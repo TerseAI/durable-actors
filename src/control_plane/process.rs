@@ -5,8 +5,8 @@ use tracing::{info, warn};
 
 use crate::{
     bucket::{GcsBucket, RuntimeStorageReader},
-    cache::{Caches, RedisConfig},
     postgres::PostgresDatabase,
+    redis_client::{Redis, RedisConfig},
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{
         HostSandboxRuntimeConfig,
@@ -140,12 +140,7 @@ async fn control_plane_routes(
         super::ActorTokenPurpose::ControlPlane,
         config.jwt_max_lifetime,
     )?;
-    let caches = match &config.redis {
-        Some(redis) => Caches::redis(redis)?,
-        None => Caches::memory(),
-    };
-    caches.check().await;
-    caches.report(Duration::from_secs(10), stop.clone());
+    let redis = config.redis.as_ref().map(Redis::connect).transpose()?;
     let database = PostgresDatabase::lazy_with_max_connections(
         &config.storage.postgres_url,
         config.storage.postgres_max_connections,
@@ -192,7 +187,7 @@ async fn control_plane_routes(
         ),
     );
     let placements = storage.clone();
-    let socket_bus = match caches.redis_connection() {
+    let socket_bus = match redis {
         Some(redis) => super::socket_bus::RedisSocketBus::start(
             redis,
             SOCKET_BUS_NAMESPACE,
@@ -205,7 +200,6 @@ async fn control_plane_routes(
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         socket_bus,
         config.gateway_accept_connections,
-        &caches,
         stop.child_token(),
     )?;
     let gateway = super::gateway::Gateway::new(

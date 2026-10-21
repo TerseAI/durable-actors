@@ -1807,7 +1807,6 @@ async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<Control
         super::super::socket_bus::MemorySocketHub::default()
             .join(crate::sockets::DEFAULT_MAX_CONNECTIONS),
         true,
-        &crate::cache::Caches::memory(),
         tokio_util::sync::CancellationToken::new(),
     )?;
     service.gateway = Some(super::super::gateway::Gateway::new(

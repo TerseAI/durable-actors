@@ -7,7 +7,6 @@ use super::{
 use crate::request_tracking::HostState;
 use crate::{
     actor::{ActorKey, ActorSocketEffect, ActorSocketInvocation},
-    cache::{Cache, Caches},
     sockets::{SocketRegistry, browser::SocketDispatcher},
 };
 use anyhow::{Context, Result, ensure};
@@ -43,7 +42,7 @@ pub(super) struct SocketGateway {
     pub stop: CancellationToken,
     pub(super) bus: Arc<dyn SocketBus>,
     pub(super) accepts_sockets: bool,
-    routes: Cache<ActorRoute>,
+    routes: moka::future::Cache<ActorKey, ActorRoute>,
     pub(super) http: reqwest::Client,
 }
 
@@ -51,7 +50,6 @@ impl SocketGateway {
     pub(super) fn start(
         bus: Arc<dyn SocketBus>,
         accepts_sockets: bool,
-        caches: &Caches,
         stop: CancellationToken,
     ) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
@@ -59,7 +57,10 @@ impl SocketGateway {
             bus,
             accepts_sockets,
             stop,
-            routes: caches.local("socket-routes", 100_000, Duration::from_secs(300)),
+            routes: moka::future::Cache::builder()
+                .max_capacity(100_000)
+                .time_to_idle(Duration::from_secs(300))
+                .build(),
             http: reqwest::Client::builder()
                 .http2_prior_knowledge()
                 .redirect(reqwest::redirect::Policy::none())
@@ -131,9 +132,8 @@ impl SocketGateway {
 
     async fn route(&self, actor: &ActorKey) -> ActorRoute {
         self.routes
-            .get_or_try_init(actor.storage_key().as_str(), async { Ok(Arc::default()) })
+            .get_with(actor.clone(), async { Arc::default() })
             .await
-            .unwrap_or_default()
     }
 
     async fn invalidate(&self, actor: &ActorKey, target: &ActorTarget) {

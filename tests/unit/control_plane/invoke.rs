@@ -460,7 +460,6 @@ async fn serve_replica(
     let sockets = super::super::super::socket_gateway::SocketGateway::start(
         hub.join(32768),
         true,
-        &crate::cache::Caches::memory(),
         tokio_util::sync::CancellationToken::new(),
     )?;
     let mut service = service.clone();

@@ -566,7 +566,6 @@ impl Stack {
         let sockets = super::super::socket_gateway::SocketGateway::start(
             hub.join(32768),
             true,
-            &crate::cache::Caches::memory(),
             tokio_util::sync::CancellationToken::new(),
         )?;
         service.gateway = Some(super::super::gateway::Gateway::new(
@@ -579,7 +578,6 @@ impl Stack {
         let second_sockets = super::super::socket_gateway::SocketGateway::start(
             hub.join(32768),
             true,
-            &crate::cache::Caches::memory(),
             tokio_util::sync::CancellationToken::new(),
         )?;
         let mut second_service = service.clone();

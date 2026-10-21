@@ -91,7 +91,7 @@ test("deploys the control plane separately and configures language-specific acto
     assert.match(output, new RegExp(`DURABLE_ACTORS_PYTHON_IMAGE, value: "[^"\\n]+@sha256:${"c".repeat(64)}"`))
 })
 
-test("replicas reach each other's sockets and share caches through Redis, which several replicas require", () => {
+test("replicas reach each other's sockets through Redis, which several replicas require", () => {
     const single = render()
     assert.equal(single.status, 0, single.stderr)
     assert.doesNotMatch(single.stdout, /DURABLE_ACTORS_REDIS_|DURABLE_ACTORS_GATEWAY_ROUTE/)

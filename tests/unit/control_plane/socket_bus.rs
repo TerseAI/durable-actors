@@ -73,12 +73,12 @@ async fn redis_bus(
     namespace: &str,
     accepts_sockets: bool,
 ) -> Result<Arc<dyn SocketBus>> {
-    let caches = crate::cache::Caches::redis(&crate::cache::RedisConfig {
+    let redis = crate::redis_client::Redis::connect(&crate::redis_client::RedisConfig {
         url: url.to_owned(),
         ca_cert: None,
     })?;
     let bus = RedisSocketBus::start(
-        caches.redis_connection().context("Redis connection")?,
+        redis,
         namespace,
         10,
         accepts_sockets,
@@ -175,8 +175,11 @@ async fn redis_questions_fail_or_report_incomplete_when_a_gateway_does_not_answe
     };
     let control = redis_bus(&url, &namespace, false).await?;
     let room = actor("one");
-    let caches = crate::cache::Caches::redis(&crate::cache::RedisConfig { url, ca_cert: None })?;
-    let mut silent = caches.redis_connection().unwrap().pubsub().await?;
+    let redis = crate::redis_client::Redis::connect(&crate::redis_client::RedisConfig {
+        url,
+        ca_cert: None,
+    })?;
+    let mut silent = redis.pubsub().await?;
     silent.subscribe(format!("{namespace}:gateways")).await?;
     silent
         .subscribe(format!("{namespace}:actor:{}", room.storage_key().as_str()))

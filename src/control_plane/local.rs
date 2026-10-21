@@ -360,7 +360,6 @@ async fn local_routes(
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         super::socket_bus::MemorySocketHub::default().join(max_socket_connections),
         true,
-        &crate::cache::Caches::memory(),
         stop.child_token(),
     )?;
     let gateway = super::gateway::Gateway::new(&issuer, origin.to_owned(), socket_gateway)?;

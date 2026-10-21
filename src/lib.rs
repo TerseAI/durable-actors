@@ -1,9 +1,6 @@
 pub mod actor;
 pub mod actor_state;
 pub mod bucket;
-// Shared caches have no consumers yet.
-#[allow(dead_code)]
-mod cache;
 pub mod clock;
 pub mod control_plane;
 mod grpc;
@@ -13,6 +10,7 @@ mod litestream;
 mod payload;
 pub mod placement;
 mod postgres;
+mod redis_client;
 pub mod sandbox;
 pub mod state_log;
 pub mod state_transport;

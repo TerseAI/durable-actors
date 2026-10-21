@@ -145,7 +145,7 @@ pub(super) struct RedisSocketBus {
 }
 
 struct Shared {
-    redis: crate::cache::Redis,
+    redis: crate::redis_client::Redis,
     registry: SocketRegistry,
     namespace: String,
     replies: String,
@@ -215,7 +215,7 @@ struct AutoResponse {
 
 impl RedisSocketBus {
     pub(super) fn start(
-        redis: crate::cache::Redis,
+        redis: crate::redis_client::Redis,
         namespace: &str,
         max_connections: usize,
         accepts_sockets: bool,
