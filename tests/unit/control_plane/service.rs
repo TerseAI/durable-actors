@@ -605,6 +605,7 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
                 memory_mib: 8192,
             },
         },
+        None,
     );
     let provisioner = provisioner.with_pool(pool);
     for (actor_name, cpu_millis, memory_mib) in [
@@ -635,6 +636,110 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
         );
     }
     Ok(())
+}
+
+struct AssigningProvider;
+
+#[async_trait]
+impl SandboxProvider for AssigningProvider {
+    async fn stopped_spares(
+        &self,
+        _: &[crate::sandbox::SpareHandle],
+    ) -> Result<Vec<crate::sandbox::StoppedSpare>> {
+        Ok(Vec::new())
+    }
+
+    async fn ensure_host(
+        &self,
+        request: &EnsureHostRequest,
+    ) -> Result<crate::sandbox::ActorHostHandle> {
+        use crate::clock::{Clock, SystemClock};
+        let route = "https://host.example.com".to_owned();
+        Ok(crate::sandbox::ActorHostHandle {
+            lease: Some(HostLease {
+                id: request.host_id.clone(),
+                session_id: request.session_id.clone(),
+                route: route.clone(),
+                expires_at_ms: SystemClock.now_ms()? + 30_000,
+            }),
+            owner_epoch: 1,
+            host_id: request.host_id.clone(),
+            route,
+            canonical_region: request.canonical_region.clone(),
+            provisioning: Some(serde_json::from_value(serde_json::json!({
+                "provider": "fake", "resourceId": "sandbox-1", "reused": false,
+                "startedAtMs": 0, "completedAtMs": 0
+            }))?),
+        })
+    }
+
+    async fn terminate_hosts(&self, _: &TerminateHostsRequest) -> Result<HostTermination> {
+        anyhow::bail!("unexpected termination")
+    }
+}
+
+#[tokio::test]
+async fn activated_sandboxes_publish_their_reservation() -> Result<()> {
+    crate::postgres::testing::with_postgres(async |fixture| {
+        let (usage, mut events) = crate::usage::testing::recorded();
+        let provider = Arc::new(AssigningProvider);
+        let pool = crate::sandbox::pool::SparePool::new(
+            crate::postgres::PostgresDatabase::connect(&fixture.url).await?,
+            provider.clone(),
+            crate::sandbox::pool::PoolConfig {
+                control_plane_url: None,
+                kind: crate::sandbox::SpareKind::Actor,
+                idle: 0,
+                fleet_maximum: 0,
+                max_starting: 1,
+                idle_ttl_seconds: 600,
+                regions: vec![],
+                resources: crate::sandbox::ResourceLimits::default(),
+            },
+            Some(usage),
+        );
+        let provisioner = SandboxHostProvisioner::new(
+            provider,
+            HostSandboxRuntimeConfig {
+                control_plane_url: "http://control".into(),
+                jwt_issuer: "issuer".into(),
+                invocation_jwt_audience: "invocation".into(),
+                host_idle_timeout_ms: 10_000,
+            },
+            test_issuer()?,
+            None,
+        )
+        .with_pool(pool);
+        let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
+            "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
+            "sandboxes":{"Counter":{"cpu":0.5,"memoryMiB":512}}
+        }))?;
+        let actor = ActorKey {
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        };
+        let (lease, _) = provisioner
+            .ensure_actor_host(&spec, "canada", &actor, true, None)
+            .await?;
+        let (host, event) = events.recv().await.unwrap();
+        assert_eq!(host, lease.id.as_str());
+        for (field, expected) in [
+            ("type", serde_json::json!("sandbox.started")),
+            ("hostId", serde_json::json!(lease.id.as_str())),
+            ("provider", serde_json::json!("fake")),
+            ("projectId", serde_json::json!("default")),
+            ("actorName", serde_json::json!("Counter")),
+            ("actorId", serde_json::json!("one")),
+            ("region", serde_json::json!("canada")),
+            ("cpuMillis", serde_json::json!(500)),
+            ("memoryMib", serde_json::json!(512)),
+        ] {
+            assert_eq!(event[field], expected, "{field}");
+        }
+        Ok(())
+    })
+    .await
 }
 
 struct LosingActivation {

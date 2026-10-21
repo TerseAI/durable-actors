@@ -3,7 +3,10 @@ use super::*;
 pub(crate) struct UnusedSandboxProvider;
 #[async_trait]
 impl SandboxProvider for UnusedSandboxProvider {
-    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+    async fn stopped_spares(
+        &self,
+        _: &[crate::sandbox::SpareHandle],
+    ) -> Result<Vec<crate::sandbox::StoppedSpare>> {
         anyhow::bail!("unexpected spare inspection")
     }
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {

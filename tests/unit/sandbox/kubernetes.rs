@@ -129,7 +129,10 @@ async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -
 async fn stopped_spares_identifies_missing_and_completed_pod_identities() -> Result<()> {
     use axum::{Json, Router, routing::get};
     let items: Vec<_> = [("live", "Running"), ("pending", "Pending"), ("unknown", "Unknown"), ("done", "Succeeded"), ("crashed", "Failed"), ("replaced", "Running")]
-        .into_iter().map(|(name, phase)| json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"sandboxes","uid":format!("{name}-uid")},"status":{"phase":phase}})).collect();
+        .into_iter().map(|(name, phase)| {
+            let finished = matches!(phase, "Succeeded" | "Failed").then(|| json!([{"name":"runtime","image":"image","imageID":"","ready":false,"restartCount":0,"state":{"terminated":{"exitCode":0,"finishedAt":"2026-10-21T12:00:00Z"}}}]));
+            json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"sandboxes","uid":format!("{name}-uid")},"status":{"phase":phase,"containerStatuses":finished}})
+        }).collect();
     let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let fail_request = fail.clone();
     let routes = Router::new().route("/api/v1/namespaces/sandboxes/pods", get(move || {
@@ -175,7 +178,11 @@ async fn stopped_spares_identifies_missing_and_completed_pod_identities() -> Res
         stopped,
         spares[3..]
             .iter()
-            .map(|s| s.resource_id.clone())
+            .map(|s| StoppedSpare {
+                resource_id: s.resource_id.clone(),
+                finished_at_ms: matches!(s.name.as_str(), "done" | "crashed")
+                    .then_some(1_792_584_000_000),
+            })
             .collect::<Vec<_>>()
     );
     fail.store(true, std::sync::atomic::Ordering::SeqCst);

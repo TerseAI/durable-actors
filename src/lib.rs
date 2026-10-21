@@ -22,6 +22,7 @@ pub(crate) mod bundle;
 mod request_traces;
 mod request_tracking;
 mod sockets;
+mod usage;
 
 #[cfg(test)]
 extern crate self as durable_actors;

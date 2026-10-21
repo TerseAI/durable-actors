@@ -72,6 +72,7 @@ pub struct SandboxProviderConfig {
     pub(super) pool: crate::sandbox::pool::PoolConfig,
     pub(crate) gke: GkeConfig,
     pub runtime: HostSandboxRuntimeConfig,
+    pub usage_events_url: Option<String>,
 }
 
 pub struct SocketEventSinkConfig {
@@ -270,7 +271,11 @@ async fn sandbox_provisioner(
     stop: tokio_util::sync::CancellationToken,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(GkeSandboxProvider::new(config.gke).await?);
-    let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
+    let usage = match &config.usage_events_url {
+        Some(url) => Some(crate::usage::UsageEvents::connect(url).await?),
+        None => None,
+    };
+    let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool, usage);
     pool.start(registry, stop);
     Ok(Arc::new(
         super::service::SandboxHostProvisioner::new(
@@ -561,6 +566,7 @@ fn sandbox_provider_config(
             invocation_jwt_audience: invocation_audience.into(),
             host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,
         },
+        usage_events_url: get("DURABLE_ACTORS_USAGE_EVENTS_URL"),
     })
 }
 

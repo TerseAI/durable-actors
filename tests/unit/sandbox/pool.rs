@@ -20,6 +20,7 @@ fn pool(database: PostgresDatabase) -> Arc<SparePool> {
         database,
         Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
         config(1),
+        None,
     )
 }
 

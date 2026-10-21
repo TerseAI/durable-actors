@@ -103,6 +103,9 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: {{ . | quote }}}
             {{- end }}
+            {{- with .Values.usageEvents.url }}
+            - {name: DURABLE_ACTORS_USAGE_EVENTS_URL, value: {{ . | quote }}}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}

@@ -105,3 +105,10 @@ test("replicas reach each other's sockets through Redis, which several replicas 
     assert.match(shared.stdout, /name: DURABLE_ACTORS_REDIS_CA_CERT\n\s+valueFrom:\n\s+secretKeyRef: \{name: "actors-credentials", key: "redis-ca"\}/)
     assert.notEqual(render({ redis: { url: "redis://inline" } }).status, 0)
 })
+
+test("publishes usage events only to a configured Pub/Sub topic", () => {
+    assert.doesNotMatch(manifests(), /DURABLE_ACTORS_USAGE_EVENTS_URL/)
+    const output = manifests({ usageEvents: { url: "pubsub://projects/billing/topics/usage" } })
+    assert.match(output, /DURABLE_ACTORS_USAGE_EVENTS_URL, value: "pubsub:\/\/projects\/billing\/topics\/usage"/)
+    assert.notEqual(render({ usageEvents: { url: "https://example.com/usage" } }).status, 0)
+})

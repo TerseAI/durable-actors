@@ -1044,6 +1044,13 @@ impl SandboxHostProvisioner {
                     },
                 )
                 .await?;
+                pool.started(crate::usage::SandboxUsage::new(
+                    &lease.id,
+                    &provisioning.provider,
+                    actor,
+                    region,
+                    &request.resources,
+                ));
             }
             anyhow::Ok(lease)
         }

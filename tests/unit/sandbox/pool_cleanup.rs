@@ -11,9 +11,11 @@ struct Provider {
     >,
 }
 
+const FINISHED_AT_MS: u64 = 1_000;
+
 #[async_trait::async_trait]
 impl SandboxProvider for Provider {
-    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>> {
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>> {
         anyhow::ensure!(
             !self.fail.load(std::sync::atomic::Ordering::SeqCst),
             "API unavailable"
@@ -26,8 +28,14 @@ impl SandboxProvider for Provider {
         Ok(spares
             .iter()
             .filter(|spare| spare.name == "do-actor-done" || spare.name == "do-actor-evicted")
-            .map(|spare| spare.resource_id.clone())
+            .map(|spare| StoppedSpare {
+                resource_id: spare.resource_id.clone(),
+                finished_at_ms: Some(FINISHED_AT_MS),
+            })
             .collect())
+    }
+    async fn retire_spare(&self, _: &SpareHandle) -> Result<()> {
+        Ok(())
     }
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
         anyhow::bail!("unexpected assignment")
@@ -58,6 +66,7 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
                 regions: vec![],
                 resources: ResourceLimits::default(),
             },
+            None,
         );
         for name in ["done", "live"] {
             pool.reserve_host(name, name, "revision").await?;
@@ -131,6 +140,7 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
                 regions: vec![],
                 resources: ResourceLimits::default(),
             },
+            None,
         );
         let mut spare = SpareHandle {
             name: "do-actor-done".into(),
@@ -173,7 +183,7 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
         let pool = SparePool::new(PostgresDatabase::connect(&fixture.url).await?, provider, PoolConfig {
             control_plane_url: None, kind: SpareKind::Actor, idle: 2, fleet_maximum: 4,
             max_starting: 2, idle_ttl_seconds: 600, regions: vec![], resources: ResourceLimits::default(),
-        });
+        }, None);
         for name in ["evicted", "warm"] {
             let spare = SpareHandle {
                 name: format!("do-actor-{name}"),
@@ -190,4 +200,66 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
         assert!(pool.store.claim("warm", "another", "revision").await?.is_none());
         Ok(())
     }).await
+}
+
+#[tokio::test]
+async fn stopped_and_retired_hosts_publish_ended_events() -> Result<()> {
+    with_postgres(async |fixture| {
+        let (usage, mut events) = crate::usage::testing::recorded();
+        let pool = SparePool::new(
+            PostgresDatabase::connect(&fixture.url).await?,
+            Arc::new(Provider {
+                fail: false.into(),
+                pause: None.into(),
+            }),
+            PoolConfig {
+                control_plane_url: None,
+                kind: SpareKind::Actor,
+                idle: 0,
+                fleet_maximum: 0,
+                max_starting: 1,
+                idle_ttl_seconds: 600,
+                regions: vec![],
+                resources: ResourceLimits::default(),
+            },
+            Some(usage),
+        );
+        for name in ["done", "live"] {
+            pool.reserve_host(name, name, "revision").await?;
+            pool.remember(name, "revision", &handle(name)).await?;
+        }
+        let evicted = handle("evicted");
+        pool.store.0.execute(
+            "INSERT INTO durable_actors_spares (name, pool_key, status, handle, expires_at) VALUES ($1, 'warm', 'ready', $2, clock_timestamp() + interval '10 minutes')",
+            &[&evicted.name, &serde_json::to_string(&evicted)?],
+        ).await?;
+        pool.forget_stopped().await?;
+        pool.failed("live").await?;
+        pool.cleanup().await?;
+        let mut ended = Vec::new();
+        for _ in 0..2 {
+            let (host, event) = events.recv().await.unwrap();
+            assert_eq!(event["type"], "sandbox.ended");
+            ended.push((host, event["occurredAtMs"].as_u64().unwrap()));
+        }
+        ended.sort();
+        assert_eq!(ended[0], ("done".into(), FINISHED_AT_MS));
+        assert_eq!(ended[1].0, "live");
+        assert!(ended[1].1 > FINISHED_AT_MS);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(events.try_recv().is_err(), "unassigned spares are not metered");
+        Ok(())
+    })
+    .await
+}
+
+fn handle(name: &str) -> SpareHandle {
+    SpareHandle {
+        name: format!("do-actor-{name}"),
+        resource_id: format!("sandboxes/do-actor-{name}/{name}-uid"),
+        route: "http://host:7101".into(),
+        canonical_region: "region".into(),
+        control_route: "http://host:7102".into(),
+        control_token: "token".into(),
+    }
 }

@@ -8,6 +8,7 @@ use super::{CreateSpareRequest, ResourceLimits, SandboxProvider, SpareHandle, Sp
 use crate::{
     control_plane::admin::{AdminRegistry, HostLaunchSpec},
     postgres::PostgresDatabase,
+    usage::{SandboxUsage, UsageEvents},
 };
 
 mod cleanup;
@@ -28,6 +29,7 @@ pub(crate) struct PoolConfig {
 pub(crate) struct SparePool {
     store: PoolStore,
     provider: Arc<dyn SandboxProvider>,
+    usage: Option<UsageEvents>,
     pub config: PoolConfig,
 }
 
@@ -36,10 +38,12 @@ impl SparePool {
         database: PostgresDatabase,
         provider: Arc<dyn SandboxProvider>,
         config: PoolConfig,
+        usage: Option<UsageEvents>,
     ) -> Arc<Self> {
         Arc::new(Self {
             store: PoolStore(database, config.kind),
             provider,
+            usage,
             config,
         })
     }
@@ -101,6 +105,12 @@ impl SparePool {
         ).await?;
         ensure!(updated == 1, "actor sandbox claim expired or was retired");
         Ok(())
+    }
+
+    pub fn started(&self, sandbox: SandboxUsage) {
+        if let Some(usage) = &self.usage {
+            usage.started(sandbox);
+        }
     }
 
     pub async fn failed(&self, host: &str) -> Result<()> {
@@ -306,14 +316,24 @@ impl SparePool {
         tokio::time::timeout(Duration::from_secs(30), self.provider.retire_spare(&handle))
             .await
             .context("spare retirement timed out")??;
-        self.store
+        let retired = self
+            .store
             .0
-            .execute(
-                "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring'",
+            .query_opt(
+                "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring' RETURNING host_id",
                 &[&handle.name],
             )
             .await?;
+        if let Some(host) = retired.and_then(|row| row.get::<_, Option<String>>(0)) {
+            self.ended(host, None);
+        }
         Ok(())
+    }
+
+    fn ended(&self, host: String, finished_at_ms: Option<u64>) {
+        if let Some(usage) = &self.usage {
+            usage.ended(host, finished_at_ms);
+        }
     }
 
     fn key(&self, image: &str, region: &str) -> String {

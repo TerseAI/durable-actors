@@ -1,4 +1,5 @@
 use super::*;
+use crate::sandbox::StoppedSpare;
 
 impl SparePool {
     pub(super) async fn forget_stopped(&self) -> Result<()> {
@@ -17,10 +18,30 @@ impl SparePool {
         )
         .await
         .context("sandbox inspection timed out")??;
-        self.store.0.execute(
-            "DELETE FROM durable_actors_spares WHERE status IN ('ready', 'active') AND kind = $1 AND handle::json->>'resourceId' = ANY($2)",
-            &[&self.config.kind.as_str(), &stopped],
+        self.forget(&stopped).await
+    }
+
+    async fn forget(&self, stopped: &[StoppedSpare]) -> Result<()> {
+        let resources: Vec<_> = stopped
+            .iter()
+            .map(|spare| spare.resource_id.as_str())
+            .collect();
+        let rows = self.store.0.connection().await?.query(
+            "DELETE FROM durable_actors_spares WHERE status IN ('ready', 'active') AND kind = $1 AND handle::json->>'resourceId' = ANY($2) \
+             RETURNING host_id, handle::json->>'resourceId'",
+            &[&self.config.kind.as_str(), &resources],
         ).await?;
+        for row in rows {
+            let Some(host) = row.get::<_, Option<String>>(0) else {
+                continue;
+            };
+            let resource = row.get::<_, &str>(1);
+            let finished_at_ms = stopped
+                .iter()
+                .find(|spare| spare.resource_id == resource)
+                .and_then(|spare| spare.finished_at_ms);
+            self.ended(host, finished_at_ms);
+        }
         Ok(())
     }
 }

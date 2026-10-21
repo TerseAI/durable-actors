@@ -190,6 +190,16 @@
         }
       }
     },
+    "usageEvents": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^$|^pubsub://projects/[^/]+/topics/[^/]+$"
+        }
+      }
+    },
     "resources": {
       "type": "object"
     },

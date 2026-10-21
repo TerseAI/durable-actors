@@ -137,7 +137,7 @@ impl SandboxCluster for Kubernetes {
         delete_pod(&self.pods, name, uid).await
     }
 
-    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>> {
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>> {
         let pods: HashMap<_, _> = self
             .pods
             .list(&ListParams::default())
@@ -153,16 +153,14 @@ impl SandboxCluster for Kubernetes {
                 namespace == self.config.namespace && name == spare.name,
                 "sandbox resource identity mismatch"
             );
-            let live = pods.get(name).is_some_and(|pod| {
-                pod.uid().as_deref() == Some(uid)
-                    && !pod
-                        .status
-                        .as_ref()
-                        .and_then(|status| status.phase.as_deref())
-                        .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
-            });
-            if !live {
-                stopped.push(spare.resource_id.clone());
+            let pod = pods
+                .get(name)
+                .filter(|pod| pod.uid().as_deref() == Some(uid));
+            if pod.is_none_or(is_terminal) {
+                stopped.push(StoppedSpare {
+                    resource_id: spare.resource_id.clone(),
+                    finished_at_ms: pod.and_then(finished_at_ms),
+                });
             }
         }
         Ok(stopped)
@@ -196,12 +194,19 @@ impl SandboxCluster for Kubernetes {
     }
 }
 
+// Keep finished pods long enough for spare cleanup to read their finish time for usage events.
+const FINISHED_POD_RETENTION_MS: u64 = 120_000;
+
 async fn reap_completed(pods: &Api<Pod>) -> Result<()> {
+    let retained_after_ms = now_ms()?.saturating_sub(FINISHED_POD_RETENTION_MS);
     for phase in ["Failed", "Succeeded"] {
         let params = ListParams::default()
             .labels("app.kubernetes.io/managed-by=terse")
             .fields(&format!("status.phase={phase}"));
         for pod in pods.list(&params).await? {
+            if finished_at_ms(&pod).is_some_and(|finished| finished > retained_after_ms) {
+                continue;
+            }
             delete_pod(
                 pods,
                 &pod.name_any(),
@@ -251,12 +256,32 @@ fn base_pod(
 }
 
 fn terminal_or_ready(pod: &Pod) -> bool {
-    is_ready(pod)
-        || pod
-            .status
-            .as_ref()
-            .and_then(|status| status.phase.as_deref())
-            .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
+    is_ready(pod) || is_terminal(pod)
+}
+fn is_terminal(pod: &Pod) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|status| status.phase.as_deref())
+        .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
+}
+fn finished_at_ms(pod: &Pod) -> Option<u64> {
+    pod.status
+        .as_ref()?
+        .container_statuses
+        .as_ref()?
+        .iter()
+        .filter_map(|container| {
+            container
+                .state
+                .as_ref()?
+                .terminated
+                .as_ref()?
+                .finished_at
+                .as_ref()
+        })
+        .map(|finished| finished.0.timestamp_millis())
+        .max()
+        .and_then(|finished| u64::try_from(finished).ok())
 }
 fn is_ready(pod: &Pod) -> bool {
     pod.status
