@@ -199,6 +199,7 @@ impl ControlPlaneService {
             .map(|contract| contract.sandboxes())
             .transpose()?
             .unwrap_or_default();
+        self.provisioner.check_sandboxes(&prepared)?;
         let changed = self
             .register_deployment(admin, update.as_mut(), &prepared, contract)
             .await?;
@@ -805,6 +806,10 @@ pub(crate) trait HostProvisioner: Send + Sync {
         HostLaunchSpec,
         Option<super::contracts::PublicActorContract>,
     )>;
+    fn check_sandboxes(&self, _spec: &HostLaunchSpec) -> Result<()> {
+        Ok(())
+    }
+
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }
@@ -902,8 +907,16 @@ impl HostProvisioner for SandboxHostProvisioner {
             .for_entrypoint(manifest.entrypoint()?)?
             .into();
         prepared.validate()?;
-        self.check_resource_bounds(&prepared)?;
         Ok((prepared, None))
+    }
+
+    fn check_sandboxes(&self, spec: &HostLaunchSpec) -> Result<()> {
+        if let Some(bounds) = &self.resource_bounds {
+            for (actor, options) in &spec.sandboxes {
+                options.check_bounds(actor, bounds)?;
+            }
+        }
+        Ok(())
     }
     async fn wait_ready(&self, host: &HostId) -> Result<()> {
         match &self.pool {
@@ -945,15 +958,6 @@ impl HostProvisioner for SandboxHostProvisioner {
 }
 
 impl SandboxHostProvisioner {
-    fn check_resource_bounds(&self, spec: &HostLaunchSpec) -> Result<()> {
-        if let Some(bounds) = &self.resource_bounds {
-            for (actor, options) in &spec.sandboxes {
-                options.check_bounds(actor, bounds)?;
-            }
-        }
-        Ok(())
-    }
-
     async fn launch(
         &self,
         spec: &HostLaunchSpec,
