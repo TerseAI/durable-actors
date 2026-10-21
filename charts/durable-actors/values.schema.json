@@ -172,10 +172,19 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 1000
+        },
+        "traceMaxConnections": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "traceUrlSecretKey": {
+          "type": "string"
         }
       },
       "required": [
-        "maxConnections"
+        "maxConnections",
+        "traceMaxConnections"
       ]
     },
     "resources": {

@@ -42,6 +42,8 @@ pub struct ControlPlaneProcessConfig {
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
     pub postgres_max_connections: usize,
+    pub trace_postgres_url: Option<String>,
+    pub trace_postgres_max_connections: usize,
     pub token_issuer: String,
     pub trace_retention: Duration,
     pub bucket: String,
@@ -141,8 +143,18 @@ async fn control_plane_routes(
         &config.storage.postgres_url,
         config.storage.postgres_max_connections,
     )?;
+    // Traces get their own pool even in the main database, so a burst of trace writes never
+    // holds the connections routing needs.
+    let trace_database = PostgresDatabase::lazy_with_max_connections(
+        config
+            .storage
+            .trace_postgres_url
+            .as_deref()
+            .unwrap_or(&config.storage.postgres_url),
+        config.storage.trace_postgres_max_connections,
+    )?;
     let trace_persistence = Arc::new(PostgresTracePersistence::new(
-        database.clone(),
+        trace_database,
         config.storage.trace_retention,
     ));
     let changes = crate::postgres::notifications::ChangeFeed::postgres(
@@ -338,7 +350,16 @@ impl ControlPlaneProcessConfig {
             artifact_bucket,
             token_issuer: required(&mut get, "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT")?,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
-            postgres_max_connections: postgres_max_connections(&mut get)?,
+            postgres_max_connections: max_connections(
+                &mut get,
+                "DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS",
+            )?,
+            trace_postgres_url: get("DURABLE_ACTORS_TRACE_POSTGRES_URL")
+                .filter(|url| !url.trim().is_empty()),
+            trace_postgres_max_connections: max_connections(
+                &mut get,
+                "DURABLE_ACTORS_TRACE_POSTGRES_MAX_CONNECTIONS",
+            )?,
             trace_retention: trace_retention(&mut get)?,
             bucket,
         };
@@ -432,15 +453,15 @@ fn rapid_persistence(
     Ok(persistence)
 }
 
-fn postgres_max_connections(get: &mut impl FnMut(&str) -> Option<String>) -> Result<usize> {
-    let connections: usize = get("DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS")
+fn max_connections(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<usize> {
+    let connections: usize = get(name)
         .map(|value| value.parse())
         .transpose()
-        .context("DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS must be an integer")?
+        .with_context(|| format!("{name} must be an integer"))?
         .unwrap_or(crate::postgres::DEFAULT_MAX_CONNECTIONS);
     ensure!(
         (1..=1000).contains(&connections),
-        "DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS must be between 1 and 1000"
+        "{name} must be between 1 and 1000"
     );
     Ok(connections)
 }
