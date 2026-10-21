@@ -104,7 +104,7 @@ impl Session {
                 biased;
                 _ = self.state.stop.cancelled() => return Err(Closed::new(1012, "socket gateway stopping")),
                 _ = authority_checks.tick() => {
-                    self.state.dispatcher.ensure_authority().map_err(|_| Closed::new(1012, "socket gateway lease expired"))?;
+                    self.state.dispatcher.ensure_authority().map_err(|_| Closed::new(1012, "socket gateway lost its subscription"))?;
                 }
                 result = async { self.handler.as_mut().unwrap().await }, if self.handler.is_some() => {
                     self.handler.take();
@@ -205,7 +205,7 @@ impl Session {
         self.state
             .dispatcher
             .ensure_authority()
-            .map_err(|_| Closed::new(1012, "socket gateway lease expired"))?;
+            .map_err(|_| Closed::new(1012, "socket gateway lost its subscription"))?;
         let mut authority_checks = tokio::time::interval(Duration::from_secs(1));
         let send = socket.send(frame);
         tokio::pin!(send);
@@ -213,7 +213,7 @@ impl Session {
             tokio::select! {
                 biased;
                 _ = self.state.stop.cancelled() => return Err(Closed::new(1012, "socket gateway stopping")),
-                _ = authority_checks.tick() => self.state.dispatcher.ensure_authority().map_err(|_| Closed::new(1012, "socket gateway lease expired"))?,
+                _ = authority_checks.tick() => self.state.dispatcher.ensure_authority().map_err(|_| Closed::new(1012, "socket gateway lost its subscription"))?,
                 result = &mut send => return result.map_err(|_| Closed::new(1006, "transport closed")),
             }
         }

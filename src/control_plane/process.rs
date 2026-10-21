@@ -20,10 +20,11 @@ const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
 const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-actors-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
+/// Redis channel and key prefix for the socket bus. Bump the version when its messages change.
+const SOCKET_BUS_NAMESPACE: &str = "durable-actors:v1:sockets";
 
 pub struct ControlPlaneProcessConfig {
     pub bind: SocketAddr,
-    pub gateway_route: String,
     pub gateway_accept_connections: bool,
     pub max_socket_connections: usize,
     pub jwt_signing_key: String,
@@ -192,17 +193,24 @@ async fn control_plane_routes(
         ),
     );
     let placements = storage.clone();
+    // Browsers' sockets stay on the gateway they reached; publishes reach every
+    // gateway through Redis. Without Redis this process is the only gateway.
+    let socket_bus = match caches.redis_connection() {
+        Some(redis) => super::socket_bus::RedisSocketBus::start(
+            redis,
+            SOCKET_BUS_NAMESPACE,
+            config.max_socket_connections,
+            config.gateway_accept_connections,
+            stop.child_token(),
+        ),
+        None => super::socket_bus::MemorySocketHub::default().join(config.max_socket_connections),
+    };
     let socket_gateway = super::socket_gateway::SocketGateway::start(
-        config.gateway_route.clone(),
-        Arc::new(super::socket_directory::PostgresSocketDirectory::new(
-            database.clone(),
-        )),
-        config.max_socket_connections,
+        socket_bus,
         config.gateway_accept_connections,
         &caches,
         stop.child_token(),
-    )
-    .await?;
+    )?;
     let gateway = super::gateway::Gateway::new(
         &issuer,
         config.sandbox_provider.gke.public_origin.clone(),
@@ -242,7 +250,6 @@ async fn control_plane_routes(
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
         storage.clone(),
         service.gateway.as_ref().unwrap().connections.clone(),
-        config.api_key.clone(),
     ));
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let inspector =
@@ -363,13 +370,8 @@ impl ControlPlaneProcessConfig {
         );
         let socket_event_sink = socket_event_sink_config(&mut get)?;
         let alarm_poll_interval = alarm_poll_interval(&mut get)?;
-        let gateway_route = validated_http_url(
-            &required(&mut get, "DURABLE_ACTORS_GATEWAY_ROUTE")?,
-            "DURABLE_ACTORS_GATEWAY_ROUTE",
-        )?;
         Ok(Self {
             bind,
-            gateway_route,
             max_socket_connections: crate::sockets::max_connections(&mut get)?,
             gateway_accept_connections: get("DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS")
                 .map(|value| value.parse())
