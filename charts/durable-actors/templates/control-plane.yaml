@@ -67,6 +67,7 @@ spec:
             - {name: DURABLE_ACTORS_CONTROL_PLANE_BIND, value: "0.0.0.0:7100"}
             - {name: DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS, value: {{ .Values.alarms.pollIntervalMs | quote }}}
             - {name: DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS, value: {{ .Values.postgres.maxConnections | quote }}}
+            - {name: DURABLE_ACTORS_TRACE_POSTGRES_MAX_CONNECTIONS, value: {{ .Values.postgres.traceMaxConnections | quote }}}
             - name: DURABLE_ACTORS_GATEWAY_IP
               valueFrom:
                 fieldRef: {fieldPath: status.podIP}
@@ -92,6 +93,11 @@ spec:
             - name: DURABLE_ACTORS_POSTGRES_URL
               valueFrom:
                 secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: postgres-url}
+            {{- with .Values.postgres.traceUrlSecretKey }}
+            - name: DURABLE_ACTORS_TRACE_POSTGRES_URL
+              valueFrom:
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: {{ . | quote }}}
+            {{- end }}
             - name: DURABLE_ACTORS_JWT_SIGNING_KEY
               valueFrom:
                 secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: jwt-signing-key}
