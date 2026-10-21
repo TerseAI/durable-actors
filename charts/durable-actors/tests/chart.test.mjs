@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
+const chart = new URL("../", import.meta.url).pathname
 const helm = process.env.HELM ?? "helm"
 function render(overrides = {}) {
     const directory = mkdtempSync(join(tmpdir(), "actors-chart-"))
