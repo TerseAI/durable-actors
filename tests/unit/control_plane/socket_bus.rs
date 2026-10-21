@@ -169,6 +169,30 @@ async fn redis_auto_responses_reach_gateways_that_open_sockets_later() -> Result
 }
 
 #[tokio::test]
+async fn redis_auto_responses_cleared_while_unwatched_do_not_return() -> Result<()> {
+    let Some((url, namespace)) = test_redis() else {
+        return Ok(());
+    };
+    let control = redis_bus(&url, &namespace, false).await?;
+    let gateway = redis_bus(&url, &namespace, true).await?;
+    let room = actor("one");
+    let set = |pair: Option<(&str, &str)>| {
+        vec![ActorSocketEffect::SetAutoResponse {
+            request: pair.map(|(request, _)| request.into()),
+            response: pair.map(|(_, response)| response.into()),
+        }]
+    };
+    control.publish(&room, set(Some(("ping", "pong")))).await?;
+    gateway.watch(&room).await?;
+    gateway.unwatch(&room).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    control.publish(&room, set(None)).await?;
+    gateway.watch(&room).await?;
+    assert_eq!(gateway.registry().auto_response(&room, "ping").await, None);
+    Ok(())
+}
+
+#[tokio::test]
 async fn redis_questions_fail_or_report_incomplete_when_a_gateway_does_not_answer() -> Result<()> {
     let Some((url, namespace)) = test_redis() else {
         return Ok(());

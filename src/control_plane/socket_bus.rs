@@ -152,11 +152,15 @@ struct Shared {
     connected: AtomicBool,
     generation: AtomicU64,
     pending: Mutex<HashMap<String, mpsc::UnboundedSender<Answer>>>,
-    subscribed: Mutex<Vec<String>>,
+    subscribed: Mutex<Vec<ActorKey>>,
 }
 
 enum Command {
-    Subscribe(String, oneshot::Sender<Result<()>>),
+    Subscribe {
+        actor: ActorKey,
+        load: bool,
+        done: oneshot::Sender<Result<()>>,
+    },
     Unsubscribe(String),
 }
 
@@ -310,6 +314,27 @@ impl Shared {
         self.redis.run::<usize>(command).await
     }
 
+    // Runs on the listener after subscribing, so changes published meanwhile apply after it.
+    async fn load_auto_response(&self, actor: &ActorKey) -> Result<()> {
+        let mut get = redis::cmd("GET");
+        get.arg(self.auto_response_key(actor));
+        let AutoResponse { request, response } = match self.redis.run::<Option<String>>(get).await?
+        {
+            Some(stored) => serde_json::from_str(&stored)?,
+            None => AutoResponse {
+                request: None,
+                response: None,
+            },
+        };
+        self.registry
+            .apply(
+                actor,
+                vec![ActorSocketEffect::SetAutoResponse { request, response }],
+            )
+            .await;
+        Ok(())
+    }
+
     /// Each reconnect starts a new generation, closing sockets that may have missed publishes.
     async fn listen(
         self: Arc<Self>,
@@ -347,8 +372,9 @@ impl Shared {
             sink.subscribe(self.gateways_channel()).await?;
         }
         let resubscribe = self.subscribed.lock().unwrap().clone();
-        for channel in resubscribe {
-            sink.subscribe(channel).await?;
+        for actor in resubscribe {
+            sink.subscribe(self.actor_channel(&actor)).await?;
+            self.load_auto_response(&actor).await?;
         }
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.connected.store(true, Ordering::SeqCst);
@@ -361,13 +387,17 @@ impl Shared {
                 }
                 command = commands.recv() => match command {
                     None => return Ok(()),
-                    Some(Command::Subscribe(channel, done)) => {
-                        let subscribed = sink.subscribe(&channel).await;
-                        let failed = subscribed.is_err();
-                        let _ = done.send(subscribed.map_err(Into::into));
-                        if failed {
+                    Some(Command::Subscribe { actor, load, done }) => {
+                        let channel = self.actor_channel(&actor);
+                        if let Err(error) = sink.subscribe(&channel).await {
+                            let _ = done.send(Err(error.into()));
                             anyhow::bail!("subscribe to {channel} failed");
                         }
+                        let loaded = match load {
+                            true => self.load_auto_response(&actor).await,
+                            false => Ok(()),
+                        };
+                        let _ = done.send(loaded);
                     }
                     Some(Command::Unsubscribe(channel)) => sink.unsubscribe(&channel).await?,
                 },
@@ -441,39 +471,27 @@ impl SocketBus for RedisSocketBus {
             self.shared.connected.load(Ordering::SeqCst),
             "socket bus is reconnecting"
         );
-        let channel = self.shared.actor_channel(actor);
         let (done, subscribed) = oneshot::channel();
         {
             // Sent under the lock, so commands reach Redis in the order the counts changed.
             let mut watched = self.watched.lock().unwrap();
             let sockets = watched.entry(actor.clone()).or_default();
             *sockets += 1;
-            if *sockets == 1 {
-                self.shared.subscribed.lock().unwrap().push(channel.clone());
+            let load = *sockets == 1;
+            if load {
+                self.shared.subscribed.lock().unwrap().push(actor.clone());
             }
             // Each watch waits for its own subscribe, even one that arrives while another is in flight.
-            self.commands
-                .send(Command::Subscribe(channel, done))
-                .ok()
-                .context("socket bus stopped")?;
+            let _ = self.commands.send(Command::Subscribe {
+                actor: actor.clone(),
+                load,
+                done,
+            });
         }
         let subscribed = tokio::time::timeout(SUBSCRIBE_TIMEOUT, subscribed).await;
         if !matches!(subscribed, Ok(Ok(Ok(())))) {
             self.unwatch(actor).await;
             anyhow::bail!("socket bus could not subscribe to the actor");
-        }
-        // Subscribed before reading, so a change published meanwhile arrives too.
-        let mut get = redis::cmd("GET");
-        get.arg(self.shared.auto_response_key(actor));
-        if let Some(stored) = self.shared.redis.run::<Option<String>>(get).await? {
-            let AutoResponse { request, response } = serde_json::from_str(&stored)?;
-            self.shared
-                .registry
-                .apply(
-                    actor,
-                    vec![ActorSocketEffect::SetAutoResponse { request, response }],
-                )
-                .await;
         }
         Ok(())
     }
@@ -486,13 +504,14 @@ impl SocketBus for RedisSocketBus {
         *sockets -= 1;
         if *sockets == 0 {
             watched.remove(actor);
-            let channel = self.shared.actor_channel(actor);
             self.shared
                 .subscribed
                 .lock()
                 .unwrap()
-                .retain(|subscribed| subscribed != &channel);
-            let _ = self.commands.send(Command::Unsubscribe(channel));
+                .retain(|subscribed| subscribed != actor);
+            let _ = self
+                .commands
+                .send(Command::Unsubscribe(self.shared.actor_channel(actor)));
         }
     }
 
