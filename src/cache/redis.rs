@@ -1,7 +1,3 @@
-//! Redis: one multiplexed connection per process, shared by the caches (JSON
-//! values, an expiry on every write) and the socket bus, which also opens its
-//! own pub/sub connection.
-
 use super::Store;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -21,30 +17,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Where the shared caches live.
 pub struct RedisConfig {
-    /// `redis://host:6379`, or `rediss://` for TLS; a password goes before the
-    /// host: `rediss://:password@host:6378`.
     pub url: String,
-    /// PEM certificates of the CA that signed the server's certificate, such as
-    /// Memorystore's server CA. Unset, TLS trusts the public web roots.
     pub ca_cert: Option<String>,
 }
 
-/// Every key starts with this. Bump the version when a value's encoding changes.
+/// Bump the version when a value's encoding changes.
 const KEY_PREFIX: &str = "durable-actors:v1";
-/// Bounds each command, so an unreachable Redis costs a miss, not a stall. Generous:
-/// under a burst the control plane itself answers slowly, and a reply that
-/// arrives late still beats the miss, which costs a database or provider call.
+/// Generous: under a burst the control plane, not Redis, is slow, and a late reply beats a miss.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(1);
-/// When Redis is down, callers skip it this long before trying it again.
 const BACKOFF: Duration = Duration::from_secs(1);
-/// Redis counts as down when it refuses or drops the connection, or answers
-/// nothing for this long. A slow reply while others arrive is load, not an outage.
+/// A slow reply while others still arrive is load, not an outage.
 const SILENCE: Duration = Duration::from_secs(2);
 
-/// Skips Redis for [`BACKOFF`] once it is down, instead of every caller waiting
-/// out its own timeout.
 type Breaker = failsafe::StateMachine<ConsecutiveFailures<Constant>, ()>;
 
 #[derive(Clone)]
@@ -99,7 +84,6 @@ impl Redis {
         self.run::<String>(redis::cmd("PING")).await.map(drop)
     }
 
-    /// A dedicated connection for subscribing to channels.
     pub(crate) async fn pubsub(&self) -> Result<redis::aio::PubSub> {
         tokio::time::timeout(Duration::from_secs(5), self.client.get_async_pubsub())
             .await
@@ -138,12 +122,9 @@ impl Redis {
 
 pub(super) struct Failure {
     pub error: anyhow::Error,
-    /// Redis did not answer in time.
     pub slow: bool,
 }
 
-/// Tells an outage from load: Redis is down when it refuses or drops the
-/// connection, or answers nothing for [`SILENCE`].
 pub(super) struct Liveness {
     started: Instant,
     answered_ms: AtomicU64,

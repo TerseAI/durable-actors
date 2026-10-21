@@ -23,10 +23,6 @@ alarms:
   pollIntervalMs: 100
 postgres:
   maxConnections: 8
-# Redis, required with more than one replica: replicas deliver WebSocket messages to each other's
-# sockets through it (pub/sub) and share caches in it. Empty, a single pod keeps both in memory.
-# urlSecretKey names the credentialsSecret key holding a redis:// or rediss:// URL with any
-# password; caSecretKey, a PEM CA for rediss://.
 redis:
   urlSecretKey: ""
   caSecretKey: ""

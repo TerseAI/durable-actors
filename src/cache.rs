@@ -1,15 +1,3 @@
-//! Caches the control plane's replicas share, or that one process keeps.
-//!
-//! [`Caches`] hands out every cache. Without Redis (locally, in tests) every
-//! cache lives in this process's memory. With `DURABLE_ACTORS_REDIS_URL` set,
-//! shared caches live only in Redis: every replica sees what any one of them
-//! loaded or invalidated, and no in-process copy sits in front to go stale.
-//! Values that only mean something inside one process, such as a lock, use
-//! [`Caches::local`] and always stay in memory.
-//!
-//! A cache never fails its caller. A Redis error counts as a miss, or a skipped
-//! write, so an unreachable Redis costs latency, not availability.
-
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
@@ -29,7 +17,6 @@ mod redis;
 pub(crate) use self::redis::Redis;
 pub use self::redis::RedisConfig;
 
-/// Where a cache keeps its entries.
 #[async_trait]
 pub(crate) trait Store<V>: Send + Sync {
     async fn get(&self, key: &str) -> Result<Option<V>>;
@@ -37,7 +24,6 @@ pub(crate) trait Store<V>: Send + Sync {
     async fn invalidate(&self, key: &str) -> Result<()>;
 }
 
-/// Entries in this process's memory, evicted by age and capacity.
 struct MemoryStore<V>(moka::future::Cache<String, V>);
 
 #[async_trait]
@@ -55,7 +41,6 @@ impl<V: Clone + Send + Sync + 'static> Store<V> for MemoryStore<V> {
     }
 }
 
-/// Hands out caches: in memory, or shared through Redis when configured.
 #[derive(Clone, Default)]
 pub(crate) struct Caches {
     redis: Option<redis::Redis>,
@@ -63,13 +48,10 @@ pub(crate) struct Caches {
 }
 
 impl Caches {
-    /// Every cache in this process's memory.
     pub fn memory() -> Self {
         Self::default()
     }
 
-    /// Shared caches in Redis. Connects lazily: the control plane starts while
-    /// Redis is unreachable and its caches miss until Redis answers.
     pub fn redis(config: &RedisConfig) -> Result<Self> {
         Ok(Self {
             redis: Some(redis::Redis::connect(config)?),
@@ -77,9 +59,6 @@ impl Caches {
         })
     }
 
-    /// A cache every replica shares when Redis is configured. Entries expire
-    /// `ttl` after they are written. `capacity` bounds the in-memory cache;
-    /// Redis evicts by its own `maxmemory` policy.
     pub fn shared<V>(&self, name: &'static str, capacity: u64, ttl: Duration) -> Cache<V>
     where
         V: Serialize + DeserializeOwned + Clone + Send + Sync + 'static,
@@ -99,8 +78,6 @@ impl Caches {
         }
     }
 
-    /// A cache for values that only mean something in this process. Always in
-    /// memory; entries expire `idle` after they were last read or written.
     pub fn local<V>(&self, name: &'static str, capacity: u64, idle: Duration) -> Cache<V>
     where
         V: Clone + Send + Sync + 'static,
@@ -138,8 +115,6 @@ impl Caches {
         }
     }
 
-    /// Logs a `cache_stats` event per active cache every `every`: hits, misses,
-    /// loads other callers shared, and store errors since the last report.
     pub fn report(&self, every: Duration, stop: CancellationToken) {
         let stats = self.stats.clone();
         tokio::spawn(async move {
@@ -153,13 +128,10 @@ impl Caches {
         });
     }
 
-    /// The Redis connection, for state that is not a cache but lives with them.
     pub fn redis_connection(&self) -> Option<Redis> {
         self.redis.clone()
     }
 
-    /// Checks Redis once, so a misconfigured URL or credential shows up at
-    /// startup rather than as a quiet miss rate.
     pub async fn check(&self) {
         if let Some(redis) = &self.redis {
             match redis.ping().await {
@@ -171,7 +143,6 @@ impl Caches {
     }
 }
 
-/// A cache of `V` by string key. Cloning shares it.
 pub(crate) struct Cache<V> {
     inner: Arc<Inner<V>>,
 }
@@ -186,12 +157,10 @@ impl<V> Clone for Cache<V> {
 
 struct Inner<V> {
     store: Arc<dyn Store<V>>,
-    /// Loads in progress in this process, so concurrent misses on a key load it once.
     flights: Mutex<HashMap<String, Flight<V>>>,
     stats: Arc<Stats>,
 }
 
-/// A load's outcome, once it lands. Callers that joined it get the error as text.
 type Flight<V> = watch::Receiver<Option<Result<V, String>>>;
 
 impl<V: Clone + Send + Sync + 'static> Cache<V> {
@@ -217,8 +186,6 @@ impl<V: Clone + Send + Sync + 'static> Cache<V> {
         }
     }
 
-    /// The cached value, or `init`'s, which is then cached. Concurrent callers
-    /// in this process share one `init`; a failed `init` is not cached.
     pub async fn get_or_try_init<F>(&self, key: &str, init: F) -> Result<V>
     where
         F: Future<Output = Result<V>>,
@@ -280,7 +247,6 @@ impl<V: Clone + Send + Sync + 'static> Cache<V> {
     }
 }
 
-/// Ends a load's flight when the load finishes or is cancelled.
 struct Land<'a, V> {
     flights: &'a Mutex<HashMap<String, Flight<V>>>,
     key: &'a str,
@@ -305,7 +271,6 @@ struct Stats {
     backend: &'static str,
     hits: AtomicU64,
     misses: AtomicU64,
-    /// Callers that waited on another caller's load instead of loading.
     joined: AtomicU64,
     errors: AtomicU64,
     last_error: Mutex<Option<String>>,

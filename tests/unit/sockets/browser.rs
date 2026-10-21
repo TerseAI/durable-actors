@@ -197,7 +197,6 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Browsers may send up to 32 MiB per message; a larger one closes the socket with 1009.
 #[tokio::test]
 async fn sockets_accept_32_mib_and_close_oversize_with_1009() -> Result<()> {
     let (events, _received) = tokio::sync::mpsc::unbounded_channel();

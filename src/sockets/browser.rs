@@ -23,7 +23,6 @@ pub(crate) trait SocketDispatcher: Send + Sync {
         ticket: &SocketTicket,
         invocation: ActorSocketInvocation,
     ) -> Result<Vec<ActorSocketEffect>>;
-    /// Delivers the effects a socket event produced to every socket of the actor.
     async fn deliver(
         &self,
         registry: &SocketRegistry,

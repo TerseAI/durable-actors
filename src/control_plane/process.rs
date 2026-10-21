@@ -20,7 +20,7 @@ const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
 const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-actors-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
-/// Redis channel and key prefix for the socket bus. Bump the version when its messages change.
+/// Bump the version when the bus's messages change.
 const SOCKET_BUS_NAMESPACE: &str = "durable-actors:v1:sockets";
 
 pub struct ControlPlaneProcessConfig {
@@ -39,7 +39,6 @@ pub struct ControlPlaneProcessConfig {
     pub socket_event_sink: Option<SocketEventSinkConfig>,
     pub region: Option<String>,
     pub alarm_poll_interval: Duration,
-    /// Where replicas share caches; unset, each replica caches in its own memory.
     pub redis: Option<RedisConfig>,
 }
 
@@ -193,8 +192,6 @@ async fn control_plane_routes(
         ),
     );
     let placements = storage.clone();
-    // Browsers' sockets stay on the gateway they reached; publishes reach every
-    // gateway through Redis. Without Redis this process is the only gateway.
     let socket_bus = match caches.redis_connection() {
         Some(redis) => super::socket_bus::RedisSocketBus::start(
             redis,
@@ -471,7 +468,7 @@ fn trace_retention(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Durat
     Ok(Duration::from_secs(days * 86400))
 }
 
-// Shared caches' Redis. The URL carries its password, so errors never quote it.
+// The URL carries its password, so errors never quote it.
 fn redis_config(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Option<RedisConfig>> {
     let set = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
     let ca_cert = set(get("DURABLE_ACTORS_REDIS_CA_CERT"));

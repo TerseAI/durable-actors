@@ -1,11 +1,3 @@
-//! Delivers socket effects to every gateway holding sockets for an actor, and
-//! asks those gateways about their connections.
-//!
-//! A browser's socket stays on whichever gateway it reached. A publish goes out
-//! once, and each gateway applies it to its own sockets for that actor. Across
-//! replicas that is Redis pub/sub; within one process (local development,
-//! tests) gateways share a [`MemorySocketHub`].
-
 use super::socket_inventory::SocketInventory;
 use crate::{
     actor::{ActorKey, ActorSocketConnection, ActorSocketEffect},
@@ -29,15 +21,10 @@ use tokio_util::sync::CancellationToken;
 
 #[async_trait]
 pub(super) trait SocketBus: Send + Sync {
-    /// This gateway's sockets.
     fn registry(&self) -> &SocketRegistry;
-    /// Changes whenever this gateway may have missed a delivery; `None` while
-    /// it cannot receive any. Sockets opened under an older generation close.
     fn generation(&self) -> Option<u64>;
-    /// Delivers `actor`'s publishes to this gateway. Call before a socket for
-    /// `actor` opens here.
+    /// Call before a socket for `actor` opens here.
     async fn watch(&self, actor: &ActorKey) -> Result<()>;
-    /// Undoes one [`SocketBus::watch`], after that socket closed.
     async fn unwatch(&self, actor: &ActorKey);
     async fn publish(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()>;
     async fn connections(
@@ -49,14 +36,12 @@ pub(super) trait SocketBus: Send + Sync {
     async fn inventory(&self, project: &str) -> Result<SocketInventory>;
 }
 
-/// Gateways in one process. Every gateway that joins sees every publish.
 #[derive(Clone, Default)]
 pub(super) struct MemorySocketHub {
     gateways: Arc<Mutex<Vec<SocketRegistry>>>,
 }
 
 impl MemorySocketHub {
-    /// A gateway's connection to the hub, with its own sockets.
     pub(super) fn join(&self, max_connections: usize) -> Arc<dyn SocketBus> {
         let registry = SocketRegistry::with_max_connections(max_connections);
         self.gateways.lock().unwrap().push(registry.clone());
@@ -131,7 +116,6 @@ impl SocketBus for MemorySocketBus {
     }
 }
 
-/// One entry per actor, though its sockets may sit on several gateways.
 fn merge_inventory(rooms: Vec<ActorSocketInventory>) -> Vec<ActorSocketInventory> {
     let mut merged: BTreeMap<(String, String), ActorSocketInventory> = BTreeMap::new();
     for room in rooms {
@@ -150,25 +134,13 @@ fn merge_inventory(rooms: Vec<ActorSocketInventory>) -> Vec<ActorSocketInventory
     rooms
 }
 
-/// How long a question waits for every gateway that received it to answer.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
-/// How long a socket waits for its gateway to subscribe to its actor.
 const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// An actor's auto-response outlives its sockets this long, so a gateway that
-/// opens the actor's next socket still answers it.
 const AUTO_RESPONSE_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// Gateways across replicas, through Redis pub/sub.
-///
-/// Every process subscribes to its own reply channel, gateways to a channel
-/// all gateways share, and each gateway to the channel of every actor it holds
-/// sockets for. A question goes to an actor's or the gateways' channel;
-/// `PUBLISH` says how many gateways received it, so the asker waits for exactly
-/// that many answers.
 pub(super) struct RedisSocketBus {
     shared: Arc<Shared>,
     commands: mpsc::UnboundedSender<Command>,
-    /// Sockets open here per actor; the actor's channel is subscribed while positive.
     watched: Mutex<HashMap<ActorKey, usize>>,
 }
 
@@ -176,13 +148,10 @@ struct Shared {
     redis: crate::cache::Redis,
     registry: SocketRegistry,
     namespace: String,
-    /// This process's reply channel.
     replies: String,
     connected: AtomicBool,
     generation: AtomicU64,
-    /// Questions waiting for answers, by id.
     pending: Mutex<HashMap<String, mpsc::UnboundedSender<Answer>>>,
-    /// Actors with sockets here, to resubscribe after reconnecting.
     subscribed: Mutex<Vec<String>>,
 }
 
@@ -245,8 +214,6 @@ struct AutoResponse {
 }
 
 impl RedisSocketBus {
-    /// `accepts_sockets` gateways answer inventory questions; others only
-    /// publish and ask.
     pub(super) fn start(
         redis: crate::cache::Redis,
         namespace: &str,
@@ -273,7 +240,6 @@ impl RedisSocketBus {
         })
     }
 
-    /// Asks every gateway subscribed to `channel`. Errors unless every one answered.
     async fn ask(&self, channel: &str, question: Question) -> Result<Vec<Answer>> {
         let (answers, complete) = self.ask_partial(channel, question).await?;
         ensure!(complete, "a socket gateway did not answer");
@@ -338,16 +304,13 @@ impl Shared {
         )
     }
 
-    /// Publishes `envelope` on `channel`; returns how many subscribers received it.
     async fn publish(&self, channel: &str, envelope: &Envelope) -> Result<usize> {
         let mut command = redis::cmd("PUBLISH");
         command.arg(channel).arg(serde_json::to_string(envelope)?);
         self.redis.run::<usize>(command).await
     }
 
-    /// Keeps a pub/sub connection open, reconnecting after it drops. Each new
-    /// connection starts a new generation, so sockets that may have missed
-    /// publishes meanwhile close and their browsers reconnect.
+    /// Each reconnect starts a new generation, closing sockets that may have missed publishes.
     async fn listen(
         self: Arc<Self>,
         mut commands: mpsc::UnboundedReceiver<Command>,
@@ -481,16 +444,14 @@ impl SocketBus for RedisSocketBus {
         let channel = self.shared.actor_channel(actor);
         let (done, subscribed) = oneshot::channel();
         {
-            // Commands are sent under the lock, so they reach Redis in the
-            // order the counts changed.
+            // Sent under the lock, so commands reach Redis in the order the counts changed.
             let mut watched = self.watched.lock().unwrap();
             let sockets = watched.entry(actor.clone()).or_default();
             *sockets += 1;
             if *sockets == 1 {
                 self.shared.subscribed.lock().unwrap().push(channel.clone());
             }
-            // Every watch waits for a subscribe of its own: one that arrives
-            // while the first is in flight returns only once it is in place.
+            // Each watch waits for its own subscribe, even one that arrives while another is in flight.
             self.commands
                 .send(Command::Subscribe(channel, done))
                 .ok()

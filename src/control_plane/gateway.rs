@@ -111,8 +111,6 @@ struct SocketQuery {
     key: Option<String>,
 }
 
-/// Opens the browser's socket on this gateway. Publishes reach it through the
-/// socket bus, wherever the actor's other sockets are.
 async fn connect(
     State((gateway, service)): State<(Gateway, ControlPlaneService)>,
     Query(query): Query<SocketQuery>,
@@ -124,8 +122,6 @@ async fn connect(
         .verify(&key)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     let connections = gateway.connections.clone();
-    // A dedicated socket gateway takes browsers' sockets; the load balancer
-    // sends none to control-plane pods.
     if !connections.accepts_sockets {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }

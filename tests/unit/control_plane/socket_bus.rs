@@ -12,7 +12,6 @@ fn actor(id: &str) -> ActorKey {
     }
 }
 
-/// Opens a socket for `actor` on `registry`, tagged `tags`.
 async fn open(
     registry: &SocketRegistry,
     actor: &ActorKey,
@@ -69,7 +68,6 @@ async fn memory_publishes_reach_every_gateway_holding_the_actors_sockets() -> Re
     Ok(())
 }
 
-/// A Redis bus in its own namespace, connected, when DURABLE_ACTORS_TEST_REDIS_URL is set.
 async fn redis_bus(
     url: &str,
     namespace: &str,
@@ -115,7 +113,6 @@ async fn redis_publishes_reach_every_gateway_holding_the_actors_sockets() -> Res
     };
     let first = redis_bus(&url, &namespace, true).await?;
     let second = redis_bus(&url, &namespace, true).await?;
-    // A control-plane pod that only publishes and asks.
     let control = redis_bus(&url, &namespace, false).await?;
     let room = actor("one");
     first.watch(&room).await?;
@@ -134,7 +131,6 @@ async fn redis_publishes_reach_every_gateway_holding_the_actors_sockets() -> Res
     assert_eq!(inventory.rooms.len(), 1);
     assert_eq!(inventory.rooms[0].connections.len(), 2);
 
-    // Once its last socket closes, a gateway stops receiving the actor's publishes.
     second.registry().remove(&room, "b").await;
     second.unwatch(&room).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -179,7 +175,6 @@ async fn redis_questions_fail_or_report_incomplete_when_a_gateway_does_not_answe
     };
     let control = redis_bus(&url, &namespace, false).await?;
     let room = actor("one");
-    // Subscribed like a gateway, but never answers.
     let caches = crate::cache::Caches::redis(&crate::cache::RedisConfig { url, ca_cert: None })?;
     let mut silent = caches.redis_connection().unwrap().pubsub().await?;
     silent.subscribe(format!("{namespace}:gateways")).await?;
@@ -191,7 +186,6 @@ async fn redis_questions_fail_or_report_incomplete_when_a_gateway_does_not_answe
     Ok(())
 }
 
-/// Forwards connections to `target` until [`Proxy::cut`] drops them all.
 struct Proxy {
     address: std::net::SocketAddr,
     connections: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
@@ -248,7 +242,6 @@ async fn redis_a_lost_subscription_starts_a_new_generation() -> Result<()> {
     })
     .await
     .context("the bus did not notice its lost subscription")?;
-    // Sockets opened before the loss now fail their checks; the bus reconnects.
     let after = connected(&gateway).await?;
     assert!(after > before);
     Ok(())

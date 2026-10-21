@@ -101,7 +101,6 @@ async fn unreachable_redis_misses_instead_of_failing() -> Result<()> {
     cache.invalidate("key").await;
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(cache.inner.stats.errors.load(Ordering::Relaxed) >= 3);
-    // The refused connection opened the breaker, so later commands skip Redis.
     let last_error = cache.inner.stats.last_error.lock().unwrap().clone();
     assert!(
         last_error
@@ -120,14 +119,11 @@ fn slow_replies_keep_redis_while_it_still_answers() {
         error: anyhow!("{message}"),
         slow,
     };
-    // A burst slows replies past the timeout while others still arrive: keep using Redis.
     let busy = redis::Liveness::new(std::time::Instant::now());
     busy.answered();
     assert!(!busy.down(&failure("timed out", true)));
-    // A refused or dropped connection is an outage.
     assert!(busy.down(&failure("connection refused", false)));
 
-    // Nothing answered for longer than SILENCE: timeouts mean Redis is gone.
     let silent = redis::Liveness::new(std::time::Instant::now() - Duration::from_secs(10));
     assert!(silent.down(&failure("timed out", true)));
 }
@@ -146,7 +142,6 @@ fn redis_rejects_a_malformed_url() {
     }
 }
 
-/// Two `Caches` stand in for two control-plane replicas sharing one Redis.
 #[tokio::test]
 async fn redis_caches_are_shared_between_replicas() -> Result<()> {
     let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_REDIS_URL") else {

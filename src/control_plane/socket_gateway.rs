@@ -38,18 +38,11 @@ pub(crate) enum SocketEventReply {
 
 type ActorRoute = Arc<tokio::sync::Mutex<Option<ActorTarget>>>;
 
-/// Holds this process's browser sockets and reaches every other gateway's
-/// through the socket bus: a socket stays on the gateway the browser reached,
-/// and publishes go to every gateway holding sockets for the actor.
 pub(super) struct SocketGateway {
     pub registry: SocketRegistry,
     pub stop: CancellationToken,
     pub(super) bus: Arc<dyn SocketBus>,
-    /// Whether browsers' sockets may open here. With a dedicated socket
-    /// gateway, control-plane pods only publish and ask.
     pub(super) accepts_sockets: bool,
-    /// Each actor's resolved host, behind a lock so one resolution serves
-    /// concurrent events. Locks only exist in this process.
     routes: Cache<ActorRoute>,
     pub(super) http: reqwest::Client,
 }
@@ -75,8 +68,6 @@ impl SocketGateway {
         }))
     }
 
-    /// The bus generation a socket opening now belongs to; `None` while this
-    /// gateway cannot receive publishes.
     pub(super) fn generation(&self) -> Option<u64> {
         if self.stop.is_cancelled() {
             return None;
@@ -84,7 +75,6 @@ impl SocketGateway {
         self.bus.generation()
     }
 
-    /// Fails once a socket opened under `generation` may have missed a publish.
     pub(super) fn ensure_delivery(&self, generation: u64) -> Result<()> {
         ensure!(
             self.generation() == Some(generation),
@@ -140,7 +130,6 @@ impl SocketGateway {
     }
 
     async fn route(&self, actor: &ActorKey) -> ActorRoute {
-        // A local cache never fails, and its load cannot.
         self.routes
             .get_or_try_init(actor.storage_key().as_str(), async { Ok(Arc::default()) })
             .await
@@ -247,7 +236,6 @@ impl SocketGateway {
 pub(super) struct GatewaySocketDispatcher {
     pub gateway: Arc<SocketGateway>,
     pub service: ControlPlaneService,
-    /// The bus generation the socket opened under.
     pub generation: u64,
 }
 
@@ -270,8 +258,6 @@ impl SocketDispatcher for GatewaySocketDispatcher {
         }
         result
     }
-    /// The actor's sockets may sit on several gateways, so its effects go
-    /// through the bus, back to this one too.
     async fn deliver(
         &self,
         _: &SocketRegistry,

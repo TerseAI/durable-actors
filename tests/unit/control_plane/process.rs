@@ -497,7 +497,6 @@ fn replicas_share_caches_through_redis_when_configured() -> Result<()> {
         Some("-----BEGIN CERTIFICATE-----")
     );
 
-    // A CA certificate needs TLS, and errors never quote the URL's password.
     values.insert("DURABLE_ACTORS_REDIS_URL", "redis://:secret@10.0.0.5:6379");
     let error = format!("{:#}", parse(&values).err().unwrap());
     assert!(

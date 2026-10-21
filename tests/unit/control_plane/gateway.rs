@@ -316,8 +316,6 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                 tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
             sockets.push(socket);
         }
-        // Each gateway resolves the cold actor for its own socket, as replicas
-        // do for HTTP invocations; the provisioner's ownership claim decides.
         for _ in 0..2 {
             provisioner.started.acquire().await?.forget();
         }
@@ -337,7 +335,6 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                 .count(),
             2
         );
-        // Each socket stays on the gateway it reached; the bus spans both.
         assert_eq!(gateways[0].connections.registry.count(&actor).await, 1);
         assert_eq!(gateways[1].connections.registry.count(&actor).await, 1);
         assert_eq!(gateways[1].connections.bus.count(&actor).await?, 2);

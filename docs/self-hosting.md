@@ -6,7 +6,7 @@ Deploy Durable Actors on GKE Sandbox with PostgreSQL and one Standard GCS bucket
 
 - GKE Standard with Workload Identity Federation and enforced NetworkPolicy. Use an ordinary node pool for the controller and a COS Sandbox node pool with the `gvisor` RuntimeClass for actors. The actor pool must have nodes in your chosen `placement.zone`.
 - PostgreSQL reachable from the controller, with a database user allowed to run migrations. Use a TLS connection for a remote database. A private Cloud SQL instance is suitable when your cluster has a supported connection to it.
-- For more than one controller replica, Redis reachable from the controller, such as Memorystore for Redis. Replicas deliver WebSocket messages to each other's sockets through it. Use TLS (`rediss://`) for a remote instance, and a replicated tier in production: while Redis is unreachable, sockets close and new ones are refused.
+- Redis, such as Memorystore, for more than one controller replica. Use TLS and, in production, a replicated tier: sockets close while Redis is unreachable.
 - An HTTPS hostname and certificate. The chart can create an Ingress for an existing controller, or you can route an existing HTTPS gateway to its Service. The endpoint must support WebSockets.
 - Helm, `kubectl`, Google Cloud CLI, and permissions to create the following resources.
 
@@ -48,7 +48,7 @@ kubectl -n actors create secret generic actors-credentials \
   --from-file=jwt-signing-key --from-file=api-key
 ```
 
-To run more than one controller replica, also add `--from-literal=redis-url="$REDIS_URL"`, such as `rediss://:AUTH_STRING@10.0.0.5:6378`, and set `redis.urlSecretKey: redis-url`. If your Redis presents a certificate from its own CA, as Memorystore does, add it with `--from-file=redis-ca=server-ca.pem` and set `redis.caSecretKey: redis-ca`. Store the generated credentials in your secret manager. Configure your backend with the same API key. Provision your TLS Secret separately in namespace `actors`; its certificate must cover your public hostname.
+For more than one replica, also add `--from-literal=redis-url="$REDIS_URL"` and set `redis.urlSecretKey: redis-url`. For a private CA such as Memorystore's, add `--from-file=redis-ca=server-ca.pem` and set `redis.caSecretKey: redis-ca`. Store the generated credentials in your secret manager. Configure your backend with the same API key. Provision your TLS Secret separately in namespace `actors`; its certificate must cover your public hostname.
 
 ## Install
 
