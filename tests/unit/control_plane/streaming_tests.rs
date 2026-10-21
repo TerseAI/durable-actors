@@ -569,6 +569,7 @@ impl Stack {
             directory_service.clone(),
             32768,
             true,
+            &crate::cache::Caches::memory(),
             tokio_util::sync::CancellationToken::new(),
         )
         .await?;
@@ -585,6 +586,7 @@ impl Stack {
             directory_service,
             32768,
             true,
+            &crate::cache::Caches::memory(),
             tokio_util::sync::CancellationToken::new(),
         )
         .await?;

@@ -463,6 +463,7 @@ async fn serve_replica(
         directory,
         32768,
         true,
+        &crate::cache::Caches::memory(),
         tokio_util::sync::CancellationToken::new(),
     )
     .await?;

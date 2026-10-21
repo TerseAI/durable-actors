@@ -362,6 +362,7 @@ async fn local_routes(
         Arc::new(super::socket_directory::MemorySocketDirectory::default()),
         max_socket_connections,
         true,
+        &crate::cache::Caches::memory(),
         stop.child_token(),
     )
     .await?;

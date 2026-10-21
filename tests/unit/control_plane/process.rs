@@ -477,3 +477,40 @@ fn compiled_artifacts_select_their_language_image() -> Result<()> {
     assert!(images.for_entrypoint("actors.ts").is_err());
     Ok(())
 }
+
+#[test]
+fn replicas_share_caches_through_redis_when_configured() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert!(parse(&values)?.redis.is_none());
+
+    values.insert("DURABLE_ACTORS_REDIS_URL", "rediss://:secret@10.0.0.5:6378");
+    values.insert(
+        "DURABLE_ACTORS_REDIS_CA_CERT",
+        "-----BEGIN CERTIFICATE-----",
+    );
+    let redis = parse(&values)?.redis.unwrap();
+    assert_eq!(redis.url, "rediss://:secret@10.0.0.5:6378");
+    assert_eq!(
+        redis.ca_cert.as_deref(),
+        Some("-----BEGIN CERTIFICATE-----")
+    );
+
+    // A CA certificate needs TLS, and errors never quote the URL's password.
+    values.insert("DURABLE_ACTORS_REDIS_URL", "redis://:secret@10.0.0.5:6379");
+    let error = format!("{:#}", parse(&values).err().unwrap());
+    assert!(
+        error.contains("rediss://") && !error.contains("secret"),
+        "{error}"
+    );
+    values.insert("DURABLE_ACTORS_REDIS_URL", "http://:secret@10.0.0.5");
+    let error = format!("{:#}", parse(&values).err().unwrap());
+    assert!(!error.contains("secret"), "{error}");
+    values.insert("DURABLE_ACTORS_REDIS_URL", " ");
+    assert!(parse(&values).is_err());
+    values.remove("DURABLE_ACTORS_REDIS_CA_CERT");
+    assert!(parse(&values)?.redis.is_none());
+    Ok(())
+}

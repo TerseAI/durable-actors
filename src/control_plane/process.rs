@@ -5,6 +5,7 @@ use tracing::{info, warn};
 
 use crate::{
     bucket::{GcsBucket, RuntimeStorageReader},
+    cache::{Caches, RedisConfig},
     postgres::PostgresDatabase,
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{
@@ -37,6 +38,8 @@ pub struct ControlPlaneProcessConfig {
     pub socket_event_sink: Option<SocketEventSinkConfig>,
     pub region: Option<String>,
     pub alarm_poll_interval: Duration,
+    /// Where replicas share caches; unset, each replica caches in its own memory.
+    pub redis: Option<RedisConfig>,
 }
 
 pub struct ControlPlaneStorageConfig {
@@ -137,6 +140,12 @@ async fn control_plane_routes(
         super::ActorTokenPurpose::ControlPlane,
         config.jwt_max_lifetime,
     )?;
+    let caches = match &config.redis {
+        Some(redis) => Caches::redis(redis)?,
+        None => Caches::memory(),
+    };
+    caches.check().await;
+    caches.report(Duration::from_secs(10), stop.clone());
     let database = PostgresDatabase::lazy_with_max_connections(
         &config.storage.postgres_url,
         config.storage.postgres_max_connections,
@@ -190,6 +199,7 @@ async fn control_plane_routes(
         )),
         config.max_socket_connections,
         config.gateway_accept_connections,
+        &caches,
         stop.child_token(),
     )
     .await?;
@@ -378,6 +388,7 @@ impl ControlPlaneProcessConfig {
             socket_event_sink,
             region,
             alarm_poll_interval,
+            redis: redis_config(&mut get)?,
         })
     }
 }
@@ -456,6 +467,28 @@ fn trace_retention(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Durat
         "DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS must be between 1 and 3650"
     );
     Ok(Duration::from_secs(days * 86400))
+}
+
+// Shared caches' Redis. The URL carries its password, so errors never quote it.
+fn redis_config(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Option<RedisConfig>> {
+    let set = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+    let ca_cert = set(get("DURABLE_ACTORS_REDIS_CA_CERT"));
+    let Some(url) = set(get("DURABLE_ACTORS_REDIS_URL")) else {
+        ensure!(
+            ca_cert.is_none(),
+            "DURABLE_ACTORS_REDIS_CA_CERT requires DURABLE_ACTORS_REDIS_URL"
+        );
+        return Ok(None);
+    };
+    ensure!(
+        url.starts_with("redis://") || url.starts_with("rediss://"),
+        "DURABLE_ACTORS_REDIS_URL must start with redis:// or rediss://"
+    );
+    ensure!(
+        ca_cert.is_none() || url.starts_with("rediss://"),
+        "DURABLE_ACTORS_REDIS_CA_CERT requires a rediss:// URL"
+    );
+    Ok(Some(RedisConfig { url, ca_cert }))
 }
 
 fn alarm_poll_interval(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Duration> {

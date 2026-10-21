@@ -23,6 +23,12 @@ alarms:
   pollIntervalMs: 100
 postgres:
   maxConnections: 8
+# Redis the replicas share their caches through. Empty, each pod caches in its own memory.
+# urlSecretKey names the credentialsSecret key holding a redis:// or rediss:// URL with any
+# password; caSecretKey, a PEM CA for rediss://.
+redis:
+  urlSecretKey: ""
+  caSecretKey: ""
 resources:
   requests: {cpu: 250m, memory: 512Mi}
   limits: {memory: 1Gi}

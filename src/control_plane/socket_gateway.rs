@@ -7,6 +7,7 @@ use super::{
 use crate::request_tracking::HostState;
 use crate::{
     actor::{ActorKey, ActorSocketEffect, ActorSocketInvocation},
+    cache::{Cache, Caches},
     sockets::{SocketRegistry, browser::SocketDispatcher},
 };
 use anyhow::{Context, Result, ensure};
@@ -58,7 +59,9 @@ pub(super) struct SocketGateway {
     pub(super) directory: Arc<dyn SocketDirectory>,
     deadline: Mutex<Instant>,
     owners: moka::future::Cache<ActorKey, GatewayOwner>,
-    routes: moka::future::Cache<ActorKey, ActorRoute>,
+    /// Each actor's resolved host, behind a lock so one resolution serves
+    /// concurrent events. Locks only exist in this process.
+    routes: Cache<ActorRoute>,
     pub(super) http: reqwest::Client,
 }
 
@@ -68,6 +71,7 @@ impl SocketGateway {
         directory: Arc<dyn SocketDirectory>,
         max_connections: usize,
         accepts_rooms: bool,
+        caches: &Caches,
         stop: CancellationToken,
     ) -> Result<Arc<Self>> {
         super::gateway::backend_origin(&route)?;
@@ -87,10 +91,7 @@ impl SocketGateway {
                 .max_capacity(100_000)
                 .time_to_live(Duration::from_secs(5))
                 .build(),
-            routes: moka::future::Cache::builder()
-                .max_capacity(100_000)
-                .time_to_idle(Duration::from_secs(300))
-                .build(),
+            routes: caches.local("socket-routes", 100_000, Duration::from_secs(300)),
             http: reqwest::Client::builder()
                 .http2_prior_knowledge()
                 .redirect(reqwest::redirect::Policy::none())
@@ -231,9 +232,11 @@ impl SocketGateway {
     }
 
     async fn route(&self, actor: &ActorKey) -> ActorRoute {
+        // A local cache never fails, and its load cannot.
         self.routes
-            .get_with(actor.clone(), async { Arc::default() })
+            .get_or_try_init(actor.storage_key().as_str(), async { Ok(Arc::default()) })
             .await
+            .unwrap_or_default()
     }
 
     async fn invalidate(&self, actor: &ActorKey, target: &ActorTarget) {

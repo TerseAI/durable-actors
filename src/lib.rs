@@ -1,6 +1,9 @@
 pub mod actor;
 pub mod actor_state;
 pub mod bucket;
+// Shared caches have no consumers yet.
+#[allow(dead_code)]
+mod cache;
 pub mod clock;
 pub mod control_plane;
 mod grpc;

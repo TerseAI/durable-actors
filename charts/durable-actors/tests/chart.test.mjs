@@ -90,3 +90,15 @@ test("deploys the control plane separately and configures language-specific acto
     assert.match(output, new RegExp(`DURABLE_ACTORS_TYPESCRIPT_IMAGE, value: "[^"\\n]+@sha256:${"b".repeat(64)}"`))
     assert.match(output, new RegExp(`DURABLE_ACTORS_PYTHON_IMAGE, value: "[^"\\n]+@sha256:${"c".repeat(64)}"`))
 })
+
+test("replicas share caches through Redis when its secret keys are set", () => {
+    const defaults = render()
+    assert.equal(defaults.status, 0, defaults.stderr)
+    assert.doesNotMatch(defaults.stdout, /DURABLE_ACTORS_REDIS_/)
+
+    const shared = render({ redis: { urlSecretKey: "redis-url", caSecretKey: "redis-ca" } })
+    assert.equal(shared.status, 0, shared.stderr)
+    assert.match(shared.stdout, /name: DURABLE_ACTORS_REDIS_URL\n\s+valueFrom:\n\s+secretKeyRef: \{name: "actors-credentials", key: "redis-url"\}/)
+    assert.match(shared.stdout, /name: DURABLE_ACTORS_REDIS_CA_CERT\n\s+valueFrom:\n\s+secretKeyRef: \{name: "actors-credentials", key: "redis-ca"\}/)
+    assert.notEqual(render({ redis: { url: "redis://inline" } }).status, 0)
+})

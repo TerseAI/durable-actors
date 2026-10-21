@@ -1808,6 +1808,7 @@ async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<Control
         Arc::new(super::super::socket_directory::MemorySocketDirectory::default()),
         crate::sockets::DEFAULT_MAX_CONNECTIONS,
         true,
+        &crate::cache::Caches::memory(),
         tokio_util::sync::CancellationToken::new(),
     )
     .await?;

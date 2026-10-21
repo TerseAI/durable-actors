@@ -140,6 +140,7 @@ async fn test_gateway(
         directory,
         32768,
         true,
+        &crate::cache::Caches::memory(),
         tokio_util::sync::CancellationToken::new(),
     )
     .await?;

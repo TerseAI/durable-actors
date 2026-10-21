@@ -98,6 +98,16 @@ spec:
             - name: DURABLE_ACTORS_SECRET
               valueFrom:
                 secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: api-key}
+            {{- with .Values.redis.urlSecretKey }}
+            - name: DURABLE_ACTORS_REDIS_URL
+              valueFrom:
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.redis.caSecretKey }}
+            - name: DURABLE_ACTORS_REDIS_CA_CERT
+              valueFrom:
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: {{ . | quote }}}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
