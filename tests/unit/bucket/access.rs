@@ -141,3 +141,52 @@ fn log_credentials_cover_only_this_actors_logs_and_archive() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn throttled_exchanges_back_off_longer_than_transient_failures() {
+    let delay = Some(Duration::from_millis(250));
+    assert_eq!(
+        throttled_delay(Some(reqwest::StatusCode::TOO_MANY_REQUESTS), delay),
+        Some(Duration::from_millis(1250))
+    );
+    assert_eq!(
+        throttled_delay(Some(reqwest::StatusCode::SERVICE_UNAVAILABLE), delay),
+        delay
+    );
+    assert_eq!(
+        throttled_delay(Some(reqwest::StatusCode::TOO_MANY_REQUESTS), None),
+        None
+    );
+}
+
+#[tokio::test]
+async fn every_request_mints_its_own_token() -> Result<()> {
+    struct Numbered(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl StorageTokenSource for Numbered {
+        async fn issue(&self, _: &[Rule]) -> Result<StorageToken> {
+            let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(StorageToken {
+                access_token: format!("token-{n}"),
+                expires_at_ms: 0,
+            })
+        }
+    }
+    let access = RuntimeAccess {
+        location: BucketLocation::Gcs {
+            bucket: "authority".into(),
+            artifact_bucket: "code".into(),
+        },
+        token_source: Some(Box::new(Numbered(Default::default()))),
+        persistence: super::super::SnapshotStoreConfig::Local,
+    };
+    let actor = crate::actor::ActorKey {
+        project_id: "tenant".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let first = access.issue(&actor, None).await?.context("token")?;
+    let second = access.issue(&actor, None).await?.context("token")?;
+    assert_ne!(first.access_token, second.access_token);
+    Ok(())
+}

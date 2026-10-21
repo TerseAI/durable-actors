@@ -259,10 +259,6 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         ("DURABLE_ACTORS_PERSISTENCE", "rapid"),
         ("DURABLE_ACTORS_GATEWAY_ROUTE", "http://10.0.0.1:7100"),
-        (
-            "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT",
-            "test@project.iam.gserviceaccount.com",
-        ),
         ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
         ("DURABLE_ACTORS_SECRET", "api-key"),
         ("DURABLE_ACTORS_BUCKET", "actor-state-test"),

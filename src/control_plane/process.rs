@@ -42,7 +42,6 @@ pub struct ControlPlaneProcessConfig {
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
     pub postgres_max_connections: usize,
-    pub token_issuer: String,
     pub trace_retention: Duration,
     pub bucket: String,
     pub persistence: crate::bucket::SnapshotStoreConfig,
@@ -168,20 +167,13 @@ async fn control_plane_routes(
         )?
         .with_persistence(config.storage.persistence, snapshots)?,
     );
-    let runtime_access = Arc::new(
-        crate::bucket::access::RuntimeAccess::new(
-            crate::bucket::access::BucketLocation::Gcs {
-                artifact_bucket: config.storage.artifact_bucket.clone(),
-                bucket: config.storage.bucket.clone(),
-            },
-            storage.persistence.clone(),
-        )?
-        .with_token_cache(
-            database.clone(),
-            config.storage.token_issuer.clone(),
-            stop.clone(),
-        ),
-    );
+    let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
+        crate::bucket::access::BucketLocation::Gcs {
+            artifact_bucket: config.storage.artifact_bucket.clone(),
+            bucket: config.storage.bucket.clone(),
+        },
+        storage.persistence.clone(),
+    )?);
     let placements = storage.clone();
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         config.gateway_route.clone(),
@@ -336,7 +328,6 @@ impl ControlPlaneProcessConfig {
         let storage = ControlPlaneStorageConfig {
             persistence,
             artifact_bucket,
-            token_issuer: required(&mut get, "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT")?,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
             postgres_max_connections: postgres_max_connections(&mut get)?,
             trace_retention: trace_retention(&mut get)?,
