@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +10,20 @@ mod local_store;
 pub(crate) mod pool;
 
 pub(crate) use local::LocalSandboxProvider;
+
+pub(crate) fn validate_image(image: &str) -> Result<()> {
+    let (name, digest) = image
+        .rsplit_once("@sha256:")
+        .context("container image must be pinned to a sha256 digest")?;
+    ensure!(
+        !name.is_empty()
+            && !name.chars().any(char::is_whitespace)
+            && digest.len() == 64
+            && digest.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid container image digest"
+    );
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -7,6 +7,7 @@ pub(crate) mod contracts;
 pub(crate) use client::LeaseFence;
 mod event_sink;
 mod gateway;
+mod image;
 mod inspection;
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/inspection_tests.rs"]

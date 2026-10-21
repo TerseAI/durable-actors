@@ -135,11 +135,27 @@ fn assignment_environment(
     spare: &SpareHandle,
     secrets: HashMap<String, String>,
 ) -> Result<HashMap<String, String>> {
-    let artifact = request
-        .code_snapshot
-        .as_deref()
-        .context("compiled GCS code artifact required")?;
-    let manifest = crate::bundle::ActorBundle::decode(artifact)?;
+    let entrypoint = match &request.code_snapshot {
+        Some(artifact) => crate::bundle::ActorBundle::decode(artifact)?
+            .entrypoint()?
+            .to_owned(),
+        None => {
+            validate_image(&request.image_ref)?;
+            ensure!(
+                request.working_directory == "/customer",
+                "image deployments must use /customer"
+            );
+            let entrypoint = request
+                .actor_entrypoint
+                .as_deref()
+                .context("image deployment entrypoint required")?;
+            ensure!(
+                matches!(entrypoint, "actors.mjs" | "actors.pyz"),
+                "image entrypoint must be actors.mjs or actors.pyz"
+            );
+            entrypoint.to_owned()
+        }
+    };
     let actor = request.actor.as_ref().context("actor identity required")?;
     actor.validate()?;
     let mut environment = HashMap::from([
@@ -185,9 +201,8 @@ fn assignment_environment(
         ),
         (
             "DURABLE_ACTORS_ENTRYPOINT".into(),
-            format!("/customer/{}", manifest.entrypoint()?),
+            format!("/customer/{entrypoint}"),
         ),
-        ("DURABLE_ACTORS_CODE_ARTIFACT".into(), artifact.into()),
         (
             "DURABLE_ACTORS_CUSTOMER_ENV".into(),
             serde_json::to_string(&secrets)?,
@@ -205,24 +220,13 @@ fn assignment_environment(
                 .context("host storage configuration required")?,
         ),
     ]);
+    if let Some(artifact) = &request.code_snapshot {
+        environment.insert("DURABLE_ACTORS_CODE_ARTIFACT".into(), artifact.clone());
+    }
     if let Some(hint) = &request.owner_hint {
         environment.insert("DURABLE_ACTORS_OWNER_HINT".into(), hint.clone());
     }
     Ok(environment)
-}
-
-pub(crate) fn validate_image(image: &str) -> Result<()> {
-    let (name, digest) = image
-        .rsplit_once("@sha256:")
-        .context("container image must be pinned to a sha256 digest")?;
-    ensure!(
-        !name.is_empty()
-            && !name.chars().any(char::is_whitespace)
-            && digest.len() == 64
-            && digest.bytes().all(|b| b.is_ascii_hexdigit()),
-        "invalid container image digest"
-    );
-    Ok(())
 }
 
 fn now_ms() -> Result<u64> {

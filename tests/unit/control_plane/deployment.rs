@@ -120,6 +120,113 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
 }
 
 #[tokio::test]
+async fn image_registration_preserves_digest_and_contract_during_secret_rotation() -> Result<()> {
+    let (service, admin, provider) = fixture()?;
+    let routes = super::super::public_api::router(service, admin.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!(
+        "http://{}/v1/projects/default/deployment",
+        listener.local_addr()?
+    );
+    let server = tokio::spawn(async { axum::serve(listener, routes).await });
+    let client = reqwest::Client::new();
+    let reference = format!(
+        "us-west4-docker.pkg.dev/test-project/actors/counter@sha256:{}",
+        "a".repeat(64)
+    );
+    let image = serde_json::json!({"reference": reference, "entrypoint": "actors.mjs"});
+    let mut document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    document["actors"][0]["sandbox"] = serde_json::json!({"cpu":2,"memoryMiB":4096});
+    client
+        .put(&url)
+        .bearer_auth("api-key")
+        .json(&serde_json::json!({"image":image,"contract":document}))
+        .send()
+        .await?
+        .error_for_status()?;
+    let active = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(active.image_ref, reference);
+    assert_eq!(active.actor_entrypoint.as_deref(), Some("actors.mjs"));
+    assert!(active.code_snapshot.is_none());
+    assert!(active.sandboxes.contains_key("ChatRoom"));
+    let mut current: serde_json::Value = client
+        .get(&url)
+        .bearer_auth("api-key")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(current["image"], image);
+    assert!(current.get("bundle").is_none());
+    current["secretRefs"] = serde_json::json!(["rotated"]);
+    client
+        .put(&url)
+        .bearer_auth("api-key")
+        .json(&current)
+        .send()
+        .await?
+        .error_for_status()?;
+    let rotated = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(rotated.image_ref, reference);
+    assert_eq!(rotated.sandboxes, active.sandboxes);
+    assert_ne!(rotated.host_config_key(), active.host_config_key());
+    assert_eq!(
+        admin
+            .deployment_contract("default")
+            .await?
+            .unwrap()
+            .contract,
+        document
+    );
+    assert_eq!(
+        provider.retired.lock().unwrap().as_slice(),
+        &[active.host_config_key()]
+    );
+    for invalid in [
+        serde_json::json!({"image":{"reference":"registry/actor:latest","entrypoint":"actors.mjs"},"contract":document}),
+        serde_json::json!({"image":{"reference":reference,"entrypoint":"../actors.mjs"},"contract":document}),
+        serde_json::json!({"image":image,"bundle":crate::bundle::ActorBundle::decode(&crate::sandbox::testing::code_artifact(1))?,"contract":document}),
+        serde_json::json!({"image":{"reference":reference.replace(&"a".repeat(64), &"b".repeat(64)),"entrypoint":"actors.mjs"}}),
+        serde_json::json!({"image":{"reference":reference,"entrypoint":"actors.pyz"}}),
+    ] {
+        assert_eq!(
+            client
+                .put(&url)
+                .bearer_auth("api-key")
+                .json(&invalid)
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            admin.current_deployment("default").await?,
+            Some(rotated.clone())
+        );
+        assert_eq!(provider.retired.lock().unwrap().len(), 1);
+    }
+    current["image"]["reference"] = reference.replace(&"a".repeat(64), &"b".repeat(64)).into();
+    current["image"]["entrypoint"] = "actors.pyz".into();
+    current["contract"] = contract();
+    client
+        .put(&url)
+        .bearer_auth("api-key")
+        .json(&current)
+        .send()
+        .await?
+        .error_for_status()?;
+    let updated = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(updated.actor_entrypoint.as_deref(), Some("actors.pyz"));
+    assert_ne!(updated.host_config_key(), rotated.host_config_key());
+    assert!(updated.sandboxes.is_empty());
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn compiled_artifact_selects_the_language_image() -> Result<()> {
     let (service, admin, _) = fixture()?;
     let contract = super::super::contracts::PublicActorContract::new(contract())?;

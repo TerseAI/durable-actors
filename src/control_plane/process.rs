@@ -668,6 +668,6 @@ mod tests;
 
 fn runtime_image(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {
     let image = required(get, name)?;
-    crate::sandbox::gke::validate_image(&image).with_context(|| format!("invalid {name}"))?;
+    crate::sandbox::validate_image(&image).with_context(|| format!("invalid {name}"))?;
     Ok(image)
 }

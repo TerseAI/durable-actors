@@ -174,14 +174,15 @@ impl ControlPlaneService {
                     .await?
             }
         };
-        if compiled_contract.is_none()
-            && prepared.code_snapshot.is_some()
-            && supplied_contract.is_none()
-        {
+        if compiled_contract.is_none() && prepared.source.is_none() && supplied_contract.is_none() {
             previous
                 .as_ref()
-                .filter(|old| old.code_snapshot == prepared.code_snapshot)
-                .context("a new bundle requires its actor contract")?;
+                .filter(|old| {
+                    old.code_snapshot == prepared.code_snapshot
+                        && old.image_ref == prepared.image_ref
+                        && old.actor_entrypoint == prepared.actor_entrypoint
+                })
+                .context("a new bundle or image requires its actor contract")?;
             let record = admin
                 .deployment_contract(&source.project_id)
                 .await?
@@ -878,6 +879,21 @@ impl HostProvisioner for SandboxHostProvisioner {
         HostLaunchSpec,
         Option<super::contracts::PublicActorContract>,
     )> {
+        if source.code_snapshot.is_none() && source.source.is_none() {
+            let image = super::image::ActorImage {
+                reference: source.image_ref.clone(),
+                entrypoint: source
+                    .actor_entrypoint
+                    .clone()
+                    .context("image deployment entrypoint required")?,
+            };
+            image.validate()?;
+            ensure!(
+                source.working_directory == "/customer",
+                "image deployments must use /customer"
+            );
+            return Ok((source.clone(), None));
+        }
         let snapshot = source
             .code_snapshot
             .as_deref()

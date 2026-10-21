@@ -204,8 +204,19 @@ async fn get_deployment(
     let local_source = spec
         .source
         .map(|super::admin::DeploymentSource::Local(local)| local);
+    let image = if bundle.is_none() && local_source.is_none() {
+        Some(super::image::ActorImage {
+            reference: spec.image_ref,
+            entrypoint: spec.actor_entrypoint.ok_or_else(|| {
+                ApiError::internal(anyhow::anyhow!("image deployment entrypoint is missing"))
+            })?,
+        })
+    } else {
+        None
+    };
     Ok(Json(RegisterDeploymentRequest {
         bundle,
+        image,
         local_source,
         contract: None,
         secret_refs: spec.secret_refs,
@@ -236,8 +247,8 @@ async fn register_deployment(
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
     let (source, code_snapshot, image_ref, working_directory, actor_entrypoint) =
-        match (request.bundle, request.local_source) {
-            (Some(bundle), None) => {
+        match (request.bundle, request.local_source, request.image) {
+            (Some(bundle), None, None) => {
                 let snapshot = bundle.encode().map_err(ApiError::bad_request)?;
                 let entrypoint = bundle
                     .entrypoint()
@@ -251,7 +262,7 @@ async fn register_deployment(
                     Some(entrypoint),
                 )
             }
-            (None, Some(local)) => {
+            (None, Some(local), None) => {
                 let directory = local.working_directory.clone();
                 let entrypoint = local.actor_entrypoint.clone();
                 (
@@ -262,9 +273,19 @@ async fn register_deployment(
                     entrypoint,
                 )
             }
+            (None, None, Some(image)) => {
+                image.validate().map_err(ApiError::bad_request)?;
+                (
+                    None,
+                    None,
+                    image.reference,
+                    "/customer".into(),
+                    Some(image.entrypoint),
+                )
+            }
             _ => {
                 return Err(ApiError::bad_request(
-                    "provide exactly one bundle or localSource",
+                    "provide exactly one bundle, image, or localSource",
                 ));
             }
         };
@@ -487,6 +508,8 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
 struct RegisterDeploymentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bundle: Option<crate::bundle::ActorBundle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image: Option<super::image::ActorImage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

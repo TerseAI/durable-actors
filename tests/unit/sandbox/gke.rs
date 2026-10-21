@@ -136,6 +136,37 @@ fn python_assignment_uses_its_manifest_entrypoint() -> Result<()> {
 }
 
 struct ExpiredAssignment;
+
+#[test]
+fn image_assignment_runs_baked_code_without_a_gcs_artifact() -> Result<()> {
+    let mut request = request()?;
+    request.code_snapshot = None;
+    request.image_ref = format!("registry/actor@sha256:{}", "a".repeat(64));
+    for entrypoint in ["actors.mjs", "actors.pyz"] {
+        request.actor_entrypoint = Some(entrypoint.into());
+        let environment =
+            assignment_environment(&request, request.spare.as_ref().unwrap(), HashMap::new())?;
+        assert_eq!(
+            environment["DURABLE_ACTORS_ENTRYPOINT"],
+            format!("/customer/{entrypoint}")
+        );
+        assert!(!environment.contains_key("DURABLE_ACTORS_CODE_ARTIFACT"));
+    }
+    for entrypoint in [None, Some("../actors.mjs".into())] {
+        request.actor_entrypoint = entrypoint;
+        assert!(
+            assignment_environment(&request, request.spare.as_ref().unwrap(), HashMap::new())
+                .is_err()
+        );
+    }
+    request.actor_entrypoint = Some("actors.mjs".into());
+    request.image_ref = "registry/actor:latest".into();
+    assert!(
+        assignment_environment(&request, request.spare.as_ref().unwrap(), HashMap::new()).is_err()
+    );
+    Ok(())
+}
+
 #[async_trait]
 impl HostAssignment for ExpiredAssignment {
     async fn assign(
