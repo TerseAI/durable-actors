@@ -538,6 +538,19 @@ fn modal_configuration_does_not_require_kubernetes() -> Result<()> {
     };
     assert_eq!(modal.app_name, "modal-test");
     assert_eq!(modal.timeout, Duration::from_secs(3600));
+    assert!(modal.registry_secrets.is_empty());
+    let mut authenticated = values.clone();
+    authenticated.insert(
+        "DURABLE_ACTORS_MODAL_REGISTRY_SECRETS",
+        r#"{"us-west4-docker.pkg.dev":"actor-registry-reader"}"#,
+    );
+    let SandboxBackend::Modal(modal) = parse(&authenticated)?.sandbox_provider.backend else {
+        panic!("expected Modal")
+    };
+    assert_eq!(
+        modal.registry_secrets["us-west4-docker.pkg.dev"],
+        "actor-registry-reader"
+    );
     for (key, value) in [
         ("DURABLE_ACTORS_SANDBOX_PROVIDER", "unknown"),
         ("DURABLE_ACTORS_CONTROL_PLANE_URL", "http://localhost:7100"),
@@ -551,6 +564,15 @@ fn modal_configuration_does_not_require_kubernetes() -> Result<()> {
             r#"{"north-america-west":"us-east"}"#,
         ),
         ("DURABLE_ACTORS_MODAL_TIMEOUT_SECONDS", "0"),
+        ("DURABLE_ACTORS_MODAL_REGISTRY_SECRETS", "[]"),
+        (
+            "DURABLE_ACTORS_MODAL_REGISTRY_SECRETS",
+            r#"{"https://registry.example":"secret"}"#,
+        ),
+        (
+            "DURABLE_ACTORS_MODAL_REGISTRY_SECRETS",
+            r#"{"registry.example":""}"#,
+        ),
     ] {
         let mut invalid = values.clone();
         invalid.insert(key, value);

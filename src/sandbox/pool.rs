@@ -44,6 +44,35 @@ impl SparePool {
         })
     }
 
+    pub async fn prepare(&self, image: &str, region: &str) -> Result<()> {
+        if self.config.idle == 0 {
+            return Ok(());
+        }
+        ensure!(
+            self.config.regions.iter().any(|r| r == region),
+            "deployment region has no spare pool"
+        );
+        self.store.0.execute(
+            "INSERT INTO durable_actors_preparing_pools (image_ref, expires_at) VALUES ($1, clock_timestamp() + interval '15 minutes') ON CONFLICT (image_ref) DO UPDATE SET expires_at = EXCLUDED.expires_at",
+            &[&image],
+        ).await?;
+        let key = self.key(image, region);
+        tokio::time::timeout(Duration::from_secs(180), async {
+            loop {
+                let row = self.store.0.query_opt(
+                    "SELECT name, handle FROM durable_actors_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > clock_timestamp() + interval '30 seconds' LIMIT 1",
+                    &[&key],
+                ).await?;
+                if let Some(row) = row {
+                    self.provider.prepare_spares(&[decode_handle(&row)?]).await?;
+                    return anyhow::Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await.context("dependency spare pool did not become ready")??;
+        Ok(())
+    }
+
     pub async fn claim(
         &self,
         spec: &HostLaunchSpec,
@@ -135,6 +164,7 @@ impl SparePool {
         let mut jobs = tokio::task::JoinSet::new();
         let mut cleaning = false;
         let mut reaping = false;
+        let mut preparing = false;
         let mut reap_interval = tokio::time::interval(Duration::from_secs(30));
         reap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -146,6 +176,10 @@ impl SparePool {
                 Some(result) = jobs.join_next(), if !jobs.is_empty() => {
                     match result {
                         Ok(Background::Build(result)) => {
+                            report(result);
+                        }
+                        Ok(Background::Prepare(result)) => {
+                            preparing = false;
                             report(result);
                         }
                         Ok(Background::Reap(result)) => {
@@ -186,6 +220,11 @@ impl SparePool {
                 }
                 Err(error) => report(Err(error)),
             }
+            if !preparing {
+                preparing = true;
+                let pool = self.clone();
+                jobs.spawn(async move { Background::Prepare(pool.prepare_spares().await) });
+            }
             if !cleaning {
                 cleaning = true;
                 let pool = self.clone();
@@ -194,13 +233,39 @@ impl SparePool {
         }
     }
 
+    async fn prepare_spares(&self) -> Result<()> {
+        let rows = self.store.0.connection().await?.query(
+            "SELECT name, handle FROM durable_actors_spares WHERE status = 'ready' AND kind = $1 AND expires_at > clock_timestamp()",
+            &[&self.config.kind.as_str()],
+        ).await?;
+        let spares = rows.iter().map(decode_handle).collect::<Result<Vec<_>>>()?;
+        self.provider.prepare_spares(&spares).await
+    }
+
     async fn reconcile(&self, registry: &dyn AdminRegistry) -> Result<Vec<Build>> {
         let deployments = registry.launch_specs().await?;
-        let images: std::collections::BTreeSet<_> = deployments
+        let mut images: std::collections::BTreeSet<String> = deployments
             .iter()
             .filter(|spec| spec.code_snapshot.is_some())
-            .map(|spec| spec.image_ref.as_str())
+            .map(|spec| spec.image_ref.clone())
             .collect();
+        self.store
+            .0
+            .execute(
+                "DELETE FROM durable_actors_preparing_pools WHERE expires_at <= clock_timestamp()",
+                &[],
+            )
+            .await?;
+        for row in self
+            .store
+            .0
+            .connection()
+            .await?
+            .query("SELECT image_ref FROM durable_actors_preparing_pools", &[])
+            .await?
+        {
+            images.insert(row.get(0));
+        }
         let keys: Vec<String> = images
             .iter()
             .flat_map(|image| {
@@ -217,7 +282,7 @@ impl SparePool {
         let mut builds = Vec::new();
         for image in images {
             for region in &self.config.regions {
-                let key = self.key(image, region);
+                let key = self.key(&image, region);
                 let names = match self.store.replenish(&key, &self.config, batch).await {
                     Ok(names) => names,
                     Err(error) => {
@@ -228,7 +293,7 @@ impl SparePool {
                 for name in names {
                     builds.push(Build {
                         key: key.clone(),
-                        image: image.into(),
+                        image: image.clone(),
                         region: region.clone(),
                         name,
                     });
@@ -330,6 +395,7 @@ struct Build {
 }
 
 enum Background {
+    Prepare(Result<()>),
     Reap(Result<()>),
     Build(Result<()>),
     Cleanup(Result<()>),

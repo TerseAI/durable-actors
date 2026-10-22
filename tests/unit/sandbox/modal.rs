@@ -5,6 +5,7 @@ fn config() -> ModalConfig {
         app_name: "durable-actors-test".into(),
         regions: BTreeMap::from([("north-america-west".into(), "us-west".into())]),
         timeout: Duration::from_secs(600),
+        registry_secrets: BTreeMap::new(),
     }
 }
 

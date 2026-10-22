@@ -204,19 +204,13 @@ async fn get_deployment(
     let local_source = spec
         .source
         .map(|super::admin::DeploymentSource::Local(local)| local);
-    let image = if bundle.is_none() && local_source.is_none() {
-        Some(super::image::ActorImage {
-            reference: spec.image_ref,
-            entrypoint: spec.actor_entrypoint.ok_or_else(|| {
-                ApiError::internal(anyhow::anyhow!("image deployment entrypoint is missing"))
-            })?,
-        })
-    } else {
-        None
-    };
     Ok(Json(RegisterDeploymentRequest {
+        dependency_image: bundle.as_ref().and_then(|_| {
+            crate::sandbox::validate_image(&spec.image_ref)
+                .is_ok()
+                .then(|| spec.image_ref.clone())
+        }),
         bundle,
-        image,
         local_source,
         contract: None,
         secret_refs: spec.secret_refs,
@@ -246,9 +240,15 @@ async fn register_deployment(
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
+    if request.dependency_image.is_some() && request.bundle.is_none() {
+        return Err(ApiError::bad_request("dependencyImage requires a bundle"));
+    }
+    if let Some(image) = &request.dependency_image {
+        crate::sandbox::validate_image(image).map_err(ApiError::bad_request)?;
+    }
     let (source, code_snapshot, image_ref, working_directory, actor_entrypoint) =
-        match (request.bundle, request.local_source, request.image) {
-            (Some(bundle), None, None) => {
+        match (request.bundle, request.local_source) {
+            (Some(bundle), None) => {
                 let snapshot = bundle.encode().map_err(ApiError::bad_request)?;
                 let entrypoint = bundle
                     .entrypoint()
@@ -257,12 +257,12 @@ async fn register_deployment(
                 (
                     None,
                     Some(snapshot),
-                    "bundle".into(),
+                    request.dependency_image.unwrap_or_else(|| "bundle".into()),
                     "/customer".into(),
                     Some(entrypoint),
                 )
             }
-            (None, Some(local), None) => {
+            (None, Some(local)) => {
                 let directory = local.working_directory.clone();
                 let entrypoint = local.actor_entrypoint.clone();
                 (
@@ -273,19 +273,9 @@ async fn register_deployment(
                     entrypoint,
                 )
             }
-            (None, None, Some(image)) => {
-                image.validate().map_err(ApiError::bad_request)?;
-                (
-                    None,
-                    None,
-                    image.reference,
-                    "/customer".into(),
-                    Some(image.entrypoint),
-                )
-            }
             _ => {
                 return Err(ApiError::bad_request(
-                    "provide exactly one bundle, image, or localSource",
+                    "provide exactly one bundle or localSource",
                 ));
             }
         };
@@ -509,7 +499,7 @@ struct RegisterDeploymentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bundle: Option<crate::bundle::ActorBundle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    image: Option<super::image::ActorImage>,
+    dependency_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

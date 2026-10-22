@@ -98,6 +98,15 @@ pub struct CreateSpareRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SandboxDeployment {
+    pub code_snapshot: Option<String>,
+    pub project_id: String,
+    pub image_ref: String,
+    pub canonical_region: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
     pub actor_is_new: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -187,6 +196,14 @@ impl std::error::Error for HostNotReady {}
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    async fn prepare_spares(&self, _spares: &[SpareHandle]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn prepare_registration(&self, _deployment: &SandboxDeployment) -> Result<()> {
+        Ok(())
+    }
+
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }

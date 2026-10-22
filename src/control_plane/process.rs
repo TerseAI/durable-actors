@@ -278,6 +278,7 @@ async fn sandbox_provisioner(
         SandboxBackend::Modal(modal) => {
             crate::sandbox::modal::provider(
                 modal,
+                database.clone(),
                 &[
                     &config.runtime_images.typescript,
                     &config.runtime_images.python,
@@ -619,6 +620,19 @@ fn sandbox_backend(
             }
             let canonical = regions.keys().cloned().collect();
             let app_name = required(get, "DURABLE_ACTORS_MODAL_APP")?;
+            let registry_secrets: BTreeMap<String, String> = serde_json::from_str(
+                &get("DURABLE_ACTORS_MODAL_REGISTRY_SECRETS").unwrap_or_else(|| "{}".into()),
+            )?;
+            for (registry, secret) in &registry_secrets {
+                ensure!(
+                    !registry.is_empty()
+                        && !registry
+                            .chars()
+                            .any(|c| c.is_whitespace() || matches!(c, '/' | '@'))
+                        && !secret.trim().is_empty(),
+                    "Modal registry secrets must map registry hosts to nonempty Secret names"
+                );
+            }
             let seconds = pool_number(
                 get,
                 "DURABLE_ACTORS_MODAL_TIMEOUT_SECONDS",
@@ -631,6 +645,7 @@ fn sandbox_backend(
                     app_name,
                     regions,
                     timeout: Duration::from_secs(seconds.into()),
+                    registry_secrets,
                 }),
                 canonical,
             ))

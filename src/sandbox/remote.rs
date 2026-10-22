@@ -35,7 +35,10 @@ impl RemoteSandboxProvider {
             "spare region mismatch"
         );
         let secrets = self.cluster.secrets(&request.secret_refs).await?;
-        let environment = assignment_environment(request, spare, secrets)?;
+        let mut environment = assignment_environment(request, spare, secrets)?;
+        if self.cluster.prepare_assignment(request, spare).await? {
+            environment.remove("DURABLE_ACTORS_CODE_ARTIFACT");
+        }
         let handle = self.assignment.assign(spare, environment).await?;
         let lease = handle
             .lease
@@ -58,6 +61,14 @@ impl RemoteSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for RemoteSandboxProvider {
+    async fn prepare_spares(&self, spares: &[SpareHandle]) -> Result<()> {
+        self.cluster.prepare_spares(spares).await
+    }
+
+    async fn prepare_registration(&self, deployment: &SandboxDeployment) -> Result<()> {
+        self.cluster.prepare_registration(deployment).await
+    }
+
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         validate_image(&request.image_ref)?;
         self.cluster.create_spare(request).await
@@ -130,27 +141,11 @@ fn assignment_environment(
     spare: &SpareHandle,
     secrets: HashMap<String, String>,
 ) -> Result<HashMap<String, String>> {
-    let entrypoint = match &request.code_snapshot {
-        Some(artifact) => crate::bundle::ActorBundle::decode(artifact)?
-            .entrypoint()?
-            .to_owned(),
-        None => {
-            validate_image(&request.image_ref)?;
-            ensure!(
-                request.working_directory == "/customer",
-                "image deployments must use /customer"
-            );
-            let entrypoint = request
-                .actor_entrypoint
-                .as_deref()
-                .context("image deployment entrypoint required")?;
-            ensure!(
-                matches!(entrypoint, "actors.mjs" | "actors.pyz"),
-                "image entrypoint must be actors.mjs or actors.pyz"
-            );
-            entrypoint.to_owned()
-        }
-    };
+    let artifact = request
+        .code_snapshot
+        .as_deref()
+        .context("compiled GCS code artifact required")?;
+    let manifest = crate::bundle::ActorBundle::decode(artifact)?;
     let actor = request.actor.as_ref().context("actor identity required")?;
     actor.validate()?;
     let mut environment = HashMap::from([
@@ -196,8 +191,9 @@ fn assignment_environment(
         ),
         (
             "DURABLE_ACTORS_ENTRYPOINT".into(),
-            format!("/customer/{entrypoint}"),
+            format!("/customer/{}", manifest.entrypoint()?),
         ),
+        ("DURABLE_ACTORS_CODE_ARTIFACT".into(), artifact.into()),
         (
             "DURABLE_ACTORS_CUSTOMER_ENV".into(),
             serde_json::to_string(&secrets)?,
@@ -215,9 +211,6 @@ fn assignment_environment(
                 .context("host storage configuration required")?,
         ),
     ]);
-    if let Some(artifact) = &request.code_snapshot {
-        environment.insert("DURABLE_ACTORS_CODE_ARTIFACT".into(), artifact.clone());
-    }
     if let Some(hint) = &request.owner_hint {
         environment.insert("DURABLE_ACTORS_OWNER_HINT".into(), hint.clone());
     }
@@ -244,6 +237,21 @@ fn now_ms() -> Result<u64> {
 
 #[async_trait]
 pub(super) trait SandboxCluster: Send + Sync {
+    async fn prepare_spares(&self, _spares: &[SpareHandle]) -> Result<()> {
+        Ok(())
+    }
+    async fn prepare_assignment(
+        &self,
+        _request: &EnsureHostRequest,
+        _spare: &SpareHandle,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn prepare_registration(&self, _deployment: &SandboxDeployment) -> Result<()> {
+        Ok(())
+    }
+
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()>;
