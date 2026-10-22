@@ -212,6 +212,7 @@ struct Bootstrap {
     fixture: crate::bucket::testing::RuntimeFixture,
     releases: AtomicUsize,
     renewals: AtomicUsize,
+    claimed: tokio::sync::Semaphore,
     fail_credentials: bool,
     credentials: Option<Arc<Gate>>,
     claim: Option<Arc<Gate>>,
@@ -223,6 +224,7 @@ impl Bootstrap {
             fixture: crate::bucket::testing::RuntimeFixture::new()?,
             releases: AtomicUsize::new(0),
             renewals: AtomicUsize::new(0),
+            claimed: tokio::sync::Semaphore::new(0),
             fail_credentials: false,
             credentials: None,
             claim: None,
@@ -243,7 +245,8 @@ impl HostBootstrap for Bootstrap {
         if let Some(gate) = &self.claim {
             gate.wait().await;
         }
-        self.fixture
+        let handoff = self
+            .fixture
             .runtime
             .prepare_activation(
                 request.actor.as_ref().unwrap(),
@@ -252,7 +255,9 @@ impl HostBootstrap for Bootstrap {
                 true,
                 None,
             )
-            .await
+            .await?;
+        self.claimed.add_permits(1);
+        Ok(handoff)
     }
     async fn renew(&self, request: &EnsureHostRequest, route: &str) -> Result<ActivationHandoff> {
         self.renewals.fetch_add(1, Ordering::SeqCst);
@@ -488,7 +493,6 @@ async fn cancelled_startup_retires_the_sandbox_and_releases_unassigned_ownership
 
 #[tokio::test]
 async fn a_slow_sandbox_keeps_its_prepared_ownership_alive() -> Result<()> {
-    use crate::placement::ObjectPlacementStore;
     let readiness = Gate::new();
     let bootstrap = Arc::new(Bootstrap::new()?);
     let provider = RemoteSandboxProvider {
@@ -504,22 +508,11 @@ async fn a_slow_sandbox_keeps_its_prepared_ownership_alive() -> Result<()> {
     };
     let mut request = request()?;
     request.spare = None;
-    let actor = request.actor.as_ref().unwrap().clone();
     let task = tokio::spawn(async move { provider.ensure_host(&request).await });
     readiness.reached().await?;
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while bootstrap
-            .fixture
-            .runtime
-            .get_owner(&actor.storage_key())
-            .await?
-            .is_none()
-        {
-            tokio::task::yield_now().await;
-        }
-        anyhow::Ok(())
-    })
-    .await??;
+    tokio::time::timeout(Duration::from_secs(3), bootstrap.claimed.acquire())
+        .await??
+        .forget();
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(11)).await;
     tokio::task::yield_now().await;
