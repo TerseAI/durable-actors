@@ -93,6 +93,8 @@ cargo build --locked
 cargo test --locked -- --ignored
 ```
 
+The live Modal snapshot test additionally requires `MODAL_SNAPSHOT_TEST_IMAGE_ID` pointing to an image containing Bun and jq, plus Modal authentication. Without that image variable it skips before contacting Modal, including during CI's ignored-test run.
+
 For Kubernetes deployment changes:
 
 ```sh

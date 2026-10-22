@@ -82,6 +82,14 @@ async fn failed_preparation_is_retryable_and_keys_bind_the_complete_deployment()
 #[tokio::test]
 #[ignore = "requires Modal authentication and MODAL_SNAPSHOT_TEST_IMAGE_ID containing Bun and jq"]
 async fn live_stage_mount_and_execute_binary_dependency() -> Result<()> {
+    let image_id = match std::env::var("MODAL_SNAPSHOT_TEST_IMAGE_ID") {
+        Ok(id) => id,
+        Err(std::env::VarError::NotPresent) => {
+            eprintln!("Skipping live Modal test: MODAL_SNAPSHOT_TEST_IMAGE_ID is not set");
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
     let client = Client::from_env()?;
     let app = client
         .app_from_name(
@@ -92,7 +100,7 @@ async fn live_stage_mount_and_execute_binary_dependency() -> Result<()> {
             },
         )
         .await?;
-    let image = Image::from_id(std::env::var("MODAL_SNAPSHOT_TEST_IMAGE_ID")?);
+    let image = Image::from_id(image_id);
     let create = || {
         client.create_sandbox(
             &app,
