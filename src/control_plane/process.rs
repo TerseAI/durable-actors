@@ -207,6 +207,7 @@ async fn control_plane_routes(
         config.sandbox_provider,
         &issuer,
         runtime_access.clone(),
+        storage.clone(),
         database.clone(),
         registry.clone(),
         stop.clone(),
@@ -269,12 +270,17 @@ async fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
     access: Arc<crate::bucket::access::RuntimeAccess>,
+    storage: Arc<RuntimeStorageReader>,
     database: PostgresDatabase,
     registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
+    let bootstrap = Arc::new(super::bootstrap::RuntimeBootstrap::new(
+        access.clone(),
+        storage,
+    ));
     let provider = Arc::new(match config.backend {
-        SandboxBackend::Gke(gke) => crate::sandbox::gke::provider(gke).await?,
+        SandboxBackend::Gke(gke) => crate::sandbox::gke::provider(gke, bootstrap).await?,
         SandboxBackend::Modal(modal) => {
             crate::sandbox::modal::provider(
                 modal,
@@ -282,6 +288,7 @@ async fn sandbox_provisioner(
                     &config.runtime_images.typescript,
                     &config.runtime_images.python,
                 ],
+                bootstrap,
             )
             .await?
         }

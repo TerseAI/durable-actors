@@ -257,7 +257,8 @@ async fn prepare_actor_host(
             assignment.actor.clone(),
         )
         .await?
-        .with_activation(assignment.new_actor, assignment.owner_hint.clone()),
+        .with_activation(assignment.new_actor, assignment.owner_hint.clone())
+        .with_handoff(assignment.handoff.clone()),
     );
     let started = timings.started_at;
     let storage_ready = async {

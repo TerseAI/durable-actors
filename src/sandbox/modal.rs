@@ -28,6 +28,7 @@ pub(crate) struct ModalConfig {
 pub(crate) async fn provider(
     config: ModalConfig,
     images: &[&str],
+    bootstrap: Arc<dyn super::bootstrap::HostBootstrap>,
 ) -> Result<RemoteSandboxProvider> {
     let client = Client::from_env()?;
     let app = client
@@ -58,6 +59,7 @@ pub(crate) async fn provider(
             config,
             images: imported,
         }),
+        bootstrap,
     )
 }
 
@@ -70,7 +72,7 @@ struct ModalCluster {
 
 #[async_trait]
 impl SandboxCluster for ModalCluster {
-    async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
+    async fn allocate_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         let image = self
             .images
             .get(&request.image_ref)
@@ -88,11 +90,20 @@ impl SandboxCluster for ModalCluster {
         .await
         .context("Modal sandbox creation timed out")??;
         let mut cleanup = SandboxCleanup(Some(sandbox.clone()));
-        let handle = tokio::time::timeout(STARTUP_TIMEOUT, ready_handle(&sandbox, request, token))
-            .await
-            .context("Modal spare readiness timed out")??;
+        let handle =
+            tokio::time::timeout(STARTUP_TIMEOUT, allocated_handle(&sandbox, request, token))
+                .await
+                .context("Modal tunnel allocation timed out")??;
         cleanup.0 = None;
         Ok(handle)
+    }
+
+    async fn wait_ready(&self, spare: &SpareHandle) -> Result<()> {
+        self.client
+            .sandbox_from_id(&spare.resource_id)
+            .wait_until_ready(STARTUP_TIMEOUT)
+            .await?;
+        Ok(())
     }
 
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
@@ -188,15 +199,12 @@ fn spare_params(
     })
 }
 
-async fn ready_handle(
+async fn allocated_handle(
     sandbox: &Sandbox,
     request: &CreateSpareRequest,
     token: String,
 ) -> Result<SpareHandle> {
-    let (_, tunnels) = tokio::try_join!(
-        sandbox.wait_until_ready(STARTUP_TIMEOUT),
-        sandbox.tunnels(STARTUP_TIMEOUT)
-    )?;
+    let tunnels = sandbox.tunnels(STARTUP_TIMEOUT).await?;
     Ok(SpareHandle {
         name: request.name.clone(),
         resource_id: sandbox.id().into(),

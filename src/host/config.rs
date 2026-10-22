@@ -163,6 +163,7 @@ pub(super) struct ActorAssignment {
     pub actor: ActorKey,
     pub new_actor: bool,
     pub owner_hint: Option<OwnershipHint>,
+    pub handoff: Option<crate::bucket::ActivationHandoff>,
 }
 
 impl ActorAssignment {
@@ -175,6 +176,9 @@ impl ActorAssignment {
                 .map(|value| value.parse())
                 .transpose()?
                 .unwrap_or(false),
+            handoff: get("DURABLE_ACTORS_ACTIVATION_HANDOFF")
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
             owner_hint: get("DURABLE_ACTORS_OWNER_HINT")
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,

@@ -42,7 +42,7 @@ impl Kubernetes {
         }
     }
 
-    async fn start(&self, pod: Pod) -> Result<Pod> {
+    async fn allocate(&self, pod: Pod) -> Result<Pod> {
         let created = self.pods.create(&PostParams::default(), &pod).await?;
         let mut cleanup = PodCleanup::new(self.pods.clone(), &created)?;
         let ready = tokio::time::timeout(
@@ -50,17 +50,29 @@ impl Kubernetes {
             await_condition(
                 self.pods.clone(),
                 &created.name_any(),
-                |pod: Option<&Pod>| pod.is_none_or(terminal_or_ready),
+                |pod: Option<&Pod>| {
+                    pod.is_none_or(|pod| {
+                        terminal_or_ready(pod)
+                            || pod
+                                .status
+                                .as_ref()
+                                .is_some_and(|status| status.pod_ip.is_some())
+                    })
+                },
             ),
         )
         .await
-        .context("sandbox pod readiness timed out")??
+        .context("sandbox pod allocation timed out")??
         .context("sandbox pod disappeared")?;
         ensure!(
             ready.uid() == created.uid(),
             "sandbox pod was replaced during startup"
         );
-        ensure!(is_ready(&ready), "sandbox pod failed: {:?}", ready.status);
+        ensure!(
+            !is_terminal(&ready),
+            "sandbox pod failed: {:?}",
+            ready.status
+        );
         cleanup.disarm();
         Ok(ready)
     }
@@ -76,14 +88,14 @@ impl Kubernetes {
 
 #[async_trait]
 impl SandboxCluster for Kubernetes {
-    async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
+    async fn allocate_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         let token = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
         let pod = spare_pod(request, self.zones(&request.canonical_region)?, &token)?;
-        let ready = self.start(pod).await?;
+        let ready = self.allocate(pod).await?;
         let ip: std::net::IpAddr = ready
             .status
             .as_ref()
@@ -108,6 +120,29 @@ impl SandboxCluster for Kubernetes {
             route: format!("http://{authority}:7101"),
             canonical_region: request.canonical_region.clone(),
         })
+    }
+
+    async fn wait_ready(&self, spare: &SpareHandle) -> Result<()> {
+        let (namespace, name, uid) = resource_identity(&spare.resource_id)?;
+        ensure!(
+            namespace == self.config.namespace && name == spare.name,
+            "sandbox resource identity mismatch"
+        );
+        let ready = tokio::time::timeout(
+            Duration::from_secs(120),
+            await_condition(self.pods.clone(), name, |pod: Option<&Pod>| {
+                pod.is_none_or(terminal_or_ready)
+            }),
+        )
+        .await
+        .context("sandbox pod readiness timed out")??
+        .context("sandbox pod disappeared")?;
+        ensure!(
+            ready.uid().as_deref() == Some(uid),
+            "sandbox pod was replaced during startup"
+        );
+        ensure!(is_ready(&ready), "sandbox pod failed: {:?}", ready.status);
+        Ok(())
     }
 
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
@@ -264,13 +299,16 @@ fn container_resources(resources: &ResourceLimits) -> serde_json::Value {
 }
 
 fn terminal_or_ready(pod: &Pod) -> bool {
-    is_ready(pod)
-        || pod
-            .status
-            .as_ref()
-            .and_then(|status| status.phase.as_deref())
-            .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
+    is_terminal(pod) || is_ready(pod)
 }
+
+fn is_terminal(pod: &Pod) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|status| status.phase.as_deref())
+        .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
+}
+
 fn is_ready(pod: &Pod) -> bool {
     pod.status
         .as_ref()

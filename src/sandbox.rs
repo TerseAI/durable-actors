@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::host::HostId;
 
+pub(crate) mod bootstrap;
 pub(crate) mod gke;
 mod local;
 mod local_store;
@@ -183,8 +184,21 @@ impl std::fmt::Display for HostNotReady {
 
 impl std::error::Error for HostNotReady {}
 
+pub type HostCredentials = tokio_util::task::AbortOnDropHandle<(Result<Option<String>>, f64)>;
+
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    async fn ensure_host_with_credentials(
+        &self,
+        request: &EnsureHostRequest,
+        credentials: HostCredentials,
+    ) -> Result<ActorHostHandle> {
+        let mut request = request.clone();
+        let (configuration, _) = credentials.await?;
+        request.runtime_config = configuration?;
+        self.ensure_host(&request).await
+    }
+
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }

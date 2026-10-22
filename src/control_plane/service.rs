@@ -970,16 +970,30 @@ impl SandboxHostProvisioner {
         let mut request = self.request(spec, region, actor)?;
         request.actor_is_new = new_actor;
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
-        let token = async {
-            match &self.runtime_access {
-                Some(access) => Ok(Some(
-                    access
-                        .bootstrap(region, actor, spec.code_snapshot.as_deref())
-                        .await?,
-                )),
-                None => anyhow::Ok(None),
+        let access = self.runtime_access.clone();
+        let configuration = request.clone();
+        let credentials = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            let started = Instant::now();
+            let result = async {
+                match access {
+                    Some(access) => Ok(Some(
+                        access
+                            .bootstrap(
+                                &configuration.canonical_region,
+                                configuration
+                                    .actor
+                                    .as_ref()
+                                    .context("actor identity required")?,
+                                configuration.code_snapshot.as_deref(),
+                            )
+                            .await?,
+                    )),
+                    None => anyhow::Ok(None),
+                }
             }
-        };
+            .await;
+            (result, elapsed_ms(started))
+        }));
         let spare = async {
             match &self.pool {
                 Some(pool) => {
@@ -989,8 +1003,7 @@ impl SandboxHostProvisioner {
                 None => Ok(None),
             }
         };
-        let (runtime_config, spare) = tokio::join!(token, spare);
-        request.spare = spare?;
+        request.spare = spare.await?;
         if let Some(pool) = &self.pool {
             if request.spare.is_none() {
                 pool.reserve_host(
@@ -1001,16 +1014,11 @@ impl SandboxHostProvisioner {
                 .await?;
             }
         }
-        request.runtime_config = match runtime_config {
-            Ok(config) => config,
-            Err(error) => {
-                if let Some(pool) = &self.pool {
-                    let _ = pool.failed(request.host_id.as_str()).await;
-                }
-                return Err(error);
-            }
-        };
-        let handle = match self.provider.ensure_host(&request).await {
+        let handle = match self
+            .provider
+            .ensure_host_with_credentials(&request, credentials)
+            .await
+        {
             Ok(handle) => handle,
             Err(error) => {
                 if let Some(pool) = &self.pool {

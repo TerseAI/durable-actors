@@ -1002,3 +1002,277 @@ impl crate::bucket::SnapshotStore for RejectingSnapshots {
         self.inner.put(object, bytes).await
     }
 }
+
+#[tokio::test]
+async fn activation_handoff_adopts_the_claim_without_another_ownership_request() -> Result<()> {
+    let f = Fixture::new()?;
+    let request = request("handoff");
+    let handoff = f
+        .runtime
+        .prepare_activation(&f.actor, &request, "us-east", true, None)
+        .await?;
+    let handoff = serde_json::from_str(&serde_json::to_string(&handoff)?)?;
+    let reads = f.bucket.reads.load(Ordering::SeqCst);
+    let writes = f.bucket.writes.load(Ordering::SeqCst);
+    let host = RuntimeStorage::new(f.bucket.clone(), f.clock.clone())?;
+    f.clock.0.store(2000, Ordering::SeqCst);
+    let loaded = host
+        .adopt_activation(&f.actor, &request, "us-east", handoff)
+        .await?;
+    assert_eq!(loaded.placement.owner_epoch, 1);
+    assert_eq!(loaded.placement.lease.expires_at_ms, 11000);
+    assert!(loaded.state.is_none());
+    assert_eq!(f.bucket.reads.load(Ordering::SeqCst), reads);
+    assert_eq!(f.bucket.writes.load(Ordering::SeqCst), writes);
+    host.prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 1)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn activation_handoff_rejects_wrong_identity_and_expiration() -> Result<()> {
+    let f = Fixture::new()?;
+    let original = request("handoff");
+    let handoff = f
+        .runtime
+        .prepare_activation(&f.actor, &original, "us-east", true, None)
+        .await?;
+    for request in [
+        request("other"),
+        HostLeaseRequest {
+            route: "http://other".into(),
+            ..original.clone()
+        },
+    ] {
+        assert!(
+            f.runtime
+                .adopt_activation(&f.actor, &request, "us-east", handoff.clone())
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        f.runtime
+            .adopt_activation(&f.actor, &original, "us-west", handoff.clone())
+            .await
+            .is_err()
+    );
+    let mut other = f.actor.clone();
+    other.actor_id = "other".into();
+    assert!(
+        f.runtime
+            .adopt_activation(&other, &original, "us-east", handoff.clone())
+            .await
+            .is_err()
+    );
+    f.clock.0.store(11000, Ordering::SeqCst);
+    assert!(
+        f.runtime
+            .adopt_activation(&f.actor, &original, "us-east", handoff)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn activation_handoff_recovers_committed_state_and_preserves_its_epoch() -> Result<()> {
+    use crate::state_transport::SnapshotWriter;
+    let f = Fixture::new()?;
+    let first = f
+        .runtime
+        .register_activation(&f.actor, &request("first"), "us-east", true, None)
+        .await?;
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &first.placement.lease, 1, 1)
+        .await?;
+    let bytes = crate::state_log::StateSnapshot::new(
+        1,
+        1,
+        "write".into(),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":42}))?,
+        serde_json::json!(42),
+    )?
+    .encode()?;
+    f.runtime.write_snapshot(&plan, bytes.clone()).await?;
+    f.clock.0.store(11000, Ordering::SeqCst);
+    let next = request("next");
+    let handoff = f
+        .runtime
+        .prepare_activation(&f.actor, &next, "us-east", false, None)
+        .await?;
+    let host = RuntimeStorage::new(f.bucket.clone(), f.clock.clone())?;
+    let loaded = host
+        .adopt_activation(&f.actor, &next, "us-east", handoff)
+        .await?;
+    assert_eq!(loaded.placement.owner_epoch, 2);
+    assert_eq!(loaded.placement.state_version, 1);
+    assert_eq!(loaded.state.unwrap(), bytes);
+    host.renew_activation(&f.actor, &next, ActivationInventory::default())
+        .await?;
+    host.prepare_actor_write(&f.actor, &loaded.placement.lease, 2, 2)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_ownership_renews_without_changing_epoch_and_cannot_revive_after_release()
+-> Result<()> {
+    let f = Fixture::new()?;
+    let lease = request("prepared");
+    let handoff = f
+        .runtime
+        .prepare_activation(&f.actor, &lease, "us-east", true, None)
+        .await?;
+    f.clock.0.store(6000, Ordering::SeqCst);
+    let renewed = f
+        .runtime
+        .renew_prepared_activation(&f.actor, &lease)
+        .await?;
+    assert_eq!(renewed.owner_epoch(), handoff.owner_epoch());
+    assert_eq!(renewed.lease().expires_at_ms, 16000);
+    let wrong = HostLeaseRequest {
+        route: "http://other".into(),
+        ..lease.clone()
+    };
+    assert!(
+        f.runtime
+            .renew_prepared_activation(&f.actor, &wrong)
+            .await
+            .is_err()
+    );
+    f.runtime
+        .release_activation(&f.actor, &lease.id, &lease.session_id)
+        .await?;
+    assert!(
+        f.runtime
+            .renew_prepared_activation(&f.actor, &lease)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn preparing_a_sealed_activation_leaves_state_loading_to_the_host() -> Result<()> {
+    use crate::state_transport::SnapshotWriter;
+    let f = Fixture::new()?;
+    let first = request("first");
+    let active = f
+        .runtime
+        .register_activation(&f.actor, &first, "us-east", true, None)
+        .await?;
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &active.placement.lease, 1, 1)
+        .await?;
+    let bytes = crate::state_log::StateSnapshot::new(
+        1,
+        1,
+        "write".into(),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":42}))?,
+        serde_json::json!(42),
+    )?
+    .encode()?;
+    f.runtime.write_snapshot(&plan, bytes.clone()).await?;
+    let checkpoint = f
+        .runtime
+        .drain_activation(
+            &f.actor,
+            &first.id,
+            &first.session_id,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await?;
+    f.runtime
+        .release_with_checkpoint(&f.actor, &first.id, &first.session_id, Some(checkpoint))
+        .await?;
+    let (_, hint) = f
+        .runtime
+        .get_owner_with_hint(&f.actor.storage_key())
+        .await?;
+    let reads = f.bucket.reads.load(Ordering::SeqCst);
+    let next = request("next");
+    let handoff = f
+        .runtime
+        .prepare_activation(&f.actor, &next, "us-east", false, hint.as_ref())
+        .await?;
+    assert_eq!(
+        f.bucket.reads.load(Ordering::SeqCst),
+        reads,
+        "preparation must not download the sealed snapshot"
+    );
+    let host = RuntimeStorage::new(f.bucket.clone(), f.clock.clone())?;
+    let loaded = host
+        .adopt_activation(&f.actor, &next, "us-east", handoff)
+        .await?;
+    assert_eq!(loaded.state.as_deref(), Some(bytes.as_ref()));
+    assert_eq!(loaded.placement.owner_epoch, 2);
+    Ok(())
+}
+
+struct ExpiringStream {
+    inner: crate::bucket::BucketSnapshots,
+    clock: Arc<TestClock>,
+    starts: AtomicU64,
+}
+
+#[async_trait]
+impl crate::bucket::SnapshotStore for ExpiringStream {
+    async fn get(&self, object: &str) -> Result<Option<Bytes>> {
+        self.inner.get(object).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix).await
+    }
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+        self.inner.latest(prefix).await
+    }
+    async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
+        self.inner.put(object, bytes).await
+    }
+    async fn start(&self, _: &StateStream) -> Result<()> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        self.clock.0.store(11_000, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn only_the_host_opens_the_stream_and_expiration_during_opening_is_fenced() -> Result<()> {
+    let f = Fixture::new()?;
+    let snapshots = Arc::new(ExpiringStream {
+        inner: crate::bucket::BucketSnapshots(f.bucket.clone()),
+        clock: f.clock.clone(),
+        starts: AtomicU64::new(0),
+    });
+    let runtime = f
+        .runtime
+        .with_persistence(rapid_policy(), snapshots.clone())?;
+    let request = request("prepared");
+    let handoff = runtime
+        .prepare_activation(&f.actor, &request, "us-east", true, None)
+        .await?;
+    assert_eq!(snapshots.starts.load(Ordering::SeqCst), 0);
+    assert!(
+        runtime
+            .prepare_actor_write(&f.actor, handoff.lease(), 1, 1)
+            .await
+            .is_err()
+    );
+    assert!(
+        runtime
+            .adopt_activation(&f.actor, &request, "us-east", handoff.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(snapshots.starts.load(Ordering::SeqCst), 1);
+    assert!(
+        runtime
+            .prepare_actor_write(&f.actor, handoff.lease(), 1, 1)
+            .await
+            .is_err()
+    );
+    Ok(())
+}

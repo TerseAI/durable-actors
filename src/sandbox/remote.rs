@@ -1,21 +1,33 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
+use tokio_util::task::AbortOnDropHandle;
 
-use super::*;
+use super::{bootstrap::HostBootstrap, *};
+use crate::bucket::ActivationHandoff;
 
 pub(crate) struct RemoteSandboxProvider {
     name: &'static str,
     cluster: Arc<dyn SandboxCluster>,
     assignment: Arc<dyn HostAssignment>,
+    bootstrap: Arc<dyn HostBootstrap>,
 }
 
 impl RemoteSandboxProvider {
-    pub(super) fn new(name: &'static str, cluster: Arc<dyn SandboxCluster>) -> Result<Self> {
+    pub(super) fn new(
+        name: &'static str,
+        cluster: Arc<dyn SandboxCluster>,
+        bootstrap: Arc<dyn HostBootstrap>,
+    ) -> Result<Self> {
         Ok(Self {
             name,
             cluster,
+            bootstrap,
             assignment: Arc::new(HttpAssignment(
                 reqwest::Client::builder()
                     .timeout(Duration::from_secs(120))
@@ -24,43 +36,24 @@ impl RemoteSandboxProvider {
             )),
         })
     }
-
-    async fn assign(
-        &self,
-        request: &EnsureHostRequest,
-        spare: &SpareHandle,
-    ) -> Result<ActorHostHandle> {
-        ensure!(
-            spare.canonical_region == request.canonical_region,
-            "spare region mismatch"
-        );
-        let secrets = self.cluster.secrets(&request.secret_refs).await?;
-        let environment = assignment_environment(request, spare, secrets)?;
-        let handle = self.assignment.assign(spare, environment).await?;
-        let lease = handle
-            .lease
-            .as_ref()
-            .context("assigned host did not acquire ownership")?;
-        ensure!(
-            handle.host_id == request.host_id
-                && lease.id == request.host_id
-                && lease.session_id == request.session_id
-                && lease.expires_at_ms > now_ms()?
-                && handle.owner_epoch > 0
-                && handle.route == spare.route
-                && lease.route == spare.route
-                && handle.canonical_region == request.canonical_region,
-            "assigned host identity mismatch"
-        );
-        Ok(handle)
-    }
 }
 
 #[async_trait]
 impl SandboxProvider for RemoteSandboxProvider {
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         validate_image(&request.image_ref)?;
-        self.cluster.create_spare(request).await
+        let spare = self.cluster.allocate_spare(request).await?;
+        let mut guard = StartupGuard::new(self.cluster.clone(), spare.clone(), None);
+        match self.cluster.wait_ready(&spare).await {
+            Ok(()) => {
+                guard.disarm();
+                Ok(spare)
+            }
+            Err(error) => {
+                guard.cleanup().await;
+                Err(error)
+            }
+        }
     }
 
     async fn retire_spare(&self, request: &SpareHandle) -> Result<()> {
@@ -72,30 +65,36 @@ impl SandboxProvider for RemoteSandboxProvider {
     }
 
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
+        let bootstrap = self.bootstrap.clone();
+        let configuration = request.clone();
+        let credentials = AbortOnDropHandle::new(tokio::spawn(async move {
+            let (result, elapsed) = timed(bootstrap.credentials(&configuration)).await;
+            (result.map(Some), elapsed)
+        }));
+        self.ensure_host_with_credentials(request, credentials)
+            .await
+    }
+
+    async fn ensure_host_with_credentials(
+        &self,
+        request: &EnsureHostRequest,
+        credentials: HostCredentials,
+    ) -> Result<ActorHostHandle> {
         let started_at_ms = now_ms()?;
-        let reused = request.spare.is_some();
-        let spare = match &request.spare {
-            Some(spare) => spare.clone(),
-            None => {
-                self.create_spare(&CreateSpareRequest {
-                    control_plane_url: Some(request.control_plane_url.clone()),
-                    kind: SpareKind::Actor,
-                    name: format!("do-actor-{}", request.session_id),
-                    image_ref: request.image_ref.clone(),
-                    canonical_region: request.canonical_region.clone(),
-                    resources: request.resources.clone(),
-                })
-                .await?
-            }
-        };
-        let result = self.assign(request, &spare).await;
+        let spare = self.allocate(request).await?;
+        let mut guard = StartupGuard::new(
+            self.cluster.clone(),
+            spare.clone(),
+            Some((self.bootstrap.clone(), request.clone())),
+        );
+        let result = self.launch(request, &spare, credentials, &mut guard).await;
         match result {
             Ok(mut handle) => {
                 let completed_at_ms = now_ms()?;
                 handle.provisioning = Some(ActorHostProvisioning {
                     provider: self.name.into(),
                     resource_id: spare.resource_id,
-                    reused,
+                    reused: request.spare.is_some(),
                     started_at_ms,
                     completed_at_ms,
                     input_parsed_at_ms: None,
@@ -109,12 +108,11 @@ impl SandboxProvider for RemoteSandboxProvider {
                     process_completed_at_ms: None,
                     response_decoded_at_ms: None,
                 });
+                guard.disarm();
                 Ok(handle)
             }
             Err(error) => {
-                if let Err(cleanup) = self.retire_spare(&spare).await {
-                    tracing::warn!(%cleanup, resource = %spare.resource_id, "failed to retire assigned sandbox");
-                }
+                guard.cleanup().await;
                 Err(error)
             }
         }
@@ -123,6 +121,214 @@ impl SandboxProvider for RemoteSandboxProvider {
     async fn terminate_hosts(&self, _: &TerminateHostsRequest) -> Result<HostTermination> {
         anyhow::bail!("remote hosts must be retired through the durable spare registry")
     }
+}
+
+impl RemoteSandboxProvider {
+    async fn allocate(&self, request: &EnsureHostRequest) -> Result<SpareHandle> {
+        if let Some(spare) = &request.spare {
+            return Ok(spare.clone());
+        }
+        validate_image(&request.image_ref)?;
+        self.cluster
+            .allocate_spare(&CreateSpareRequest {
+                control_plane_url: Some(request.control_plane_url.clone()),
+                kind: SpareKind::Actor,
+                name: format!("do-actor-{}", request.session_id),
+                image_ref: request.image_ref.clone(),
+                canonical_region: request.canonical_region.clone(),
+                resources: request.resources.clone(),
+            })
+            .await
+    }
+
+    async fn launch(
+        &self,
+        request: &EnsureHostRequest,
+        spare: &SpareHandle,
+        credentials: HostCredentials,
+        guard: &mut StartupGuard,
+    ) -> Result<ActorHostHandle> {
+        ensure!(
+            spare.canonical_region == request.canonical_region,
+            "spare region mismatch"
+        );
+        let setup = async {
+            let ready = async {
+                if request.spare.is_none() {
+                    self.cluster.wait_ready(spare).await?;
+                }
+                anyhow::Ok(())
+            };
+            let (credentials, secrets, (ready, readiness_ms)) = tokio::join!(
+                credentials,
+                self.cluster.secrets(&request.secret_refs),
+                timed(ready)
+            );
+            let (credentials, credentials_ms) = credentials?;
+            ready?;
+            Ok((
+                credentials?.context("host storage configuration required")?,
+                secrets?,
+                credentials_ms,
+                readiness_ms,
+            ))
+        };
+        let (mut handoff, (runtime_config, secrets, credentials_ms, readiness_ms), ownership_ms) =
+            self.prepare(request, spare, setup).await?;
+        if handoff.lease().expires_at_ms <= now_ms()?.saturating_add(15_000) {
+            handoff = self.bootstrap.renew(request, &spare.route).await?;
+        }
+        ensure!(
+            handoff.lease().expires_at_ms > now_ms()?.saturating_add(15_000),
+            "activation handoff has insufficient lease time"
+        );
+        let mut request = request.clone();
+        request.runtime_config = Some(runtime_config);
+        let mut environment = assignment_environment(&request, spare, secrets)?;
+        environment.insert(
+            "DURABLE_ACTORS_ACTIVATION_HANDOFF".into(),
+            serde_json::to_string(&handoff)?,
+        );
+        guard.assigned = true;
+        let (handle, assignment_ms) = timed(self.assignment.assign(spare, environment)).await;
+        let handle = handle?;
+        validate_assignment(&request, spare, &handoff, &handle)?;
+        tracing::info!(event = "remote_host_bootstrap", provider = self.name,
+            host_id = %request.host_id, credentials_ms, readiness_ms, ownership_ms, assignment_ms,
+            reused = request.spare.is_some(), "remote host bootstrap completed");
+        Ok(handle)
+    }
+
+    async fn prepare<T>(
+        &self,
+        request: &EnsureHostRequest,
+        spare: &SpareHandle,
+        setup: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<(ActivationHandoff, T, f64)> {
+        let claim = timed(self.bootstrap.claim(request, &spare.route));
+        tokio::pin!(claim, setup);
+        let (mut handoff, ownership_ms) = tokio::select! {
+            (handoff, elapsed) = &mut claim => (handoff?, elapsed),
+            result = &mut setup => {
+                let (handoff, elapsed) = claim.await;
+                return Ok((handoff?, result?, elapsed));
+            }
+        };
+        loop {
+            tokio::select! {
+                result = &mut setup => {
+                    let result = result?;
+                    return Ok((handoff, result, ownership_ms));
+                }
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                    handoff = self.bootstrap.renew(request, &spare.route).await?;
+                }
+            }
+        }
+    }
+}
+
+fn validate_assignment(
+    request: &EnsureHostRequest,
+    spare: &SpareHandle,
+    handoff: &ActivationHandoff,
+    handle: &ActorHostHandle,
+) -> Result<()> {
+    let lease = handle
+        .lease
+        .as_ref()
+        .context("assigned host did not acquire ownership")?;
+    ensure!(
+        handle.host_id == request.host_id
+            && lease.id == request.host_id
+            && lease.session_id == request.session_id
+            && lease.expires_at_ms > now_ms()?
+            && handle.owner_epoch == handoff.owner_epoch()
+            && handle.route == spare.route
+            && lease.route == spare.route
+            && handle.canonical_region == request.canonical_region,
+        "assigned host identity mismatch"
+    );
+    Ok(())
+}
+
+struct StartupGuard {
+    cluster: Arc<dyn SandboxCluster>,
+    spare: Option<SpareHandle>,
+    bootstrap: Option<(Arc<dyn HostBootstrap>, EnsureHostRequest)>,
+    assigned: bool,
+}
+
+impl StartupGuard {
+    fn new(
+        cluster: Arc<dyn SandboxCluster>,
+        spare: SpareHandle,
+        bootstrap: Option<(Arc<dyn HostBootstrap>, EnsureHostRequest)>,
+    ) -> Self {
+        Self {
+            cluster,
+            spare: Some(spare),
+            bootstrap,
+            assigned: false,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.spare = None;
+    }
+
+    async fn cleanup(&mut self) {
+        let Some(spare) = self.spare.take() else {
+            return;
+        };
+        let _ = tokio::spawn(cleanup(
+            self.cluster.clone(),
+            spare,
+            self.bootstrap.take(),
+            self.assigned,
+        ))
+        .await;
+    }
+}
+
+impl Drop for StartupGuard {
+    fn drop(&mut self) {
+        let Some(spare) = self.spare.take() else {
+            return;
+        };
+        tokio::spawn(cleanup(
+            self.cluster.clone(),
+            spare,
+            self.bootstrap.take(),
+            self.assigned,
+        ));
+    }
+}
+
+async fn cleanup(
+    cluster: Arc<dyn SandboxCluster>,
+    spare: SpareHandle,
+    bootstrap: Option<(Arc<dyn HostBootstrap>, EnsureHostRequest)>,
+    assigned: bool,
+) {
+    let result = tokio::time::timeout(Duration::from_secs(30), cluster.retire_spare(&spare)).await;
+    if !matches!(result, Ok(Ok(()))) {
+        tracing::warn!(?result, resource = %spare.resource_id, "failed to retire starting sandbox");
+    }
+    // An ambiguous assignment may have started a writer; let its lease expire.
+    if !assigned && let Some((bootstrap, request)) = bootstrap {
+        let result =
+            tokio::time::timeout(Duration::from_secs(30), bootstrap.release(&request)).await;
+        if !matches!(result, Ok(Ok(()))) {
+            tracing::warn!(?result, host_id = %request.host_id, "failed to release unassigned activation");
+        }
+    }
+}
+
+async fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, f64) {
+    let started = Instant::now();
+    let result = future.await;
+    (result, started.elapsed().as_secs_f64() * 1000.0)
 }
 
 fn assignment_environment(
@@ -227,7 +433,8 @@ fn now_ms() -> Result<u64> {
 #[async_trait]
 pub(super) trait SandboxCluster: Send + Sync {
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
-    async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
+    async fn allocate_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
+    async fn wait_ready(&self, spare: &SpareHandle) -> Result<()>;
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()>;
     async fn secrets(&self, names: &[String]) -> Result<HashMap<String, String>>;
 }
