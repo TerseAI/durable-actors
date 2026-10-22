@@ -130,14 +130,16 @@ used for image import and are not injected into actor or staging sandboxes. Depl
 `secretRefs` remain unsupported.
 
 A bundle may specify a digest-pinned `dependencyImage`; omission uses the configured language
-runtime. Modal verifies and stages its GCS files into a directory snapshot before publishing the
-new deployment. Snapshot references persist in PostgreSQL and expire before Modal's 30-day TTL.
+runtime. Registration publishes the deployment without waiting for Modal warmup. Modal verifies
+and stages its GCS files into a directory snapshot in the background. Snapshot references persist
+in PostgreSQL and expire before Modal's 30-day TTL.
 The control-plane Google identity needs read access to the configured artifact bucket.
 
-With spare pooling enabled, registration also waits for a matching spare in the default region.
-Preparation has a 20-minute deadline covering image import, staging, and the spare wait;
-deployment clients must allow additional time for publication and the response.
-Preparation failure preserves the previous deployment. Matching spares mount the code snapshot
-before assignment; an unavailable snapshot falls back to verified GCS delivery. An empty pool or
-custom resource request starts a new sandbox. SDK connections are prepared on spare readiness.
-Unchanged code and dependency images skip preparation on redeploy or secret rotation.
+With spare pooling enabled, matching spares warm concurrently in the default region. Background
+preparation has a 20-minute deadline, retries failures, and resumes from registered deployments
+after controller restarts. Background preparation has no application-level concurrency cap;
+snapshot creation for the same deployment is coordinated through PostgreSQL across controllers.
+Matching spares mount an available snapshot before assignment. A missing or pending snapshot
+uses verified GCS delivery immediately. An empty pool or custom resource request starts a new
+sandbox with the matching dependency image. SDK connections are prepared on spare readiness.
+Unchanged code and dependency images reuse prepared snapshots on redeploy or secret rotation.

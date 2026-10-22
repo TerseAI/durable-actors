@@ -166,8 +166,9 @@ impl SandboxCluster for ModalCluster {
             canonical_region: request.canonical_region.clone(),
             code_snapshot: request.code_snapshot.clone(),
         };
-        let image = match self.snapshots.prepare(&deployment).await {
-            Ok(image) => image,
+        let image = match self.snapshots.get(&deployment).await {
+            Ok(Some(image)) => image,
+            Ok(None) => return Ok(false),
             Err(error) => {
                 tracing::warn!(%error, "snapshot unavailable; using verified GCS code delivery");
                 return Ok(false);

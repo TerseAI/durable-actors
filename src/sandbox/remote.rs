@@ -36,9 +36,16 @@ impl RemoteSandboxProvider {
         );
         let secrets = self.cluster.secrets(&request.secret_refs).await?;
         let mut environment = assignment_environment(request, spare, secrets)?;
-        if self.cluster.prepare_assignment(request, spare).await? {
+        let prepared = self.cluster.prepare_assignment(request, spare).await?;
+        if prepared {
             environment.remove("DURABLE_ACTORS_CODE_ARTIFACT");
         }
+        tracing::info!(
+            event = "actor_code_delivery",
+            host_id = %request.host_id,
+            delivery = if prepared { "snapshot" } else { "gcs" },
+            "actor code delivery selected"
+        );
         let handle = self.assignment.assign(spare, environment).await?;
         let lease = handle
             .lease

@@ -233,6 +233,7 @@ async fn control_plane_routes(
     service.changes = changes;
     service.gateway = Some(gateway);
     service.region = config.region;
+    super::preparation::start(service.clone(), stop.clone());
     service.start_alarm_scheduler(config.alarm_poll_interval, stop);
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
         storage.clone(),

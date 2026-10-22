@@ -5,9 +5,22 @@ use std::sync::{
 };
 
 #[derive(Default)]
-struct Store(Mutex<HashMap<String, String>>);
+struct Store(
+    Mutex<HashMap<String, String>>,
+    Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+);
 #[async_trait]
 impl SnapshotStore for Store {
+    async fn lock(&self, key: &str) -> Result<Box<dyn Send>> {
+        let lock = self
+            .1
+            .lock()
+            .unwrap()
+            .entry(key.into())
+            .or_default()
+            .clone();
+        Ok(Box::new(lock.lock_owned().await))
+    }
     async fn get(&self, key: &str) -> Result<Option<String>> {
         Ok(self.0.lock().unwrap().get(key).cloned())
     }
@@ -24,11 +37,18 @@ impl SnapshotStore for Store {
 struct Backend {
     calls: AtomicUsize,
     fail: AtomicBool,
+    block: AtomicBool,
+    started: tokio::sync::Notify,
+    finish: tokio::sync::Notify,
 }
 #[async_trait]
 impl SnapshotBackend for Backend {
     async fn create(&self, _: &SandboxDeployment) -> Result<Image> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.block.load(Ordering::SeqCst) {
+            self.started.notify_one();
+            self.finish.notified().await;
+        }
         tokio::task::yield_now().await;
         ensure!(!self.fail.load(Ordering::SeqCst), "staging failed");
         Ok(Image::from_id(format!("im-code-{n}")))
@@ -37,14 +57,81 @@ impl SnapshotBackend for Backend {
 fn deployment() -> SandboxDeployment {
     SandboxDeployment { project_id: "project".into(), image_ref: "registry/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(), code_snapshot: Some(crate::sandbox::testing::code_artifact(1)), canonical_region: "us".into() }
 }
+
+#[tokio::test]
+async fn snapshot_lookup_never_starts_or_waits_for_preparation() -> Result<()> {
+    let backend = Arc::new(Backend::default());
+    let store = Arc::new(Store::default());
+    let cache = Arc::new(Snapshots::new("app".into(), backend.clone(), store.clone()));
+    assert!(cache.get(&deployment()).await?.is_none());
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    backend.block.store(true, Ordering::SeqCst);
+    let preparing = cache.clone();
+    let task = tokio::spawn(async move { preparing.prepare(&deployment()).await });
+    backend.started.notified().await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), cache.get(&deployment()))
+            .await??
+            .is_none()
+    );
+    backend.finish.notify_one();
+    task.await??;
+    assert_eq!(
+        cache.get(&deployment()).await?.unwrap().image_id(),
+        Some("im-code-0")
+    );
+    let mut newer = deployment();
+    newer.code_snapshot = Some(crate::sandbox::testing::code_artifact(2));
+    assert!(cache.get(&newer).await?.is_none());
+    let restarted = Snapshots::new("app".into(), backend.clone(), store);
+    assert!(restarted.get(&deployment()).await?.is_some());
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+#[tokio::test]
+async fn distinct_snapshots_start_concurrently() -> Result<()> {
+    let backend = Arc::new(Backend::default());
+    backend.block.store(true, Ordering::SeqCst);
+    let store = Arc::new(Store::default());
+    let cache = Arc::new(Snapshots::new("app".into(), backend.clone(), store.clone()));
+    let mut tasks = tokio::task::JoinSet::new();
+    for n in 0..50 {
+        let mut deployment = deployment();
+        deployment.project_id = format!("project-{n}");
+        let cache = cache.clone();
+        tasks.spawn(async move { cache.prepare(&deployment).await });
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while backend.calls.load(Ordering::SeqCst) < 50 {
+            backend.started.notified().await;
+        }
+    })
+    .await?;
+    assert!(store.0.lock().unwrap().is_empty());
+    backend.finish.notify_waiters();
+    while let Some(result) = tasks.join_next().await {
+        result??;
+    }
+    assert_eq!(store.0.lock().unwrap().len(), 50);
+    Ok(())
+}
+
 #[tokio::test]
 async fn snapshots_deduplicate_and_survive_controller_restart() -> Result<()> {
     let backend = Arc::new(Backend::default());
     let store = Arc::new(Store::default());
     let cache = Snapshots::new("app".into(), backend.clone(), store.clone());
+    let other_controller = Snapshots::new("app".into(), backend.clone(), store.clone());
     let deployment = deployment();
-    let images =
-        futures_util::future::try_join_all((0..50).map(|_| cache.prepare(&deployment))).await?;
+    let images = futures_util::future::try_join_all((0..50).map(|n| {
+        let cache = if n % 2 == 0 {
+            &cache
+        } else {
+            &other_controller
+        };
+        cache.prepare(&deployment)
+    }))
+    .await?;
     assert!(images.iter().all(|i| i.image_id() == Some("im-code-0")));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     let restarted = Snapshots::new("app".into(), backend.clone(), store.clone());

@@ -96,7 +96,7 @@ pub struct CreateSpareRequest {
     pub resources: ResourceLimits,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxDeployment {
     pub code_snapshot: Option<String>,

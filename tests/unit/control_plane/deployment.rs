@@ -142,62 +142,117 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
     Ok(())
 }
 
-#[tokio::test]
-async fn preparation_precedes_publication_and_failure_preserves_the_current_deployment()
--> Result<()> {
+#[tokio::test(start_paused = true)]
+async fn deployment_publishes_while_warmup_is_pending_and_retries_failures() -> Result<()> {
     let (service, admin, provider) = fixture()?;
+    let stop = tokio_util::sync::CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let worker = super::super::preparation::start(service.clone(), stop.clone());
     let original = source();
     let contract = super::super::contracts::PublicActorContract::new(contract())?;
+    provider.preparation_seconds.store(600, Ordering::SeqCst);
+    let started = tokio::time::Instant::now();
     service
         .deploy_source(&admin, &original, Some(&contract))
         .await?;
-    let active = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    assert!(admin.current_deployment("default").await?.is_some());
+    settle().await;
     assert_eq!(provider.prepared.lock().unwrap().len(), 1);
-    service.deploy_source(&admin, &original, None).await?;
-    assert_eq!(provider.prepared.lock().unwrap().len(), 1);
-    assert_eq!(provider.retired.lock().unwrap().len(), 1);
+
     let mut changed = original.clone();
     changed.code_snapshot = Some(crate::sandbox::testing::code_artifact(2));
     provider.fail_preparation.store(true, Ordering::SeqCst);
-    assert!(
-        service
-            .deploy_source(&admin, &changed, Some(&contract))
-            .await
-            .is_err()
-    );
-    assert_eq!(admin.current_deployment("default").await?, Some(active));
-    assert_eq!(provider.retired.lock().unwrap().len(), 1);
-    provider.fail_preparation.store(false, Ordering::SeqCst);
     service
         .deploy_source(&admin, &changed, Some(&contract))
         .await?;
-    assert_eq!(provider.retired.lock().unwrap().len(), 2);
-    let n = provider.prepared.lock().unwrap().len();
+    settle().await;
+    assert_eq!(
+        admin
+            .current_deployment("default")
+            .await?
+            .unwrap()
+            .code_snapshot,
+        changed.code_snapshot
+    );
+    assert_eq!(provider.prepared.lock().unwrap().len(), 2);
+
+    provider.fail_preparation.store(false, Ordering::SeqCst);
+    provider.preparation_seconds.store(0, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_secs(31)).await;
+    settle().await;
+    assert_eq!(provider.prepared.lock().unwrap().len(), 3);
     changed.secret_refs.push("rotated".into());
     service.deploy_source(&admin, &changed, None).await?;
-    assert_eq!(provider.prepared.lock().unwrap().len(), n);
+    settle().await;
+    assert_eq!(provider.prepared.lock().unwrap().len(), 3);
+    stop.cancel();
+    worker.await?;
     Ok(())
 }
 
 #[tokio::test(start_paused = true)]
-async fn preparation_allows_sequential_provider_budgets_and_bounds_stalled_work() -> Result<()> {
+async fn background_warmup_starts_all_deployments_and_recovers_after_restart() -> Result<()> {
     let (service, admin, provider) = fixture()?;
-    let original = source();
     let contract = super::super::contracts::PublicActorContract::new(contract())?;
-    provider
-        .preparation_seconds
-        .store(600 + 90 + 180 + 180, Ordering::SeqCst);
+    provider.preparation_seconds.store(600, Ordering::SeqCst);
+    for n in 0..50 {
+        let mut deployment = source();
+        deployment.project_id = format!("project-{n}");
+        service
+            .deploy_source(&admin, &deployment, Some(&contract))
+            .await?;
+    }
+    let stop = tokio_util::sync::CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let worker = super::super::preparation::start(service.clone(), stop.clone());
+    settle().await;
+    let initial = provider.prepared.lock().unwrap().clone();
+    assert_eq!(initial.len(), 50);
     service
-        .deploy_source(&admin, &original, Some(&contract))
+        .delete_deployment(&admin, &initial[0].project_id)
         .await?;
-    let active = admin.current_deployment("default").await?;
+    settle().await;
+    assert_eq!(provider.prepared.lock().unwrap().len(), 50);
+    stop.cancel();
+    worker.await?;
+    provider.prepared.lock().unwrap().clear();
+    provider.preparation_seconds.store(0, Ordering::SeqCst);
 
+    let stop = tokio_util::sync::CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let worker = super::super::preparation::start(service, stop.clone());
+    settle().await;
+    let prepared = provider.prepared.lock().unwrap().clone();
+    assert_eq!(prepared.len(), 49);
+    assert!(
+        prepared
+            .iter()
+            .all(|d| d.project_id != initial[0].project_id)
+    );
+    stop.cancel();
+    worker.await?;
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn background_preparation_still_bounds_stalled_work() -> Result<()> {
+    let (service, admin, provider) = fixture()?;
+    let contract = super::super::contracts::PublicActorContract::new(contract())?;
+    service
+        .deploy_source(&admin, &source(), Some(&contract))
+        .await?;
+    let active = admin.current_deployment("default").await?.unwrap();
+    let deployment = crate::sandbox::SandboxDeployment {
+        project_id: active.project_id.clone(),
+        image_ref: active.image_ref.clone(),
+        code_snapshot: active.code_snapshot.clone(),
+        canonical_region: service.default_region().into(),
+    };
     provider.preparation_seconds.store(1201, Ordering::SeqCst);
-    let mut changed = original.clone();
-    changed.code_snapshot = Some(crate::sandbox::testing::code_artifact(2));
     let started = tokio::time::Instant::now();
     let error = service
-        .deploy_source(&admin, &changed, Some(&contract))
+        .prepare_registered_deployment(&deployment)
         .await
         .unwrap_err();
     assert!(
@@ -206,9 +261,17 @@ async fn preparation_allows_sequential_provider_budgets_and_bounds_stalled_work(
             .contains("deployment preparation timed out")
     );
     assert_eq!(started.elapsed(), Duration::from_secs(1200));
-    assert_eq!(admin.current_deployment("default").await?, active);
-    assert!(provider.retired.lock().unwrap().is_empty());
+    assert_eq!(admin.current_deployment("default").await?, Some(active));
     Ok(())
+}
+
+async fn settle() {
+    for _ in 0..2 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+    }
 }
 
 #[tokio::test]

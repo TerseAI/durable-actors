@@ -4643,6 +4643,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
+ "hashbrown 0.15.5",
  "libc",
  "pin-project-lite",
  "slab",

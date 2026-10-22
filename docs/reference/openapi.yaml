@@ -55,7 +55,7 @@ paths:
             operationId: registerDeployment
             tags: [Deployments]
             summary: Deploy actors
-            description: Registers a compiled GCS bundle and actor contract, optionally with a digest-pinned dependencyImage containing the compatible host and system dependencies. Bundles must use the configured artifact bucket and durable-actors/v3/artifacts/{UUID}/ paths. Provider preparation completes before publication; failure preserves the current deployment. On Modal this prepares a code snapshot and, when pooling is enabled, a matching spare in the default region. Replaces the deployment and restarts actors while preserving saved state. A changed bundle or dependency image requires contract; resubmitting the current code may omit it. Local development uses localSource.
+            description: Registers a compiled GCS bundle and actor contract, optionally with a digest-pinned dependencyImage containing the compatible host and system dependencies. Bundles must use the configured artifact bucket and durable-actors/v3/artifacts/{UUID}/ paths. Publishes without waiting for provider warmup. Modal prepares a code snapshot and matching spare capacity in the background; requests use verified GCS delivery while the snapshot is unavailable and may incur cold sandbox startup. Replaces the deployment and restarts actors while preserving saved state. A changed bundle or dependency image requires contract; resubmitting the current code may omit it. Local development uses localSource.
             requestBody:
                 required: true
                 content:

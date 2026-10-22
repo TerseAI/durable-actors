@@ -47,7 +47,7 @@ pub struct ControlPlaneService {
     placements: Arc<dyn ObjectPlacementStore>,
     pub(super) auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
-    registry: Arc<dyn AdminRegistry>,
+    pub(super) registry: Arc<dyn AdminRegistry>,
     provisioner: Arc<dyn HostProvisioner>,
     alarms: Arc<dyn super::alarms::AlarmStore>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
@@ -147,13 +147,6 @@ impl ControlPlaneService {
     ) -> Result<bool> {
         let previous = admin.current_deployment(&spec.project_id).await?;
         spec.validate()?;
-        let new_code = spec.source.is_none()
-            && previous.as_ref().is_none_or(|old| {
-                old.image_ref != spec.image_ref || old.code_snapshot != spec.code_snapshot
-            });
-        if new_code {
-            self.prepare_registered_deployment(spec).await?;
-        }
         let replacing = previous.is_some();
         if let Some(previous) = previous {
             self.terminate_deployment_hosts(&previous).await?;
@@ -163,18 +156,15 @@ impl ControlPlaneService {
         Ok(changed || replacing)
     }
 
-    async fn prepare_registered_deployment(&self, spec: &HostLaunchSpec) -> Result<()> {
-        let deployment = crate::sandbox::SandboxDeployment {
-            project_id: spec.project_id.clone(),
-            image_ref: spec.image_ref.clone(),
-            code_snapshot: spec.code_snapshot.clone(),
-            canonical_region: self.default_region().into(),
-        };
+    pub(super) async fn prepare_registered_deployment(
+        &self,
+        deployment: &crate::sandbox::SandboxDeployment,
+    ) -> Result<()> {
         let started = Instant::now();
         // Import (600s), sandbox (90s), staging (180s), spare (180s), plus overhead.
         tokio::time::timeout(
             Duration::from_secs(1200),
-            self.provisioner.prepare_registration(&deployment),
+            self.provisioner.prepare_registration(deployment),
         )
         .await
         .context("deployment preparation timed out")??;
@@ -922,13 +912,16 @@ impl HostProvisioner for SandboxHostProvisioner {
         &self,
         deployment: &crate::sandbox::SandboxDeployment,
     ) -> Result<()> {
-        self.provider.prepare_registration(deployment).await?;
-        if deployment.code_snapshot.is_some() {
-            if let Some(pool) = &self.pool {
-                pool.prepare(&deployment.image_ref, &deployment.canonical_region)
-                    .await?;
+        let spares = async {
+            if deployment.code_snapshot.is_some() {
+                if let Some(pool) = &self.pool {
+                    pool.prepare(&deployment.image_ref, &deployment.canonical_region)
+                        .await?;
+                }
             }
-        }
+            anyhow::Ok(())
+        };
+        tokio::try_join!(self.provider.prepare_registration(deployment), spares)?;
         Ok(())
     }
 

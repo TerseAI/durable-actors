@@ -10,7 +10,6 @@ pub(super) struct Snapshots {
     backend: Arc<dyn SnapshotBackend>,
     store: Arc<dyn SnapshotStore>,
     cached: Cache<String, Image>,
-    slots: tokio::sync::Semaphore,
     namespace: String,
 }
 
@@ -28,8 +27,19 @@ impl Snapshots {
                 .max_capacity(1024)
                 .time_to_live(Duration::from_secs(3600))
                 .build(),
-            slots: tokio::sync::Semaphore::new(4),
         }
+    }
+
+    pub async fn get(&self, deployment: &SandboxDeployment) -> Result<Option<Image>> {
+        let key = snapshot_key(&self.namespace, deployment)?;
+        if let Some(image) = self.cached.get(&key).await {
+            return Ok(Some(image));
+        }
+        let image = self.store.get(&key).await?.map(Image::from_id);
+        if let Some(image) = &image {
+            self.cached.insert(key, image.clone()).await;
+        }
+        Ok(image)
     }
 
     pub async fn prepare(&self, deployment: &SandboxDeployment) -> Result<Image> {
@@ -39,7 +49,10 @@ impl Snapshots {
                 if let Some(id) = self.store.get(&key).await? {
                     return Ok(Image::from_id(id));
                 }
-                let _slot = self.slots.acquire().await?;
+                let _lock = self.store.lock(&key).await?;
+                if let Some(id) = self.store.get(&key).await? {
+                    return Ok(Image::from_id(id));
+                }
                 let image = self.backend.create(deployment).await?;
                 self.store
                     .put(
@@ -85,6 +98,7 @@ pub(super) trait SnapshotBackend: Send + Sync {
 
 #[async_trait]
 pub(super) trait SnapshotStore: Send + Sync {
+    async fn lock(&self, key: &str) -> Result<Box<dyn Send>>;
     async fn get(&self, key: &str) -> Result<Option<String>>;
     async fn put(&self, key: &str, image: &str) -> Result<()>;
     async fn remove(&self, key: &str) -> Result<()>;
@@ -93,6 +107,17 @@ pub(super) trait SnapshotStore: Send + Sync {
 pub(super) struct PostgresSnapshots(pub PostgresDatabase);
 #[async_trait]
 impl SnapshotStore for PostgresSnapshots {
+    async fn lock(&self, key: &str) -> Result<Box<dyn Send>> {
+        let client = deadpool_postgres::Object::take(self.0.connection().await?);
+        client
+            .query_one(
+                "SELECT pg_advisory_lock(hashtext('durable-actors-code-snapshot'), hashtext($1))",
+                &[&key],
+            )
+            .await?;
+        Ok(Box::new(client))
+    }
+
     async fn get(&self, key: &str) -> Result<Option<String>> {
         Ok(self.0.query_opt("SELECT image_id FROM durable_actors_prepared_code WHERE cache_key = $1 AND expires_at > clock_timestamp()", &[&key]).await?.map(|row| row.get(0)))
     }
