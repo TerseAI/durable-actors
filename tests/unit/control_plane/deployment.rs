@@ -5,7 +5,7 @@ use crate::{
     sandbox::ActorHostHandle,
 };
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[tokio::test]
 async fn openapi_is_available_without_credentials_or_a_deployment() -> Result<()> {
@@ -176,6 +176,38 @@ async fn preparation_precedes_publication_and_failure_preserves_the_current_depl
     changed.secret_refs.push("rotated".into());
     service.deploy_source(&admin, &changed, None).await?;
     assert_eq!(provider.prepared.lock().unwrap().len(), n);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn preparation_allows_sequential_provider_budgets_and_bounds_stalled_work() -> Result<()> {
+    let (service, admin, provider) = fixture()?;
+    let original = source();
+    let contract = super::super::contracts::PublicActorContract::new(contract())?;
+    provider
+        .preparation_seconds
+        .store(600 + 90 + 180 + 180, Ordering::SeqCst);
+    service
+        .deploy_source(&admin, &original, Some(&contract))
+        .await?;
+    let active = admin.current_deployment("default").await?;
+
+    provider.preparation_seconds.store(1201, Ordering::SeqCst);
+    let mut changed = original.clone();
+    changed.code_snapshot = Some(crate::sandbox::testing::code_artifact(2));
+    let started = tokio::time::Instant::now();
+    let error = service
+        .deploy_source(&admin, &changed, Some(&contract))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("deployment preparation timed out")
+    );
+    assert_eq!(started.elapsed(), Duration::from_secs(1200));
+    assert_eq!(admin.current_deployment("default").await?, active);
+    assert!(provider.retired.lock().unwrap().is_empty());
     Ok(())
 }
 
@@ -405,6 +437,7 @@ struct Provider {
     retired: Mutex<Vec<String>>,
     prepared: Mutex<Vec<crate::sandbox::SandboxDeployment>>,
     fail_preparation: AtomicBool,
+    preparation_seconds: AtomicU64,
 }
 
 #[async_trait]
@@ -418,6 +451,10 @@ impl SandboxProvider for Provider {
             !self.fail_preparation.load(Ordering::SeqCst),
             "provider warming failed"
         );
+        tokio::time::sleep(Duration::from_secs(
+            self.preparation_seconds.load(Ordering::SeqCst),
+        ))
+        .await;
         Ok(())
     }
 

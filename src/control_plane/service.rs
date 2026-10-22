@@ -171,8 +171,9 @@ impl ControlPlaneService {
             canonical_region: self.default_region().into(),
         };
         let started = Instant::now();
+        // Import (600s), sandbox (90s), staging (180s), spare (180s), plus overhead.
         tokio::time::timeout(
-            Duration::from_secs(720),
+            Duration::from_secs(1200),
             self.provisioner.prepare_registration(&deployment),
         )
         .await

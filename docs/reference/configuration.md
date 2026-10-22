@@ -135,6 +135,8 @@ new deployment. Snapshot references persist in PostgreSQL and expire before Moda
 The control-plane Google identity needs read access to the configured artifact bucket.
 
 With spare pooling enabled, registration also waits for a matching spare in the default region.
+Preparation has a 20-minute deadline covering image import, staging, and the spare wait;
+deployment clients must allow additional time for publication and the response.
 Preparation failure preserves the previous deployment. Matching spares mount the code snapshot
 before assignment; an unavailable snapshot falls back to verified GCS delivery. An empty pool or
 custom resource request starts a new sandbox. SDK connections are prepared on spare readiness.
