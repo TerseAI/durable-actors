@@ -10,12 +10,34 @@ use std::{
     collections::BTreeMap,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     },
 };
 
 #[path = "rapid/batch.rs"]
 mod batch;
+
+#[test]
+fn gcs_replica_identity_preserves_manifest_serialization() -> Result<()> {
+    let replica = Replica {
+        bucket: "projects/_/buckets/rapid-a".into(),
+        object: "logs/segment".into(),
+        identity: ReplicaIdentity::Gcs { generation: 42 },
+    };
+
+    let encoded = serde_json::to_value(&replica)?;
+    assert_eq!(
+        encoded,
+        serde_json::json!({
+            "bucket": "projects/_/buckets/rapid-a",
+            "object": "logs/segment",
+            "generation": 42,
+        })
+    );
+    let decoded: Replica = serde_json::from_value(encoded)?;
+    assert_eq!(decoded.gcs_generation()?, 42);
+    Ok(())
+}
 
 #[tokio::test]
 async fn hot_writes_reuse_streams_and_a_fresh_reader_discovers_acknowledged_state() -> Result<()> {
@@ -177,7 +199,7 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
         async fn compare_and_swap(
             &self,
             _key: &str,
-            _generation: Option<i64>,
+            _revision: Option<crate::bucket::StorageRevision>,
             _bytes: bytes::Bytes,
         ) -> Result<bool> {
             anyhow::bail!("archive unavailable")
@@ -470,14 +492,14 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
         async fn compare_and_swap(
             &self,
             key: &str,
-            generation: Option<i64>,
+            revision: Option<crate::bucket::StorageRevision>,
             bytes: bytes::Bytes,
         ) -> Result<bool> {
             ensure!(
                 !key.ends_with(".replicated"),
                 "coverage publication unavailable"
             );
-            self.0.compare_and_swap(key, generation, bytes).await
+            self.0.compare_and_swap(key, revision, bytes).await
         }
     }
     let f = Fixture::new()?;
@@ -633,6 +655,39 @@ async fn unavailable_rapid_at_activation_uses_standard_without_losing_state() ->
 }
 
 #[tokio::test]
+async fn invalid_replica_identity_falls_back_before_manifest_publication() -> Result<()> {
+    let f = Fixture::new()?;
+    f.zones[0].generation.store(0, Ordering::SeqCst);
+    let store = f.store()?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    store
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
+
+    assert!(
+        f.zones
+            .iter()
+            .all(|zone| zone.objects.lock().unwrap().is_empty())
+    );
+    assert!(
+        f.archive
+            .list("")
+            .await?
+            .iter()
+            .all(|key| !key.ends_with(".manifest"))
+    );
+    assert_eq!(
+        f.store()?.latest(&f.stream.prefix).await?,
+        Some((f.stream.object(1), state(1, 1)?))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn writes_require_an_activated_epoch_and_consecutive_versions() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
@@ -688,7 +743,7 @@ async fn manifests_cannot_redirect_a_reader_to_another_actors_log() -> Result<()
         f.archive
             .compare_and_swap(
                 &left,
-                Some(stored.generation),
+                Some(stored.revision.clone()),
                 crate::payload::encode(&manifest)?
             )
             .await?
@@ -759,6 +814,7 @@ struct MemoryZone {
     objects: Arc<Mutex<BTreeMap<String, MemoryObject>>>,
     offline: Arc<AtomicBool>,
     stalled: Arc<AtomicBool>,
+    generation: AtomicI64,
     opens: AtomicU64,
     range_reads: AtomicU64,
 }
@@ -769,6 +825,7 @@ impl MemoryZone {
             objects: Default::default(),
             offline: Default::default(),
             stalled: Default::default(),
+            generation: AtomicI64::new(1),
             opens: AtomicU64::new(0),
             range_reads: AtomicU64::new(0),
         }
@@ -778,6 +835,10 @@ impl MemoryZone {
 impl LogZone for MemoryZone {
     fn bucket(&self) -> &str {
         &self.name
+    }
+    fn validate_identity(&self, replica: &Replica) -> Result<()> {
+        ensure!(replica.gcs_generation()? > 0, "invalid test generation");
+        Ok(())
     }
     async fn open(&self, object: &str) -> Result<(Replica, Box<dyn LogWriter>)> {
         ensure!(!self.offline.load(Ordering::SeqCst), "zone offline");
@@ -789,7 +850,9 @@ impl LogZone for MemoryZone {
             Replica {
                 bucket: self.name.clone(),
                 object: object.into(),
-                generation: 1,
+                identity: ReplicaIdentity::Gcs {
+                    generation: self.generation.load(Ordering::SeqCst),
+                },
             },
             Box::new(MemoryWriter {
                 objects: self.objects.clone(),
