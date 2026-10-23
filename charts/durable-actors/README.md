@@ -59,3 +59,23 @@ Every configured copy must durably flush before a Rapid write is acknowledged. W
 `credentialsSecret` defaults to `actors-credentials`; it must contain `postgres-url`, `api-key`, and `jwt-signing-key`. For Redis, add the keys named by `redis.urlSecretKey` and, optionally, `redis.caSecretKey`. `nodeSelector` places controllers on ordinary nodes. `networkPolicy.dnsCidrs` permits specific host-networked or link-local DNS endpoints, for example a NodeLocal DNS `/32`. Add only the address your cluster uses.
 
 See [values.yaml](values.yaml) for the full values reference and [values.schema.json](values.schema.json) for validation. No database, bucket, ingress controller, DNS record, or certificate is provisioned by this chart.
+
+## ClickHouse analytics
+
+To serve actor inventory and request analytics from ClickHouse, add these values with your database connection details:
+
+```yaml
+analytics:
+  backend: clickhouse
+  clickhouse:
+    url: https://clickhouse.example.com:8443
+    database: actors
+    user: actors
+    passwordSecretKey: clickhouse-password
+```
+
+Store `clickhouse-password` in `credentialsSecret`. Precreate the database and grant the application user SELECT, INSERT, CREATE TABLE, CREATE VIEW, and ALTER TABLE privileges. The control plane creates the lifecycle tables and materialized view. Actor hosts only report to the control plane and need no ClickHouse credentials.
+
+For an existing installation, first deploy lifecycle-capable control planes, then upgrade the TypeScript/Python images and redeploy actor bundles so new hosts report. Enable `analytics.backend: clickhouse` after that rollout. Installations already using ClickHouse switch inventory readers on upgrade; old hosts do not appear until an upgraded activation reports. Historical inventory is not backfilled.
+
+PostgreSQL remains required for control-plane bookkeeping and deployment metadata. The default `analytics.backend: postgres` keeps the existing inventory reader. See [host lifecycle reports](../../docs/reference/configuration.md#host-lifecycle-reports) for freshness and retention behavior.

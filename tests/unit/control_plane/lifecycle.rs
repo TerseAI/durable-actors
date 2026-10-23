@@ -75,6 +75,10 @@ impl LifecyclePersistence for Persistence {
         self.0.send(event.clone())?;
         Ok(())
     }
+
+    async fn latest(&self, _: &str) -> Result<Vec<LifecycleEvent>> {
+        unreachable!("this test only records reports")
+    }
 }
 
 struct UnusedPlacement;

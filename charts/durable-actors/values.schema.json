@@ -236,6 +236,23 @@
         "dnsCidrs"
       ]
     },
+    "analytics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {"enum": ["postgres", "clickhouse"]},
+        "clickhouse": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {"type": "string"},
+            "database": {"type": "string"},
+            "user": {"type": "string"},
+            "passwordSecretKey": {"type": "string"}
+          }
+        }
+      }
+    },
     "images": {
       "type": "object",
       "additionalProperties": false,

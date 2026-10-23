@@ -1,13 +1,23 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use moka::{future::Cache, ops::compute::Op};
 use serde::{Deserialize, Serialize};
 
-use crate::{actor::ActorKey, host_leases::WaitingOperation, sandbox::ResourceLimits};
+use crate::{
+    actor::ActorKey,
+    clock::{Clock, SystemClock},
+    host_leases::WaitingOperation,
+    placement::{
+        ActorInstanceOverview, ActorInventory, ActorInventoryReader, ActorInventorySnapshot,
+        ActorResidency,
+    },
+    sandbox::ResourceLimits,
+};
 
 pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const STALE_AFTER_MS: u64 = 35_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +57,7 @@ pub(crate) struct LifecycleEvent {
 #[async_trait]
 pub(crate) trait LifecyclePersistence: Send + Sync {
     async fn record(&self, event: &LifecycleEvent) -> Result<()>;
+    async fn latest(&self, project: &str) -> Result<Vec<LifecycleEvent>>;
 }
 
 #[derive(Clone)]
@@ -71,6 +82,58 @@ impl LifecycleStore {
             "invalid lifecycle time range"
         );
         self.0.record(&event).await
+    }
+}
+
+#[async_trait]
+impl ActorInventoryReader for LifecycleStore {
+    async fn actor_inventory(&self, project: &str) -> Result<ActorInventorySnapshot> {
+        let now = SystemClock.now_ms()?;
+        let mut actors = BTreeMap::<String, ActorInventory>::new();
+        for event in self.0.latest(project).await? {
+            let status = residency(&event, now);
+            let actor = actors
+                .entry(event.actor.actor_name.clone())
+                .or_insert_with(|| ActorInventory {
+                    actor_name: event.actor.actor_name.clone(),
+                    ..Default::default()
+                });
+            match status {
+                ActorResidency::Live => actor.live += 1,
+                ActorResidency::Dormant => actor.dormant += 1,
+                ActorResidency::Unknown => actor.unknown += 1,
+            }
+            actor.instances.push(ActorInstanceOverview {
+                actor_id: event.actor.actor_id,
+                status,
+                connections: Vec::new(),
+                waiting: match status {
+                    ActorResidency::Unknown => None,
+                    ActorResidency::Dormant if event.report.kind == LifecycleKind::Stopped => {
+                        Some(Vec::new())
+                    }
+                    _ => Some(event.report.waiting),
+                },
+            });
+        }
+        Ok(ActorInventorySnapshot {
+            actors: actors.into_values().collect(),
+            connections_complete: true,
+        })
+    }
+}
+
+fn residency(event: &LifecycleEvent, now: u64) -> ActorResidency {
+    if event.report.kind == LifecycleKind::Stopped {
+        return ActorResidency::Dormant;
+    }
+    if now.saturating_sub(event.received_at_ms) > STALE_AFTER_MS {
+        return ActorResidency::Unknown;
+    }
+    match event.report.resident {
+        Some(true) => ActorResidency::Live,
+        Some(false) => ActorResidency::Dormant,
+        None => ActorResidency::Unknown,
     }
 }
 
@@ -105,6 +168,19 @@ impl LifecyclePersistence for MemoryLifecyclePersistence {
             })
             .await;
         Ok(())
+    }
+
+    async fn latest(&self, project: &str) -> Result<Vec<LifecycleEvent>> {
+        let mut events: Vec<_> = self
+            .0
+            .iter()
+            .filter(|(actor, _)| actor.project_id == project)
+            .map(|(_, event)| event)
+            .collect();
+        events.sort_by(|a, b| {
+            (&a.actor.actor_name, &a.actor.actor_id).cmp(&(&b.actor.actor_name, &b.actor.actor_id))
+        });
+        Ok(events)
     }
 }
 

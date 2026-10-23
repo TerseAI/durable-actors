@@ -166,7 +166,7 @@ async fn control_plane_routes(
         stop.clone(),
     )
     .await?;
-    let traces = trace_store(
+    let (traces, lifecycle) = telemetry_stores(
         &config.storage,
         database.clone(),
         changes.clone(),
@@ -243,12 +243,18 @@ async fn control_plane_routes(
     .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
+    service.lifecycle = lifecycle;
     service.changes = changes;
     service.gateway = Some(gateway);
     service.region = config.region;
     service.start_alarm_scheduler(config.alarm_poll_interval, stop);
+    let actor_inventory: Arc<dyn crate::placement::ActorInventoryReader> =
+        match config.storage.analytics {
+            AnalyticsBackend::ClickHouse(_) => Arc::new(service.lifecycle.clone()),
+            AnalyticsBackend::Postgres => storage.clone(),
+        };
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
-        storage.clone(),
+        actor_inventory,
         service.gateway.as_ref().unwrap().connections.clone(),
     ));
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
@@ -278,13 +284,13 @@ async fn snapshot_store(
     )?))
 }
 
-async fn trace_store(
+async fn telemetry_stores(
     storage: &ControlPlaneStorageConfig,
     database: PostgresDatabase,
     changes: crate::postgres::notifications::ChangeFeed,
     redis: Option<Redis>,
     stop: tokio_util::sync::CancellationToken,
-) -> Result<TraceStore> {
+) -> Result<(TraceStore, crate::actor_lifecycle::LifecycleStore)> {
     match &storage.analytics {
         AnalyticsBackend::Postgres => {
             let persistence = Arc::new(PostgresTracePersistence::new(
@@ -294,19 +300,22 @@ async fn trace_store(
             let mut traces = TraceStore::open(persistence.clone()).await?;
             traces.changes = changes;
             persistence.start_retention(stop);
-            Ok(traces)
+            Ok((traces, Default::default()))
         }
         AnalyticsBackend::ClickHouse(config) => {
             let live = crate::request_traces::live::LiveTraceFeed::start(redis, stop.clone());
-            let mut traces = TraceStore::open(Arc::new(ClickHouseTracePersistence::start(
+            let persistence = Arc::new(ClickHouseTracePersistence::start(
                 config.clone(),
                 storage.trace_retention,
                 Arc::new(live.clone()),
                 stop,
-            )?))
-            .await?;
+            )?);
+            let mut traces = TraceStore::open(persistence.clone()).await?;
             traces.live = Some(live);
-            Ok(traces)
+            Ok((
+                traces,
+                crate::actor_lifecycle::LifecycleStore::new(persistence),
+            ))
         }
     }
 }

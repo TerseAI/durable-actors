@@ -80,9 +80,9 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process accepts browser WebSockets; defaults to `true`. |
 | `DURABLE_ACTORS_PUBLIC_URL` | Public HTTPS origin for client invocation and socket routing. |
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace, and spare bookkeeping database; the user needs migration privileges. |
-| `DURABLE_ACTORS_ANALYTICS_BACKEND` | Request telemetry backend: `postgres` (default) or `clickhouse`. PostgreSQL remains required for control-plane bookkeeping. |
+| `DURABLE_ACTORS_ANALYTICS_BACKEND` | Telemetry backend: `postgres` (default) or `clickhouse`. ClickHouse supplies request analytics and actor inventory. PostgreSQL remains required for control-plane bookkeeping. |
 | `DURABLE_ACTORS_CLICKHOUSE_URL` | ClickHouse HTTP(S) endpoint, required for the ClickHouse backend. |
-| `DURABLE_ACTORS_CLICKHOUSE_DATABASE` | Existing ClickHouse database. The application user needs SELECT, INSERT, CREATE TABLE, and ALTER TABLE privileges in it. |
+| `DURABLE_ACTORS_CLICKHOUSE_DATABASE` | Existing ClickHouse database. The application user needs SELECT, INSERT, CREATE TABLE, CREATE VIEW, and ALTER TABLE privileges in it. |
 | `DURABLE_ACTORS_CLICKHOUSE_USER` | ClickHouse application user. |
 | `DURABLE_ACTORS_CLICKHOUSE_PASSWORD` | ClickHouse application password. Supply through a secret. |
 | `DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS` | PostgreSQL pool size per process, default `8`, range 1–1,000. The chart sets it from `postgres.maxConnections`. Invocation routing, trace writes, and alarm polling share the pool. Budget the database's connection limit for this pool size times the controller replica count, plus other database clients. |
@@ -110,7 +110,13 @@ Standard mode rejects Rapid bucket and archive settings. Storage mode and bucket
 
 Upgraded hosts report `started` after activation, `heartbeat` every 10 seconds, `draining` before executor shutdown, and `stopped` after the storage shutdown attempt. Reports contain the ownership epoch, a per-session sequence, activation/report timestamps, requested resources, residency, and waiting operations. The sandbox provider supplies resources through the internal `DURABLE_ACTORS_HOST_RESOURCES` JSON environment variable. Each report has a one-second timeout and is best effort.
 
-The control plane derives project, actor, host, session, and region from the authenticated host token without reading ownership. This allows a stop report after ownership release. For this initial increment, each control plane keeps only the latest report per actor in a bounded in-memory cache (10,000 actors, 24-hour idle expiry). Reports do not yet feed the dashboard, routing, or usage billing. Deploy upgraded control planes before upgraded host images; older hosts continue using the existing protocol.
+The control plane derives project, actor, host, session, and region from the authenticated host token without reading ownership. This allows a stop report after ownership release. With the default PostgreSQL analytics backend, lifecycle reports stay in a bounded in-memory cache (10,000 actors, 24-hour idle expiry), and inventory retains its legacy reader. Reports do not affect routing or usage billing.
+
+With `DURABLE_ACTORS_ANALYTICS_BACKEND=clickhouse`, the existing bounded telemetry writer batches reports into `actor_lifecycle`. A materialized view maintains `actor_inventory`, ordered by ownership epoch and report sequence so late reports from an old activation cannot overwrite its replacement. Raw reports use the configured analytics retention period; latest inventory records have no TTL, keeping stopped actors visible.
+
+Dashboard inventory and request analytics come from ClickHouse, deployment metadata from PostgreSQL, and current sockets from the gateway/Redis. Inventory reads never fall back to GCS: an actor without a report is absent from lifecycle inventory, while a ClickHouse read error is returned to the dashboard. A report older than 35 seconds is shown as unknown unless it is a confirmed `stopped` report, which remains dormant. Explicit state inspection and authoritative ownership still use GCS. Existing lease renewals and inventory notifications continue unchanged.
+
+Deploy lifecycle-capable control planes before upgraded host images, then enable ClickHouse inventory once hosts can report. Existing ClickHouse installations switch inventory readers when upgrading to this version. Actors appear as their upgraded hosts report; there is no historical backfill. See the [chart configuration](../../charts/durable-actors/README.md#clickhouse-analytics) for credentials and rollout details.
 
 ## Modal data plane
 

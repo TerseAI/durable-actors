@@ -1,6 +1,77 @@
 use super::*;
 
 #[tokio::test]
+async fn inventory_distinguishes_resident_idle_stopped_and_stale_actors() -> Result<()> {
+    let store = LifecycleStore::default();
+    let now = SystemClock.now_ms()?;
+    for (id, kind, resident, received_at_ms) in [
+        ("resident", LifecycleKind::Heartbeat, Some(true), now),
+        ("idle", LifecycleKind::Heartbeat, Some(false), now),
+        (
+            "stopped",
+            LifecycleKind::Stopped,
+            Some(false),
+            now - STALE_AFTER_MS - 1,
+        ),
+        (
+            "stale",
+            LifecycleKind::Heartbeat,
+            Some(true),
+            now - STALE_AFTER_MS - 1,
+        ),
+    ] {
+        store
+            .record(LifecycleEvent {
+                event_id: id.into(),
+                actor: ActorKey {
+                    project_id: "project".into(),
+                    actor_name: "Counter".into(),
+                    actor_id: id.into(),
+                },
+                host_id: id.into(),
+                session_id: id.into(),
+                region: "us-east".into(),
+                received_at_ms,
+                report: LifecycleReport {
+                    kind,
+                    owner_epoch: 1,
+                    sequence: 1,
+                    started_at_ms: 1000,
+                    occurred_at_ms: 1000,
+                    resources: Default::default(),
+                    resident,
+                    waiting: vec![WaitingOperation {
+                        id: "request".into(),
+                        operation: "increment".into(),
+                    }],
+                },
+            })
+            .await?;
+    }
+    let snapshot = store.actor_inventory("project").await?;
+    let actor = &snapshot.actors[0];
+    assert_eq!((actor.live, actor.dormant, actor.unknown), (1, 2, 1));
+    for instance in &actor.instances {
+        match instance.actor_id.as_str() {
+            "resident" | "idle" => {
+                assert_eq!(instance.waiting.as_ref().unwrap()[0].operation, "increment")
+            }
+            "stopped" => assert!(instance.waiting.as_ref().unwrap().is_empty()),
+            "stale" => assert!(instance.waiting.is_none()),
+            _ => unreachable!(),
+        }
+    }
+    assert!(
+        store
+            .actor_inventory("another-project")
+            .await?
+            .actors
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn latest_report_follows_activation_shutdown_and_reactivation_per_project() -> Result<()> {
     let persistence = Arc::new(MemoryLifecyclePersistence::default());
     let store = LifecycleStore::new(persistence.clone());
