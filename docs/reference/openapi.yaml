@@ -840,11 +840,6 @@ components:
                 - required: [localSource]
             properties:
                 bundle: { $ref: "#/components/schemas/ActorBundle" }
-                imageRef:
-                    type: string
-                    maxLength: 255
-                    pattern: '^\S+@sha256:[a-fA-F0-9]{64}$'
-                    description: Optional custom runtime image for a hosted bundle, pinned by digest. Omit to use the current platform runtime automatically. Custom images must provide the durable-actors runtime and language executor.
                 localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs:
                     type: array
@@ -867,7 +862,6 @@ components:
                 - required: [localSource]
             properties:
                 bundle: { $ref: "#/components/schemas/ActorBundle" }
-                imageRef: { $ref: "#/components/schemas/Deployment/properties/imageRef" }
                 localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs: { $ref: "#/components/schemas/Deployment/properties/secretRefs" }
         PublicActorContract:

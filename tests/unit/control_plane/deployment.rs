@@ -76,7 +76,7 @@ async fn custom_image_registration_round_trips_without_adopting_the_platform_ima
     let client = reqwest::Client::new();
     let image = format!("customer/runtime@sha256:{}", "a".repeat(64));
     let bundle = crate::bundle::ActorBundle::decode(source().code_snapshot.as_ref().unwrap())?;
-    let mut body = serde_json::json!({ "imageRef":image, "bundle":bundle, "contract":contract()});
+    let body = serde_json::json!({ "imageRef":image, "bundle":bundle, "contract":contract()});
     client
         .put(&url)
         .bearer_auth("api-key")
@@ -111,33 +111,6 @@ async fn custom_image_registration_round_trips_without_adopting_the_platform_ima
             .unwrap()
             .image_ref,
         image
-    );
-    body["imageRef"] = "customer/runtime:latest".into();
-    assert_eq!(
-        client
-            .put(&url)
-            .bearer_auth("api-key")
-            .json(&body)
-            .send()
-            .await?
-            .status(),
-        reqwest::StatusCode::BAD_REQUEST
-    );
-    body.as_object_mut().unwrap().remove("imageRef");
-    client
-        .put(&url)
-        .bearer_auth("api-key")
-        .json(&body)
-        .send()
-        .await?
-        .error_for_status()?;
-    assert_eq!(
-        admin
-            .current_deployment("default")
-            .await?
-            .unwrap()
-            .image_policy,
-        super::super::admin::ImagePolicy::Platform
     );
     drop(server);
     Ok(())

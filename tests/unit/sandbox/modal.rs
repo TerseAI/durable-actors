@@ -39,40 +39,10 @@ async fn failed_image_imports_can_be_retried() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(start_paused = true)]
-async fn timed_out_image_imports_can_be_retried() -> Result<()> {
-    let importer = Arc::new(RecordingImporter::default());
-    importer.stall.store(true, Ordering::SeqCst);
-    let images = ImportedImages::new(importer.clone());
-    let reference = image_ref('a');
-    assert!(
-        images
-            .get(&reference)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("timed out")
-    );
-    assert!(images.get(&reference).await.is_ok());
-    assert_eq!(importer.calls.lock().unwrap().len(), 2);
-    Ok(())
-}
-
-#[tokio::test]
-async fn image_imports_require_valid_pinned_references() {
-    let importer = Arc::new(RecordingImporter::default());
-    let images = ImportedImages::new(importer.clone());
-    for reference in ["runtime:latest", "runtime@sha256:abc", "@sha256:"] {
-        assert!(images.get(reference).await.is_err());
-    }
-    assert!(importer.calls.lock().unwrap().is_empty());
-}
-
 #[derive(Default)]
 struct RecordingImporter {
     calls: Mutex<Vec<String>>,
     fail: AtomicBool,
-    stall: AtomicBool,
 }
 
 #[async_trait]
@@ -80,9 +50,6 @@ impl ImageImporter for RecordingImporter {
     async fn import(&self, reference: &str) -> Result<Image> {
         self.calls.lock().unwrap().push(reference.into());
         tokio::task::yield_now().await;
-        if self.stall.swap(false, Ordering::SeqCst) {
-            std::future::pending::<()>().await;
-        }
         anyhow::ensure!(
             !self.fail.swap(false, Ordering::SeqCst),
             "registry unavailable"

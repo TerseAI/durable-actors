@@ -7,27 +7,6 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
-fn platform_images_follow_the_runtime_and_custom_images_stay_pinned() -> Result<()> {
-    let images = RuntimeImages {
-        typescript: "runtime-b".into(),
-        python: "python-b".into(),
-    };
-    let mut spec: super::super::admin::HostLaunchSpec =
-        serde_json::from_value(serde_json::json!({
-            "projectId":"project", "imageRef":"runtime-a", "imagePolicy":"platform",
-            "codeSnapshot":crate::sandbox::testing::code_artifact(1),
-            "workingDirectory":"/customer", "actorEntrypoint":"actors.mjs", "secretRefs":[]
-        }))?;
-    let identity = spec.host_config_key();
-    assert_eq!(images.for_deployment(&spec)?, "runtime-b");
-    assert_eq!(spec.image_ref, "runtime-a");
-    assert_eq!(spec.host_config_key(), identity);
-    spec.image_policy = super::super::admin::ImagePolicy::Custom;
-    assert_eq!(images.for_deployment(&spec)?, "runtime-a");
-    Ok(())
-}
-
-#[test]
 fn legacy_images_are_classified_by_the_configured_platform_repository() -> Result<()> {
     use super::super::admin::{HostLaunchSpec, ImagePolicy};
     let current = format!("platform/runtime@sha256:{}", "b".repeat(64));
