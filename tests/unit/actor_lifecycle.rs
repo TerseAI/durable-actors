@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "usage_reconciliation.rs"]
+mod usage_reconciliation;
+
 #[tokio::test]
 async fn usage_publishes_activation_boundaries_for_each_project() -> Result<()> {
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
@@ -59,7 +62,7 @@ async fn usage_publishes_activation_boundaries_for_each_project() -> Result<()> 
         assert_eq!(stopped.event.report.kind, LifecycleKind::Stopped);
         assert_eq!(started.ended_at_ms, None);
         assert_eq!(started.usage_id, stopped.usage_id);
-        assert_eq!((started.revision, stopped.revision), (1, 4));
+        assert_eq!((started.revision, stopped.revision), (2, 8));
         let payload = serde_json::to_value(stopped)?;
         assert_eq!(payload["usageId"], format!("host:{project}-session"));
         assert_eq!(payload["eventId"], format!("{project}-session:4"));
@@ -74,7 +77,8 @@ async fn usage_publishes_activation_boundaries_for_each_project() -> Result<()> 
         assert_eq!(payload["startedAtMs"], 1000);
         assert_eq!(payload["endedAtMs"], 4000);
         assert_eq!(payload["ownerEpoch"], 1);
-        assert_eq!(payload["revision"], 4);
+        assert_eq!(payload["revision"], 8);
+        assert_eq!(payload["estimated"], false);
     }
     assert!(received.try_recv().is_err());
     Ok(())

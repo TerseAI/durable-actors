@@ -190,10 +190,20 @@ async fn control_plane_routes(
             retention,
         )),
     };
-    let lifecycle = lifecycle
+    let mut lifecycle = lifecycle
         .with_routing(routing)
         .with_usage_topic(config.usage_topic.as_deref())
         .await?;
+    if config.usage_topic.is_some()
+        && let Some(redis) = &redis
+    {
+        lifecycle = lifecycle.with_usage_sessions(Arc::new(
+            crate::actor_lifecycle::reconciliation::RedisUsageSessions::new(
+                redis.clone(),
+                "durable-actors:{usage}:v1",
+            ),
+        ));
+    }
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
@@ -267,6 +277,7 @@ async fn control_plane_routes(
     service.changes = changes;
     service.gateway = Some(gateway);
     service.region = config.region;
+    service.lifecycle.start_reconciliation(stop.clone());
     service.start_alarm_scheduler(config.alarm_poll_interval, stop);
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
         Arc::new(service.lifecycle.clone()),

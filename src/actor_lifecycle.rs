@@ -20,6 +20,7 @@ pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const STALE_AFTER_MS: u64 = 35_000;
 
 mod pubsub;
+pub(crate) mod reconciliation;
 pub(crate) mod routing;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +64,7 @@ pub(crate) struct UsageUpdate {
     pub usage_id: String,
     pub revision: u64,
     pub ended_at_ms: Option<u64>,
+    pub estimated: bool,
     #[serde(flatten)]
     pub event: LifecycleEvent,
 }
@@ -71,11 +73,26 @@ impl From<LifecycleEvent> for UsageUpdate {
     fn from(event: LifecycleEvent) -> Self {
         Self {
             usage_id: format!("{}:{}", event.host_id, event.session_id),
-            revision: event.report.sequence,
+            revision: event.report.sequence * 2,
             ended_at_ms: (event.report.kind == LifecycleKind::Stopped)
                 .then_some(event.report.occurred_at_ms),
+            estimated: false,
             event,
         }
+    }
+}
+
+impl UsageUpdate {
+    fn estimated_stop(mut event: LifecycleEvent, now: u64) -> Self {
+        event.event_id.push_str(":estimated");
+        event.report.kind = LifecycleKind::Stopped;
+        event.report.resident = None;
+        event.report.waiting.clear();
+        event.received_at_ms = now;
+        let mut update = Self::from(event);
+        update.revision += 1;
+        update.estimated = true;
+        update
     }
 }
 
@@ -95,6 +112,7 @@ pub(crate) struct LifecycleStore {
     persistence: Arc<dyn LifecyclePersistence>,
     routing: Arc<dyn routing::RoutingHints>,
     usage: Option<Arc<dyn UsagePublisher>>,
+    usage_sessions: Arc<dyn reconciliation::UsageSessions>,
 }
 
 impl Default for LifecycleStore {
@@ -108,6 +126,7 @@ impl LifecycleStore {
         Self {
             persistence,
             usage: None,
+            usage_sessions: Arc::new(reconciliation::MemoryUsageSessions::default()),
             routing: Arc::new(routing::MemoryRoutingHints::new(Duration::from_secs(
                 86_460,
             ))),
@@ -124,6 +143,14 @@ impl LifecycleStore {
         self
     }
 
+    pub(crate) fn with_usage_sessions(
+        mut self,
+        sessions: Arc<dyn reconciliation::UsageSessions>,
+    ) -> Self {
+        self.usage_sessions = sessions;
+        self
+    }
+
     pub(crate) async fn with_usage_topic(mut self, topic: Option<&str>) -> Result<Self> {
         if let Some(topic) = topic {
             self = self.with_publisher(Arc::new(pubsub::PubSubPublisher::connect(topic).await?));
@@ -132,16 +159,42 @@ impl LifecycleStore {
     }
 
     pub(crate) async fn record(&self, event: LifecycleEvent) -> Result<()> {
-        ensure!(event.report.sequence > 0, "invalid lifecycle sequence");
+        ensure!(
+            event.report.sequence > 0 && event.report.sequence < (1 << 52),
+            "invalid lifecycle sequence"
+        );
         ensure!(event.report.owner_epoch > 0, "invalid ownership epoch");
         ensure!(
             event.report.occurred_at_ms >= event.report.started_at_ms,
             "invalid lifecycle time range"
         );
-        self.publish_usage(&event);
-        let (persisted, ()) =
-            tokio::join!(self.persistence.record(&event), self.record_routing(&event));
+        let (persisted, (), ()) = tokio::join!(
+            self.persistence.record(&event),
+            self.record_routing(&event),
+            self.record_usage(&event)
+        );
         persisted
+    }
+
+    pub(crate) fn start_reconciliation(&self, stop: tokio_util::sync::CancellationToken) {
+        if self.usage.is_none() {
+            return;
+        }
+        let store = self.clone();
+        tokio::spawn(async move {
+            let work = async {
+                let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let result = async { store.reconcile(SystemClock.now_ms()?).await }.await;
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "usage reconciliation failed");
+                    }
+                }
+            };
+            tokio::select! { _ = stop.cancelled() => {}, _ = work => {} }
+        });
     }
 
     pub(crate) async fn routing(
@@ -164,17 +217,35 @@ impl LifecycleStore {
         }
     }
 
-    fn publish_usage(&self, event: &LifecycleEvent) {
-        if !matches!(
-            event.report.kind,
-            LifecycleKind::Started | LifecycleKind::Stopped
-        ) {
+    async fn record_usage(&self, event: &LifecycleEvent) {
+        if self.usage.is_none() {
             return;
         }
+        let boundary = matches!(
+            event.report.kind,
+            LifecycleKind::Started | LifecycleKind::Stopped
+        );
+        if boundary {
+            self.publish_usage(UsageUpdate::from(event.clone()));
+        }
+        match self.usage_sessions.observe(event).await {
+            Ok(true) if !boundary => self.publish_usage(UsageUpdate::from(event.clone())),
+            Err(error) => tracing::warn!(%error, "usage session could not be recorded"),
+            _ => {}
+        }
+    }
+
+    async fn reconcile(&self, now: u64) -> Result<()> {
+        for event in self.usage_sessions.expire(now).await? {
+            self.publish_usage(UsageUpdate::estimated_stop(event, now));
+        }
+        Ok(())
+    }
+
+    fn publish_usage(&self, update: UsageUpdate) {
         let Some(publisher) = self.usage.clone() else {
             return;
         };
-        let update = UsageUpdate::from(event.clone());
         tokio::spawn(async move {
             if let Err(error) =
                 tokio::time::timeout(Duration::from_secs(5), publisher.publish(&update))

@@ -127,21 +127,28 @@ Deploy lifecycle-capable control planes before upgraded host images, then enable
 
 ### Usage events
 
-Setting `DURABLE_ACTORS_USAGE_TOPIC` publishes `started` and `stopped` reports to Pub/Sub, independently of the analytics backend. Heartbeats and draining reports are not published as usage. Both warm-spare and on-demand activations report through the same host lifecycle path. Usage covers activation through shutdown, including idle time while assigned; it excludes time spent waiting as an unassigned spare and measures allocated resources, not actual CPU utilization. Token grants and usage enforcement belong to the external consumer.
+Setting `DURABLE_ACTORS_USAGE_TOPIC` publishes `started` and `stopped` reports to Pub/Sub, independently of the analytics backend. Heartbeats and draining reports are published as usage only when correcting an estimated stop. Both warm-spare and on-demand activations report through the same host lifecycle path. Usage covers activation through shutdown, including idle time while assigned; it excludes time spent waiting as an unassigned spare and measures allocated resources, not actual CPU utilization. Token grants and usage enforcement belong to the external consumer.
 
-Each message contains the lifecycle event with three additional fields:
+Each message contains the lifecycle event with four additional fields:
 
 | Field | Meaning |
 | --- | --- |
 | `usageId` | Stable `<hostId>:<sessionId>` activation ID, shared by its start and stop. |
-| `revision` | Host report sequence. Higher revisions replace lower revisions for the same activation. |
-| `endedAtMs` | `null` for start; the host's stop timestamp for stop. |
+| `revision` | `2 * sequence` for a host report; `2 * sequence + 1` for an estimated stop based on that report. Higher revisions replace lower revisions for the same activation. |
+| `endedAtMs` | `null` for start or a correction from a live host; the real or estimated stop timestamp for stop. |
+| `estimated` | `true` when silence caused an estimated stop; `false` for host reports. |
 
 The event includes `eventId`, `actor` (`project_id`, `actor_name`, `actor_id`), `hostId`, `sessionId`, `ownerEpoch`, `region`, `kind`, `sequence`, `startedAtMs`, `occurredAtMs`, `receivedAtMs`, `resources`, `resident`, and `waiting`. Resources use `cpuMillis` and `memoryMib` for requests, plus optional `cpuLimitMillis` and `memoryLimitMib`. Pub/Sub attributes `projectId` and `eventId` support filtering and deduplication. The topic's Google Cloud project can differ from the actor's project.
 
 Consumers should upsert by actor project, actor identity, and `usageId`, accepting only a higher `revision`. Messages can be duplicated or arrive out of order; do not sum every message. A stop contains the complete interval even if its start was missed: duration is `endedAtMs - startedAtMs`. For example, 3,000 ms at 500 millicores is 1.5 allocated CPU-seconds; at 768 MiB it is 2,304 MiB-seconds. Sum completed activations to roll up usage by actor and project.
 
-Publishing runs in the background, waits up to five seconds for acknowledgment, and logs failures without blocking lifecycle recording or routing. This POC has no durable outbox or replay; a controller exit or failed publication can lose events. Hosts that crash without a stop remain unfinished until missing-stop reconciliation is added. No history is backfilled.
+Publishing runs in the background, waits up to five seconds for acknowledgment, and logs failures without blocking lifecycle recording or routing. This POC has no durable outbox or replay; a controller exit or failed publication can lose events. No history is backfilled.
+
+When usage publishing is enabled, controllers retain each session's latest report in shared Redis and check for missing stops every 10 seconds, claiming up to 128 overdue sessions per controller per pass. After 35 seconds without a report, an estimated stop uses the last report's `occurredAtMs` as its end time. It retains that report's sequence, appends `:estimated` to its event ID, and uses the reconciliation time as `receivedAtMs`. It does not count the silence window as usage.
+
+The next newer heartbeat or draining report reopens the usage interval (`endedAtMs: null`, `estimated: false`); a real stop replaces the estimate with the actual end time. Consumers must replace or retract the previous contribution when processing a higher revision, including reopening a previously closed interval. Duplicate and older reports do not extend the freshness window. Redis atomically coordinates reports and expiry across replicas; session records expire after 24 hours without an update. Enable Redis persistence to retain this state across Redis restarts. Without Redis, reconciliation uses a process-local cache capped at 100,000 sessions that resets on restart.
+
+Estimates affect only usage publications. ClickHouse retains the actual lifecycle reports, stale dashboard entries stay unknown, and estimated stops neither create routing hints nor release ownership. Reconciliation performs no GCS or PostgreSQL reads. Redis errors log warnings; start/stop publishing and the other lifecycle paths continue, but reconciliation and heartbeat corrections require the session state to be available.
 
 ## Modal data plane
 

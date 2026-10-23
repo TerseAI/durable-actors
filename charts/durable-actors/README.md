@@ -90,3 +90,5 @@ usage:
 ```
 
 Grant the control plane's Google service account `roles/pubsub.publisher` on that topic. Hosts use the existing lifecycle reporting path and need no Pub/Sub credentials. Publishing works with either analytics backend and is disabled when `usage.topic` is empty. Consumers must handle duplicates and out-of-order delivery; see the [usage event contract](../../docs/reference/configuration.md#usage-events) for aggregation and delivery limitations.
+
+Missing-stop reconciliation uses the configured Redis to coordinate estimated usage ends and later corrections across controllers. Configure Redis persistence for restart recovery. Consumers must accept higher revisions that correct or reopen an estimated interval; estimates do not change ownership or dashboard status.
