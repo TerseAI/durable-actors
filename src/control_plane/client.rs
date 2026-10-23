@@ -65,13 +65,6 @@ impl ControlPlaneClient {
         Ok(())
     }
 
-    pub(crate) async fn notify_inventory_changed(&self) -> Result<()> {
-        match self.execute(ControlPlaneCommand::InventoryChanged).await? {
-            ControlPlaneCommandReply::Unit => Ok(()),
-            _ => anyhow::bail!("unexpected inventory notification response"),
-        }
-    }
-
     pub(crate) async fn get_alarm(&self) -> Result<Option<i64>> {
         match self.execute(ControlPlaneCommand::GetAlarm).await? {
             ControlPlaneCommandReply::Alarm { timestamp_ms } => Ok(timestamp_ms),

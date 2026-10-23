@@ -384,7 +384,7 @@ async fn local_routes(
     let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
     service.deploy_source(&admin, &spec, None).await?;
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
-        storage.runtime.clone(),
+        Arc::new(service.lifecycle.clone()),
         service.gateway.as_ref().unwrap().connections.clone(),
     ));
     let inspector = super::inspection::ActorInspector::new(

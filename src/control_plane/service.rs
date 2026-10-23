@@ -499,10 +499,6 @@ impl ControlPlaneService {
                 self.alarms.update(&principal.actor, timestamp_ms).await?;
                 Ok(ControlPlaneCommandReply::Unit)
             }
-            ControlPlaneCommand::InventoryChanged => {
-                self.changes.notify().await;
-                Ok(ControlPlaneCommandReply::Unit)
-            }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
                 let spec = self

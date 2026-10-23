@@ -11,7 +11,6 @@ pub(crate) enum ControlPlaneCommand {
         operation: super::socket_gateway::SocketOperation,
     },
     RefreshStorageAccess,
-    InventoryChanged,
     Lifecycle {
         report: crate::actor_lifecycle::LifecycleReport,
     },

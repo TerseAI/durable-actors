@@ -248,13 +248,8 @@ async fn control_plane_routes(
     service.gateway = Some(gateway);
     service.region = config.region;
     service.start_alarm_scheduler(config.alarm_poll_interval, stop);
-    let actor_inventory: Arc<dyn crate::placement::ActorInventoryReader> =
-        match config.storage.analytics {
-            AnalyticsBackend::ClickHouse(_) => Arc::new(service.lifecycle.clone()),
-            AnalyticsBackend::Postgres => storage.clone(),
-        };
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
-        actor_inventory,
+        Arc::new(service.lifecycle.clone()),
         service.gateway.as_ref().unwrap().connections.clone(),
     ));
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;

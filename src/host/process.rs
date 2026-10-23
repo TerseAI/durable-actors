@@ -119,7 +119,6 @@ pub(super) async fn serve_assigned_host(
             return Err(error);
         }
     };
-    lease.observe(executor_connection.executor(), host.status());
     let lifecycle = super::lifecycle::HostLifecycle::start(
         control_plane,
         ready.owner_epoch,
