@@ -35,10 +35,9 @@ pub(crate) struct HostLaunchSpec {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ImagePolicy {
+    #[default]
     Platform,
     Custom,
-    #[default]
-    Legacy,
 }
 
 impl ImagePolicy {
@@ -46,7 +45,6 @@ impl ImagePolicy {
         match self {
             Self::Platform => "platform",
             Self::Custom => "custom",
-            Self::Legacy => "legacy",
         }
     }
 }
@@ -538,7 +536,6 @@ fn launch_spec_from_row(row: &tokio_postgres::Row) -> Result<HostLaunchSpec> {
         image_policy: match row.get::<_, &str>(8) {
             "platform" => ImagePolicy::Platform,
             "custom" => ImagePolicy::Custom,
-            "legacy" => ImagePolicy::Legacy,
             value => anyhow::bail!("invalid deployment image policy: {value}"),
         },
         sandboxes: serde_json::from_str(row.get::<_, &str>(7))?,

@@ -132,15 +132,7 @@ impl ControlPlaneService {
         &self,
         project_id: &str,
     ) -> Result<Option<HostLaunchSpec>> {
-        let mut spec = self.registry.launch_spec(project_id).await?;
-        if let Some(spec) = &mut spec {
-            spec.image_policy = self.provisioner.image_policy(spec)?;
-        }
-        Ok(spec)
-    }
-
-    pub(super) fn image_policy(&self, spec: &HostLaunchSpec) -> Result<super::admin::ImagePolicy> {
-        self.provisioner.image_policy(spec)
+        self.registry.launch_spec(project_id).await
     }
 
     pub(super) async fn register_deployment(
@@ -791,10 +783,6 @@ impl std::error::Error for RegionConflict {}
 pub(crate) trait HostProvisioner: Send + Sync {
     fn host_idle_timeout_ms(&self) -> u64;
 
-    fn image_policy(&self, spec: &HostLaunchSpec) -> Result<super::admin::ImagePolicy> {
-        Ok(spec.image_policy)
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -877,13 +865,6 @@ impl SandboxHostProvisioner {
 impl HostProvisioner for SandboxHostProvisioner {
     fn host_idle_timeout_ms(&self) -> u64 {
         self.runtime.host_idle_timeout_ms
-    }
-
-    fn image_policy(&self, spec: &HostLaunchSpec) -> Result<super::admin::ImagePolicy> {
-        match &self.runtime_images {
-            Some(images) => images.image_policy(spec),
-            None => Ok(spec.image_policy),
-        }
     }
 
     async fn prepare_deployment(

@@ -201,10 +201,6 @@ async fn get_deployment(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "deployment not found"))?;
-    let image_policy = state
-        .invocations
-        .image_policy(&spec)
-        .map_err(ApiError::internal)?;
     let bundle = spec
         .code_snapshot
         .as_deref()
@@ -215,7 +211,7 @@ async fn get_deployment(
         .source
         .map(|super::admin::DeploymentSource::Local(local)| local);
     Ok(Json(RegisterDeploymentRequest {
-        image_ref: (image_policy == super::admin::ImagePolicy::Custom && bundle.is_some())
+        image_ref: (spec.image_policy == super::admin::ImagePolicy::Custom && bundle.is_some())
             .then_some(spec.image_ref),
         bundle,
         local_source,

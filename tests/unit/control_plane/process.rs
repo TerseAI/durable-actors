@@ -7,30 +7,6 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
-fn legacy_images_are_classified_by_the_configured_platform_repository() -> Result<()> {
-    use super::super::admin::{HostLaunchSpec, ImagePolicy};
-    let current = format!("platform/runtime@sha256:{}", "b".repeat(64));
-    let images = RuntimeImages {
-        typescript: current.clone(),
-        python: "unused".into(),
-    };
-    let mut spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
-        "projectId":"project", "imageRef":format!("platform/runtime@sha256:{}", "a".repeat(64)),
-        "codeSnapshot":crate::sandbox::testing::code_artifact(1),
-        "workingDirectory":"/customer", "secretRefs":[]
-    }))?;
-    assert_eq!(images.image_policy(&spec)?, ImagePolicy::Platform);
-    assert_eq!(images.for_deployment(&spec)?, current);
-    spec.image_policy = ImagePolicy::Custom;
-    assert_eq!(images.for_deployment(&spec)?, spec.image_ref);
-    spec.image_policy = ImagePolicy::Legacy;
-    spec.image_ref = format!("customer/runtime@sha256:{}", "a".repeat(64));
-    assert_eq!(images.image_policy(&spec)?, ImagePolicy::Custom);
-    assert_eq!(images.for_deployment(&spec)?, spec.image_ref);
-    Ok(())
-}
-
-#[test]
 fn analytics_defaults_to_postgres_and_clickhouse_is_opt_in() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {

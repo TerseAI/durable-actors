@@ -17,6 +17,15 @@ async fn persisted_deployments_cold_start_on_the_current_runtime_without_redeplo
         let mut deployed = source();
         deployed.image_ref = format!("runtime/platform@sha256:{}", "a".repeat(64));
         registry.register_test_deployment(&deployed).await?;
+        let client = fixture.pool.get().await?;
+        client
+            .batch_execute("ALTER TABLE durable_actors_deployment DROP COLUMN image_policy")
+            .await?;
+        client
+            .batch_execute(include_str!(
+                "../../../migrations/V21__deployment_image_policy.sql"
+            ))
+            .await?;
         let identity = deployed.host_config_key();
         let current = format!("runtime/platform@sha256:{}", "b".repeat(64));
         let provisioner = SandboxHostProvisioner::new(
