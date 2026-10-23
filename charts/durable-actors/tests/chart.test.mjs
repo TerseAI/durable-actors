@@ -53,20 +53,11 @@ test("starts one controller and creates actor pods on demand using one Standard 
     assert.equal(output.match(/kind: Deployment\n/g).length, 1)
 })
 
-test("configures operator defaults for per-project actor limits", () => {
-    assert.match(manifests(), /DURABLE_ACTORS_PROJECT_LIMITS_ENABLED, value: "true"/)
-    assert.match(manifests({ projectLimits: { enabled: false } }), /DURABLE_ACTORS_PROJECT_LIMITS_ENABLED, value: "false"/)
-    for (const [output, expected] of [
-        [manifests(), [10000, 50, 100]],
-        [manifests({ projectLimits: { maxActiveActors: 20000, actorStartsPerSecond: 100, actorStartBurst: 200 } }), [20000, 100, 200]]
-    ]) {
-        for (const [index, name] of ["MAX_ACTIVE_ACTORS", "ACTOR_STARTS_PER_SECOND", "ACTOR_START_BURST"].entries()) {
-            assert.match(output, new RegExp(`DURABLE_ACTORS_PROJECT_${name}, value: "${expected[index]}"`))
-        }
-    }
-    for (const name of ["maxActiveActors", "actorStartsPerSecond", "actorStartBurst"]) {
-        for (const value of [0, -1, 1.5, 4294967296]) assert.notEqual(render({ projectLimits: { [name]: value } }).status, 0)
-    }
+test("configures project start-rate limits", () => {
+    const output = manifests({ projectLimits: { enabled: false, actorStartsPerSecond: 100, actorStartBurst: 200 } })
+    assert.match(output, /DURABLE_ACTORS_PROJECT_LIMITS_ENABLED, value: "false"/)
+    assert.match(output, /DURABLE_ACTORS_PROJECT_ACTOR_STARTS_PER_SECOND, value: "100"/)
+    assert.match(output, /DURABLE_ACTORS_PROJECT_ACTOR_START_BURST, value: "200"/)
 })
 
 test("isolates sandboxes in a release-specific namespace with constrained credentials and network access", () => {

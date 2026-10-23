@@ -680,7 +680,7 @@ impl ControlPlaneService {
                 .await
             {
                 Ok(target) => return Ok(target),
-                Err(error) if error.is::<super::project_limits::AdmissionFailure>() => {
+                Err(error) if error.is::<super::project_limits::StartLimitError>() => {
                     return Err(error);
                 }
                 Err(error) => {
@@ -915,7 +915,7 @@ pub(crate) trait HostProvisioner: Send + Sync {
 }
 
 pub(crate) struct SandboxHostProvisioner {
-    admission: Option<Arc<super::project_limits::ActorAdmission>>,
+    rate_limiter: Option<Arc<super::project_limits::ProjectRateLimiter>>,
     runtime_images: Option<super::process::RuntimeImages>,
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     resource_bounds: Option<crate::sandbox::ResourceBounds>,
@@ -926,11 +926,11 @@ pub(crate) struct SandboxHostProvisioner {
 }
 
 impl SandboxHostProvisioner {
-    pub(super) fn with_actor_admission(
+    pub(super) fn with_project_rate_limiter(
         mut self,
-        admission: Arc<super::project_limits::ActorAdmission>,
+        limiter: Option<Arc<super::project_limits::ProjectRateLimiter>>,
     ) -> Self {
-        self.admission = Some(admission);
+        self.rate_limiter = limiter;
         self
     }
 
@@ -959,7 +959,7 @@ impl SandboxHostProvisioner {
     ) -> Self {
         Self {
             runtime_images,
-            admission: None,
+            rate_limiter: None,
             pool: None,
             resource_bounds: None,
             runtime_access: None,
@@ -1067,10 +1067,8 @@ impl SandboxHostProvisioner {
     ) -> Result<(HostLease, u64)> {
         let started_at = Instant::now();
         let mut request = self.request(spec, region, actor)?;
-        if let Some(admission) = &self.admission {
-            admission
-                .reserve(actor, &request.host_id, &request.session_id)
-                .await?;
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.check(&actor.project_id).await?;
         }
         request.actor_is_new = new_actor;
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
