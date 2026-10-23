@@ -264,6 +264,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
             registry
                 .register_test_deployment(&HostLaunchSpec {
                     image_policy: Default::default(),
+                    organization_id: Some("org-test".into()),
                     sandboxes: Default::default(),
                     project_id: project.into(),
                     source: None,

@@ -8,6 +8,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[path = "delegated_access.rs"]
 mod delegated_access;
+#[path = "lifecycle.rs"]
+mod lifecycle;
 
 struct FakeSocketEventSink {
     delivered: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
@@ -180,6 +182,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     registry
         .register_test_deployment(&HostLaunchSpec {
             image_policy: Default::default(),
+            organization_id: Some("org-test".into()),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -262,6 +265,7 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
     );
     let first = HostLaunchSpec {
         image_policy: Default::default(),
+        organization_id: Some("org-test".into()),
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
@@ -705,6 +709,7 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
     registry
         .register_test_deployment(&HostLaunchSpec {
             image_policy: Default::default(),
+            organization_id: Some("org-test".into()),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -834,6 +839,7 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         registry
             .register_test_deployment(&HostLaunchSpec {
                 image_policy: Default::default(),
+                organization_id: Some("org-test".into()),
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
@@ -914,6 +920,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     registry
         .register_test_deployment(&HostLaunchSpec {
             image_policy: Default::default(),
+            organization_id: Some("org-test".into()),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -1021,6 +1028,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         "host.v3.{}.fixture",
         HostLaunchSpec {
             image_policy: Default::default(),
+            organization_id: Some("org-test".into()),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -1062,6 +1070,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         serde_json::json!({"metadata":{"userId":"trusted"},"homeRegion":"north-america-east"});
     let host_token = issuer
         .issue_host(
+            Some("org-test"),
             &fixture_host("fixture"),
             &uuid::Uuid::new_v4().to_string(),
             "v1",
@@ -1084,7 +1093,9 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     client
         .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"localSource": local_document("a")}))
+        .json(
+            &serde_json::json!({"organizationId": "org-test", "localSource": local_document("a")}),
+        )
         .send()
         .await?
         .error_for_status()?;
@@ -1156,6 +1167,7 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
             "host.v3.{}.fixture",
             HostLaunchSpec {
                 image_policy: Default::default(),
+                organization_id: Some("org-test".into()),
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
@@ -1193,7 +1205,8 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let deployment = serde_json::json!({"localSource": local_document("a")});
+    let deployment =
+        serde_json::json!({"organizationId": "org-test", "localSource": local_document("a")});
     let registered = client
         .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
@@ -1279,6 +1292,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
     admin
         .register_test_deployment(&HostLaunchSpec {
             image_policy: Default::default(),
+            organization_id: Some("org-test".into()),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: Some(super::super::admin::DeploymentSource::Local(
@@ -1327,6 +1341,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
         .json()
         .await?;
     assert_eq!(deployment["localSource"], local_document("a"));
+    assert_eq!(deployment["organizationId"], "org-test");
     assert_eq!(deployment["secretRefs"], serde_json::json!([]));
     for changed in [true, false] {
         let reply: serde_json::Value = client
@@ -1366,6 +1381,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
     let host_token = issuer
         .issue_host(
+            Some("org-test"),
             &HostId::new("host.v3.r1.one"),
             &uuid::Uuid::new_v4().to_string(),
             "r1",
@@ -1419,8 +1435,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
     let document: serde_json::Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
-    let mut deployment =
-        serde_json::json!({"localSource": local_document("a"), "contract":document});
+    let mut deployment = serde_json::json!({"organizationId": "org-test", "localSource": local_document("a"), "contract":document});
     for scope in ["/v1/projects/default"] {
         for changed in [true, true] {
             let reply: serde_json::Value = client
@@ -1536,14 +1551,14 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
     ))?;
     for project in ["team-a", "team-b"] {
         client.put(format!("{origin}/v1/projects/{project}/deployment")).bearer_auth("api-key")
-            .json(&serde_json::json!({"localSource": local_document(if project == "team-a" { "a" } else { "b" }), "contract":document}))
+            .json(&serde_json::json!({"organizationId": "org-test", "localSource": local_document(if project == "team-a" { "a" } else { "b" }), "contract":document}))
             .send().await?.error_for_status()?;
     }
     assert!(retired_rx.try_recv().is_err());
     client
         .put(format!("{origin}/v1/projects/team-a/deployment"))
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"localSource": local_document("c"), "contract":document}))
+        .json(&serde_json::json!({"organizationId": "org-test", "localSource": local_document("c"), "contract":document}))
         .send()
         .await?
         .error_for_status()?;
@@ -1590,6 +1605,7 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
 fn fixture_host(suffix: &str) -> HostId {
     let spec = HostLaunchSpec {
         image_policy: Default::default(),
+        organization_id: Some("org-test".into()),
         sandboxes: Default::default(),
         source: None,
         code_snapshot: None,
@@ -1620,6 +1636,7 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                 registry
                     .register_test_deployment(&HostLaunchSpec {
                         image_policy: Default::default(),
+                        organization_id: Some("org-test".into()),
                         sandboxes: Default::default(),
                         project_id: project.into(),
                         source: None,
@@ -1776,6 +1793,7 @@ fn socket_authorization_uses_actor_scope_without_reading_ownership() -> Result<(
     let mut lease = test_lease(&host);
     lease.expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 60_000;
     let principal = ActorPrincipal {
+        organization_id: Some("org-test".into()),
         actor: actor.clone(),
         host_id: host.clone(),
         session_id: lease.session_id.clone(),

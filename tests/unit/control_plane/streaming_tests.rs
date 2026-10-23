@@ -530,6 +530,7 @@ impl Stack {
         };
         let spec = HostLaunchSpec {
             image_policy: Default::default(),
+            organization_id: Some("org-test".into()),
             sandboxes: Default::default(),
             source: None,
             code_snapshot: None,
@@ -612,6 +613,7 @@ impl Stack {
         });
         let token = issuer
             .issue_host(
+                Some("org-test"),
                 &host_id,
                 "00000000-0000-4000-8000-000000000001",
                 &revision,
@@ -641,15 +643,12 @@ impl Stack {
             .with_activation(true, None),
         );
         storage
-            .register(
-                &HostLeaseRequest {
-                    id: host_id.clone(),
-                    session_id: "00000000-0000-4000-8000-000000000001".into(),
-                    route: host_route.clone(),
-                    duration_ms: 60_000,
-                },
-                Default::default(),
-            )
+            .register(&HostLeaseRequest {
+                id: host_id.clone(),
+                session_id: "00000000-0000-4000-8000-000000000001".into(),
+                route: host_route.clone(),
+                duration_ms: 60_000,
+            })
             .await?;
 
         let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(
