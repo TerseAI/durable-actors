@@ -12,6 +12,9 @@ pub(crate) enum ControlPlaneCommand {
     },
     RefreshStorageAccess,
     InventoryChanged,
+    Lifecycle {
+        report: crate::actor_lifecycle::LifecycleReport,
+    },
     GetAlarm,
     UpdateAlarm {
         timestamp_ms: Option<i64>,

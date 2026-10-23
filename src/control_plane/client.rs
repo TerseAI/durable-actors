@@ -29,6 +29,15 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn report_lifecycle(
+        &self,
+        report: crate::actor_lifecycle::LifecycleReport,
+    ) -> Result<()> {
+        self.execute(ControlPlaneCommand::Lifecycle { report })
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn socket_operation(
         &self,
         actor: &ActorKey,

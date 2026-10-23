@@ -36,6 +36,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
+    pub(super) lifecycle: crate::actor_lifecycle::LifecycleStore,
     pub(super) traces: crate::request_traces::TraceStore,
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
@@ -76,6 +77,7 @@ impl ControlPlaneService {
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
+            lifecycle: Default::default(),
             traces: crate::request_traces::TraceStore::default(),
             changes: Default::default(),
             runtime_access: None,
@@ -452,6 +454,21 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
+            ControlPlaneCommand::Lifecycle { report } => {
+                use crate::clock::Clock;
+                self.lifecycle
+                    .record(crate::actor_lifecycle::LifecycleEvent {
+                        event_id: format!("{}:{}", principal.session_id, report.sequence),
+                        actor: principal.actor.clone(),
+                        host_id: principal.host_id.to_string(),
+                        session_id: principal.session_id.clone(),
+                        region: principal.region.clone(),
+                        received_at_ms: crate::clock::SystemClock.now_ms()?,
+                        report,
+                    })
+                    .await?;
+                Ok(ControlPlaneCommandReply::Unit)
+            }
             ControlPlaneCommand::SocketOperation { .. } => {
                 anyhow::bail!("socket operation requires authenticated routing")
             }

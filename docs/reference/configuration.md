@@ -106,6 +106,12 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 
 Standard mode rejects Rapid bucket and archive settings. Storage mode and bucket identities are fixed for existing actor ownership records; changing them requires a planned data migration. See [Rapid configuration](../self-hosting.md#speed-up-writes-with-gcs-rapid) for bucket creation, IAM, and chart values.
 
+### Host lifecycle reports
+
+Upgraded hosts report `started` after activation, `heartbeat` every 10 seconds, `draining` before executor shutdown, and `stopped` after the storage shutdown attempt. Reports contain the ownership epoch, a per-session sequence, activation/report timestamps, requested resources, residency, and waiting operations. The sandbox provider supplies resources through the internal `DURABLE_ACTORS_HOST_RESOURCES` JSON environment variable. Each report has a one-second timeout and is best effort.
+
+The control plane derives project, actor, host, session, and region from the authenticated host token without reading ownership. This allows a stop report after ownership release. For this initial increment, each control plane keeps only the latest report per actor in a bounded in-memory cache (10,000 actors, 24-hour idle expiry). Reports do not yet feed the dashboard, routing, or usage billing. Deploy upgraded control planes before upgraded host images; older hosts continue using the existing protocol.
+
 ## Modal data plane
 
 Set `DURABLE_ACTORS_SANDBOX_PROVIDER=modal` to run hosts on Modal. The default is `gke`.

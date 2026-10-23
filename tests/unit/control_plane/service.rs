@@ -8,6 +8,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[path = "delegated_access.rs"]
 mod delegated_access;
+#[path = "lifecycle.rs"]
+mod lifecycle;
 
 struct FakeSocketEventSink {
     delivered: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
