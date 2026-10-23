@@ -79,3 +79,14 @@ Store `clickhouse-password` in `credentialsSecret`. Precreate the database and g
 For an existing installation, first deploy lifecycle-capable control planes, then upgrade the TypeScript/Python images and redeploy actor bundles so new hosts report. Enable `analytics.backend: clickhouse` after that rollout. Installations already using ClickHouse switch inventory readers on upgrade; old hosts do not appear until an upgraded activation reports. Historical inventory is not backfilled.
 
 PostgreSQL remains required for control-plane bookkeeping and deployment metadata. The default `analytics.backend: postgres` reads inventory from an in-memory lifecycle cache on each control-plane replica; it resets on restart and is not shared across replicas. All modes use lifecycle reports for inventory without GCS scans. See [host lifecycle reports](../../docs/reference/configuration.md#host-lifecycle-reports) for freshness and retention behavior.
+
+## Usage publishing
+
+To publish actor activation usage, set an existing Pub/Sub topic:
+
+```yaml
+usage:
+  topic: projects/my-project/topics/actor-usage
+```
+
+Grant the control plane's Google service account `roles/pubsub.publisher` on that topic. Hosts use the existing lifecycle reporting path and need no Pub/Sub credentials. Publishing works with either analytics backend and is disabled when `usage.topic` is empty. Consumers must handle duplicates and out-of-order delivery; see the [usage event contract](../../docs/reference/configuration.md#usage-events) for aggregation and delivery limitations.

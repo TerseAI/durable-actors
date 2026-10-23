@@ -1,6 +1,96 @@
 use super::*;
 
 #[tokio::test]
+async fn usage_publishes_activation_boundaries_for_each_project() -> Result<()> {
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let store = LifecycleStore::default().with_publisher(Arc::new(Publisher(sent)));
+    for project in ["first", "second"] {
+        for (sequence, kind) in [
+            (1, LifecycleKind::Started),
+            (2, LifecycleKind::Heartbeat),
+            (3, LifecycleKind::Draining),
+            (4, LifecycleKind::Stopped),
+        ] {
+            store
+                .record(LifecycleEvent {
+                    event_id: format!("{project}-session:{sequence}"),
+                    actor: ActorKey {
+                        project_id: project.into(),
+                        actor_name: "Counter".into(),
+                        actor_id: "one".into(),
+                    },
+                    host_id: "host".into(),
+                    session_id: format!("{project}-session"),
+                    region: "us-east".into(),
+                    received_at_ms: sequence * 1000,
+                    report: LifecycleReport {
+                        kind,
+                        owner_epoch: 1,
+                        sequence,
+                        started_at_ms: 1000,
+                        occurred_at_ms: sequence * 1000,
+                        resources: ResourceLimits {
+                            cpu_millis: 500,
+                            memory_mib: 768,
+                            memory_limit_mib: Some(768),
+                            ..Default::default()
+                        },
+                        resident: Some(kind != LifecycleKind::Stopped),
+                        waiting: Vec::new(),
+                    },
+                })
+                .await?;
+        }
+    }
+    let mut updates = Vec::new();
+    for _ in 0..4 {
+        updates.push(
+            tokio::time::timeout(Duration::from_secs(1), received.recv())
+                .await?
+                .unwrap(),
+        );
+    }
+    updates.sort_by_key(|update| (update.event.actor.project_id.clone(), update.revision));
+    for (project, pair) in ["first", "second"].into_iter().zip(updates.chunks_exact(2)) {
+        let [started, stopped] = pair else {
+            unreachable!()
+        };
+        assert_eq!(started.event.report.kind, LifecycleKind::Started);
+        assert_eq!(stopped.event.report.kind, LifecycleKind::Stopped);
+        assert_eq!(started.ended_at_ms, None);
+        assert_eq!(started.usage_id, stopped.usage_id);
+        assert_eq!((started.revision, stopped.revision), (1, 4));
+        let payload = serde_json::to_value(stopped)?;
+        assert_eq!(payload["usageId"], format!("host:{project}-session"));
+        assert_eq!(payload["eventId"], format!("{project}-session:4"));
+        assert_eq!(
+            payload["actor"],
+            serde_json::json!({
+                "project_id": project, "actor_name": "Counter", "actor_id": "one"
+            })
+        );
+        assert_eq!(payload["resources"]["cpuMillis"], 500);
+        assert_eq!(payload["resources"]["memoryMib"], 768);
+        assert_eq!(payload["startedAtMs"], 1000);
+        assert_eq!(payload["endedAtMs"], 4000);
+        assert_eq!(payload["ownerEpoch"], 1);
+        assert_eq!(payload["revision"], 4);
+    }
+    assert!(received.try_recv().is_err());
+    Ok(())
+}
+
+struct Publisher(tokio::sync::mpsc::UnboundedSender<UsageUpdate>);
+
+#[async_trait]
+impl UsagePublisher for Publisher {
+    async fn publish(&self, event: &UsageUpdate) -> Result<()> {
+        self.0.send(event.clone())?;
+        Ok(())
+    }
+}
+
+#[tokio::test]
 async fn inventory_distinguishes_resident_idle_stopped_and_stale_actors() -> Result<()> {
     let store = LifecycleStore::default();
     let now = SystemClock.now_ms()?;

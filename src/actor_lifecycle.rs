@@ -19,6 +19,7 @@ use crate::{
 pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const STALE_AFTER_MS: u64 = 35_000;
 
+mod pubsub;
 pub(crate) mod routing;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,16 +57,44 @@ pub(crate) struct LifecycleEvent {
     pub report: LifecycleReport,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageUpdate {
+    pub usage_id: String,
+    pub revision: u64,
+    pub ended_at_ms: Option<u64>,
+    #[serde(flatten)]
+    pub event: LifecycleEvent,
+}
+
+impl From<LifecycleEvent> for UsageUpdate {
+    fn from(event: LifecycleEvent) -> Self {
+        Self {
+            usage_id: format!("{}:{}", event.host_id, event.session_id),
+            revision: event.report.sequence,
+            ended_at_ms: (event.report.kind == LifecycleKind::Stopped)
+                .then_some(event.report.occurred_at_ms),
+            event,
+        }
+    }
+}
+
 #[async_trait]
 pub(crate) trait LifecyclePersistence: Send + Sync {
     async fn record(&self, event: &LifecycleEvent) -> Result<()>;
     async fn latest(&self, project: &str) -> Result<Vec<LifecycleEvent>>;
 }
 
+#[async_trait]
+pub(crate) trait UsagePublisher: Send + Sync {
+    async fn publish(&self, event: &UsageUpdate) -> Result<()>;
+}
+
 #[derive(Clone)]
 pub(crate) struct LifecycleStore {
     persistence: Arc<dyn LifecyclePersistence>,
     routing: Arc<dyn routing::RoutingHints>,
+    usage: Option<Arc<dyn UsagePublisher>>,
 }
 
 impl Default for LifecycleStore {
@@ -78,6 +107,7 @@ impl LifecycleStore {
     pub(crate) fn new(persistence: Arc<dyn LifecyclePersistence>) -> Self {
         Self {
             persistence,
+            usage: None,
             routing: Arc::new(routing::MemoryRoutingHints::new(Duration::from_secs(
                 86_460,
             ))),
@@ -89,6 +119,18 @@ impl LifecycleStore {
         self
     }
 
+    pub(crate) fn with_publisher(mut self, publisher: Arc<dyn UsagePublisher>) -> Self {
+        self.usage = Some(publisher);
+        self
+    }
+
+    pub(crate) async fn with_usage_topic(mut self, topic: Option<&str>) -> Result<Self> {
+        if let Some(topic) = topic {
+            self = self.with_publisher(Arc::new(pubsub::PubSubPublisher::connect(topic).await?));
+        }
+        Ok(self)
+    }
+
     pub(crate) async fn record(&self, event: LifecycleEvent) -> Result<()> {
         ensure!(event.report.sequence > 0, "invalid lifecycle sequence");
         ensure!(event.report.owner_epoch > 0, "invalid ownership epoch");
@@ -96,6 +138,7 @@ impl LifecycleStore {
             event.report.occurred_at_ms >= event.report.started_at_ms,
             "invalid lifecycle time range"
         );
+        self.publish_usage(&event);
         let (persisted, ()) =
             tokio::join!(self.persistence.record(&event), self.record_routing(&event));
         persisted
@@ -119,6 +162,29 @@ impl LifecycleStore {
                 None
             }
         }
+    }
+
+    fn publish_usage(&self, event: &LifecycleEvent) {
+        if !matches!(
+            event.report.kind,
+            LifecycleKind::Started | LifecycleKind::Stopped
+        ) {
+            return;
+        }
+        let Some(publisher) = self.usage.clone() else {
+            return;
+        };
+        let update = UsageUpdate::from(event.clone());
+        tokio::spawn(async move {
+            if let Err(error) =
+                tokio::time::timeout(Duration::from_secs(5), publisher.publish(&update))
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|result| result)
+            {
+                tracing::warn!(event_id = update.event.event_id, %error, "usage publication failed");
+            }
+        });
     }
 
     async fn record_routing(&self, event: &LifecycleEvent) {

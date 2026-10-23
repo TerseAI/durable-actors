@@ -38,6 +38,8 @@ analytics:
     database: ""
     user: ""
     passwordSecretKey: ""
+usage:
+  topic: ""
 postgres:
   maxConnections: 8
 redis:

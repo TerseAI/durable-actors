@@ -37,6 +37,7 @@ pub struct ControlPlaneProcessConfig {
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
+    pub usage_topic: Option<String>,
     pub region: Option<String>,
     pub alarm_poll_interval: Duration,
     pub redis: Option<RedisConfig>,
@@ -189,7 +190,10 @@ async fn control_plane_routes(
             retention,
         )),
     };
-    let lifecycle = lifecycle.with_routing(routing);
+    let lifecycle = lifecycle
+        .with_routing(routing)
+        .with_usage_topic(config.usage_topic.as_deref())
+        .await?;
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
@@ -458,6 +462,7 @@ impl ControlPlaneProcessConfig {
             storage,
             sandbox_provider,
             socket_event_sink,
+            usage_topic: get("DURABLE_ACTORS_USAGE_TOPIC"),
             region,
             alarm_poll_interval,
             redis: redis_config(&mut get)?,
