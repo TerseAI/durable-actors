@@ -1,5 +1,8 @@
 use crate::request_tracking::HostState;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -44,7 +47,7 @@ pub struct ControlPlaneService {
     placements: Arc<dyn ObjectPlacementStore>,
     pub(super) auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
-    registry: Arc<dyn AdminRegistry>,
+    pub(super) registry: Arc<dyn AdminRegistry>,
     provisioner: Arc<dyn HostProvisioner>,
     alarms: Arc<dyn super::alarms::AlarmStore>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
@@ -153,6 +156,22 @@ impl ControlPlaneService {
         Ok(changed || replacing)
     }
 
+    pub(super) async fn prepare_registered_deployment(
+        &self,
+        deployment: &crate::sandbox::SandboxDeployment,
+    ) -> Result<()> {
+        let started = Instant::now();
+        // Import (600s), sandbox (90s), staging (180s), spare (180s), plus overhead.
+        tokio::time::timeout(
+            Duration::from_secs(1200),
+            self.provisioner.prepare_registration(deployment),
+        )
+        .await
+        .context("deployment preparation timed out")??;
+        info!(event = "deployment_prepared", project_id = %deployment.project_id, total_ms = elapsed_ms(started), "deployment preparation completed");
+        Ok(())
+    }
+
     pub(super) async fn deploy_source(
         &self,
         admin: &AdminService,
@@ -174,14 +193,15 @@ impl ControlPlaneService {
                     .await?
             }
         };
-        if compiled_contract.is_none()
-            && prepared.code_snapshot.is_some()
-            && supplied_contract.is_none()
-        {
+        if compiled_contract.is_none() && prepared.source.is_none() && supplied_contract.is_none() {
             previous
                 .as_ref()
-                .filter(|old| old.code_snapshot == prepared.code_snapshot)
-                .context("a new bundle requires its actor contract")?;
+                .filter(|old| {
+                    old.code_snapshot == prepared.code_snapshot
+                        && old.image_ref == prepared.image_ref
+                        && old.actor_entrypoint == prepared.actor_entrypoint
+                })
+                .context("a new bundle or dependency image requires its actor contract")?;
             let record = admin
                 .deployment_contract(&source.project_id)
                 .await?
@@ -783,6 +803,13 @@ impl std::error::Error for RegionConflict {}
 pub(crate) trait HostProvisioner: Send + Sync {
     fn host_idle_timeout_ms(&self) -> u64;
 
+    async fn prepare_registration(
+        &self,
+        _deployment: &crate::sandbox::SandboxDeployment,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -867,6 +894,23 @@ impl HostProvisioner for SandboxHostProvisioner {
         self.runtime.host_idle_timeout_ms
     }
 
+    async fn prepare_registration(
+        &self,
+        deployment: &crate::sandbox::SandboxDeployment,
+    ) -> Result<()> {
+        let spares = async {
+            if deployment.code_snapshot.is_some() {
+                if let Some(pool) = &self.pool {
+                    pool.prepare(&deployment.image_ref, &deployment.canonical_region)
+                        .await?;
+                }
+            }
+            anyhow::Ok(())
+        };
+        tokio::try_join!(self.provider.prepare_registration(deployment), spares)?;
+        Ok(())
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -886,12 +930,16 @@ impl HostProvisioner for SandboxHostProvisioner {
             .context("hosted deployments require artifact storage access")?
             .validate_code(&manifest)?;
         let mut prepared = source.clone();
-        prepared.image_ref = self
-            .runtime_images
-            .as_ref()
-            .context("hosted deployments require runtime images")?
-            .for_entrypoint(manifest.entrypoint()?)?
-            .into();
+        if prepared.image_ref == "bundle" {
+            prepared.image_ref = self
+                .runtime_images
+                .as_ref()
+                .context("hosted deployments require runtime images")?
+                .for_entrypoint(manifest.entrypoint()?)?
+                .into();
+        } else {
+            crate::sandbox::validate_image(&prepared.image_ref)?;
+        }
         prepared.validate()?;
         Ok((prepared, None))
     }

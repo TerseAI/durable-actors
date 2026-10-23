@@ -42,7 +42,17 @@ impl RemoteSandboxProvider {
             "spare region mismatch"
         );
         let secrets = self.secrets.resolve(&request.secret_refs).await?;
-        let environment = assignment_environment(request, spare, secrets)?;
+        let mut environment = assignment_environment(request, spare, secrets)?;
+        let prepared = self.cluster.prepare_assignment(request, spare).await?;
+        if prepared {
+            environment.remove("DURABLE_ACTORS_CODE_ARTIFACT");
+        }
+        tracing::info!(
+            event = "actor_code_delivery",
+            host_id = %request.host_id,
+            delivery = if prepared { "snapshot" } else { "gcs" },
+            "actor code delivery selected"
+        );
         let handle = self.assignment.assign(spare, environment).await?;
         let lease = handle
             .lease
@@ -65,6 +75,14 @@ impl RemoteSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for RemoteSandboxProvider {
+    async fn prepare_spares(&self, spares: &[SpareHandle]) -> Result<()> {
+        self.cluster.prepare_spares(spares).await
+    }
+
+    async fn prepare_registration(&self, deployment: &SandboxDeployment) -> Result<()> {
+        self.cluster.prepare_registration(deployment).await
+    }
+
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         validate_image(&request.image_ref)?;
         self.cluster.create_spare(request).await
@@ -233,6 +251,21 @@ fn now_ms() -> Result<u64> {
 
 #[async_trait]
 pub(super) trait SandboxCluster: Send + Sync {
+    async fn prepare_spares(&self, _spares: &[SpareHandle]) -> Result<()> {
+        Ok(())
+    }
+    async fn prepare_assignment(
+        &self,
+        _request: &EnsureHostRequest,
+        _spare: &SpareHandle,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn prepare_registration(&self, _deployment: &SandboxDeployment) -> Result<()> {
+        Ok(())
+    }
+
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()>;

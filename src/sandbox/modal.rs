@@ -7,7 +7,7 @@ use std::{
 use ::modal::{
     App, AppLookupParams, Client, Image, Probe, Sandbox, SandboxCreateParams, SandboxListParams,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 
 use super::{
@@ -15,6 +15,11 @@ use super::{
     secrets::SecretResolver,
     *,
 };
+
+mod images;
+mod snapshots;
+use futures_util::{StreamExt, TryStreamExt};
+use moka::future::Cache;
 
 const READY_FILE: &str = "/tmp/durable-actors-spare-ready";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
@@ -24,10 +29,12 @@ pub(crate) struct ModalConfig {
     pub app_name: String,
     pub regions: BTreeMap<String, String>,
     pub timeout: Duration,
+    pub registry_secrets: BTreeMap<String, String>,
 }
 
 pub(crate) async fn provider(
     config: ModalConfig,
+    database: crate::postgres::PostgresDatabase,
     images: &[&str],
     secrets: Arc<dyn SecretResolver>,
 ) -> Result<RemoteSandboxProvider> {
@@ -41,17 +48,25 @@ pub(crate) async fn provider(
             },
         )
         .await?;
-    let mut imported = HashMap::new();
+    let imported = Arc::new(images::Images::new(Arc::new(images::ModalImages::new(
+        client.clone(),
+        app.clone(),
+        config.clone(),
+    ))));
     for reference in images {
-        if imported.contains_key(*reference) {
-            continue;
-        }
-        let image = Image::from_registry(*reference).dockerfile_commands(["ENTRYPOINT []"]);
-        tokio::time::timeout(Duration::from_secs(600), image.build(&client, &app))
-            .await
-            .context("Modal image import timed out")??;
-        imported.insert((*reference).to_owned(), image);
+        imported.image(reference).await?;
     }
+    let snapshots = snapshots::Snapshots::new(
+        app.app_id.clone(),
+        Arc::new(snapshots::ModalSnapshots {
+            client: client.clone(),
+            app: app.clone(),
+            config: config.clone(),
+            images: imported.clone(),
+            storage: Default::default(),
+        }),
+        Arc::new(snapshots::PostgresSnapshots(database)),
+    );
     RemoteSandboxProvider::new(
         "modal",
         Arc::new(ModalCluster {
@@ -59,6 +74,11 @@ pub(crate) async fn provider(
             app,
             config,
             images: imported,
+            snapshots,
+            sandboxes: Cache::builder()
+                .max_capacity(10000)
+                .time_to_idle(Duration::from_secs(3600))
+                .build(),
         }),
         secrets,
     )
@@ -68,16 +88,20 @@ struct ModalCluster {
     client: Client,
     app: App,
     config: ModalConfig,
-    images: HashMap<String, Image>,
+    images: Arc<images::Images>,
+    snapshots: snapshots::Snapshots,
+    sandboxes: Cache<String, Sandbox>,
 }
 
 #[async_trait]
 impl SandboxCluster for ModalCluster {
+    async fn prepare_registration(&self, deployment: &SandboxDeployment) -> Result<()> {
+        self.snapshots.prepare(deployment).await?;
+        Ok(())
+    }
+
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
-        let image = self
-            .images
-            .get(&request.image_ref)
-            .context("Modal runtime image was not imported")?;
+        let image = self.images.image(&request.image_ref).await?;
         let token = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
@@ -86,7 +110,7 @@ impl SandboxCluster for ModalCluster {
         let params = spare_params(request, &self.config, &token)?;
         let sandbox = tokio::time::timeout(
             STARTUP_TIMEOUT,
-            self.client.create_sandbox(&self.app, image, params),
+            self.client.create_sandbox(&self.app, &image, params),
         )
         .await
         .context("Modal sandbox creation timed out")??;
@@ -94,11 +118,82 @@ impl SandboxCluster for ModalCluster {
         let handle = tokio::time::timeout(STARTUP_TIMEOUT, ready_handle(&sandbox, request, token))
             .await
             .context("Modal spare readiness timed out")??;
+        self.sandboxes
+            .insert(handle.resource_id.clone(), sandbox)
+            .await;
         cleanup.0 = None;
         Ok(handle)
     }
 
+    async fn prepare_spares(&self, spares: &[SpareHandle]) -> Result<()> {
+        futures_util::stream::iter(spares.to_vec())
+            .map(|spare: SpareHandle| async move {
+                if self.sandboxes.contains_key(&spare.resource_id) {
+                    return Ok(());
+                }
+                let sandbox = self.client.sandbox_from_id(&spare.resource_id);
+                // A claim may race this refresh; only cache successfully prepared connections.
+                if sandbox
+                    .wait_until_ready(Duration::from_secs(2))
+                    .await
+                    .is_ok()
+                {
+                    self.sandboxes
+                        .insert(spare.resource_id.clone(), sandbox)
+                        .await;
+                }
+                anyhow::Ok(())
+            })
+            .buffer_unordered(8)
+            .try_collect::<Vec<_>>()
+            .await?;
+        Ok(())
+    }
+
+    async fn prepare_assignment(
+        &self,
+        request: &EnsureHostRequest,
+        spare: &SpareHandle,
+    ) -> Result<bool> {
+        if request.code_snapshot.is_none() {
+            return Ok(false);
+        }
+        let deployment = SandboxDeployment {
+            project_id: request
+                .actor
+                .as_ref()
+                .context("actor identity required")?
+                .project_id
+                .clone(),
+            image_ref: request.image_ref.clone(),
+            canonical_region: request.canonical_region.clone(),
+            code_snapshot: request.code_snapshot.clone(),
+        };
+        let image = match self.snapshots.get(&deployment).await {
+            Ok(Some(image)) => image,
+            Ok(None) => return Ok(false),
+            Err(error) => {
+                tracing::warn!(%error, "snapshot unavailable; using verified GCS code delivery");
+                return Ok(false);
+            }
+        };
+        let sandbox = self
+            .sandboxes
+            .get(&spare.resource_id)
+            .await
+            .unwrap_or_else(|| self.client.sandbox_from_id(&spare.resource_id));
+        match sandbox.mount_image("/customer", &image).await {
+            Ok(()) => Ok(true),
+            Err(::modal::Error::NotFound(_)) => {
+                self.snapshots.invalidate(&deployment).await?;
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
+        self.sandboxes.invalidate(&spare.resource_id).await;
         let sandbox = if spare.resource_id.is_empty() {
             match self
                 .client

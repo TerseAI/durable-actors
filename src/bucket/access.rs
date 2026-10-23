@@ -157,7 +157,7 @@ struct ClientSideTokens {
 }
 
 impl ClientSideTokens {
-    /// Signs in with the service-account key named by `GOOGLE_APPLICATION_CREDENTIALS`, or
+    /// Signs in with the credential file named by `GOOGLE_APPLICATION_CREDENTIALS`, or
     /// otherwise through the metadata server (Workload Identity on GKE).
     fn from_environment() -> Result<Self> {
         let context = reqsign_core::Context::new()
@@ -172,6 +172,7 @@ impl ClientSideTokens {
             .push(ServiceAccountTokenCredentialProvider::from_provider(
                 EnvCredentialProvider::new(),
             ))
+            .push(EnvCredentialProvider::new())
             .push(VmMetadataCredentialProvider::new());
         Ok(Self::new(context, source))
     }

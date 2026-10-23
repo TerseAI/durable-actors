@@ -1,12 +1,21 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[derive(Default)]
 struct Cluster {
+    mounted: bool,
+    fail_preparation: bool,
+    preparations: AtomicUsize,
     creates: AtomicUsize,
     retires: AtomicUsize,
 }
 #[async_trait]
 impl SandboxCluster for Cluster {
+    async fn prepare_assignment(&self, _: &EnsureHostRequest, _: &SpareHandle) -> Result<bool> {
+        self.preparations.fetch_add(1, Ordering::SeqCst);
+        ensure!(!self.fail_preparation, "snapshot mount failed");
+        Ok(self.mounted)
+    }
     async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
@@ -31,7 +40,10 @@ impl SecretResolver for Secrets {
         )]))
     }
 }
-struct Assign;
+#[derive(Default)]
+struct Assign {
+    mounted: bool,
+}
 #[async_trait]
 impl HostAssignment for Assign {
     async fn assign(
@@ -43,7 +55,11 @@ impl HostAssignment for Assign {
             environment["DURABLE_ACTORS_ENTRYPOINT"],
             "/customer/actors.mjs"
         );
-        assert!(environment["DURABLE_ACTORS_CODE_ARTIFACT"].starts_with("gcs:"));
+        if self.mounted {
+            assert!(!environment.contains_key("DURABLE_ACTORS_CODE_ARTIFACT"));
+        } else {
+            assert!(environment["DURABLE_ACTORS_CODE_ARTIFACT"].starts_with("gcs:"));
+        }
         let secrets: HashMap<String, String> =
             serde_json::from_str(&environment["DURABLE_ACTORS_CUSTOMER_ENV"])?;
         assert_eq!(secrets["CUSTOMER_SECRET"], "assigned-secret");
@@ -66,21 +82,23 @@ impl HostAssignment for Assign {
 
 #[tokio::test]
 async fn prewarmed_assignment_uses_ready_host_without_creating_a_pod() -> Result<()> {
-    let cluster = Arc::new(Cluster {
-        creates: AtomicUsize::new(0),
-        retires: AtomicUsize::new(0),
-    });
-    let provider = RemoteSandboxProvider {
-        name: "gke",
-        cluster: cluster.clone(),
-        secrets: Arc::new(Secrets),
-        assignment: Arc::new(Assign),
-    };
-    let request = request()?;
-    let result = provider.ensure_host(&request).await?;
-    assert_eq!(result.owner_epoch, 3);
-    assert!(result.provisioning.unwrap().reused);
-    assert_eq!(cluster.creates.load(Ordering::SeqCst), 0);
+    for (name, mounted) in [("gke", false), ("modal", false), ("modal", true)] {
+        let cluster = Arc::new(Cluster {
+            mounted,
+            ..Default::default()
+        });
+        let provider = RemoteSandboxProvider {
+            name,
+            cluster: cluster.clone(),
+            secrets: Arc::new(Secrets),
+            assignment: Arc::new(Assign { mounted }),
+        };
+        let result = provider.ensure_host(&request()?).await?;
+        assert_eq!(result.owner_epoch, 3);
+        assert!(result.provisioning.unwrap().reused);
+        assert_eq!(cluster.creates.load(Ordering::SeqCst), 0);
+        assert_eq!(cluster.preparations.load(Ordering::SeqCst), 1);
+    }
     Ok(())
 }
 
@@ -147,6 +165,7 @@ fn python_assignment_uses_its_manifest_entrypoint() -> Result<()> {
 }
 
 struct ExpiredAssignment;
+
 #[async_trait]
 impl HostAssignment for ExpiredAssignment {
     async fn assign(
@@ -154,7 +173,7 @@ impl HostAssignment for ExpiredAssignment {
         spare: &SpareHandle,
         environment: HashMap<String, String>,
     ) -> Result<ActorHostHandle> {
-        let mut handle = Assign.assign(spare, environment).await?;
+        let mut handle = Assign::default().assign(spare, environment).await?;
         handle.lease.as_mut().unwrap().expires_at_ms = 0;
         Ok(handle)
     }
@@ -165,10 +184,7 @@ async fn assignment_rejects_a_host_whose_lease_expired_before_its_reply() -> Res
     let provider = RemoteSandboxProvider {
         name: "gke",
         secrets: Arc::new(Secrets),
-        cluster: Arc::new(Cluster {
-            creates: AtomicUsize::new(0),
-            retires: AtomicUsize::new(0),
-        }),
+        cluster: Arc::new(Cluster::default()),
         assignment: Arc::new(ExpiredAssignment),
     };
     assert!(provider.ensure_host(&request()?).await.is_err());
@@ -176,16 +192,16 @@ async fn assignment_rejects_a_host_whose_lease_expired_before_its_reply() -> Res
 }
 
 #[tokio::test]
-async fn modal_assignment_failure_retires_the_claimed_spare() -> Result<()> {
+async fn snapshot_mount_failure_retires_the_claimed_spare() -> Result<()> {
     let cluster = Arc::new(Cluster {
-        creates: AtomicUsize::new(0),
-        retires: AtomicUsize::new(0),
+        fail_preparation: true,
+        ..Default::default()
     });
     let provider = RemoteSandboxProvider {
         name: "modal",
         secrets: Arc::new(Secrets),
         cluster: cluster.clone(),
-        assignment: Arc::new(ExpiredAssignment),
+        assignment: Arc::new(Assign::default()),
     };
     assert!(provider.ensure_host(&request()?).await.is_err());
     assert_eq!(cluster.retires.load(Ordering::SeqCst), 1);
@@ -195,15 +211,9 @@ async fn modal_assignment_failure_retires_the_claimed_spare() -> Result<()> {
 
 #[tokio::test]
 async fn modal_assignment_delivers_resolved_project_secrets() -> Result<()> {
-    let mut provider = RemoteSandboxProvider::new(
-        "modal",
-        Arc::new(Cluster {
-            creates: AtomicUsize::new(0),
-            retires: AtomicUsize::new(0),
-        }),
-        Arc::new(Secrets),
-    )?;
-    provider.assignment = Arc::new(Assign);
+    let mut provider =
+        RemoteSandboxProvider::new("modal", Arc::new(Cluster::default()), Arc::new(Secrets))?;
+    provider.assignment = Arc::new(Assign::default());
     let request = request()?;
     let result = provider.ensure_host(&request).await?;
     let provisioning = result.provisioning.unwrap();
@@ -223,14 +233,12 @@ impl SecretResolver for UnavailableSecrets {
 
 #[tokio::test]
 async fn secret_resolution_failure_retires_the_modal_spare_without_assignment() -> Result<()> {
-    let cluster = Arc::new(Cluster {
-        creates: AtomicUsize::new(0),
-        retires: AtomicUsize::new(0),
-    });
+    let cluster = Arc::new(Cluster::default());
     let provider =
         RemoteSandboxProvider::new("modal", cluster.clone(), Arc::new(UnavailableSecrets))?;
     let error = provider.ensure_host(&request()?).await.unwrap_err();
     assert_eq!(error.to_string(), "secret unavailable");
+    assert_eq!(cluster.preparations.load(Ordering::SeqCst), 0);
     assert_eq!(cluster.retires.load(Ordering::SeqCst), 1);
     assert_eq!(cluster.creates.load(Ordering::SeqCst), 0);
     Ok(())

@@ -16,6 +16,8 @@ pub(crate) mod secrets;
 
 pub(crate) use local::LocalSandboxProvider;
 
+pub(crate) use remote::validate_image;
+
 /// Kubernetes-style resources: `cpu_millis` and `memory_mib` are requests; an unset limit
 /// leaves that resource uncapped.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +95,15 @@ pub struct CreateSpareRequest {
     pub image_ref: String,
     pub canonical_region: String,
     pub resources: ResourceLimits,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxDeployment {
+    pub code_snapshot: Option<String>,
+    pub project_id: String,
+    pub image_ref: String,
+    pub canonical_region: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -186,6 +197,14 @@ impl std::error::Error for HostNotReady {}
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    async fn prepare_spares(&self, _spares: &[SpareHandle]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn prepare_registration(&self, _deployment: &SandboxDeployment) -> Result<()> {
+        Ok(())
+    }
+
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }

@@ -117,6 +117,7 @@ Both providers use the same PostgreSQL spare pool, deployment API, actor runtime
 | `DURABLE_ACTORS_MODAL_APP` | Required for Modal | Dedicated Modal App for this control-plane installation. |
 | `DURABLE_ACTORS_MODAL_REGIONS` | Required for Modal | JSON mapping of canonical actor regions to Modal regions, e.g. `{"north-america-west":"us-west"}`. |
 | `DURABLE_ACTORS_MODAL_TIMEOUT_SECONDS` | `3600` | Maximum sandbox lifetime, 120–86400 seconds, including time spent as a spare. |
+| `DURABLE_ACTORS_MODAL_REGISTRY_SECRETS` | `{}` | JSON mapping of registry hosts to Modal Secret names, e.g. `{"us-west4-docker.pkg.dev":"actor-registry-reader"}`. |
 
 Modal reads the active `~/.modal.toml` profile or `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`.
 Its control-plane URL must be an HTTPS origin that carries gRPC. Proxies must preserve HTTP/2
@@ -125,8 +126,27 @@ are unnecessary in Modal mode. CPU requests and limits are passed as Modal physi
 (`cpu_millis / 1000`); memory requests and limits retain their MiB values.
 
 Sandboxes run on GCP. Use a dedicated Modal App and PostgreSQL spare registry for each
-installation; sharing a registry between providers is unsupported. Runtime images must be
-accessible without private registry credentials.
+installation; sharing a registry between providers is unsupported. Public runtime images need no
+registry credentials. For private images, configure a Modal Secret with `REGISTRY_USERNAME` and
+`REGISTRY_PASSWORD`, then map its registry host through `DURABLE_ACTORS_MODAL_REGISTRY_SECRETS`.
+For Artifact Registry, a Google service-account JSON key can be used with username `_json_key`;
+grant that identity Artifact Registry Reader on the image repository. Registry credentials are
+used for image import and are not injected into actor or staging sandboxes.
+
+A bundle may specify a digest-pinned `dependencyImage`; omission uses the configured language
+runtime. Registration publishes the deployment without waiting for Modal warmup. Modal verifies
+and stages its GCS files into a directory snapshot in the background. Snapshot references persist
+in PostgreSQL and expire before Modal's 30-day TTL.
+The control-plane Google identity needs read access to the configured artifact bucket.
+
+With spare pooling enabled, matching spares warm concurrently in the default region. Background
+preparation has a 20-minute deadline, retries failures, and resumes from registered deployments
+after controller restarts. Background preparation has no application-level concurrency cap;
+snapshot creation for the same deployment is coordinated through PostgreSQL across controllers.
+Matching spares mount an available snapshot before assignment. A missing or pending snapshot
+uses verified GCS delivery immediately. An empty pool or custom resource request starts a new
+sandbox with the matching dependency image. SDK connections are prepared on spare readiness.
+Unchanged code and dependency images reuse prepared snapshots on redeploy or secret rotation.
 
 Deployment `secretRefs` use the same Kubernetes secrets as GKE. The control plane reads them
 from `DURABLE_ACTORS_GKE_NAMESPACE` (default `terse-sandboxes`) at assignment and requires

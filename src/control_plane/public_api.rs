@@ -205,6 +205,11 @@ async fn get_deployment(
         .source
         .map(|super::admin::DeploymentSource::Local(local)| local);
     Ok(Json(RegisterDeploymentRequest {
+        dependency_image: bundle.as_ref().and_then(|_| {
+            crate::sandbox::validate_image(&spec.image_ref)
+                .is_ok()
+                .then(|| spec.image_ref.clone())
+        }),
         bundle,
         local_source,
         contract: None,
@@ -235,6 +240,12 @@ async fn register_deployment(
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
+    if request.dependency_image.is_some() && request.bundle.is_none() {
+        return Err(ApiError::bad_request("dependencyImage requires a bundle"));
+    }
+    if let Some(image) = &request.dependency_image {
+        crate::sandbox::validate_image(image).map_err(ApiError::bad_request)?;
+    }
     let (source, code_snapshot, image_ref, working_directory, actor_entrypoint) =
         match (request.bundle, request.local_source) {
             (Some(bundle), None) => {
@@ -246,7 +257,7 @@ async fn register_deployment(
                 (
                     None,
                     Some(snapshot),
-                    "bundle".into(),
+                    request.dependency_image.unwrap_or_else(|| "bundle".into()),
                     "/customer".into(),
                     Some(entrypoint),
                 )
@@ -487,6 +498,8 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
 struct RegisterDeploymentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bundle: Option<crate::bundle::ActorBundle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dependency_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
