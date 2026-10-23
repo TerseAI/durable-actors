@@ -141,6 +141,7 @@ fn test_gateway(
         hub.join(32768),
         true,
         tokio_util::sync::CancellationToken::new(),
+        crate::sandbox::connections::HostConnections::new()?.client,
     )?;
     Gateway::new(issuer, origin, sockets)
 }
