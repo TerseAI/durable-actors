@@ -462,6 +462,7 @@ impl ControlPlaneService {
                 use crate::clock::Clock;
                 self.lifecycle
                     .record(crate::actor_lifecycle::LifecycleEvent {
+                        organization_id: principal.organization_id.clone(),
                         event_id: format!("{}:{}", principal.session_id, report.sequence),
                         actor: principal.actor.clone(),
                         host_id: principal.host_id.to_string(),
@@ -523,6 +524,7 @@ impl ControlPlaneService {
                 let replacement_token = self
                     .host_token_issuer
                     .issue_host(
+                        principal.organization_id.as_deref(),
                         &principal.host_id,
                         &principal.session_id,
                         principal
@@ -1210,7 +1212,14 @@ impl SandboxHostProvisioner {
         let session_id = uuid::Uuid::new_v4().to_string();
         let host_token = self
             .issuer
-            .issue_host(&host_id, &session_id, &config_key, region, actor)?
+            .issue_host(
+                spec.organization_id.as_deref(),
+                &host_id,
+                &session_id,
+                &config_key,
+                region,
+                actor,
+            )?
             .token;
         Ok(EnsureHostRequest {
             actor_is_new: false,

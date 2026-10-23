@@ -20,14 +20,18 @@ impl PubSubPublisher {
 #[async_trait]
 impl UsagePublisher for PubSubPublisher {
     async fn publish(&self, event: &UsageUpdate) -> Result<()> {
+        let mut attributes = vec![
+            ("projectId", event.event.actor.project_id.as_str()),
+            ("eventId", event.event.event_id.as_str()),
+        ];
+        if let Some(organization) = &event.event.organization_id {
+            attributes.push(("organizationId", organization));
+        }
         self.0
             .publish(
                 Message::new()
                     .set_data(serde_json::to_vec(event)?)
-                    .set_attributes([
-                        ("projectId", event.event.actor.project_id.as_str()),
-                        ("eventId", event.event.event_id.as_str()),
-                    ]),
+                    .set_attributes(attributes),
             )
             .await?;
         Ok(())

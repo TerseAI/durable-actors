@@ -16,6 +16,7 @@ async fn usage_publishes_activation_boundaries_for_each_project() -> Result<()> 
         ] {
             store
                 .record(LifecycleEvent {
+                    organization_id: Some("org-test".into()),
                     event_id: format!("{project}-session:{sequence}"),
                     actor: ActorKey {
                         project_id: project.into(),
@@ -64,6 +65,7 @@ async fn usage_publishes_activation_boundaries_for_each_project() -> Result<()> 
         assert_eq!(started.usage_id, stopped.usage_id);
         assert_eq!((started.revision, stopped.revision), (2, 8));
         let payload = serde_json::to_value(stopped)?;
+        assert_eq!(payload["organizationId"], "org-test");
         assert_eq!(payload["usageId"], format!("host:{project}-session"));
         assert_eq!(payload["eventId"], format!("{project}-session:4"));
         assert_eq!(
@@ -116,6 +118,7 @@ async fn inventory_distinguishes_resident_idle_stopped_and_stale_actors() -> Res
     ] {
         store
             .record(LifecycleEvent {
+                organization_id: Some("org-test".into()),
                 event_id: id.into(),
                 actor: ActorKey {
                     project_id: "project".into(),
@@ -175,6 +178,7 @@ async fn latest_report_follows_activation_shutdown_and_reactivation_per_project(
         actor_id: "one".into(),
     };
     let mut event = LifecycleEvent {
+        organization_id: Some("org-test".into()),
         event_id: "session:1".into(),
         actor: actor.clone(),
         host_id: "host".into(),

@@ -127,12 +127,19 @@ Deploy lifecycle-capable control planes before upgraded host images, then enable
 
 ### Usage events
 
+Deployment registration requires `organizationId` from the upstream service. The control plane persists it with the deployment and binds it into host credentials. Lifecycle analytics and usage updates take it from the authenticated host, including refreshed credentials and estimated stops, without a per-event deployment lookup. Pub/Sub also includes it as an `organizationId` message attribute alongside `projectId`. Changing the organization changes the host configuration; existing activations retain their original attribution.
+
+Coordinate this API upgrade with the upstream deployment service: older control planes reject the new field, and the upgraded API rejects requests without it. Hold deployment registrations and secret rotations while upgrading the control plane and configured host images, then upgrade the upstream service and resume registrations. If that service pins the runtime version, update its pin to the published release before deploying it.
+
+Existing deployments have null organization attribution until re-registered; there is no inferred ownership or historical backfill. Consumers must exclude unattributed events from organization billing. Local development uses `local`.
+
 Setting `DURABLE_ACTORS_USAGE_TOPIC` publishes `started` and `stopped` reports to Pub/Sub, independently of the analytics backend. Heartbeats and draining reports are published as usage only when correcting an estimated stop. Both warm-spare and on-demand activations report through the same host lifecycle path. Usage covers activation through shutdown, including idle time while assigned; it excludes time spent waiting as an unassigned spare and measures allocated resources, not actual CPU utilization. Token grants and usage enforcement belong to the external consumer.
 
 Each message contains the lifecycle event with four additional fields:
 
 | Field | Meaning |
 | --- | --- |
+| `organizationId` | Owning organization supplied at deployment; null for legacy deployments. |
 | `usageId` | Stable `<hostId>:<sessionId>` activation ID, shared by its start and stop. |
 | `revision` | `2 * sequence` for a host report; `2 * sequence + 1` for an estimated stop based on that report. Higher revisions replace lower revisions for the same activation. |
 | `endedAtMs` | `null` for start or a correction from a live host; the real or estimated stop timestamp for stop. |
@@ -140,7 +147,7 @@ Each message contains the lifecycle event with four additional fields:
 
 The event includes `eventId`, `actor` (`project_id`, `actor_name`, `actor_id`), `hostId`, `sessionId`, `ownerEpoch`, `region`, `kind`, `sequence`, `startedAtMs`, `occurredAtMs`, `receivedAtMs`, `resources`, `resident`, and `waiting`. Resources use `cpuMillis` and `memoryMib` for requests, plus optional `cpuLimitMillis` and `memoryLimitMib`. Pub/Sub attributes `projectId` and `eventId` support filtering and deduplication. The topic's Google Cloud project can differ from the actor's project.
 
-Consumers should upsert by actor project, actor identity, and `usageId`, accepting only a higher `revision`. Messages can be duplicated or arrive out of order; do not sum every message. A stop contains the complete interval even if its start was missed: duration is `endedAtMs - startedAtMs`. For example, 3,000 ms at 500 millicores is 1.5 allocated CPU-seconds; at 768 MiB it is 2,304 MiB-seconds. Sum completed activations to roll up usage by actor and project.
+Consumers should upsert by actor project, actor identity, and `usageId`, accepting only a higher `revision`. Messages can be duplicated or arrive out of order; do not sum every message. A stop contains the complete interval even if its start was missed: duration is `endedAtMs - startedAtMs`. For example, 3,000 ms at 500 millicores is 1.5 allocated CPU-seconds; at 768 MiB it is 2,304 MiB-seconds. Sum completed activations to roll up usage by actor, project, and organization.
 
 Publishing runs in the background, waits up to five seconds for acknowledgment, and logs failures without blocking lifecycle recording or routing. This POC has no durable outbox or replay; a controller exit or failed publication can lose events. No history is backfilled.
 

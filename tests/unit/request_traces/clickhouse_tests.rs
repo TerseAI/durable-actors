@@ -28,6 +28,7 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
     let reader = LifecycleStore::new(persistence.clone());
     let project = format!("lifecycle-{}", uuid::Uuid::new_v4());
     let mut event = LifecycleEvent {
+        organization_id: Some("org-test".into()),
         event_id: "session:1".into(),
         actor: crate::actor::ActorKey {
             project_id: project.clone(),

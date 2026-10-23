@@ -529,6 +529,7 @@ impl Stack {
             actor_id: "counter-1".into(),
         };
         let spec = HostLaunchSpec {
+            organization_id: Some("org-test".into()),
             sandboxes: Default::default(),
             source: None,
             code_snapshot: None,
@@ -609,6 +610,7 @@ impl Stack {
         });
         let token = issuer
             .issue_host(
+                Some("org-test"),
                 &host_id,
                 "00000000-0000-4000-8000-000000000001",
                 &revision,

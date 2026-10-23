@@ -48,6 +48,7 @@ pub(crate) struct LifecycleReport {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LifecycleEvent {
+    pub organization_id: Option<String>,
     pub event_id: String,
     pub actor: ActorKey,
     pub host_id: String,

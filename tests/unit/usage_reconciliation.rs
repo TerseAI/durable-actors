@@ -46,6 +46,7 @@ async fn reconcile_and_correct(
     tokio::try_join!(first.reconcile(46000), second.reconcile(46000))?;
     let estimate = next(&mut received).await?;
     assert_eq!(estimate.usage_id, started.usage_id);
+    assert_eq!(estimate.event.organization_id.as_deref(), Some("org-test"));
     assert_eq!(estimate.revision, 5);
     assert!(estimate.estimated);
     assert_eq!(estimate.ended_at_ms, Some(11000));
@@ -70,6 +71,7 @@ async fn reconcile_and_correct(
         .await?;
     let resumed = next(&mut received).await?;
     assert_eq!(resumed.usage_id, started.usage_id);
+    assert_eq!(resumed.event.organization_id, started.event.organization_id);
     assert_eq!(resumed.revision, 6);
     assert!(!resumed.estimated);
     assert_eq!(resumed.ended_at_ms, None);
@@ -105,6 +107,7 @@ async fn next(
 
 fn event(kind: LifecycleKind, sequence: u64, time: u64) -> LifecycleEvent {
     LifecycleEvent {
+        organization_id: Some("org-test".into()),
         event_id: format!("session:{sequence}"),
         actor: ActorKey {
             project_id: "project".into(),

@@ -21,7 +21,7 @@ async fn lifecycle_reports_use_authenticated_identity_without_reading_ownership(
     let host = HostId::new("host.v3.test.one");
     let session = uuid::Uuid::new_v4().to_string();
     let token = issuer
-        .issue_host(&host, &session, "test", "us-east", &actor)?
+        .issue_host(Some("org-test"), &host, &session, "test", "us-east", &actor)?
         .token;
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
     let mut service = ControlPlaneService::new(
@@ -61,6 +61,7 @@ async fn lifecycle_reports_use_authenticated_identity_without_reading_ownership(
         ));
         let event = received.try_recv()?;
         assert_eq!(event.actor, actor);
+        assert_eq!(event.organization_id.as_deref(), Some("org-test"));
         assert_eq!(event.host_id, host.as_str());
         assert_eq!(event.session_id, session);
         assert_eq!(event.region, "us-east");

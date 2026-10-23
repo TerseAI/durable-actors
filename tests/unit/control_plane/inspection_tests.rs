@@ -255,6 +255,7 @@ async fn observability_requires_admin_credentials() -> Result<()> {
     let token = fixture
         .issuer
         .issue_host(
+            Some("org-test"),
             &fixture.host,
             &uuid::Uuid::new_v4().to_string(),
             "r1",
@@ -363,6 +364,7 @@ impl Fixture {
         let now = SystemClock.now_ms()?;
         self.lifecycle
             .record(LifecycleEvent {
+                organization_id: Some("org-test".into()),
                 event_id: format!("session:{sequence}"),
                 actor,
                 host_id: self.host.to_string(),
@@ -484,6 +486,7 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
         .admin
         .register_deployment(
             &super::admin::HostLaunchSpec {
+                organization_id: Some("org-test".into()),
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
