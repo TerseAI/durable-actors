@@ -56,6 +56,39 @@ Configuration uses environment variables. Precedence is to use exported variable
 | `DURABLE_ACTORS_REGION`                 | Unset   | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                                                                                              |
 | `DURABLE_ACTORS_HOME_REGION`            | Unset   | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                                                                                            |
 
+## Project actor limits
+
+Hosted control planes enable these operator limits by default. They cover all actor types, regions, and credentials in each project. All replicas must share Redis and use the same defaults. A single controller without Redis uses memory. Local development is disabled by default; explicitly set `DURABLE_ACTORS_PROJECT_LIMITS_ENABLED=true` to test the in-memory implementation locally.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DURABLE_ACTORS_PROJECT_LIMITS_ENABLED` | `true` hosted; `false` local | Enable or disable activation limits. |
+| `DURABLE_ACTORS_PROJECT_MAX_ACTIVE_ACTORS` | `10000` | Maximum reserved, starting, running, and draining activations per project. Dormant stored actor identities do not consume capacity. |
+| `DURABLE_ACTORS_PROJECT_ACTOR_STARTS_PER_SECOND` | `50` | Sustained sandbox start rate per project, including waking dormant actors and regional fallback attempts. |
+| `DURABLE_ACTORS_PROJECT_ACTOR_START_BURST` | `100` | Maximum accumulated start tokens, initially full. |
+
+Numeric values must be integers from 1 to 4,294,967,295. The Helm chart's `projectLimits` values set these environment variables. Before issuing storage access, claiming a spare, or invoking the provider, the control plane atomically reserves capacity and spends a start token in Redis. Each host/session is charged once. Ordinary calls to running hosts do not check or spend start tokens.
+
+The existing authenticated lifecycle reports maintain reservations. `started`, `heartbeat`, and `draining` keep the activation counted. A matching `stopped` report releases capacity exactly once; delayed events cannot affect a replacement session. Reports from hosts running before rollout are counted as they arrive, without spending start tokens. After Redis data loss or an in-memory controller restart, existing usage rebuilds from lifecycle reports; capacity is not fully known during that rebuild.
+
+Missing heartbeats, estimated usage stops, cancelled requests, and ambiguous provider failures do **not** release reservations. This conservative guard can retain capacity for a host that has actually died. Operators must confirm the host is stopped before removing its member from `durable-actors:admission:v1:{PROJECT_ID}:active`; members encode actor type, actor ID, host, and session as a JSON array. Redis admission data should not be evicted. Memory state is scoped to one controller process and resets on restart.
+
+Rejected starts return HTTP `429` with `actor_quota_exceeded` or `actor_start_rate_limited`. Rate rejections include `Retry-After` in seconds. SDKs surface these errors without automatic retries. If override lookup or the configured Redis backend is unavailable, new starts fail with `503`; existing warm routes remain usable. WebSocket grants are issued before resolution, so a rejected WebSocket activation closes the connection without starting a host.
+
+Operators can override any subset of hosted defaults directly in PostgreSQL, without restarting controllers:
+
+```sql
+INSERT INTO durable_actors_project_limits
+    (project_id, max_active_actors, actor_starts_per_second, actor_start_burst)
+VALUES ('my-project', 20000, 500, 1000)
+ON CONFLICT (project_id) DO UPDATE SET
+    max_active_actors = EXCLUDED.max_active_actors,
+    actor_starts_per_second = EXCLUDED.actor_starts_per_second,
+    actor_start_burst = EXCLUDED.actor_start_burst;
+```
+
+Each `NULL` column inherits its environment default. Set a column to `NULL` to reset that override, or delete the override row to restore all defaults. These changes preserve active reservations and token balances. Lowering capacity below current usage blocks additional starts while existing hosts keep serving. Override settings are never accepted from deployment bundles or exposed through the public API or SDK. Local opt-in uses the environment defaults without PostgreSQL overrides.
+
 ## Authentication and callbacks
 
 | Variable                                | Default                        | Description                                                                                                                                    |

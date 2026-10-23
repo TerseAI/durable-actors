@@ -69,6 +69,23 @@ fn configures_gateway_connection_limit() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn project_limit_defaults_are_loaded_from_the_environment() -> Result<()> {
+    let mut values = process_environment();
+    values.extend([
+        ("DURABLE_ACTORS_PROJECT_MAX_ACTIVE_ACTORS", "20000"),
+        ("DURABLE_ACTORS_PROJECT_ACTOR_STARTS_PER_SECOND", "100"),
+        ("DURABLE_ACTORS_PROJECT_ACTOR_START_BURST", "200"),
+    ]);
+    let config = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    })?;
+    assert_eq!(config.project_limits.unwrap().max_active_actors, 20_000);
+    assert_eq!(config.project_limits.unwrap().starts_per_second, 100);
+    assert_eq!(config.project_limits.unwrap().start_burst, 200);
+    Ok(())
+}
+
 #[tokio::test]
 async fn server_carries_websocket_upgrades() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

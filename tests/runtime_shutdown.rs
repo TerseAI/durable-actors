@@ -73,6 +73,88 @@ async fn idle_actors_rehydrate_with_live_websockets() -> Result<()> {
     .await
 }
 
+#[tokio::test]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
+async fn local_activation_limits_require_explicit_opt_in() -> Result<()> {
+    for enabled in [false, true] {
+        assert_local_activation_limits(enabled).await?;
+    }
+    Ok(())
+}
+
+async fn assert_local_activation_limits(enabled: bool) -> Result<()> {
+    let project = tempfile::tempdir()?;
+    local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
+    command
+        .args([
+            "dev",
+            "--port",
+            "0",
+            "--entrypoint",
+            "actors.ts",
+            "--project-id",
+            "default",
+            "--api-key",
+            "test-key",
+        ])
+        .arg("--sdk-host")
+        .arg(local_project::sdk_host())
+        .arg("--project")
+        .arg(project.path())
+        .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
+        .env("DURABLE_ACTORS_PROJECT_MAX_ACTIVE_ACTORS", "1")
+        .env("DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS", "60000")
+        .env_remove("DURABLE_ACTORS_PROJECT_LIMITS_ENABLED")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true);
+    if enabled {
+        command.env("DURABLE_ACTORS_PROJECT_LIMITS_ENABLED", "true");
+    }
+    let mut child = command.spawn()?;
+    let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
+    let origin = timeout(Duration::from_secs(20), wait_until_ready(&mut output)).await??;
+    let logs = tokio::spawn(async move {
+        let mut remaining = String::new();
+        output.read_to_string(&mut remaining).await?;
+        Ok::<_, std::io::Error>(remaining)
+    });
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()?;
+    for id in ["one", "one", "two"] {
+        let response = client
+            .post(format!(
+                "{origin}/v1/projects/default/actors/Counter/{id}/invoke"
+            ))
+            .bearer_auth("test-key")
+            .json(
+                &serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "method":"read", "args":[]}),
+            )
+            .send()
+            .await?;
+        let expected = if enabled && id == "two" {
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        } else {
+            reqwest::StatusCode::OK
+        };
+        ensure!(
+            response.status() == expected,
+            "unexpected local admission response: {}",
+            response.text().await?
+        );
+    }
+    drop(child.stdin.take());
+    let status = timeout(Duration::from_secs(10), child.wait()).await??;
+    let logs = logs.await??;
+    ensure!(
+        status.success(),
+        "local runtime shutdown failed: {status}: {logs}"
+    );
+    Ok(())
+}
+
 async fn assert_idle_behavior(actor: &str, client: &str) -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(project.path(), actor)?;

@@ -1762,6 +1762,9 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
 #[path = "invoke.rs"]
 mod invoke;
 
+#[path = "project_admission.rs"]
+mod project_admission;
+
 fn local_document(digest: &str) -> serde_json::Value {
     serde_json::json!({"workingDirectory": format!("/project/{digest}"), "actorEntrypoint":"src/actors.ts"})
 }
