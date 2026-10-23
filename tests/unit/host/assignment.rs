@@ -2,6 +2,30 @@ use super::*;
 use crate::host::HostId;
 
 #[tokio::test]
+async fn health_checks_do_not_claim_the_spare() -> anyhow::Result<()> {
+    let (send, mut receive) = tokio::sync::oneshot::channel();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router("secret".into(), send))
+            .await
+            .unwrap();
+    });
+    let client = reqwest::Client::new();
+    for _ in 0..2 {
+        let response = client.get(format!("{url}/healthz")).send().await?;
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await?, "ok");
+        assert!(matches!(
+            receive.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn assignment_is_authenticated_single_use_and_waits_for_readiness() -> anyhow::Result<()> {
     let (send, receive) = tokio::sync::oneshot::channel();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

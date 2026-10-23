@@ -128,6 +128,10 @@ Sandboxes run on GCP. Use a dedicated Modal App and PostgreSQL spare registry fo
 installation; sharing a registry between providers is unsupported. Runtime images must be
 accessible without private registry credentials.
 
+Each control-plane replica resolves ready spares' invocation hostnames and keeps their assignment
+HTTP/2 connections warm. Assignment and gateway requests share the same client and DNS cache;
+lookups honor DNS TTLs. Warmup is bounded and best effort, and never claims an actor.
+
 Deployment `secretRefs` use the same Kubernetes secrets as GKE. The control plane reads them
 from `DURABLE_ACTORS_GKE_NAMESPACE` (default `terse-sandboxes`) at assignment and requires
 Kubernetes credentials with permission to get those secrets. Secrets must carry the
