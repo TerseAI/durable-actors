@@ -1,5 +1,53 @@
 use super::*;
 
+#[tokio::test]
+async fn image_policy_migration_upgrades_published_runtimes_and_preserves_custom_images()
+-> Result<()> {
+    crate::postgres::testing::with_postgres(async |fixture| {
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        let registry = PostgresAdminRegistry::from_database(database.clone());
+        let mut platform = spec(&format!(
+            "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors@sha256:{}",
+            "a".repeat(64)
+        ));
+        platform.working_directory = "/customer".into();
+        platform.actor_entrypoint = Some("actors.mjs".into());
+        platform.code_snapshot = Some(crate::sandbox::testing::code_artifact(1));
+        let identity = platform.host_config_key();
+        let mut custom = platform.clone();
+        custom.project_id = "custom".into();
+        custom.image_ref = format!("customer/runtime@sha256:{}", "b".repeat(64));
+        registry.register_test_deployment(&platform).await?;
+        registry.register_test_deployment(&custom).await?;
+        let client = fixture.pool.get().await?;
+        client
+            .batch_execute("ALTER TABLE durable_actors_deployment DROP COLUMN image_policy")
+            .await?;
+        client
+            .batch_execute(include_str!(
+                "../../../migrations/V21__deployment_image_policy.sql"
+            ))
+            .await?;
+        let migrated = registry.launch_spec("default").await?.unwrap();
+        assert_eq!(migrated.image_policy, ImagePolicy::Legacy);
+        let images = crate::control_plane::RuntimeImages {
+            typescript: platform.image_ref.replace(&"a".repeat(64), &"b".repeat(64)),
+            python: "unused".into(),
+        };
+        assert_eq!(images.for_deployment(&migrated)?, images.typescript);
+        assert_eq!(images.for_deployment(&custom)?, custom.image_ref);
+        assert_eq!(migrated.image_ref, platform.image_ref);
+        assert_eq!(migrated.host_config_key(), identity);
+        assert_eq!(registry.launch_spec("custom").await?, Some(custom));
+        assert!(!registry.register_test_deployment(&migrated).await?);
+        platform.image_policy = ImagePolicy::Platform;
+        assert!(registry.register_test_deployment(&platform).await?);
+        assert_eq!(registry.launch_spec("default").await?, Some(platform));
+        Ok(())
+    })
+    .await
+}
+
 #[test]
 fn secret_changes_update_host_configuration() {
     let mut deployment = spec("image-1");
@@ -80,6 +128,7 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
 
 fn spec(image: &str) -> HostLaunchSpec {
     HostLaunchSpec {
+        image_policy: Default::default(),
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,

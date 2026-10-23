@@ -487,6 +487,7 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
         .admin
         .register_deployment(
             &super::admin::HostLaunchSpec {
+                image_policy: Default::default(),
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,

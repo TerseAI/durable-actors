@@ -69,6 +69,10 @@ Configuration uses environment variables. Precedence is to use exported variable
 
 ## Kubernetes hosting
 
+Hosted bundles use the current configured TypeScript or Python runtime on each cold start. Platform upgrades keep the same immutable GCS code artifact and saved actor state; existing hosts finish their normal lifecycle. Runtime releases must remain compatible with previously deployed artifacts and state.
+
+For native dependencies, supply a digest-pinned `imageRef` alongside the deployment's `bundle`. That custom image remains pinned until explicitly changed and must include the durable-actors runtime and language executor. Modal imports custom images on demand. Existing deployments without an image policy follow the platform runtime when their image uses the configured runtime repository; unrecognized repositories remain pinned. If moving platform images to a different repository, classify existing deployments before the move.
+
 Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/durable-actors/README.md) to run on GKE Sandbox with PostgreSQL and one Standard GCS bucket. One controller handles HTTP and WebSockets, and actor pods start on demand. The chart sets `DURABLE_ACTORS_SPARE_IDLE=0`; the runtime's standalone default above remains 64.
 
 | Variable | Description |

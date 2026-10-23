@@ -352,6 +352,7 @@ impl Fixture {
         admin
             .register_deployment(
                 &HostLaunchSpec {
+                    image_policy: Default::default(),
                     sandboxes: Default::default(),
                     project_id: "default".into(),
                     source: None,

@@ -132,7 +132,15 @@ impl ControlPlaneService {
         &self,
         project_id: &str,
     ) -> Result<Option<HostLaunchSpec>> {
-        self.registry.launch_spec(project_id).await
+        let mut spec = self.registry.launch_spec(project_id).await?;
+        if let Some(spec) = &mut spec {
+            spec.image_policy = self.provisioner.image_policy(spec)?;
+        }
+        Ok(spec)
+    }
+
+    pub(super) fn image_policy(&self, spec: &HostLaunchSpec) -> Result<super::admin::ImagePolicy> {
+        self.provisioner.image_policy(spec)
     }
 
     pub(super) async fn register_deployment(
@@ -783,6 +791,10 @@ impl std::error::Error for RegionConflict {}
 pub(crate) trait HostProvisioner: Send + Sync {
     fn host_idle_timeout_ms(&self) -> u64;
 
+    fn image_policy(&self, spec: &HostLaunchSpec) -> Result<super::admin::ImagePolicy> {
+        Ok(spec.image_policy)
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -867,6 +879,13 @@ impl HostProvisioner for SandboxHostProvisioner {
         self.runtime.host_idle_timeout_ms
     }
 
+    fn image_policy(&self, spec: &HostLaunchSpec) -> Result<super::admin::ImagePolicy> {
+        match &self.runtime_images {
+            Some(images) => images.image_policy(spec),
+            None => Ok(spec.image_policy),
+        }
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -886,12 +905,16 @@ impl HostProvisioner for SandboxHostProvisioner {
             .context("hosted deployments require artifact storage access")?
             .validate_code(&manifest)?;
         let mut prepared = source.clone();
-        prepared.image_ref = self
-            .runtime_images
-            .as_ref()
-            .context("hosted deployments require runtime images")?
-            .for_entrypoint(manifest.entrypoint()?)?
-            .into();
+        if source.image_policy == super::admin::ImagePolicy::Platform {
+            prepared.image_ref = self
+                .runtime_images
+                .as_ref()
+                .context("hosted deployments require runtime images")?
+                .for_entrypoint(manifest.entrypoint()?)?
+                .into();
+        } else {
+            crate::sandbox::gke::validate_image(&source.image_ref)?;
+        }
         prepared.validate()?;
         Ok((prepared, None))
     }
@@ -1135,7 +1158,10 @@ impl SandboxHostProvisioner {
             control_plane_url: self.runtime.control_plane_url.clone(),
             jwt_issuer: self.runtime.jwt_issuer.clone(),
             invocation_jwt_audience: self.runtime.invocation_jwt_audience.clone(),
-            image_ref: spec.image_ref.clone(),
+            image_ref: match &self.runtime_images {
+                Some(images) => images.for_deployment(spec)?.into(),
+                None => spec.image_ref.clone(),
+            },
             working_directory: spec.working_directory.clone(),
             actor_entrypoint: spec
                 .actor_entrypoint
