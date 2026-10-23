@@ -174,6 +174,22 @@ async fn control_plane_routes(
         stop.clone(),
     )
     .await?;
+    let retention = config
+        .jwt_max_lifetime
+        .saturating_add(Duration::from_millis(
+            crate::host_leases::MAX_HOST_LEASE_DURATION_MS,
+        ));
+    let routing: Arc<dyn crate::actor_lifecycle::routing::RoutingHints> = match &redis {
+        Some(redis) => Arc::new(crate::actor_lifecycle::routing::RedisRoutingHints::new(
+            redis.clone(),
+            "durable-actors:v1:shutdown",
+            retention,
+        )),
+        None => Arc::new(crate::actor_lifecycle::routing::MemoryRoutingHints::new(
+            retention,
+        )),
+    };
+    let lifecycle = lifecycle.with_routing(routing);
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),

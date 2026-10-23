@@ -32,7 +32,11 @@ async fn lifecycle_reports_use_authenticated_identity_without_reading_ownership(
         Arc::new(UnavailableProvisioner),
     );
     service.lifecycle = LifecycleStore::new(Arc::new(Persistence(sent)));
-    for (sequence, kind) in [(1, LifecycleKind::Started), (2, LifecycleKind::Stopped)] {
+    for (sequence, kind) in [
+        (1, LifecycleKind::Started),
+        (2, LifecycleKind::Draining),
+        (3, LifecycleKind::Stopped),
+    ] {
         let mut request = Request::new(super::super::super::protocol::encode_command(
             ControlPlaneCommand::Lifecycle {
                 report: LifecycleReport {
@@ -63,6 +67,13 @@ async fn lifecycle_reports_use_authenticated_identity_without_reading_ownership(
         assert_eq!(event.event_id, format!("{session}:{sequence}"));
         assert_eq!(event.report.kind, kind);
         assert!(event.received_at_ms > 0);
+        assert_eq!(
+            service
+                .lifecycle
+                .routing(&actor.storage_key(), host.as_str(), &session, 1)
+                .await,
+            (kind != LifecycleKind::Started).then_some(kind),
+        );
     }
     Ok(())
 }

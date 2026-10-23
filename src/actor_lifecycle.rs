@@ -19,6 +19,8 @@ use crate::{
 pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const STALE_AFTER_MS: u64 = 35_000;
 
+pub(crate) mod routing;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LifecycleKind {
@@ -61,7 +63,10 @@ pub(crate) trait LifecyclePersistence: Send + Sync {
 }
 
 #[derive(Clone)]
-pub(crate) struct LifecycleStore(Arc<dyn LifecyclePersistence>);
+pub(crate) struct LifecycleStore {
+    persistence: Arc<dyn LifecyclePersistence>,
+    routing: Arc<dyn routing::RoutingHints>,
+}
 
 impl Default for LifecycleStore {
     fn default() -> Self {
@@ -71,7 +76,17 @@ impl Default for LifecycleStore {
 
 impl LifecycleStore {
     pub(crate) fn new(persistence: Arc<dyn LifecyclePersistence>) -> Self {
-        Self(persistence)
+        Self {
+            persistence,
+            routing: Arc::new(routing::MemoryRoutingHints::new(Duration::from_secs(
+                86_460,
+            ))),
+        }
+    }
+
+    pub(crate) fn with_routing(mut self, routing: Arc<dyn routing::RoutingHints>) -> Self {
+        self.routing = routing;
+        self
     }
 
     pub(crate) async fn record(&self, event: LifecycleEvent) -> Result<()> {
@@ -81,7 +96,47 @@ impl LifecycleStore {
             event.report.occurred_at_ms >= event.report.started_at_ms,
             "invalid lifecycle time range"
         );
-        self.0.record(&event).await
+        let (persisted, ()) =
+            tokio::join!(self.persistence.record(&event), self.record_routing(&event));
+        persisted
+    }
+
+    pub(crate) async fn routing(
+        &self,
+        actor: &crate::actor_state::ActorStorageKey,
+        host: &str,
+        session: &str,
+        epoch: u64,
+    ) -> Option<LifecycleKind> {
+        match self
+            .routing
+            .get(&routing::session_key(actor, host, session, epoch))
+            .await
+        {
+            Ok(hint) => hint,
+            Err(error) => {
+                tracing::warn!(%error, "shutdown hint unavailable; routing with ownership lease");
+                None
+            }
+        }
+    }
+
+    async fn record_routing(&self, event: &LifecycleEvent) {
+        if !matches!(
+            event.report.kind,
+            LifecycleKind::Draining | LifecycleKind::Stopped
+        ) {
+            return;
+        }
+        let key = routing::session_key(
+            &event.actor.storage_key(),
+            &event.host_id,
+            &event.session_id,
+            event.report.owner_epoch,
+        );
+        if let Err(error) = self.routing.record(&key, event.report.kind).await {
+            tracing::warn!(%error, "host shutdown hint could not be recorded");
+        }
     }
 }
 
@@ -90,7 +145,7 @@ impl ActorInventoryReader for LifecycleStore {
     async fn actor_inventory(&self, project: &str) -> Result<ActorInventorySnapshot> {
         let now = SystemClock.now_ms()?;
         let mut actors = BTreeMap::<String, ActorInventory>::new();
-        for event in self.0.latest(project).await? {
+        for event in self.persistence.latest(project).await? {
             let status = residency(&event, now);
             let actor = actors
                 .entry(event.actor.actor_name.clone())

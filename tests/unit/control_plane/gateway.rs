@@ -39,7 +39,7 @@ async fn signed_route_is_bound_to_the_actor_and_epoch() -> Result<()> {
     )?;
     let authorization = format!("Bearer {}", token.token);
     assert_eq!(
-        gateway.invocation_route(&actor, 7, &authorization)?,
+        gateway.invocation_route(&actor, 7, &authorization)?.0,
         "http://10.1.2.3:7101/"
     );
     assert!(gateway.invocation_route(&actor, 8, &authorization).is_err());
@@ -117,7 +117,9 @@ async fn signed_route_rejects_divergent_principal_actor() -> Result<()> {
         "http://10.1.2.3:7101",
     )?;
     assert_eq!(
-        gateway.invocation_route(&capability_actor, 7, &format!("Bearer {}", control.token))?,
+        gateway
+            .invocation_route(&capability_actor, 7, &format!("Bearer {}", control.token))?
+            .0,
         "http://10.1.2.3:7101/"
     );
 
