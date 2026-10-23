@@ -6,6 +6,7 @@ fn config() -> ModalConfig {
         regions: BTreeMap::from([("north-america-west".into(), "us-west".into())]),
         timeout: Duration::from_secs(600),
         registry_secrets: BTreeMap::new(),
+        code_snapshots: true,
     }
 }
 

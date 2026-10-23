@@ -719,6 +719,11 @@ fn sandbox_backend(
                     regions,
                     timeout: Duration::from_secs(seconds.into()),
                     registry_secrets,
+                    code_snapshots: get("DURABLE_ACTORS_MODAL_CODE_SNAPSHOTS")
+                        .map(|value| value.parse())
+                        .transpose()
+                        .context("DURABLE_ACTORS_MODAL_CODE_SNAPSHOTS must be boolean")?
+                        .unwrap_or(true),
                 }),
                 canonical,
             ))

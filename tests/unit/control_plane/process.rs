@@ -575,6 +575,12 @@ fn modal_configuration_does_not_require_kubernetes() -> Result<()> {
         "project-secrets"
     );
     assert!(modal.registry_secrets.is_empty());
+    assert!(modal.code_snapshots);
+    values.insert("DURABLE_ACTORS_MODAL_CODE_SNAPSHOTS", "false");
+    let SandboxBackend::Modal(disabled) = parse(&values)?.sandbox_provider.backend else {
+        panic!("expected Modal")
+    };
+    assert!(!disabled.code_snapshots);
     let mut authenticated = values.clone();
     authenticated.insert(
         "DURABLE_ACTORS_MODAL_REGISTRY_SECRETS",
@@ -600,6 +606,7 @@ fn modal_configuration_does_not_require_kubernetes() -> Result<()> {
             r#"{"north-america-west":"us-east"}"#,
         ),
         ("DURABLE_ACTORS_MODAL_TIMEOUT_SECONDS", "0"),
+        ("DURABLE_ACTORS_MODAL_CODE_SNAPSHOTS", "invalid"),
         ("DURABLE_ACTORS_MODAL_REGISTRY_SECRETS", "[]"),
         (
             "DURABLE_ACTORS_MODAL_REGISTRY_SECRETS",

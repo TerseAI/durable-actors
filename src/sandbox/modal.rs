@@ -30,6 +30,7 @@ pub(crate) struct ModalConfig {
     pub regions: BTreeMap<String, String>,
     pub timeout: Duration,
     pub registry_secrets: BTreeMap<String, String>,
+    pub code_snapshots: bool,
 }
 
 pub(crate) async fn provider(
@@ -96,7 +97,9 @@ struct ModalCluster {
 #[async_trait]
 impl SandboxCluster for ModalCluster {
     async fn prepare_registration(&self, deployment: &SandboxDeployment) -> Result<()> {
-        self.snapshots.prepare(deployment).await?;
+        if self.config.code_snapshots {
+            self.snapshots.prepare(deployment).await?;
+        }
         Ok(())
     }
 
@@ -155,7 +158,7 @@ impl SandboxCluster for ModalCluster {
         request: &EnsureHostRequest,
         spare: &SpareHandle,
     ) -> Result<bool> {
-        if request.code_snapshot.is_none() {
+        if !self.config.code_snapshots || request.code_snapshot.is_none() {
             return Ok(false);
         }
         let deployment = SandboxDeployment {

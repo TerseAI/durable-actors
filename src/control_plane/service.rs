@@ -1015,15 +1015,17 @@ impl SandboxHostProvisioner {
             }
         };
         let spare = async {
-            match &self.pool {
+            let started = Instant::now();
+            let result = match &self.pool {
                 Some(pool) => {
                     pool.claim(spec, region, request.host_id.as_str(), &request.resources)
                         .await
                 }
                 None => Ok(None),
-            }
+            };
+            (result, elapsed_ms(started))
         };
-        let (runtime_config, spare) = tokio::join!(token, spare);
+        let (runtime_config, (spare, spare_claim_ms)) = tokio::join!(token, spare);
         request.spare = spare?;
         if let Some(pool) = &self.pool {
             if request.spare.is_none() {
@@ -1121,6 +1123,7 @@ impl SandboxHostProvisioner {
             provider = provisioning.as_ref().map(|value| value.provider.as_str()).unwrap_or("unknown"),
             provider_resource_id = provisioning.as_ref().map(|value| value.resource_id.as_str()).unwrap_or(""),
             provider_reused = provisioning.as_ref().is_some_and(|value| value.reused),
+            spare_claim_ms,
             started_at_ms = 0,
             provider_process_spawned_at_ms = provisioning.as_ref().and_then(|value| value.command_spawned_at_ms),
             provider_request_written_at_ms = provisioning.as_ref().and_then(|value| value.request_written_at_ms),

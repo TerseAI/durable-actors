@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -43,6 +47,7 @@ impl RemoteSandboxProvider {
         );
         let secrets = self.secrets.resolve(&request.secret_refs).await?;
         let mut environment = assignment_environment(request, spare, secrets)?;
+        let code_started = Instant::now();
         let prepared = self.cluster.prepare_assignment(request, spare).await?;
         if prepared {
             environment.remove("DURABLE_ACTORS_CODE_ARTIFACT");
@@ -51,9 +56,17 @@ impl RemoteSandboxProvider {
             event = "actor_code_delivery",
             host_id = %request.host_id,
             delivery = if prepared { "snapshot" } else { "gcs" },
+            duration_ms = code_started.elapsed().as_secs_f64() * 1000.0,
             "actor code delivery selected"
         );
+        let assignment_started = Instant::now();
         let handle = self.assignment.assign(spare, environment).await?;
+        tracing::info!(
+            event = "actor_host_assignment",
+            host_id = %request.host_id,
+            duration_ms = assignment_started.elapsed().as_secs_f64() * 1000.0,
+            "actor host assignment completed"
+        );
         let lease = handle
             .lease
             .as_ref()

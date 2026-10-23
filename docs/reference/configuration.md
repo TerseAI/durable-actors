@@ -118,6 +118,7 @@ Both providers use the same PostgreSQL spare pool, deployment API, actor runtime
 | `DURABLE_ACTORS_MODAL_REGIONS` | Required for Modal | JSON mapping of canonical actor regions to Modal regions, e.g. `{"north-america-west":"us-west"}`. |
 | `DURABLE_ACTORS_MODAL_TIMEOUT_SECONDS` | `3600` | Maximum sandbox lifetime, 120–86400 seconds, including time spent as a spare. |
 | `DURABLE_ACTORS_MODAL_REGISTRY_SECRETS` | `{}` | JSON mapping of registry hosts to Modal Secret names, e.g. `{"us-west4-docker.pkg.dev":"actor-registry-reader"}`. |
+| `DURABLE_ACTORS_MODAL_CODE_SNAPSHOTS` | `true` | Prepare and mount reusable code snapshots. Set `false` to use verified GCS delivery for comparisons or rollback; spare pooling remains enabled independently. |
 
 Modal reads the active `~/.modal.toml` profile or `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`.
 Its control-plane URL must be an HTTPS origin that carries gRPC. Proxies must preserve HTTP/2
