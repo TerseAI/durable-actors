@@ -12,6 +12,55 @@ use std::{
 
 const RETENTION: Duration = Duration::from_secs(86_460);
 
+#[tokio::test]
+async fn routing_preserves_suspension_and_admission_errors() -> Result<()> {
+    use crate::control_plane::{access::AccessDisabled, public_api::ApiError};
+    use axum::{body::to_bytes, response::IntoResponse};
+
+    for (error, status, code, retry_after) in [
+        (
+            anyhow::Error::new(AccessDisabled),
+            403,
+            "access_disabled",
+            None,
+        ),
+        (
+            anyhow::Error::new(AdmissionRejected::Quota { limit: 500 }).context(AdmissionFailure),
+            429,
+            "actor_quota_exceeded",
+            None,
+        ),
+        (
+            anyhow::Error::new(AdmissionRejected::Rate {
+                retry_after_seconds: 2,
+            })
+            .context(AdmissionFailure),
+            429,
+            "actor_start_rate_limited",
+            Some("2"),
+        ),
+    ] {
+        let response = ApiError::routing(error).into_response();
+        assert_eq!(response.status().as_u16(), status);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .map(|v| v.to_str().unwrap()),
+            retry_after
+        );
+        if status == 429 {
+            assert_eq!(response.headers()["cache-control"], "no-store");
+        }
+        let body = to_bytes(response.into_body(), usize::MAX).await?;
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body)?["error"]["code"],
+            code
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn limits_are_enabled_hosted_and_opt_in_locally() -> Result<()> {
     assert_eq!(
