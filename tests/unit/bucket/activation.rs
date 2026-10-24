@@ -913,3 +913,302 @@ impl crate::bucket::SnapshotStore for RejectingSnapshots {
         self.inner.put(object, bytes).await
     }
 }
+
+struct PausedSnapshots {
+    inner: crate::bucket::BucketSnapshots,
+    head: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
+    checkpoint: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
+    starts: AtomicU64,
+    reject_head: AtomicBool,
+}
+
+async fn pause_snapshot(
+    gate: &Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
+) -> Result<()> {
+    let pending = gate.lock().unwrap().take();
+    if let Some((entered, resume)) = pending {
+        entered.add_permits(1);
+        resume.acquire().await?.forget();
+    }
+    Ok(())
+}
+
+#[async_trait]
+impl crate::bucket::SnapshotStore for PausedSnapshots {
+    async fn get(&self, object: &str) -> Result<Option<Bytes>> {
+        pause_snapshot(&self.head).await?;
+        ensure!(
+            !self.reject_head.load(Ordering::SeqCst),
+            "head download failed"
+        );
+        self.inner.get(object).await
+    }
+    async fn prefetch_checkpoint(
+        &self,
+        source: &SnapshotRef,
+    ) -> Result<Option<crate::bucket::recovery::PrefetchedCheckpoint>> {
+        pause_snapshot(&self.checkpoint).await?;
+        Ok(Some(crate::bucket::recovery::PrefetchedCheckpoint {
+            source: source.clone(),
+            bytes: None,
+        }))
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix).await
+    }
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+        self.inner.latest(prefix).await
+    }
+    async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
+        self.inner.put(object, bytes).await
+    }
+    async fn start(&self, _: &StateStream) -> Result<()> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+async fn sealed_activation() -> Result<(Fixture, Arc<PausedSnapshots>, OwnershipHint)> {
+    use crate::state_transport::SnapshotWriter;
+    let mut f = Fixture::new()?;
+    let snapshots = Arc::new(PausedSnapshots {
+        inner: crate::bucket::BucketSnapshots(f.bucket.clone()),
+        head: Mutex::new(None),
+        checkpoint: Mutex::new(None),
+        starts: AtomicU64::new(0),
+        reject_head: AtomicBool::new(false),
+    });
+    f.runtime = f
+        .runtime
+        .with_persistence(crate::bucket::SnapshotStoreConfig::Local, snapshots.clone())?;
+    let first = request("first");
+    let active = f
+        .runtime
+        .register_activation(&f.actor, &first, "us-east", true, None)
+        .await?;
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &active.placement.lease, 1, 1)
+        .await?;
+    let bytes = crate::state_log::StateSnapshot::new(
+        1,
+        1,
+        "committed".into(),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":42}))?,
+        serde_json::json!(42),
+    )?
+    .encode()?;
+    f.runtime.write_snapshot(&plan, bytes).await?;
+    let checkpoint = f
+        .runtime
+        .drain_activation(
+            &f.actor,
+            &first.id,
+            &first.session_id,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
+    f.runtime
+        .release_with_checkpoint(&f.actor, &first.id, &first.session_id, Some(checkpoint))
+        .await?;
+    let (_, hint) = f
+        .runtime
+        .get_owner_with_hint(&f.actor.storage_key())
+        .await?;
+    snapshots.starts.store(0, Ordering::SeqCst);
+    Ok((f, snapshots, hint.unwrap()))
+}
+
+#[tokio::test]
+async fn sealed_activation_overlaps_ownership_head_and_checkpoint_but_waits_to_open_the_stream()
+-> Result<()> {
+    let (f, snapshots, hint) = sealed_activation().await?;
+    let gates: Vec<_> = (0..3)
+        .map(|_| {
+            (
+                Arc::new(tokio::sync::Semaphore::new(0)),
+                Arc::new(tokio::sync::Semaphore::new(0)),
+            )
+        })
+        .collect();
+    *f.bucket.delay_write.lock().unwrap() = Some(gates[0].clone());
+    *snapshots.head.lock().unwrap() = Some(gates[1].clone());
+    *snapshots.checkpoint.lock().unwrap() = Some(gates[2].clone());
+    let next = request("next");
+    let activated = tokio::time::timeout(Duration::from_secs(5), async {
+        let control = async {
+            for (entered, _) in &gates {
+                entered.acquire().await?.forget();
+            }
+            assert_eq!(snapshots.starts.load(Ordering::SeqCst), 0);
+            for (_, resume) in &gates {
+                resume.add_permits(1);
+            }
+            anyhow::Ok(())
+        };
+        let (loaded, controlled) = tokio::join!(
+            f.runtime
+                .register_activation(&f.actor, &next, "us-east", false, Some(&hint)),
+            control
+        );
+        controlled?;
+        loaded
+    })
+    .await??;
+    assert_eq!(activated.placement.owner_epoch, 2);
+    assert_eq!(snapshots.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        activated
+            .state
+            .as_deref()
+            .map(crate::state_log::StateSnapshot::decode)
+            .transpose()?
+            .unwrap()
+            .state_version,
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_snapshot_activation_does_not_wait_for_an_unneeded_checkpoint() -> Result<()> {
+    let (f, snapshots, hint) = sealed_activation().await?;
+    let head_entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let head_resume = Arc::new(tokio::sync::Semaphore::new(0));
+    let checkpoint_entered = Arc::new(tokio::sync::Semaphore::new(0));
+    *snapshots.head.lock().unwrap() = Some((head_entered.clone(), head_resume.clone()));
+    *snapshots.checkpoint.lock().unwrap() = Some((
+        checkpoint_entered.clone(),
+        Arc::new(tokio::sync::Semaphore::new(0)),
+    ));
+    let next = request("next");
+    let activated = tokio::time::timeout(Duration::from_secs(5), async {
+        let release_head = async {
+            head_entered.acquire().await?.forget();
+            checkpoint_entered.acquire().await?.forget();
+            assert_eq!(snapshots.starts.load(Ordering::SeqCst), 0);
+            head_resume.add_permits(1);
+            anyhow::Ok(())
+        };
+        let (loaded, released) = tokio::join!(
+            f.runtime
+                .register_activation(&f.actor, &next, "us-east", false, Some(&hint)),
+            release_head,
+        );
+        released?;
+        loaded
+    })
+    .await??;
+    assert!(activated.checkpoint.is_none());
+    assert_eq!(activated.placement.state_version, 1);
+    assert_eq!(snapshots.starts.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_sealed_download_releases_its_claim_and_preserves_the_durable_base() -> Result<()> {
+    let (f, snapshots, hint) = sealed_activation().await?;
+    snapshots.reject_head.store(true, Ordering::SeqCst);
+    *snapshots.checkpoint.lock().unwrap() = Some((
+        Arc::new(tokio::sync::Semaphore::new(0)),
+        Arc::new(tokio::sync::Semaphore::new(0)),
+    ));
+    let failed = tokio::time::timeout(
+        Duration::from_secs(5),
+        f.runtime
+            .register_activation(&f.actor, &request("failed"), "us-east", false, Some(&hint)),
+    )
+    .await?;
+    assert_eq!(failed.err().unwrap().to_string(), "head download failed");
+    assert_eq!(snapshots.starts.load(Ordering::SeqCst), 0);
+    let (_, released) = f
+        .runtime
+        .get_owner_with_hint(&f.actor.storage_key())
+        .await?;
+    let released = released.unwrap();
+    assert!(released.record.sealed);
+    assert_eq!(released.record.lease.expires_at_ms, 0);
+    assert_eq!(released.record.base, hint.record.base);
+    snapshots.reject_head.store(false, Ordering::SeqCst);
+    let next = f
+        .runtime
+        .register_activation(
+            &f.actor,
+            &request("next"),
+            "us-east",
+            false,
+            Some(&released),
+        )
+        .await?;
+    assert_eq!(next.placement.owner_epoch, 3);
+    assert_eq!(next.placement.state_version, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_sealed_download_leaves_an_unadopted_claim_recoverable_after_expiry() -> Result<()>
+{
+    let (f, snapshots, hint) = sealed_activation().await?;
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let resume = Arc::new(tokio::sync::Semaphore::new(0));
+    *snapshots.head.lock().unwrap() = Some((entered.clone(), resume));
+    let cancelled = request("cancelled");
+    let mut pending = Box::pin(f.runtime.register_activation(
+        &f.actor,
+        &cancelled,
+        "us-east",
+        false,
+        Some(&hint),
+    ));
+    let claimed = tokio::time::timeout(Duration::from_secs(5), async {
+        let observed = async {
+            entered.acquire().await?.forget();
+            loop {
+                let (_, record) = f.runtime.load(&f.actor.storage_key()).await?.unwrap();
+                if record.lease.id == cancelled.id {
+                    return anyhow::Ok(record);
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::select! {
+            result = &mut pending => {
+                result?;
+                anyhow::bail!("activation completed before its blocked head download")
+            }
+            record = observed => record,
+        }
+    })
+    .await??;
+    drop(pending);
+    assert_eq!(snapshots.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(claimed.epoch, 2);
+    assert_eq!(claimed.base, hint.record.base);
+    assert!(
+        f.runtime
+            .prepare_actor_write(&f.actor, &claimed.lease, claimed.epoch, 2)
+            .await
+            .is_err()
+    );
+    let rejected = f
+        .runtime
+        .register_activation(&f.actor, &request("early"), "us-east", false, None)
+        .await;
+    assert_eq!(
+        rejected.err().unwrap().to_string(),
+        "previous owner lease is still active"
+    );
+    f.clock
+        .0
+        .store(claimed.lease.expires_at_ms, Ordering::SeqCst);
+    let restored = f
+        .runtime
+        .register_activation(&f.actor, &request("next"), "us-east", false, None)
+        .await?;
+    assert_eq!(restored.placement.owner_epoch, 3);
+    assert_eq!(restored.placement.state_version, 1);
+    let snapshot = crate::state_log::StateSnapshot::decode(restored.state.as_deref().unwrap())?;
+    assert_eq!(snapshot.completion.unwrap().result, serde_json::json!(42));
+    assert_eq!(snapshots.starts.load(Ordering::SeqCst), 1);
+    Ok(())
+}
