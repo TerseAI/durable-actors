@@ -25,7 +25,7 @@ pub struct ProjectLimits {
 impl Default for ProjectLimits {
     fn default() -> Self {
         Self {
-            max_active_actors: 10_000,
+            max_active_actors: 500,
             starts_per_second: 50,
             start_burst: 100,
         }

@@ -16,7 +16,7 @@ const RETENTION: Duration = Duration::from_secs(86_460);
 fn limits_are_enabled_hosted_and_opt_in_locally() -> Result<()> {
     assert_eq!(
         ProjectLimits::from_lookup(&mut |_| None, true)?,
-        Some(ProjectLimits::default())
+        Some(limits(500, 50, 100))
     );
     assert!(local_admission(&mut |_| None)?.is_none());
     assert!(

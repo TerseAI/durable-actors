@@ -63,7 +63,7 @@ Hosted control planes enable per-project limits by default; local development re
 | Variable | Default | Description |
 | --- | --- | --- |
 | `DURABLE_ACTORS_PROJECT_LIMITS_ENABLED` | `true` hosted; `false` local | Enable activation limits. |
-| `DURABLE_ACTORS_PROJECT_MAX_ACTIVE_ACTORS` | `10000` | Maximum starting, running, and draining activations. |
+| `DURABLE_ACTORS_PROJECT_MAX_ACTIVE_ACTORS` | `500` | Maximum starting, running, and draining activations. |
 | `DURABLE_ACTORS_PROJECT_ACTOR_STARTS_PER_SECOND` | `50` | Sustained start rate, including waking dormant actors. |
 | `DURABLE_ACTORS_PROJECT_ACTOR_START_BURST` | `100` | Start-token capacity, initially full. |
 
