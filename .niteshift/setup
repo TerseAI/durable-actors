@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "${NITESHIFT_CHECKOUT_ROOT:?}/Landing-Page/frontend"
+pnpm install --frozen-lockfile --allow-build esbuild --allow-build '!@tsparticles/engine'
