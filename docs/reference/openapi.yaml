@@ -740,11 +740,11 @@ components:
                 application/json:
                     schema: { $ref: "#/components/schemas/Error" }
         ActorLimit:
-            description: Actor start throttled before provisioning or execution with code actor_start_rate_limited. Existing running hosts remain usable. SDKs surface these errors without automatic retries.
+            description: Actor activation rejected before provisioning or execution. The code is actor_quota_exceeded for concurrent activation capacity or actor_start_rate_limited for temporary throttling. Existing running hosts remain usable. SDKs surface these errors without automatic retries.
             headers:
                 Cache-Control: { $ref: "#/components/headers/NoStore" }
                 Retry-After:
-                    description: Wait at least one second before trying again; concurrent requests may consume the next token first.
+                    description: Seconds until a start token is available. Present only for actor_start_rate_limited; concurrent requests may consume that token first.
                     schema: { type: integer, minimum: 1 }
             content:
                 application/json:

@@ -53,9 +53,10 @@ test("starts one controller and creates actor pods on demand using one Standard 
     assert.equal(output.match(/kind: Deployment\n/g).length, 1)
 })
 
-test("configures project start-rate limits", () => {
-    const output = manifests({ projectLimits: { enabled: false, actorStartsPerSecond: 100, actorStartBurst: 200 } })
+test("configures project actor capacity and start-rate limits", () => {
+    const output = manifests({ projectLimits: { enabled: false, maxActiveActors: 20000, actorStartsPerSecond: 100, actorStartBurst: 200 } })
     assert.match(output, /DURABLE_ACTORS_PROJECT_LIMITS_ENABLED, value: "false"/)
+    assert.match(output, /DURABLE_ACTORS_PROJECT_MAX_ACTIVE_ACTORS, value: "20000"/)
     assert.match(output, /DURABLE_ACTORS_PROJECT_ACTOR_STARTS_PER_SECOND, value: "100"/)
     assert.match(output, /DURABLE_ACTORS_PROJECT_ACTOR_START_BURST, value: "200"/)
 })

@@ -42,6 +42,7 @@ usage:
   topic: ""
 projectLimits:
   enabled: true
+  maxActiveActors: 10000
   actorStartsPerSecond: 50
   actorStartBurst: 100
 postgres:

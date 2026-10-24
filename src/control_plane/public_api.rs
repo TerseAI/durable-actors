@@ -554,6 +554,7 @@ pub(super) struct ApiError {
     status: StatusCode,
     code: String,
     message: String,
+    retry_after_seconds: Option<u64>,
 }
 
 impl ApiError {
@@ -578,15 +579,17 @@ impl ApiError {
     }
 
     pub(super) fn routing(error: anyhow::Error) -> Self {
-        if matches!(
-            error.downcast_ref::<super::project_limits::StartLimitError>(),
-            Some(super::project_limits::StartLimitError::Limited)
-        ) {
-            Self::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "actor_start_rate_limited",
-                error.to_string(),
-            )
+        if let Some(rejected) = error.downcast_ref::<super::project_limits::AdmissionRejected>() {
+            use super::project_limits::AdmissionRejected;
+            let (code, retry_after_seconds) = match rejected {
+                AdmissionRejected::Quota { .. } => ("actor_quota_exceeded", None),
+                AdmissionRejected::Rate {
+                    retry_after_seconds,
+                } => ("actor_start_rate_limited", Some(*retry_after_seconds)),
+            };
+            let mut response = Self::new(StatusCode::TOO_MANY_REQUESTS, code, rejected.to_string());
+            response.retry_after_seconds = retry_after_seconds;
+            response
         } else if error.is::<super::service::RegionConflict>() {
             Self::conflict(error.to_string())
         } else {
@@ -631,6 +634,7 @@ impl ApiError {
             status,
             code: code.into(),
             message: message.into(),
+            retry_after_seconds: None,
         }
     }
 }
@@ -651,9 +655,11 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        }
+        if let Some(seconds) = self.retry_after_seconds {
             response
                 .headers_mut()
-                .insert(header::RETRY_AFTER, "1".parse().unwrap());
+                .insert(header::RETRY_AFTER, seconds.into());
         }
         response
     }

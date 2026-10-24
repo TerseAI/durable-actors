@@ -58,30 +58,36 @@ Configuration uses environment variables. Precedence is to use exported variable
 
 ## Project actor limits
 
-Actor starts use a per-project token bucket to catch runaway creation loops while allowing application startup bursts. Hosted control planes enable it by default. Replicas share Redis; a single controller without Redis uses memory. Local development is disabled by default and uses memory when explicitly enabled.
+Hosted control planes enable these operator limits by default. They cover all actor types, regions, and credentials in each project. All replicas must share Redis and use the same defaults. A single controller without Redis uses memory. Local development is disabled by default; explicitly set `DURABLE_ACTORS_PROJECT_LIMITS_ENABLED=true` to test the in-memory implementation locally.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `DURABLE_ACTORS_PROJECT_LIMITS_ENABLED` | `true` hosted; `false` local | Enable or disable start-rate limiting. |
-| `DURABLE_ACTORS_PROJECT_ACTOR_STARTS_PER_SECOND` | `50` | Sustained sandbox start rate per project. |
+| `DURABLE_ACTORS_PROJECT_LIMITS_ENABLED` | `true` hosted; `false` local | Enable or disable activation limits. |
+| `DURABLE_ACTORS_PROJECT_MAX_ACTIVE_ACTORS` | `10000` | Maximum reserved, starting, running, and draining activations per project. Dormant stored actor identities do not consume capacity. |
+| `DURABLE_ACTORS_PROJECT_ACTOR_STARTS_PER_SECOND` | `50` | Sustained sandbox start rate per project, including waking dormant actors and regional fallback attempts. |
 | `DURABLE_ACTORS_PROJECT_ACTOR_START_BURST` | `100` | Maximum accumulated start tokens, initially full. |
 
-Positive integer defaults are configured through environment variables or the Helm chart's `projectLimits` values. Every sandbox start, including waking a dormant actor or trying another region, spends a token before provisioning. Calls to running actors do not spend tokens. This limits how quickly actors start; it does not cap how many can remain running.
+Numeric values must be integers from 1 to 4,294,967,295. The Helm chart's `projectLimits` values set these environment variables. Before issuing storage access, claiming a spare, or invoking the provider, the control plane atomically reserves capacity and spends a start token in Redis. Each host/session is charged once, whether started by an invocation, a WebSocket connection, or an alarm. Events delivered to an already-running host do not spend start tokens or reserve another active slot.
 
-Throttled starts return HTTP `429` with code `actor_start_rate_limited` and `Retry-After: 1`. SDKs surface the error without automatic retries. If Redis or the database override lookup fails, new starts fail with `503`. WebSocket activations fail by closing the connection. In-memory limits reset when the controller restarts.
+The existing authenticated lifecycle reports maintain reservations. `started`, `heartbeat`, and `draining` keep the activation counted. A matching `stopped` report releases capacity exactly once; delayed events cannot affect a replacement session. Reports from hosts running before rollout are counted as they arrive, without spending start tokens. After Redis data loss or an in-memory controller restart, existing usage rebuilds from lifecycle reports; capacity is not fully known during that rebuild.
 
-Operators can override hosted defaults directly in PostgreSQL without restarting controllers:
+Missing heartbeats, estimated usage stops, cancelled requests, and ambiguous provider failures do **not** release reservations. This conservative guard can retain capacity for a host that has actually died. Operators must confirm the host is stopped before removing its member from `durable-actors:admission:v1:{PROJECT_ID}:active`; members encode actor type, actor ID, host, and session as a JSON array. Redis admission data should not be evicted. Memory state is scoped to one controller process and resets on restart.
+
+Rejected starts return HTTP `429` with `actor_quota_exceeded` or `actor_start_rate_limited`. Rate rejections include `Retry-After` in seconds. SDKs surface these errors without automatic retries. If override lookup or the configured Redis backend is unavailable, new starts fail with `503`; existing warm routes remain usable. WebSocket grants are issued before resolution, so a rejected WebSocket activation closes the connection without starting a host.
+
+Operators can override any subset of hosted defaults directly in PostgreSQL, without restarting controllers:
 
 ```sql
 INSERT INTO durable_actors_project_limits
-    (project_id, actor_starts_per_second, actor_start_burst)
-VALUES ('my-project', 500, 1000)
+    (project_id, max_active_actors, actor_starts_per_second, actor_start_burst)
+VALUES ('my-project', 20000, 500, 1000)
 ON CONFLICT (project_id) DO UPDATE SET
+    max_active_actors = EXCLUDED.max_active_actors,
     actor_starts_per_second = EXCLUDED.actor_starts_per_second,
     actor_start_burst = EXCLUDED.actor_start_burst;
 ```
 
-A `NULL` column inherits its environment default. Delete the row to reset both overrides. Settings are not exposed through the public API or SDK. Local opt-in uses environment defaults without database overrides.
+Each `NULL` column inherits its environment default. Set a column to `NULL` to reset that override, or delete the override row to restore all defaults. These changes preserve active reservations and token balances. Lowering capacity below current usage blocks additional starts while existing hosts keep serving. Override settings are never accepted from deployment bundles or exposed through the public API or SDK. Local opt-in uses the environment defaults without PostgreSQL overrides.
 
 ## Authentication and callbacks
 
