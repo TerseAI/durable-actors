@@ -1,5 +1,6 @@
 use super::*;
 use crate::control_plane::access::AccessDisabled;
+use crate::control_plane::access::AccessSource::Admin;
 
 #[tokio::test]
 async fn organization_access_requires_admin_and_can_be_restored() -> Result<()> {
@@ -13,24 +14,48 @@ async fn organization_access_requires_admin_and_can_be_restored() -> Result<()> 
     );
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    for (token, enabled, status) in [
-        ("wrong", false, reqwest::StatusCode::UNAUTHORIZED),
-        ("api-key", false, reqwest::StatusCode::ACCEPTED),
-        ("api-key", true, reqwest::StatusCode::ACCEPTED),
+    for (enabled, source, effective) in [
+        (false, None, false),
+        (true, Some("billing"), false),
+        (true, None, true),
+        (false, Some("billing"), false),
+        (true, None, false),
+        (true, Some("billing"), true),
     ] {
+        let mut body = serde_json::json!({"enabled":enabled});
+        if let Some(source) = source {
+            body["source"] = source.into();
+        }
         let response = client
             .put(&url)
-            .bearer_auth(token)
-            .json(&serde_json::json!({"enabled":enabled}))
+            .bearer_auth("api-key")
+            .json(&body)
             .send()
             .await?;
-        assert_eq!(response.status(), status);
-        if token == "api-key" {
-            assert_eq!(
-                service.registry.project_access_enabled("default").await?,
-                enabled
-            );
-        }
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        assert_eq!(
+            response.json::<serde_json::Value>().await?,
+            serde_json::json!({"enabled":enabled,"source":source.unwrap_or("admin")})
+        );
+        assert_eq!(
+            service.registry.project_access_enabled("default").await?,
+            effective
+        );
+    }
+    for (token, source, status) in [
+        ("wrong", "admin", reqwest::StatusCode::UNAUTHORIZED),
+        ("api-key", "unknown", reqwest::StatusCode::BAD_REQUEST),
+    ] {
+        assert_eq!(
+            client
+                .put(&url)
+                .bearer_auth(token)
+                .json(&serde_json::json!({"enabled":true,"source":source}))
+                .send()
+                .await?
+                .status(),
+            status
+        );
     }
     assert!(admin.current_deployment("default").await?.is_some());
     server.abort();
@@ -50,7 +75,9 @@ async fn organization_shutdown_retries_without_affecting_other_tenants() -> Resu
         spec.organization_id = Some(organization.into());
         admin.register_test_deployment(&spec).await?;
     }
-    admin.set_organization_access("org-test", false).await?;
+    admin
+        .set_organization_access("org-test", Admin, false)
+        .await?;
     provider
         .fail_termination
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -83,7 +110,9 @@ async fn organization_shutdown_retries_without_affecting_other_tenants() -> Resu
             .unwrap_err()
             .is::<AccessDisabled>()
     );
-    admin.set_organization_access("org-test", true).await?;
+    admin
+        .set_organization_access("org-test", Admin, true)
+        .await?;
     service.ensure_project_access("default").await?;
     provider.retired.lock().unwrap().clear();
     service.reconcile_access().await?;

@@ -1,6 +1,7 @@
 use super::super::super::socket_gateway::{SocketEventReply, SocketEventRequest};
 use super::*;
 use crate::actor::{ActorSocketEffect, ActorSocketMessage};
+use crate::control_plane::access::AccessSource;
 use axum::{
     Json, Router,
     extract::State,
@@ -32,7 +33,7 @@ async fn suspension_rejects_cached_tickets_on_every_gateway_replica() -> Result<
     let epoch = target["ownerEpoch"].as_u64().unwrap();
     fixture
         .admin
-        .set_organization_access("org-test", false)
+        .set_organization_access("org-test", AccessSource::Admin, false)
         .await?;
     for origin in [&fixture.origin, &fixture.replica] {
         for (endpoint, body) in [
@@ -65,7 +66,7 @@ async fn suspension_blocks_existing_websocket_routes_and_connection_tickets() ->
     let before = fixture.host.socket_requests.lock().unwrap().len();
     fixture
         .admin
-        .set_organization_access("org-test", false)
+        .set_organization_access("org-test", AccessSource::Admin, false)
         .await?;
     let error = tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap())
         .await

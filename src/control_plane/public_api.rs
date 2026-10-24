@@ -115,12 +115,13 @@ async fn set_organization_access(
     let Json(request) = request.map_err(ApiError::json)?;
     state
         .admin
-        .set_organization_access(&organization, request.enabled)
+        .set_organization_access(&organization, request.source, request.enabled)
         .await
         .map_err(ApiError::internal)?;
     info!(
         event = "access_updated",
         organization_id = organization,
+        source = request.source.as_str(),
         enabled = request.enabled,
         "access setting updated"
     );
@@ -131,6 +132,8 @@ async fn set_organization_access(
 #[serde(deny_unknown_fields)]
 struct AccessRequest {
     enabled: bool,
+    #[serde(default)]
+    source: super::access::AccessSource,
 }
 
 async fn issue_session(

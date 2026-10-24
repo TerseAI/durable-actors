@@ -1,11 +1,29 @@
 use std::{fmt, time::Duration};
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use super::ControlPlaneService;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AccessSource {
+    #[default]
+    Admin,
+    Billing,
+}
+
+impl AccessSource {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Billing => "billing",
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct AccessDisabled;

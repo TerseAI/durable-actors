@@ -12,6 +12,7 @@ use subtle::ConstantTimeEq;
 use crate::postgres::PostgresDatabase;
 
 use super::ActorJwtIssuer;
+use super::access::AccessSource;
 use super::contracts::{PublicActorContract, PublishedContract, SandboxOptions};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,7 +136,12 @@ impl HostLaunchSpec {
 
 #[async_trait]
 pub(crate) trait AdminRegistry: Send + Sync {
-    async fn set_organization_access(&self, organization: &str, enabled: bool) -> Result<()>;
+    async fn set_organization_access(
+        &self,
+        organization: &str,
+        source: AccessSource,
+        enabled: bool,
+    ) -> Result<()>;
     async fn organization_access_enabled(&self, organization: Option<&str>) -> Result<bool>;
     async fn project_access_enabled(&self, project: &str) -> Result<bool> {
         let spec = self.launch_spec(project).await?;
@@ -291,10 +297,11 @@ impl AdminService {
     pub(super) async fn set_organization_access(
         &self,
         organization: &str,
+        source: AccessSource,
         enabled: bool,
     ) -> Result<()> {
         self.registry
-            .set_organization_access(organization, enabled)
+            .set_organization_access(organization, source, enabled)
             .await
     }
 
@@ -337,7 +344,7 @@ impl AdminService {
 #[derive(Default)]
 pub(crate) struct LocalAdminRegistry {
     state: Mutex<HashMap<String, LocalAdminState>>,
-    suspensions: Mutex<HashSet<String>>,
+    suspensions: Mutex<HashSet<(String, AccessSource)>>,
     updates: tokio::sync::Mutex<()>,
 }
 
@@ -349,15 +356,21 @@ struct LocalAdminState {
 
 #[async_trait]
 impl AdminRegistry for LocalAdminRegistry {
-    async fn set_organization_access(&self, organization: &str, enabled: bool) -> Result<()> {
+    async fn set_organization_access(
+        &self,
+        organization: &str,
+        source: AccessSource,
+        enabled: bool,
+    ) -> Result<()> {
         let mut suspensions = self
             .suspensions
             .lock()
             .map_err(|_| anyhow::anyhow!("access registry lock poisoned"))?;
+        let hold = (organization.to_owned(), source);
         if enabled {
-            suspensions.remove(organization);
+            suspensions.remove(&hold);
         } else {
-            suspensions.insert(organization.to_owned());
+            suspensions.insert(hold);
         }
         Ok(())
     }
@@ -367,7 +380,11 @@ impl AdminRegistry for LocalAdminRegistry {
             .suspensions
             .lock()
             .map_err(|_| anyhow::anyhow!("access registry lock poisoned"))?;
-        Ok(organization.is_none_or(|id| !suspensions.contains(id)))
+        Ok(organization.is_none_or(|id| {
+            !suspensions
+                .iter()
+                .any(|(organization, _)| organization == id)
+        }))
     }
 
     async fn lock_deployment(&self, project_id: &str) -> Result<Box<dyn DeploymentUpdate + '_>> {
@@ -471,16 +488,21 @@ impl PostgresAdminRegistry {
 
 #[async_trait]
 impl AdminRegistry for PostgresAdminRegistry {
-    async fn set_organization_access(&self, organization: &str, enabled: bool) -> Result<()> {
+    async fn set_organization_access(
+        &self,
+        organization: &str,
+        source: AccessSource,
+        enabled: bool,
+    ) -> Result<()> {
         let sql = if enabled {
-            "DELETE FROM durable_actors_organization_suspensions WHERE organization_id = $1"
+            "DELETE FROM durable_actors_organization_suspensions WHERE organization_id = $1 AND source = $2"
         } else {
-            "INSERT INTO durable_actors_organization_suspensions (organization_id) VALUES ($1) ON CONFLICT DO NOTHING"
+            "INSERT INTO durable_actors_organization_suspensions (organization_id, source) VALUES ($1, $2) ON CONFLICT DO NOTHING"
         };
         self.database
             .connection()
             .await?
-            .execute(sql, &[&organization])
+            .execute(sql, &[&organization, &source.as_str()])
             .await?;
         Ok(())
     }
