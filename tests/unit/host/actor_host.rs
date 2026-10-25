@@ -2348,6 +2348,73 @@ async fn background_database_writes_outlive_invocations() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn background_database_follows_the_owner_epoch_across_activations() -> Result<()> {
+    struct Executor;
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            database: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            if invocation.method == "reset" {
+                return Ok(ActorMethodOutcome::Failed(
+                    crate::actor::ActorInvocationFailure {
+                        code: "actor_worker_failed".into(),
+                        message: "reset".into(),
+                    },
+                ));
+            }
+            increment(&*database).await
+        }
+    }
+    let endpoint = HostEndpoint {
+        id: super::super::HostId::new("host-1"),
+        route: "http://host.invalid/".into(),
+    };
+    let database = HostDatabase::new(
+        endpoint.clone(),
+        Arc::new(FakeAuthority::default()),
+        Arc::new(FakeStateTransport::default()),
+        replication().await,
+    );
+    let background = database.background(counter());
+    let host = ActorHost::new(
+        endpoint,
+        counter(),
+        Arc::new(Executor),
+        database,
+        Arc::new(EmptySocketPublisher),
+    );
+    let call = |method: &'static str, owner_epoch: u64| {
+        host.invoke_actor(
+            ActorInvocation {
+                request_id: method.into(),
+                actor: counter(),
+                method: method.into(),
+                args: Vec::new(),
+            },
+            owner_epoch,
+            HostState::Warm,
+            0.0,
+        )
+    };
+    assert_eq!(call("first", 1).await.0?, completed(1));
+    assert!(matches!(
+        call("reset", 1).await.0?,
+        ActorExecutionResult::Failed { .. }
+    ));
+    assert_eq!(call("second", 2).await.0?, completed(1));
+    persist_fields(&*background, json!({"count": 5}), true).await?;
+    assert_eq!(call("third", 2).await.0?, completed(6));
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
 async fn increment(database: &dyn ActorDatabase) -> Result<ActorMethodOutcome> {
     let count = fields(database).await?["count"].as_u64().unwrap_or(0) + 1;
     write_fields(database, json!({ "count": count })).await?;

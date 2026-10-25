@@ -54,10 +54,11 @@ impl DatabaseSession {
     pub(super) async fn prepare_invocation(
         &mut self,
         invocation: &ActorInvocation,
-        owner_epoch: u64,
+        owner_epoch: Option<u64>,
         replay: bool,
         timings: &mut DatabaseTimings,
     ) -> Result<PreparedInvocation> {
+        let owner_epoch = owner_epoch.context("activation scopes cannot run invocations")?;
         if self.storage.ensure_authority().is_err() {
             return Ok(PreparedInvocation::Completed(
                 ActorExecutionResult::HostUnavailable,
@@ -244,11 +245,12 @@ impl DatabaseSession {
     pub(super) async fn complete(
         &mut self,
         invocation: &ActorInvocation,
-        owner_epoch: u64,
+        owner_epoch: Option<u64>,
         result: Value,
         committed: Option<u64>,
         origin: CommitOrigin,
     ) -> Result<u64> {
+        let owner_epoch = owner_epoch.context("activation scopes cannot complete invocations")?;
         let mut cached = self
             .cached_state
             .take()

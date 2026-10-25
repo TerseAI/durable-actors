@@ -105,6 +105,29 @@ impl HostDatabase {
         owner_epoch: u64,
         origin: CommitOrigin,
     ) -> Arc<DatabaseInvocation> {
+        self.scope(invocation, Some(owner_epoch), origin)
+    }
+
+    /// A scope for the whole activation: it never closes and follows the current owner epoch.
+    pub(crate) fn background(
+        self: &Arc<Self>,
+        actor: crate::actor::ActorKey,
+    ) -> Arc<dyn ActorDatabase> {
+        let invocation = ActorInvocation {
+            actor,
+            request_id: "background".into(),
+            method: "background".into(),
+            args: vec![],
+        };
+        self.scope(invocation, None, CommitOrigin::default())
+    }
+
+    fn scope(
+        self: &Arc<Self>,
+        invocation: ActorInvocation,
+        owner_epoch: Option<u64>,
+        origin: CommitOrigin,
+    ) -> Arc<DatabaseInvocation> {
         Arc::new(DatabaseInvocation {
             database: self.clone(),
             scope: Arc::new(InvocationScope {
@@ -114,21 +137,6 @@ impl HostDatabase {
                 committed: AtomicU64::new(0),
                 active: AtomicBool::new(true),
             }),
-        })
-    }
-
-    pub(crate) fn background(
-        self: &Arc<Self>,
-        actor: crate::actor::ActorKey,
-    ) -> Arc<dyn ActorDatabase> {
-        Arc::new(BackgroundDatabase {
-            database: self.clone(),
-            invocation: ActorInvocation {
-                actor,
-                request_id: "background".into(),
-                method: "background".into(),
-                args: vec![],
-            },
         })
     }
 
@@ -253,31 +261,9 @@ impl ActorDatabase for DatabaseInvocation {
     }
 }
 
-struct BackgroundDatabase {
-    database: Arc<HostDatabase>,
-    invocation: ActorInvocation,
-}
-
-#[async_trait]
-impl ActorDatabase for BackgroundDatabase {
-    async fn call(&self, call: DatabaseCall) -> Result<DatabaseResult> {
-        let (reply, result) = oneshot::channel();
-        self.database
-            .send(Command::Background {
-                invocation: self.invocation.clone(),
-                call,
-                reply,
-            })
-            .await?;
-        result
-            .await
-            .context("database service stopped before database call completed")?
-    }
-}
-
 struct InvocationScope {
     invocation: ActorInvocation,
-    owner_epoch: u64,
+    owner_epoch: Option<u64>,
     origin: CommitOrigin,
     committed: AtomicU64,
     active: AtomicBool,
@@ -324,11 +310,6 @@ enum Command {
     },
     Call {
         scope: Arc<InvocationScope>,
-        call: DatabaseCall,
-        reply: oneshot::Sender<Result<DatabaseResult>>,
-    },
-    Background {
-        invocation: ActorInvocation,
         call: DatabaseCall,
         reply: oneshot::Sender<Result<DatabaseResult>>,
     },
@@ -393,11 +374,6 @@ impl DatabaseService {
                 let _ = reply.send((result, timings));
             }
             Command::Call { scope, call, reply } => return self.call(scope, call, reply).await,
-            Command::Background {
-                invocation,
-                call,
-                reply,
-            } => return self.background(invocation, call, reply).await,
             Command::Activate { reply } => {
                 let _ = reply.send(self.session.prepare_activation().await);
             }
@@ -433,42 +409,15 @@ impl DatabaseService {
             .session
             .database_call(
                 &scope.invocation,
-                Some(scope.owner_epoch),
+                scope.owner_epoch,
                 scope.origin.clone(),
                 call,
             )
             .await;
-        self.reply(result, reply, |txid| {
-            scope.committed.store(txid, Ordering::Release)
-        })
-    }
-
-    async fn background(
-        &mut self,
-        invocation: ActorInvocation,
-        call: DatabaseCall,
-        reply: oneshot::Sender<Result<DatabaseResult>>,
-    ) -> bool {
-        let result = self
-            .session
-            .database_call(&invocation, None, CommitOrigin::default(), call)
-            .await;
-        self.reply(result, reply, |_| {})
-    }
-
-    fn reply(
-        &mut self,
-        result: Result<DatabaseReply>,
-        reply: oneshot::Sender<Result<DatabaseResult>>,
-        committed: impl FnOnce(u64),
-    ) -> bool {
         match result {
-            Ok(DatabaseReply::Executed {
-                result,
-                committed: txid,
-            }) => {
-                if let Some(txid) = txid {
-                    committed(txid);
+            Ok(DatabaseReply::Executed { result, committed }) => {
+                if let Some(txid) = committed {
+                    scope.committed.store(txid, Ordering::Release);
                 }
                 self.version
                     .store(self.session.state_version().unwrap_or(0), Ordering::Release);
