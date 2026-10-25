@@ -97,7 +97,7 @@ impl DatabaseSession {
     pub(super) async fn database_call(
         &mut self,
         invocation: &ActorInvocation,
-        owner_epoch: u64,
+        owner_epoch: Option<u64>,
         origin: CommitOrigin,
         call: DatabaseCall,
     ) -> Result<DatabaseReply> {
@@ -116,15 +116,16 @@ impl DatabaseSession {
     async fn execute_database_call(
         &self,
         invocation: &ActorInvocation,
-        owner_epoch: u64,
+        owner_epoch: Option<u64>,
         origin: CommitOrigin,
         cached: &mut ResidentDatabase,
         call: DatabaseCall,
     ) -> Result<DatabaseReply> {
         ensure!(
-            cached.owner_epoch == owner_epoch,
+            owner_epoch.is_none_or(|owner_epoch| cached.owner_epoch == owner_epoch),
             "database call ownership changed"
         );
+        let owner_epoch = cached.owner_epoch;
         match &call {
             DatabaseCall::Alarm => {
                 let timestamp_ms = self.storage.get_alarm().await?;

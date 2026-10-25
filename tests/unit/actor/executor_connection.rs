@@ -57,7 +57,7 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
             &HashMap::from([("CUSTOMER_KEY".into(), "value".into())]),
         )
         .await?;
-    connection.mark_ready(counter(), None, None).await?;
+    connection.mark_ready(counter(), None, None, None).await?;
     let (requested, mut requests) = mpsc::unbounded_channel();
     let database = Arc::new(actor_database::DelayedDatabase {
         requested,
@@ -103,6 +103,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
                 actor_name: "Room".into(),
                 actor_id: "one".into(),
             },
+            None,
             None,
             None,
         )
@@ -166,6 +167,7 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
                 requested,
                 release: release.clone(),
             })),
+            None,
         )
         .await?;
     let peer = async {
@@ -313,7 +315,7 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
         std::future::pending::<Result<()>>().await
     });
     let connection = listener.accept().await?;
-    connection.mark_ready(counter(), None, None).await?;
+    connection.mark_ready(counter(), None, None, None).await?;
     let executor = connection.executor();
     let shutdown = CancellationToken::new();
     let mut running = tokio::spawn(connection.run(shutdown.clone()));
@@ -340,7 +342,7 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
     let customer = tokio::spawn(run_incrementing_customer(socket.clone()));
     let connection = host.accept().await?;
     let executor = connection.executor();
-    connection.mark_ready(counter(), None, None).await?;
+    connection.mark_ready(counter(), None, None, None).await?;
     assert!(executor.supports("counter"));
 
     let shutdown = CancellationToken::new();
@@ -561,7 +563,7 @@ async fn database_call_exchange(fail: bool) -> Result<()> {
     let (reader, writer) = host.into_split();
     let (executor, running) =
         JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
-    executor.mark_ready(counter(), None, None).await?;
+    executor.mark_ready(counter(), None, None, None).await?;
     let (requested, mut requests) = mpsc::unbounded_channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let database = Arc::new(actor_database::DelayedDatabase {

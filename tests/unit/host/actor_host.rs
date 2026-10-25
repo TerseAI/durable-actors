@@ -2307,6 +2307,47 @@ async fn database_handles_expire_with_their_invocation() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn background_database_writes_outlive_invocations() -> Result<()> {
+    let endpoint = HostEndpoint {
+        id: super::super::HostId::new("host-1"),
+        route: "http://host.invalid/".into(),
+    };
+    let writes = Arc::new(FakeStateTransport::default());
+    let database = HostDatabase::new(
+        endpoint.clone(),
+        Arc::new(FakeAuthority::default()),
+        writes.clone(),
+        replication().await,
+    );
+    let background = database.background(counter());
+    let host = ActorHost::new(
+        endpoint,
+        counter(),
+        Arc::new(IncrementingExecutor {
+            invocations: AtomicU64::new(0),
+        }),
+        database,
+        Arc::new(EmptySocketPublisher),
+    );
+    assert_eq!(invoke(&host, "request-1").await?, completed(1));
+    persist_fields(&*background, json!({"count": 5}), true).await?;
+    assert_eq!(invoke(&host, "request-2").await?, completed(6));
+    let background_writes = writes
+        .writes
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|bytes| StateSnapshot::decode(bytes))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|snapshot| snapshot.request_id == "background")
+        .count();
+    assert_eq!(background_writes, 1);
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
 async fn increment(database: &dyn ActorDatabase) -> Result<ActorMethodOutcome> {
     let count = fields(database).await?["count"].as_u64().unwrap_or(0) + 1;
     write_fields(database, json!({ "count": count })).await?;

@@ -117,6 +117,21 @@ impl HostDatabase {
         })
     }
 
+    pub(crate) fn background(
+        self: &Arc<Self>,
+        actor: crate::actor::ActorKey,
+    ) -> Arc<dyn ActorDatabase> {
+        Arc::new(BackgroundDatabase {
+            database: self.clone(),
+            invocation: ActorInvocation {
+                actor,
+                request_id: "background".into(),
+                method: "background".into(),
+                args: vec![],
+            },
+        })
+    }
+
     pub(super) fn state_version(&self) -> Option<u64> {
         let version = self.version.load(Ordering::Acquire);
         (version > 0).then_some(version)
@@ -238,6 +253,28 @@ impl ActorDatabase for DatabaseInvocation {
     }
 }
 
+struct BackgroundDatabase {
+    database: Arc<HostDatabase>,
+    invocation: ActorInvocation,
+}
+
+#[async_trait]
+impl ActorDatabase for BackgroundDatabase {
+    async fn call(&self, call: DatabaseCall) -> Result<DatabaseResult> {
+        let (reply, result) = oneshot::channel();
+        self.database
+            .send(Command::Background {
+                invocation: self.invocation.clone(),
+                call,
+                reply,
+            })
+            .await?;
+        result
+            .await
+            .context("database service stopped before database call completed")?
+    }
+}
+
 struct InvocationScope {
     invocation: ActorInvocation,
     owner_epoch: u64,
@@ -287,6 +324,11 @@ enum Command {
     },
     Call {
         scope: Arc<InvocationScope>,
+        call: DatabaseCall,
+        reply: oneshot::Sender<Result<DatabaseResult>>,
+    },
+    Background {
+        invocation: ActorInvocation,
         call: DatabaseCall,
         reply: oneshot::Sender<Result<DatabaseResult>>,
     },
@@ -351,6 +393,11 @@ impl DatabaseService {
                 let _ = reply.send((result, timings));
             }
             Command::Call { scope, call, reply } => return self.call(scope, call, reply).await,
+            Command::Background {
+                invocation,
+                call,
+                reply,
+            } => return self.background(invocation, call, reply).await,
             Command::Activate { reply } => {
                 let _ = reply.send(self.session.prepare_activation().await);
             }
@@ -386,15 +433,42 @@ impl DatabaseService {
             .session
             .database_call(
                 &scope.invocation,
-                scope.owner_epoch,
+                Some(scope.owner_epoch),
                 scope.origin.clone(),
                 call,
             )
             .await;
+        self.reply(result, reply, |txid| {
+            scope.committed.store(txid, Ordering::Release)
+        })
+    }
+
+    async fn background(
+        &mut self,
+        invocation: ActorInvocation,
+        call: DatabaseCall,
+        reply: oneshot::Sender<Result<DatabaseResult>>,
+    ) -> bool {
+        let result = self
+            .session
+            .database_call(&invocation, None, CommitOrigin::default(), call)
+            .await;
+        self.reply(result, reply, |_| {})
+    }
+
+    fn reply(
+        &mut self,
+        result: Result<DatabaseReply>,
+        reply: oneshot::Sender<Result<DatabaseResult>>,
+        committed: impl FnOnce(u64),
+    ) -> bool {
         match result {
-            Ok(DatabaseReply::Executed { result, committed }) => {
-                if let Some(txid) = committed {
-                    scope.committed.store(txid, Ordering::Release);
+            Ok(DatabaseReply::Executed {
+                result,
+                committed: txid,
+            }) => {
+                if let Some(txid) = txid {
+                    committed(txid);
                 }
                 self.version
                     .store(self.session.state_version().unwrap_or(0), Ordering::Release);

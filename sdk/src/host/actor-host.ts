@@ -94,6 +94,11 @@ class ActorSessionConnection {
         number,
         { resolve: (result: DatabaseResult) => void; reject: (error: Error) => void }
     >()
+    private readonly activationDatabaseCalls = new Map<
+        number,
+        { resolve: (result: DatabaseResult) => void; reject: (error: Error) => void }
+    >()
+    private nextActivationCallId = 0
     private readonly publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
     private readonly loadingConnections = new Map<
         number,
@@ -181,7 +186,7 @@ class ActorSessionConnection {
             const message = parseActorSessionServerMessage(rawMessage)
             switch (message.type) {
                 case "attached":
-                    this.supervisor.assign(message.actor)
+                    this.supervisor.assign(message.actor, call => this.callActivationDatabase(call))
                     this.reportResidency()
                     this.attachedResolve?.()
                     this.attachedResolve = undefined
@@ -204,6 +209,15 @@ class ActorSessionConnection {
                     if (pending === undefined)
                         throw new ActorProtocolError("Rust host replied to unknown database call")
                     this.databaseCalls.delete(message.message_id)
+                    if (message.result === undefined) pending.reject(new ActorSessionError(message.error!))
+                    else pending.resolve(message.result)
+                    break
+                }
+                case "activation_database_result": {
+                    const pending = this.activationDatabaseCalls.get(message.call_id)
+                    if (pending === undefined)
+                        throw new ActorProtocolError("Rust host replied to unknown activation database call")
+                    this.activationDatabaseCalls.delete(message.call_id)
                     if (message.result === undefined) pending.reject(new ActorSessionError(message.error!))
                     else pending.resolve(message.result)
                     break
@@ -264,6 +278,20 @@ class ActorSessionConnection {
         })
     }
 
+    private callActivationDatabase(call: DatabaseCall): Promise<DatabaseResult> {
+        return new Promise((resolve, reject) => {
+            if (this.socket.destroyed) throw new ActorSessionError("Rust host disconnected before the database call")
+            const callId = ++this.nextActivationCallId
+            this.activationDatabaseCalls.set(callId, { resolve, reject })
+            try {
+                this.send({ type: "activation_database_call", call_id: callId, call })
+            } catch (error) {
+                this.activationDatabaseCalls.delete(callId)
+                reject(sessionError(error))
+            }
+        })
+    }
+
     private publish(messageId: number, effects: readonly SocketEffect[]): Promise<void> {
         return new Promise((resolve, reject) => {
             if (this.publishing.has(messageId))
@@ -314,6 +342,9 @@ class ActorSessionConnection {
         for (const pending of this.databaseCalls.values())
             pending.reject(new ActorSessionError("Rust host disconnected during a database call"))
         this.databaseCalls.clear()
+        for (const pending of this.activationDatabaseCalls.values())
+            pending.reject(new ActorSessionError("Rust host disconnected during a database call"))
+        this.activationDatabaseCalls.clear()
         for (const pending of this.loadingConnections.values())
             pending.reject(new ActorSessionError("Rust host disconnected while loading connections"))
         this.loadingConnections.clear()

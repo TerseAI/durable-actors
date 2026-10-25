@@ -22,11 +22,11 @@ async function runGenericHost(): Promise<never> {
             options =>
                 new ActorWorkerSupervisor({
                     ...options,
-                    createWorker: (data, onStateChange) => {
+                    createWorker: (data, onStateChange, database) => {
                         const assigned = { ...data, environment }
-                        if (!available) return new ActorWorker(assigned, onStateChange)
+                        if (!available) return new ActorWorker(assigned, onStateChange, database)
                         available = false
-                        worker.load(assigned, onStateChange)
+                        worker.load(assigned, onStateChange, database)
                         return worker
                     }
                 }),

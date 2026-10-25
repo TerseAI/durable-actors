@@ -329,8 +329,11 @@ impl ActorExecutorConnection {
         actor: ActorKey,
         publisher: Option<Arc<dyn ActorSocketPublisher>>,
         sockets: Option<Arc<dyn ActorSocketSource>>,
+        database: Option<Arc<dyn ActorDatabase>>,
     ) -> Result<()> {
-        self.executor.mark_ready(actor, publisher, sockets).await?;
+        self.executor
+            .mark_ready(actor, publisher, sockets, database)
+            .await?;
         info!(
             actor_names = ?self.executor.actor_names,
             "customer JavaScript process attached to actor executor"
@@ -522,6 +525,7 @@ impl JsActorExecutor {
         actor: ActorKey,
         publisher: Option<Arc<dyn ActorSocketPublisher>>,
         sockets: Option<Arc<dyn ActorSocketSource>>,
+        database: Option<Arc<dyn ActorDatabase>>,
     ) -> Result<()> {
         let (reply, ready) = oneshot::channel();
         self.commands
@@ -530,6 +534,7 @@ impl JsActorExecutor {
                 written: reply,
                 publisher,
                 sockets,
+                database,
             })
             .await
             .context("actor executor stopped")?;
@@ -578,6 +583,7 @@ async fn run_executor_connection(
         outbound,
         publisher: None,
         sockets: None,
+        database: None,
         publishing: JoinSet::new(),
         publishing_ids: HashSet::new(),
         loading_connections: JoinSet::new(),
@@ -602,12 +608,19 @@ struct ExecutorDriver {
     outbound: mpsc::Sender<ExecutorWrite>,
     publisher: Option<Arc<dyn ActorSocketPublisher>>,
     sockets: Option<Arc<dyn ActorSocketSource>>,
+    database: Option<Arc<dyn ActorDatabase>>,
     publishing: JoinSet<(u64, Result<()>)>,
     publishing_ids: HashSet<u64>,
     loading_connections: JoinSet<(u64, Result<super::SocketLookup>)>,
     connection_lookup_ids: HashSet<u64>,
-    database_calls: JoinSet<(u64, Result<DatabaseResult>)>,
+    database_calls: JoinSet<(DatabaseCaller, Result<DatabaseResult>)>,
     database_ids: HashSet<u64>,
+}
+
+#[derive(Clone, Copy)]
+enum DatabaseCaller {
+    Command(u64),
+    Activation(u64),
 }
 
 impl ExecutorDriver {
@@ -631,23 +644,14 @@ impl ExecutorDriver {
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
                         ActorExecutorClientMessage::DatabaseCall { message_id, call } => self.call_database(message_id, call)?,
+                        ActorExecutorClientMessage::ActivationDatabaseCall { call_id, call } => self.call_activation_database(call_id, call),
                         ActorExecutorClientMessage::GetConnections { message_id, query } => self.load_connections(message_id, query)?,
                         ActorExecutorClientMessage::Warm { .. } | ActorExecutorClientMessage::Attach { .. } => anyhow::bail!("customer actor executor attached more than once"),
                     }
                 }
                 called = self.database_calls.join_next(), if !self.database_calls.is_empty() => {
-                    let (message_id, result) = called.context("actor database call stopped")??;
-                    self.database_ids.remove(&message_id);
-                    let (result, error) = match result {
-                        Ok(result) => (Some(result), None),
-                        Err(error) => (None, Some(format!("{error:#}"))),
-                    };
-                    self.outbound.send(ExecutorWrite {
-                        bytes: encode_server_message(&ActorExecutorServerMessage::DatabaseResult {
-                            message_id, result, error,
-                        })?,
-                        written: None,
-                    }).await.context("actor executor writer stopped")?;
+                    let (caller, result) = called.context("actor database call stopped")??;
+                    self.database_called(caller, result).await?;
                 }
                 published = self.publishing.join_next(), if !self.publishing.is_empty() => {
                     let (message_id, result) = published.context("socket publisher stopped")??;
@@ -690,9 +694,11 @@ impl ExecutorDriver {
                 written,
                 publisher,
                 sockets,
+                database,
             } => {
                 self.publisher = publisher;
                 self.sockets = sockets;
+                self.database = database;
                 self.outbound
                     .try_send(ExecutorWrite {
                         bytes: encode_server_message(&ActorExecutorServerMessage::Attached {
@@ -741,9 +747,59 @@ impl ExecutorDriver {
             self.database_ids.insert(message_id),
             "actor sent concurrent database calls"
         );
-        self.database_calls
-            .spawn(async move { (message_id, database.call(call).await) });
+        self.database_calls.spawn(async move {
+            (
+                DatabaseCaller::Command(message_id),
+                database.call(call).await,
+            )
+        });
         Ok(())
+    }
+
+    fn call_activation_database(&mut self, call_id: u64, call: DatabaseCall) {
+        let database = self.database.clone();
+        self.database_calls.spawn(async move {
+            let result = match database {
+                Some(database) => database.call(call).await,
+                None => Err(anyhow::anyhow!("actor database is unavailable")),
+            };
+            (DatabaseCaller::Activation(call_id), result)
+        });
+    }
+
+    async fn database_called(
+        &mut self,
+        caller: DatabaseCaller,
+        result: Result<DatabaseResult>,
+    ) -> Result<()> {
+        let (result, error) = match result {
+            Ok(result) => (Some(result), None),
+            Err(error) => (None, Some(format!("{error:#}"))),
+        };
+        let message = match caller {
+            DatabaseCaller::Command(message_id) => {
+                self.database_ids.remove(&message_id);
+                ActorExecutorServerMessage::DatabaseResult {
+                    message_id,
+                    result,
+                    error,
+                }
+            }
+            DatabaseCaller::Activation(call_id) => {
+                ActorExecutorServerMessage::ActivationDatabaseResult {
+                    call_id,
+                    result,
+                    error,
+                }
+            }
+        };
+        self.outbound
+            .send(ExecutorWrite {
+                bytes: encode_server_message(&message)?,
+                written: None,
+            })
+            .await
+            .context("actor executor writer stopped")
     }
 
     fn load_connections(&mut self, message_id: u64, query: super::SocketQuery) -> Result<()> {
@@ -911,6 +967,7 @@ enum ExecutorRequest {
         written: oneshot::Sender<Result<()>>,
         publisher: Option<Arc<dyn ActorSocketPublisher>>,
         sockets: Option<Arc<dyn ActorSocketSource>>,
+        database: Option<Arc<dyn ActorDatabase>>,
     },
 }
 
@@ -989,6 +1046,13 @@ enum ActorExecutorServerMessage<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    ActivationDatabaseResult {
+        call_id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<DatabaseResult>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     SocketConnections {
         message_id: u64,
         connections: super::SocketLookup,
@@ -1015,6 +1079,10 @@ enum ActorExecutorServerMessage<'a> {
 enum ActorExecutorClientMessage {
     DatabaseCall {
         message_id: u64,
+        call: DatabaseCall,
+    },
+    ActivationDatabaseCall {
+        call_id: u64,
         call: DatabaseCall,
     },
     Warm {

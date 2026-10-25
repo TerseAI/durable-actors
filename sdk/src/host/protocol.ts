@@ -79,6 +79,14 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
             error: z.string().optional()
         })
         .refine(message => (message.result === undefined) !== (message.error === undefined)),
+    z
+        .object({
+            type: z.literal("activation_database_result"),
+            call_id: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+            result: databaseResultSchema.optional(),
+            error: z.string().optional()
+        })
+        .refine(message => (message.result === undefined) !== (message.error === undefined)),
     z.object({ type: z.literal("attached"), protocol: z.literal(28), actor: actorIdentitySchema }),
     z.object({
         type: z.literal("socket_connections"),
@@ -108,6 +116,7 @@ type ActorExecutorReply =
     InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "hydrated" }
 type ActorSessionClientMessage =
     | { readonly type: "database_call"; readonly message_id: number; readonly call: DatabaseCall }
+    | { readonly type: "activation_database_call"; readonly call_id: number; readonly call: DatabaseCall }
     | { readonly type: "residency"; readonly resident: boolean }
     | AttachMessage
     | { readonly type: "ready_for_invocation"; readonly message_id: number }
@@ -176,7 +185,7 @@ type ActorWorkerRequest =
 type ActorWorkerMessage =
     | {
           readonly type: "database_call"
-          readonly messageId: number
+          readonly messageId?: number
           readonly call: DatabaseCall
           readonly request: DatabaseRequest
       }
