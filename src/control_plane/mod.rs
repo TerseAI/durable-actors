@@ -26,6 +26,7 @@ mod regions;
 mod service;
 pub(crate) mod session;
 pub(crate) mod socket_ticket;
+mod storage_migration;
 
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ pub(crate) const CONTROL_PLANE_REQUEST_TIMEOUT: Duration = Duration::from_secs(3
 
 pub use local::{DevOptions, serve_local};
 pub use project_limits::ProjectLimits;
+pub use storage_migration::{StorageMigrationOptions, migrate_storage};
 
 #[cfg(test)]
 pub(crate) use self::auth::ActorInvocationCapability;

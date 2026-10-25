@@ -16,7 +16,10 @@ pub use file::FileBucket;
 pub use gcs::GcsBucket;
 pub(crate) use gcs::WarmStorage;
 pub(crate) use runtime::ActorStateReader;
+#[cfg(test)]
+pub(crate) use runtime::owner_record;
 pub use runtime::{LoadedActor, OwnershipHint, RuntimeStorage, RuntimeStorageReader};
+pub(crate) use runtime::{OwnerMigration, migrate_owner};
 
 #[derive(Clone, Debug)]
 pub struct BucketObject {

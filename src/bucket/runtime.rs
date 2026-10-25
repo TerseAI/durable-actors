@@ -23,6 +23,10 @@ use super::{Bucket, replace};
 mod activation;
 mod history;
 pub(crate) use history::ActorStateReader;
+mod migration;
+#[cfg(test)]
+pub(crate) use migration::owner_record;
+pub(crate) use migration::{OwnerMigration, migrate_owner};
 mod session;
 
 #[cfg(test)]

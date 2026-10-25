@@ -138,7 +138,26 @@ When actor hosts can start in either of two regions, put one Rapid bucket in a z
 
 The Standard bucket remains required. Startup checks Rapid storage class, actual zonal placement, and retention rules. Do not configure automatic deletion of Rapid log objects: the runtime archives them before removing their Rapid copies. If Rapid streams cannot be opened at activation, the runtime can persist immutable Standard snapshots.
 
-Storage mode and bucket identities are bound to existing actor ownership records. Select the mode before creating actors in an installation. Changing an existing installation's mode needs a planned data migration; a Helm values change alone does not migrate actor state.
+Storage mode and bucket identities are bound to existing actor ownership records. Select the mode before creating actors in an installation. Changing an existing installation's mode needs a planned data migration; a Helm values change alone does not migrate actor state. To move a Rapid installation's archive or code to new buckets, follow [Move storage to new buckets](#move-storage-to-new-buckets).
+
+## Move storage to new buckets
+
+A Rapid installation can move its archive and code buckets, and add Rapid zones, during a maintenance window. The ownership bucket stays the same. Keep every Rapid bucket your actors already use; unarchived log segments are read from them.
+
+1. Create the new buckets with the same IAM as the old ones.
+2. While actors keep running, copy the objects. Archive and code objects are written once, so this copy stays valid:
+   ```sh
+   gcloud storage rsync -r "gs://${OLD_ARCHIVE}" "gs://${NEW_ARCHIVE}"
+   gcloud storage rsync -r "gs://${OLD_CODE}" "gs://${NEW_CODE}"
+   ```
+3. Scale the controller to zero and wait for actor hosts to exit, so no actor holds a lease.
+4. Repeat both copies to pick up objects written since the first copy.
+5. With the controller's image, service account and new environment, run the migration, first with `--dry-run`:
+   ```sh
+   durable-actors migrate-storage --from-archive-bucket "${OLD_ARCHIVE}" --from-artifact-bucket "${OLD_CODE}" --dry-run
+   ```
+   It refuses to write while any actor holds a lease or any old archive object is missing from the new archive. It points each deployment at its verified copy and each actor's ownership record at the new storage. Rerunning is safe.
+6. Start the controller with the new bucket settings. Delete the old archive and code buckets only after actors are verified on the new ones.
 
 ## Upgrades and troubleshooting
 

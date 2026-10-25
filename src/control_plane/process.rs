@@ -529,7 +529,7 @@ impl ControlPlaneProcessConfig {
     }
 }
 
-fn persistence_config(
+pub(super) fn persistence_config(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<crate::bucket::SnapshotStoreConfig> {
     match get("DURABLE_ACTORS_PERSISTENCE")
@@ -963,7 +963,7 @@ fn optional_number(
         .with_context(|| format!("invalid {name}"))
 }
 
-fn required(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {
+pub(super) fn required(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {
     let value = get(name).with_context(|| format!("{name} is required"))?;
     ensure!(!value.is_empty(), "{name} must not be empty");
     Ok(value)

@@ -3,7 +3,10 @@ use std::io::IsTerminal;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use durable_actors::{
-    control_plane::{ControlPlaneProcessConfig, DevOptions, serve_control_plane, serve_local},
+    control_plane::{
+        ControlPlaneProcessConfig, DevOptions, StorageMigrationOptions, migrate_storage,
+        serve_control_plane, serve_local,
+    },
     host::serve_actor_host,
 };
 use tokio::sync::oneshot;
@@ -52,8 +55,10 @@ fn init_logging(development: bool) {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    if let Some(Commands::Dev(options)) = cli.command {
-        return serve_local(options, shutdown_signal()).await;
+    match cli.command {
+        Some(Commands::Dev(options)) => return serve_local(options, shutdown_signal()).await,
+        Some(Commands::MigrateStorage(options)) => return migrate_storage(options).await,
+        None => {}
     }
     let shutdown = shutdown_signal();
     match std::env::var("DURABLE_ACTORS_PROCESS_ROLE")
@@ -83,6 +88,10 @@ struct Cli {
 enum Commands {
     #[command(about = "Start local actors with persistent file storage")]
     Dev(DevOptions),
+    #[command(
+        about = "Move dormant actors and deployments to the archive and code buckets in this environment"
+    )]
+    MigrateStorage(StorageMigrationOptions),
 }
 
 async fn shutdown_signal() {
