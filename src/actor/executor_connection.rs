@@ -27,7 +27,7 @@ use super::{
     DatabaseResult,
 };
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 28;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 29;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 
 #[derive(Debug, Serialize)]
@@ -613,14 +613,8 @@ struct ExecutorDriver {
     publishing_ids: HashSet<u64>,
     loading_connections: JoinSet<(u64, Result<super::SocketLookup>)>,
     connection_lookup_ids: HashSet<u64>,
-    database_calls: JoinSet<(DatabaseCaller, Result<DatabaseResult>)>,
+    database_calls: JoinSet<(u64, Option<u64>, Result<DatabaseResult>)>,
     database_ids: HashSet<u64>,
-}
-
-#[derive(Clone, Copy)]
-enum DatabaseCaller {
-    Command(u64),
-    Activation(u64),
 }
 
 impl ExecutorDriver {
@@ -643,15 +637,14 @@ impl ExecutorDriver {
                         ActorExecutorClientMessage::ReadyForInvocation { message_id } => self.allow_next_invocation(message_id)?,
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
-                        ActorExecutorClientMessage::DatabaseCall { message_id, call } => self.call_database(message_id, call)?,
-                        ActorExecutorClientMessage::ActivationDatabaseCall { call_id, call } => self.call_activation_database(call_id, call),
+                        ActorExecutorClientMessage::DatabaseCall { call_id, message_id, call } => self.call_database(call_id, message_id, call)?,
                         ActorExecutorClientMessage::GetConnections { message_id, query } => self.load_connections(message_id, query)?,
                         ActorExecutorClientMessage::Warm { .. } | ActorExecutorClientMessage::Attach { .. } => anyhow::bail!("customer actor executor attached more than once"),
                     }
                 }
                 called = self.database_calls.join_next(), if !self.database_calls.is_empty() => {
-                    let (caller, result) = called.context("actor database call stopped")??;
-                    self.database_called(caller, result).await?;
+                    let (call_id, message_id, result) = called.context("actor database call stopped")??;
+                    self.database_called(call_id, message_id, result).await?;
                 }
                 published = self.publishing.join_next(), if !self.publishing.is_empty() => {
                     let (message_id, result) = published.context("socket publisher stopped")??;
@@ -735,67 +728,53 @@ impl ExecutorDriver {
         Ok(())
     }
 
-    fn call_database(&mut self, message_id: u64, call: DatabaseCall) -> Result<()> {
-        let database = self
-            .pending
-            .get(&message_id)
-            .context("database call has no active invocation")?
-            .database
-            .clone()
-            .context("command has no actor database")?;
-        ensure!(
-            self.database_ids.insert(message_id),
-            "actor sent concurrent database calls"
-        );
-        self.database_calls.spawn(async move {
-            (
-                DatabaseCaller::Command(message_id),
-                database.call(call).await,
-            )
-        });
-        Ok(())
-    }
-
-    fn call_activation_database(&mut self, call_id: u64, call: DatabaseCall) {
-        let database = self.database.clone();
+    fn call_database(
+        &mut self,
+        call_id: u64,
+        message_id: Option<u64>,
+        call: DatabaseCall,
+    ) -> Result<()> {
+        let message_id = message_id.filter(|id| self.pending.contains_key(id));
+        let database = match message_id {
+            Some(id) => self.pending[&id].database.clone(),
+            None => self.database.clone(),
+        };
+        if let Some(id) = message_id {
+            ensure!(
+                self.database_ids.insert(id),
+                "actor sent concurrent database calls"
+            );
+        }
         self.database_calls.spawn(async move {
             let result = match database {
                 Some(database) => database.call(call).await,
                 None => Err(anyhow::anyhow!("actor database is unavailable")),
             };
-            (DatabaseCaller::Activation(call_id), result)
+            (call_id, message_id, result)
         });
+        Ok(())
     }
 
     async fn database_called(
         &mut self,
-        caller: DatabaseCaller,
+        call_id: u64,
+        message_id: Option<u64>,
         result: Result<DatabaseResult>,
     ) -> Result<()> {
+        if let Some(id) = message_id {
+            self.database_ids.remove(&id);
+        }
         let (result, error) = match result {
             Ok(result) => (Some(result), None),
             Err(error) => (None, Some(format!("{error:#}"))),
         };
-        let message = match caller {
-            DatabaseCaller::Command(message_id) => {
-                self.database_ids.remove(&message_id);
-                ActorExecutorServerMessage::DatabaseResult {
-                    message_id,
-                    result,
-                    error,
-                }
-            }
-            DatabaseCaller::Activation(call_id) => {
-                ActorExecutorServerMessage::ActivationDatabaseResult {
+        self.outbound
+            .send(ExecutorWrite {
+                bytes: encode_server_message(&ActorExecutorServerMessage::DatabaseResult {
                     call_id,
                     result,
                     error,
-                }
-            }
-        };
-        self.outbound
-            .send(ExecutorWrite {
-                bytes: encode_server_message(&message)?,
+                })?,
                 written: None,
             })
             .await
@@ -1040,13 +1019,6 @@ async fn remove_socket(path: &Path) -> Result<()> {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorServerMessage<'a> {
     DatabaseResult {
-        message_id: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<DatabaseResult>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
-    ActivationDatabaseResult {
         call_id: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<DatabaseResult>,
@@ -1078,11 +1050,9 @@ enum ActorExecutorServerMessage<'a> {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorClientMessage {
     DatabaseCall {
-        message_id: u64,
-        call: DatabaseCall,
-    },
-    ActivationDatabaseCall {
         call_id: u64,
+        #[serde(default)]
+        message_id: Option<u64>,
         call: DatabaseCall,
     },
     Warm {
