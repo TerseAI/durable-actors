@@ -46,7 +46,8 @@ impl LogStorage {
             prefix,
             manifests,
             records = records.len(),
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Rapid history scanned"
         );
         Ok(records)
     }
@@ -161,7 +162,8 @@ impl LogStorage {
             records.push(record);
         }
         tracing::info!(event = "rapid_archive_read", segment = %manifest.id, batches, downloaded_bytes,
-            records = records.len(), duration_ms = started.elapsed().as_secs_f64() * 1000.0);
+            records = records.len(), duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Rapid archive read");
         Ok((through, records))
     }
 

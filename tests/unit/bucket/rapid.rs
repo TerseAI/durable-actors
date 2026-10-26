@@ -18,6 +18,41 @@ use std::{
 mod batch;
 
 #[tokio::test]
+async fn history_logs_have_readable_messages_and_queryable_fields() -> Result<()> {
+    let log = tempfile::NamedTempFile::new()?;
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_writer(log.reopen()?)
+        .finish();
+    let _subscriber = tracing::subscriber::set_default(subscriber);
+    let fixture = Fixture::new()?;
+    assert!(
+        fixture
+            .store()?
+            .latest(&fixture.stream.prefix)
+            .await?
+            .is_none()
+    );
+
+    let output = std::fs::read_to_string(log.path())?;
+    let entries = output
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let scanned = entries
+        .iter()
+        .find(|entry| entry["event"] == "rapid_history_scanned")
+        .expect("history scan log");
+    assert_eq!(scanned["message"], "Rapid history scanned");
+    assert_eq!(scanned["prefix"], fixture.stream.prefix);
+    assert_eq!(scanned["manifests"], 0);
+    assert_eq!(scanned["records"], 0);
+    assert!(scanned["duration_ms"].as_f64().unwrap() >= 0.0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn hot_writes_reuse_streams_and_a_fresh_reader_discovers_acknowledged_state() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;

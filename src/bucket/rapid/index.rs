@@ -85,7 +85,7 @@ impl LogStorage {
         {
             Ok(keys) => Ok(keys),
             Err(error) => {
-                tracing::warn!(event = "rapid_index_fallback", prefix, %error);
+                tracing::warn!(event = "rapid_index_fallback", prefix, %error, "Rapid index unavailable; scanning history");
                 Ok(Vec::new())
             }
         }
@@ -100,7 +100,7 @@ impl LogStorage {
         match self.read_indexed(object, first, keys).await {
             Ok(records) => records,
             Err(error) => {
-                tracing::warn!(event = "rapid_index_fallback", object, %error);
+                tracing::warn!(event = "rapid_index_fallback", object, %error, "Rapid index unavailable; scanning history");
                 None
             }
         }
@@ -140,7 +140,8 @@ impl LogStorage {
                 event = "rapid_index_read",
                 state_version = version,
                 downloaded_bytes = length,
-                records = records.len()
+                records = records.len(),
+                "Rapid index read"
             );
             return Ok(Some(records));
         }

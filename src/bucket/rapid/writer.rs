@@ -117,7 +117,8 @@ impl Session {
                 .as_ref()
                 .map_or(0, |s| s.manifest.replicas.len()),
             bytes = self.latest.as_ref().unwrap().1.len(),
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Rapid snapshot written"
         );
         Ok(())
     }
@@ -205,7 +206,8 @@ impl Session {
         tracing::info!(
             event = "rapid_archive_finished",
             state_version = self.version,
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Rapid archive finished"
         );
         if let Some((object, bytes)) = &self.latest {
             self.checkpoint

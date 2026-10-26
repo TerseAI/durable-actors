@@ -13,7 +13,11 @@ impl LogStorage {
         checkpoint: Option<crate::bucket::recovery::PrefetchedCheckpoint>,
     ) -> Result<ResolvedSqlite> {
         let started = std::time::Instant::now();
-        tracing::info!(event = "sqlite_history_started", object);
+        tracing::info!(
+            event = "sqlite_history_started",
+            object,
+            "restoring SQLite history"
+        );
         let mut history = LogHistory {
             storage: self,
             epochs: BTreeMap::new(),
@@ -41,7 +45,8 @@ impl LogStorage {
                 .iter()
                 .map(|file| file.data.len())
                 .sum::<usize>(),
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "SQLite history restored"
         );
         Ok(resolved)
     }
@@ -55,7 +60,8 @@ impl LogStorage {
                 object,
                 state_version = snapshot.state_version,
                 outcome = "full_snapshot",
-                duration_ms = started.elapsed().as_secs_f64() * 1000.0
+                duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "SQLite checkpoint already covered by full snapshot"
             );
             return Ok(());
         }
@@ -67,7 +73,8 @@ impl LogStorage {
                 object,
                 state_version = snapshot.state_version,
                 outcome = "existing",
-                duration_ms = started.elapsed().as_secs_f64() * 1000.0
+                duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "SQLite checkpoint already exists"
             );
             return Ok(());
         }
@@ -113,7 +120,8 @@ impl LogStorage {
             state_version = snapshot.state_version,
             input_files,
             bytes = size,
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "SQLite checkpoint published"
         );
         Ok(())
     }
@@ -285,7 +293,8 @@ impl Progress {
             tracing::info!(
                 event = "sqlite_checkpoint_cancelled",
                 state_version = superseded,
-                reason = "superseded_on_shutdown"
+                reason = "superseded_on_shutdown",
+                "SQLite checkpoint superseded on shutdown"
             );
             task.abort();
             let _ = task.await;
@@ -315,7 +324,8 @@ impl Progress {
             event = "sqlite_checkpoint_started",
             object,
             state_version = version,
-            trigger
+            trigger,
+            "SQLite checkpoint started"
         );
         self.task = Some((
             version,
@@ -330,7 +340,8 @@ impl Progress {
                 .and_then(|result| result);
                 if let Err(error) = &result {
                     tracing::warn!(event = "sqlite_checkpoint_failed", object, state_version = version,
-                        error = %format!("{error:#}"), duration_ms = started.elapsed().as_secs_f64() * 1000.0);
+                        error = %format!("{error:#}"), duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+                        "SQLite checkpoint failed");
                 }
                 result
             })),

@@ -286,7 +286,8 @@ impl LogStorage {
             start_offset = start,
             end_offset = end,
             bytes = bytes.len(),
-            duration_ms = began.elapsed().as_secs_f64() * 1000.0
+            duration_ms = began.elapsed().as_secs_f64() * 1000.0,
+            "Rapid log batch archived"
         );
         Ok(())
     }

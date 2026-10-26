@@ -266,7 +266,7 @@ async fn invoke(
         ));
     }
     if let Some(grant) = grant {
-        info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %actor.project_id, actor_name = %actor.actor_name, actor_id = %actor.actor_id, request_id = %request.request_id, method = %request.method);
+        info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %actor.project_id, actor_name = %actor.actor_name, actor_id = %actor.actor_id, request_id = %request.request_id, method = %request.method, "delegated actor invocation authorized");
     }
     let invocation = ActorInvocation {
         actor,

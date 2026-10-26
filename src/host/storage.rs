@@ -215,7 +215,8 @@ impl HostStorage {
             error = released.as_ref().err().map(|error| format!("{error:#}")),
             storage_ms,
             release_ms = release_started.elapsed().as_secs_f64() * 1000.0,
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "actor host storage shutdown finished"
         );
         released
     }

@@ -337,7 +337,8 @@ impl DatabaseSession {
             SqliteCapture::restore(self.replication.clone(), &sqlite.files, sqlite.txid).await?;
         tracing::info!(event = "actor_sqlite_restored", host_id = %self.endpoint.id, state_version,
             history_ms, apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0,
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0);
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "actor SQLite state restored");
         let mut cached = ResidentDatabase::open(owner_epoch, capture).await?;
         cached.state_version = state_version;
         cached.published = Some(cached.synced);

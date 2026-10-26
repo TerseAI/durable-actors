@@ -205,7 +205,8 @@ pub(super) async fn serve_assigned_host(
         error = unregister_result
             .as_ref()
             .err()
-            .map(|error| format!("{error:#}"))
+            .map(|error| format!("{error:#}")),
+        "actor host shutdown finished"
     );
     info!(%host_id, "durable-actors host stopped");
     stop_result?;

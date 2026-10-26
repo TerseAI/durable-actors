@@ -118,6 +118,7 @@ impl RuntimeStorage {
                 checkpoint_prefetch_ms = recovery.checkpoint_ms,
                 ownership_write_ms = ownership_cas_ms + stream_open_ms,
                 duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
+                "actor activation storage ready"
             );
             let mut loaded = self.remember(record, recovery.snapshot);
             loaded.checkpoint = recovery.checkpoint;

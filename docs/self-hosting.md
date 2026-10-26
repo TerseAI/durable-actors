@@ -96,6 +96,19 @@ Use the [deployment registration API](reference/openapi.md) to register compiled
 
 Verify an actor write and read, restart its sandbox, and read the value again. Also verify a WebSocket connection through your chosen ingress. One controller handles HTTP and sockets by default; actors start on demand. Increase `actors.warm` for lower cold-start latency and `replicaCount` for controller redundancy; more than one replica requires Redis. These settings do not create additional node pools or guarantee capacity.
 
+## Query runtime logs
+
+Cloud processes write one JSON object per line to stdout. GKE stores the event fields in `jsonPayload`; `message` supplies the readable log summary. Expand an entry to inspect its fields, or query them directly in Logs Explorer:
+
+```text
+resource.type="k8s_container"
+resource.labels.namespace_name="actors"
+jsonPayload.event="rapid_history_scanned"
+jsonPayload.duration_ms>100
+```
+
+Replace the namespace with your control-plane namespace. Fields such as `duration_ms`, `records`, and `state_version` remain numeric; `jsonPayload.request_id` can select logs for one request when present. Use `severity>=WARNING` for warnings and errors. Local `dev` output remains human-readable text.
+
 ## Speed up writes with GCS Rapid
 
 Rapid stores the hot write log in one or two zones and keeps permanent history in the Standard bucket. Each acknowledged write has durably flushed to every configured Rapid copy. A single zone has no second Rapid copy if that zone is lost before archival. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.

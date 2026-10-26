@@ -77,7 +77,8 @@ impl Segment {
                 .join(","),
             open_ms,
             manifest_ms = started.elapsed().as_secs_f64() * 1000.0 - open_ms,
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Rapid log opened"
         );
         Ok(Some(Self {
             manifest,
