@@ -56,15 +56,15 @@ export class ChatHistory extends Actor<null, string, Message[]> {
 
     @Interleave // Let other calls run during await, e.g. new connections while a reply streams.
     async onMessage(_socket: ActorSocket<null, Message[]>, text: string) {
-        this.messages.push({ role: "user", content: text })
-        const result = streamText({ model: openai("gpt-5-mini"), messages: [...this.messages] })
-        const reply: Message = { role: "assistant", content: "" }
-        this.messages.push(reply)
+        this.messages = [...this.messages, { role: "user", content: text }]
         this.broadcast(this.messages)
+        const result = streamText({ model: openai("gpt-5-mini"), messages: this.messages })
+        const reply: Message = { role: "assistant", content: "" }
         for await (const chunk of result.textStream) {
             reply.content += chunk
-            this.broadcast(this.messages)
+            this.broadcast([...this.messages, reply])
         }
+        this.messages = [...this.messages, reply]
     }
 }
 ```

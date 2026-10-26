@@ -83,7 +83,7 @@ ON CONFLICT (project_id) DO UPDATE SET
 
 `NULL` inherits the environment default; deleting the row restores all defaults. Lowering capacity blocks additional starts while existing hosts continue serving. Overrides are operator-only; local opt-in uses environment defaults.
 
-Missing stops and ambiguous launches retain reservations until an operator confirms the host has stopped and removes its reservation. Redis admission data must not be evicted. After Redis data loss or an in-memory controller restart, counts rebuild from lifecycle reports and are temporarily incomplete.
+A failed launch releases its reservation. Hosts that stop without reporting keep theirs until an operator confirms the host has stopped and removes the reservation. Redis admission data must not be evicted. After Redis data loss or an in-memory controller restart, counts rebuild from lifecycle reports and are temporarily incomplete.
 
 ## Authentication and callbacks
 

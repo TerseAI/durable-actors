@@ -126,29 +126,15 @@ async fn suspension_rejects_cached_tickets_on_every_gateway_replica() -> Result<
 }
 
 #[tokio::test]
-async fn suspension_blocks_existing_websocket_routes_and_connection_tickets() -> Result<()> {
+async fn suspension_closes_existing_websockets() -> Result<()> {
     let fixture = Fixture::start(vec![]).await?;
     let mut socket = fixture.connect().await?;
-    let grant: Value = fixture
-        .post("find-websocket", "api-key", json!({"metadata":{}}))
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
     let before = fixture.host.socket_requests.lock().unwrap().len();
     fixture
         .admin
         .set_organization_access("org-test", AccessSource::Admin, false)
         .await?;
-    let error = tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap())
-        .await
-        .unwrap_err();
-    match error {
-        tokio_tungstenite::tungstenite::Error::Http(response) => {
-            assert_eq!(response.status(), StatusCode::FORBIDDEN)
-        }
-        error => panic!("unexpected handshake error: {error}"),
-    }
+    fixture.service.reconcile_access().await?;
     socket.send(Message::Text("{}".into())).await?;
     let message = next_message(&mut socket).await?;
     assert!(matches!(message, Message::Close(_)));

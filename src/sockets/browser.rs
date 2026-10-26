@@ -309,10 +309,12 @@ async fn dispatch(
             state.registry.activate(&ticket.actor, &connection.id).await;
         }
     }
-    state
-        .dispatcher
-        .deliver(&state.registry, &ticket.actor, effects)
-        .await?;
+    if !effects.is_empty() {
+        state
+            .dispatcher
+            .deliver(&state.registry, &ticket.actor, effects)
+            .await?;
+    }
     state.dispatcher.notify(ticket, &event);
     Ok(())
 }
