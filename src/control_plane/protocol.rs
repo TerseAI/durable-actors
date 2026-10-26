@@ -22,6 +22,11 @@ pub(crate) enum ControlPlaneCommand {
         traces: Vec<crate::request_traces::RequestTrace>,
         dropped: u64,
     },
+    CustomerLogs {
+        report_id: String,
+        logs: Vec<crate::customer_logs::CustomerLog>,
+        dropped: u64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

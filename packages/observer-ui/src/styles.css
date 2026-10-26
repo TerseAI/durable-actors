@@ -2130,6 +2130,49 @@
 .la-state-comparison > button {
     margin-bottom: 12px;
 }
+.la-log-actor-id {
+    display: block;
+    color: var(--muted-foreground);
+    overflow-wrap: anywhere;
+}
+.la-logs td {
+    vertical-align: top;
+}
+.la-logs time {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.la-log-message {
+    min-width: 280px;
+    width: 100%;
+}
+.la-log-message summary {
+    cursor: pointer;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.la-log-message pre {
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.la-log-level-warn {
+    color: var(--warning);
+}
+.la-log-level-error,
+.la-log-level-fatal {
+    color: var(--destructive);
+}
+.la-log-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 16px;
+    color: var(--muted-foreground);
+}
 .la-state-json {
     font:
         12px/1.8 ui-monospace,

@@ -448,6 +448,90 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/observe/logs:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: listCustomerLogs
+            tags: [Observability]
+            summary: Get customer log history
+            description: Newest first by timestamp and event ID. Use nextCursor with the same filters for older records. Logs are independent of actor state commits and request completion.
+            parameters:
+                - name: actorName
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 256 }
+                - name: actorId
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 256 }
+                - name: requestId
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 256 }
+                - name: level
+                  in: query
+                  schema: { type: string, enum: [TRACE, DEBUG, INFO, WARN, ERROR, FATAL] }
+                - name: search
+                  in: query
+                  description: Case-sensitive message substring.
+                  schema: { type: string, maxLength: 512 }
+                - name: fromMs
+                  in: query
+                  schema: { type: integer, minimum: 0, maximum: 8640000000000000 }
+                - name: toMs
+                  in: query
+                  schema: { type: integer, minimum: 0, maximum: 8640000000000000 }
+                - name: limit
+                  in: query
+                  schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+                - name: cursor
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 8192 }
+            responses:
+                "200":
+                    description: Customer log records.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/CustomerLogPage" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "503": { description: Customer log history is temporarily unavailable. }
+    /v1/projects/{project_id}/observe/logs/events:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: streamCustomerLogs
+            tags: [Observability]
+            summary: Stream customer logs
+            description: SSE logs events contain CustomerLogPage JSON. The stream attaches immediately without waiting for history or persistence. Fetch history separately and deduplicate by eventId. Empty batches report delivery and persistence status. Reconnect and query history to recover persisted records.
+            parameters:
+                - name: actorName
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 256 }
+                - name: actorId
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 256 }
+                - name: requestId
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 256 }
+                - name: level
+                  in: query
+                  schema: { type: string, enum: [TRACE, DEBUG, INFO, WARN, ERROR, FATAL] }
+                - name: search
+                  in: query
+                  description: Case-sensitive message substring.
+                  schema: { type: string, maxLength: 512 }
+                - name: fromMs
+                  in: query
+                  schema: { type: integer, minimum: 0, maximum: 8640000000000000 }
+                - name: toMs
+                  in: query
+                  schema: { type: integer, minimum: 0, maximum: 8640000000000000 }
+            responses:
+                "200": { $ref: "#/components/responses/EventStream" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
     /v1/projects/{project_id}/observe/requests:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -1226,6 +1310,30 @@ components:
                                                 properties:
                                                     id: { type: string }
                                                     operation: { type: string }
+        CustomerLogPage:
+            type: object
+            required: [records, nextCursor, dropped, persistenceFailed]
+            properties:
+                records: { type: array, maxItems: 500, items: { $ref: "#/components/schemas/CustomerLog" } }
+                nextCursor: { type: [string, "null"] }
+                dropped: { type: integer, minimum: 0 }
+                persistenceFailed: { type: boolean }
+        CustomerLog:
+            type: object
+            required: [eventId, timestampMs, stream, level, message, fields, projectId, actorName, actorId, hostId, sessionId]
+            properties:
+                eventId: { type: string, minLength: 1, maxLength: 128 }
+                timestampMs: { type: integer, minimum: 0, maximum: 8640000000000000 }
+                stream: { type: string, enum: [stdout, stderr] }
+                level: { type: string, enum: [TRACE, DEBUG, INFO, WARN, ERROR, FATAL] }
+                message: { type: string }
+                fields: { type: object, additionalProperties: true }
+                requestId: { type: [string, "null"], description: Present only when supplied by the log record; background output does not require a request. }
+                projectId: { type: string }
+                actorName: { type: string }
+                actorId: { type: string }
+                hostId: { type: string }
+                sessionId: { type: string }
         TracePage:
             type: object
             required: [epoch, cursor, capacity, evicted, dropped, persistenceFailed, records, nextCursor, resumeCursor, reset]

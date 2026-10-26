@@ -41,6 +41,20 @@ class ControlPlaneClient {
         return this.openStream(`${this.projectPath()}/observe/requests/events${query}`, signal)
     }
 
+    async openLogStream(signal: AbortSignal, query = new URLSearchParams()): Promise<Response> {
+        return this.openStream(`${this.projectPath()}/observe/logs/events${query.size ? `?${query}` : ""}`, signal)
+    }
+
+    listLogs(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
+        return this.requestJson(
+            "GET",
+            `${this.projectPath()}/observe/logs${query.size ? `?${query}` : ""}`,
+            undefined,
+            30_000,
+            signal
+        )
+    }
+
     getState(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
         return this.requestJson("GET", `${this.projectPath()}/observe/state?${query}`, undefined, 30_000, signal)
     }

@@ -5,7 +5,7 @@ use std::{process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdout, Command},
     time::timeout,
 };
@@ -105,6 +105,158 @@ async fn service_process_logs_remain_structured() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
+async fn customer_logs_arrive_before_request_completion_and_survive_failure() -> Result<()> {
+    let runtime = LocalRuntime::start_with_actor(None, r#"
+        async hold(gate: string): Promise<void> {
+            console.log(JSON.stringify({ message: "customer-started", level: "warn",
+                requestId: "customer-request", count: 42, nested: { ready: true }, projectId: "spoofed" }));
+            console.error("customer-stderr");
+            await fetch(gate);
+            throw new Error("customer-failed");
+        }
+    "#).await?;
+    let result = check_customer_logs(&runtime.origin).await;
+    let output = runtime.stop().await?;
+    result?;
+    ensure!(
+        output.contains("customer-started"),
+        "customer stdout was not forwarded"
+    );
+    Ok(())
+}
+
+async fn check_customer_logs(origin: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let logs = format!("{origin}/v1/projects/default/observe/logs");
+    let mut live = client
+        .get(format!("{logs}/events"))
+        .send()
+        .await?
+        .error_for_status()?;
+    let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let request = client
+        .post(format!(
+            "{origin}/v1/projects/default/actors/Counter/one/invoke"
+        ))
+        .bearer_auth("test-key")
+        .json(
+            &serde_json::json!({"requestId": "customer-request", "method": "hold",
+            "args": [format!("http://{}", gate.local_addr()?)]}),
+        );
+    let invocation = tokio::spawn(request.send());
+    let (mut gate, _) = timeout(Duration::from_secs(10), gate.accept()).await??;
+    let record = timeout(
+        Duration::from_secs(5),
+        read_customer_log(&mut live, "customer-started"),
+    )
+    .await??;
+    ensure!(
+        !invocation.is_finished(),
+        "logs waited for invocation completion"
+    );
+    assert_eq!(record["projectId"], "default");
+    assert_eq!(record["actorName"], "Counter");
+    assert_eq!(record["actorId"], "one");
+    assert_eq!(record["level"], "WARN");
+    assert_eq!(record["fields"]["count"], 42);
+    assert_eq!(record["fields"]["nested"]["ready"], true);
+    assert_eq!(record["fields"]["projectId"], "spoofed");
+    assert!(record.get("stateVersion").is_none());
+    let history = timeout(
+        Duration::from_secs(5),
+        wait_for_log_history(&client, &logs, "customer-stderr"),
+    )
+    .await??;
+    let error = history["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["message"] == "customer-stderr")
+        .unwrap();
+    assert_eq!(error["stream"], "stderr");
+    assert!(
+        error
+            .get("requestId")
+            .is_none_or(serde_json::Value::is_null)
+    );
+    ensure!(
+        !invocation.is_finished(),
+        "history waited for invocation completion"
+    );
+    gate.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .await?;
+    drop(gate);
+    let response: serde_json::Value = timeout(Duration::from_secs(5), invocation)
+        .await???
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(response["outcome"]["type"], "failed");
+    let history = timeout(
+        Duration::from_secs(5),
+        wait_for_log_history(&client, &logs, "customer-started"),
+    )
+    .await??;
+    assert!(
+        history["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|saved| saved["eventId"] == record["eventId"])
+    );
+    Ok(())
+}
+
+async fn read_customer_log(
+    response: &mut reqwest::Response,
+    message: &str,
+) -> Result<serde_json::Value> {
+    let mut pending = String::new();
+    while let Some(chunk) = response.chunk().await? {
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(end) = pending.find('\n') {
+            let line = pending[..end].to_owned();
+            pending.drain(..=end);
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let page: serde_json::Value = serde_json::from_str(data.trim())?;
+            if let Some(record) = page["records"]
+                .as_array()
+                .and_then(|records| records.iter().find(|record| record["message"] == message))
+            {
+                return Ok(record.clone());
+            }
+        }
+    }
+    anyhow::bail!("log stream ended before {message}")
+}
+
+async fn wait_for_log_history(
+    client: &reqwest::Client,
+    url: &str,
+    message: &str,
+) -> Result<serde_json::Value> {
+    loop {
+        let page: serde_json::Value = client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if page["records"]
+            .as_array()
+            .is_some_and(|records| records.iter().any(|record| record["message"] == message))
+        {
+            return Ok(page);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 fn request_logs(output: &str) -> Vec<&str> {
     output
         .lines()
@@ -121,8 +273,12 @@ struct LocalRuntime {
 
 impl LocalRuntime {
     async fn start(filter: Option<&str>) -> Result<Self> {
+        Self::start_with_actor(filter, "async read(): Promise<number> { return 1 }").await
+    }
+
+    async fn start_with_actor(filter: Option<&str>, actor: &str) -> Result<Self> {
         let project = tempfile::tempdir()?;
-        local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
+        local_project::write_actor(project.path(), actor)?;
         let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
             .args([

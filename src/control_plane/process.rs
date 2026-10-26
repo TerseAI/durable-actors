@@ -126,12 +126,18 @@ pub async fn serve_control_plane(
     warn_if_authentication_disabled(bind, config.api_key.as_deref());
     let stop = tokio_util::sync::CancellationToken::new();
     let _guard = stop.clone().drop_guard();
-    let routes = control_plane_routes(config, stop).await?;
+    let (routes, logs) = control_plane_routes(config, stop.clone()).await?;
     info!(bind = %bind, "durable-actors control plane is ready");
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .context("bind durable-actors control plane")?;
-    serve_routes(listener, routes, shutdown).await
+    let result = serve_routes(listener, routes, async move {
+        shutdown.await;
+        stop.cancel();
+    })
+    .await;
+    logs.shutdown().await;
+    result
 }
 
 fn warn_if_authentication_disabled(bind: SocketAddr, secret: Option<&str>) {
@@ -157,7 +163,7 @@ async fn serve_routes(
 async fn control_plane_routes(
     config: ControlPlaneProcessConfig,
     stop: tokio_util::sync::CancellationToken,
-) -> Result<tonic::service::Routes> {
+) -> Result<(tonic::service::Routes, crate::customer_logs::LogStore)> {
     let issuer = super::ActorJwtIssuer::from_base64_pkcs8(
         &config.jwt_signing_key,
         config.jwt_key_id,
@@ -184,6 +190,12 @@ async fn control_plane_routes(
         stop.clone(),
     )
     .await?;
+    let logs = customer_log_store(
+        &config.storage,
+        database.clone(),
+        redis.clone(),
+        stop.clone(),
+    )?;
     let (traces, lifecycle) = telemetry_stores(
         &config.storage,
         database.clone(),
@@ -311,6 +323,7 @@ async fn control_plane_routes(
     .with_runtime_access(runtime_access)
     .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
     .with_traces(traces)
+    .with_logs(logs.clone())
     .with_socket_event_sink(socket_events);
     service.lifecycle = lifecycle;
     service.changes = changes;
@@ -326,11 +339,15 @@ async fn control_plane_routes(
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let inspector =
         super::inspection::ActorInspector::new(inventory, storage.clone(), service.changes.clone())
-            .with_traces(service.traces.clone());
+            .with_traces(service.traces.clone())
+            .with_logs(service.logs.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin));
     let internal_api = service.into_internal_service();
-    Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
+    Ok((
+        tonic::service::Routes::from(public_api).add_service(internal_api),
+        logs,
+    ))
 }
 
 async fn snapshot_store(
@@ -348,6 +365,36 @@ async fn snapshot_store(
         stop,
         None,
     )?))
+}
+
+fn customer_log_store(
+    storage: &ControlPlaneStorageConfig,
+    database: PostgresDatabase,
+    redis: Option<Redis>,
+    stop: tokio_util::sync::CancellationToken,
+) -> Result<crate::customer_logs::LogStore> {
+    use crate::customer_logs::{
+        LogStore,
+        live::LiveLogFeed,
+        persistence::{
+            LogPersistence, clickhouse::ClickHouseLogPersistence, postgres::PostgresLogPersistence,
+        },
+    };
+    let persistence: Arc<dyn LogPersistence> = match &storage.analytics {
+        AnalyticsBackend::Postgres => Arc::new(PostgresLogPersistence::new(
+            database,
+            storage.trace_retention,
+        )),
+        AnalyticsBackend::ClickHouse(config) => Arc::new(ClickHouseLogPersistence::new(
+            config.clone(),
+            storage.trace_retention,
+        )?),
+    };
+    Ok(LogStore::start(
+        persistence,
+        LiveLogFeed::start(redis, stop.clone()),
+        stop,
+    ))
 }
 
 async fn telemetry_stores(

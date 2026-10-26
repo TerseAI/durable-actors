@@ -2,6 +2,7 @@ mod actor_database;
 mod actor_host;
 mod assignment;
 mod config;
+mod customer_logs;
 pub(crate) mod http;
 mod lease_maintenance;
 mod lifecycle;

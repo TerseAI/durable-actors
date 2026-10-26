@@ -4,6 +4,7 @@ pub mod actor_state;
 pub mod bucket;
 pub mod clock;
 pub mod control_plane;
+mod customer_logs;
 mod grpc;
 pub mod host;
 pub mod host_leases;

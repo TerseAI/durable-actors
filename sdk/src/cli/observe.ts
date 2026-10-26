@@ -48,7 +48,12 @@ class Observer {
             | "getState"
             | "listStateHistory"
         > &
-            Partial<Pick<ControlPlaneClient, "openActorStream" | "openRequestStream" | "listRequests">>,
+            Partial<
+                Pick<
+                    ControlPlaneClient,
+                    "openActorStream" | "openRequestStream" | "listRequests" | "openLogStream" | "listLogs"
+                >
+            >,
         private readonly openBrowser: (url: string) => Promise<unknown>,
         private readonly assetDirectory = new URL(
             "./",
@@ -142,10 +147,19 @@ class Observer {
             )
             return
         }
+        if (pathname === "/api/observe/logs/events") {
+            await this.proxyEvents(
+                request,
+                response,
+                this.client.openLogStream ? signal => this.client.openLogStream!(signal, url.searchParams) : undefined
+            )
+            return
+        }
         const history = {
             "/api/observe/state": this.client.getState,
             "/api/observe/state/history": this.client.listStateHistory,
             "/api/observe/requests": this.client.listRequests,
+            "/api/observe/logs": this.client.listLogs,
             "/api/observe/metrics": this.client.getMetrics,
             "/api/observe/queue-waits": this.client.listQueueWaits,
             "/api/observe/websockets": this.client.listWebSockets

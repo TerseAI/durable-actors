@@ -82,3 +82,12 @@ fn executor_outlasts_a_rapid_fallback() {
         .and_then(|(_, value)| value);
     assert_eq!(startup, Some(std::ffi::OsStr::new("30000")));
 }
+
+#[test]
+fn python_executor_output_is_unbuffered() {
+    let command = executor_command(true, "/tmp/executor.sock", ActorRuntime::Python);
+    assert_eq!(
+        command.as_std().get_args().next(),
+        Some(std::ffi::OsStr::new("-u"))
+    );
+}

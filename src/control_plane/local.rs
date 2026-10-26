@@ -144,7 +144,13 @@ pub async fn serve_local(
         stop.clone(),
     )
     .await?;
-    let server = LocalServer::start(listener, routes, provider, stop);
+    let server = LocalServer::start(
+        listener,
+        routes,
+        provider,
+        reload.service.logs.clone(),
+        stop,
+    );
     let ready = notify_launcher(
         &origin,
         options.api_key.as_deref(),
@@ -184,6 +190,7 @@ pub async fn serve_local(
 }
 
 struct LocalServer {
+    logs: crate::customer_logs::LogStore,
     provider: Arc<LocalSandboxProvider>,
     stop: CancellationToken,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -194,6 +201,7 @@ impl LocalServer {
         listener: TcpListener,
         routes: tonic::service::Routes,
         provider: Arc<LocalSandboxProvider>,
+        logs: crate::customer_logs::LogStore,
         stop: CancellationToken,
     ) -> Self {
         let stopped = stop.clone();
@@ -204,6 +212,7 @@ impl LocalServer {
         });
         Self {
             provider,
+            logs,
             stop,
             server,
         }
@@ -235,6 +244,7 @@ impl LocalServer {
         {
             self.server.abort();
         }
+        self.logs.shutdown().await;
         result
     }
 }
@@ -368,6 +378,16 @@ async fn local_routes(
         crate::sandbox::connections::HostConnections::new()?.client,
     )?;
     let gateway = super::gateway::Gateway::new(&issuer, origin.to_owned(), socket_gateway)?;
+    let logs = crate::customer_logs::LogStore::start(
+        Arc::new(
+            crate::customer_logs::persistence::sqlite::SqliteLogPersistence::new(
+                directory.join("customer-logs.sqlite3"),
+                Duration::from_secs(30 * 86400),
+            ),
+        ),
+        crate::customer_logs::live::LiveLogFeed::default(),
+        stop.clone(),
+    );
     let mut service = ControlPlaneService::new(
         storage.runtime.clone(),
         auth,
@@ -383,7 +403,8 @@ async fn local_routes(
             options.sdk_host.clone(),
         )),
     )))
-    .with_traces(storage.traces.clone());
+    .with_traces(storage.traces.clone())
+    .with_logs(logs);
     if let Some(admission) = admission {
         service.lifecycle = service.lifecycle.with_observer(admission);
     }
@@ -401,7 +422,8 @@ async fn local_routes(
         storage.runtime.clone(),
         service.changes.clone(),
     )
-    .with_traces(service.traces.clone());
+    .with_traces(service.traces.clone())
+    .with_logs(service.logs.clone());
     let reload = LocalReload {
         service: service.clone(),
         admin: admin.clone(),

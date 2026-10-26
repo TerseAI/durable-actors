@@ -23,6 +23,7 @@ use super::{
     ActorHost, HostEndpoint, HostId, HostLeaseMaintainer, LeaseRenewalTask,
     actor_host::{ActorPhase, ActorStatus},
     config::{ActorHostConfig, ExecutorConfig, HostNetwork, InvocationAuth, LeaseTiming},
+    customer_logs::CustomerLogs,
 };
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -63,12 +64,17 @@ pub(super) async fn serve_assigned_host(
 ) -> Result<()> {
     let readiness = warm.as_mut().and_then(|warm| warm.readiness.take());
     let operation = warm.as_mut().and_then(|warm| warm.operation.take());
+    let mut logs = warm
+        .as_mut()
+        .and_then(|warm| warm.logs.take())
+        .unwrap_or_else(|| CustomerLogs::new(Arc::new(SystemClock)));
     let host_id = &config.identity.host_id;
-    let prepared = match prepare_actor_host(&config, &mut timings, warm).await {
+    let prepared = match prepare_actor_host(&config, &mut timings, warm, &mut logs).await {
         Ok(prepared) => prepared,
         Err(error) => {
             log_startup(host_id, &timings, "failed", Some(&error));
             super::assignment::decline(readiness);
+            logs.finish().await;
             return Err(error);
         }
     };
@@ -133,6 +139,8 @@ pub(super) async fn serve_assigned_host(
         Ok(ready) => ready,
         Err(error) => {
             log_startup(host_id, &timings, "failed", Some(&error));
+            drop(javascript);
+            logs.finish().await;
             let _ = lease.unregister().await;
             let _ = renewal.shutdown().await;
             if !started {
@@ -188,6 +196,7 @@ pub(super) async fn serve_assigned_host(
         lifecycle.draining();
         stop_executor(&host, &executor_stop, executor_task).await;
         drop(javascript);
+        logs.finish().await;
         let result = storage
             .finish(shutdown_deadline - Duration::from_secs(2))
             .await;
@@ -251,6 +260,7 @@ async fn prepare_actor_host(
     config: &ActorHostConfig,
     timings: &mut HostStartupTimings,
     warm: Option<super::spare::WarmHost>,
+    logs: &mut CustomerLogs,
 ) -> Result<PreparedActorHostResources> {
     let replication = warm
         .as_ref()
@@ -280,6 +290,7 @@ async fn prepare_actor_host(
     )?;
     timings.control_plane_ready_at_ms = Some(timings.elapsed_ms());
     let control_plane = Arc::new(control_plane);
+    logs.start(control_plane.clone());
     let stop = CancellationToken::new();
     let credentials = stop.clone().drop_guard();
     let assignment = &config.assignment;
@@ -337,6 +348,7 @@ async fn prepare_actor_host(
                 &config.executor,
                 timings.started_at,
                 &mut timings.javascript_spawned_at_ms,
+                logs,
             )
             .await
         };
@@ -524,13 +536,15 @@ async fn connect_executor(
     executor: &ExecutorConfig,
     started_at: Instant,
     javascript_spawned_at_ms: &mut Option<f64>,
+    logs: &mut CustomerLogs,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(&executor.socket).await?;
-    let javascript = spawn_executor_process(
+    let mut javascript = spawn_executor_process(
         false,
         &executor.socket.display().to_string(),
         executor.runtime,
     )?;
+    logs.capture(&mut javascript)?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -621,7 +635,7 @@ fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Comma
         let mut command = Command::new(
             std::env::var("DURABLE_ACTORS_PYTHON").unwrap_or_else(|_| "python3".into()),
         );
-        command.args(["-m", "durable_actors.host"]);
+        command.args(["-u", "-m", "durable_actors.host"]);
         if generic {
             command.arg("--generic");
         }
@@ -649,8 +663,8 @@ fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Comma
         .env_remove("DURABLE_ACTORS_HOST_TOKEN")
         .env_remove("GOOGLE_APPLICATION_CREDENTIALS")
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
     command
 }

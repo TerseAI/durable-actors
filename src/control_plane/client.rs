@@ -65,6 +65,21 @@ impl ControlPlaneClient {
         Ok(())
     }
 
+    pub(crate) async fn report_logs(
+        &self,
+        report_id: &str,
+        logs: Vec<crate::customer_logs::CustomerLog>,
+        dropped: u64,
+    ) -> Result<()> {
+        self.execute(ControlPlaneCommand::CustomerLogs {
+            report_id: report_id.into(),
+            logs,
+            dropped,
+        })
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn get_alarm(&self) -> Result<Option<i64>> {
         match self.execute(ControlPlaneCommand::GetAlarm).await? {
             ControlPlaneCommandReply::Alarm { timestamp_ms } => Ok(timestamp_ms),

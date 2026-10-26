@@ -1,8 +1,9 @@
 import { useState } from "react"
 
-import { Activity, ArrowRight, Box, Cable, Hash, LayoutGrid, SunMoon } from "lucide-react"
+import { Activity, ArrowRight, Box, Cable, Hash, LayoutGrid, Logs, SunMoon } from "lucide-react"
 
 import { ActorObserver } from "./ActorObserver.js"
+import { LogObserver } from "./LogObserver.js"
 import { Overview } from "./Overview.js"
 import { RequestObserver } from "./RequestObserver.js"
 import { WebSocketObserver } from "./WebSocketObserver.js"
@@ -14,7 +15,8 @@ const views = [
     { id: "overview", label: "Durable Actors", icon: LayoutGrid },
     { id: "actors", label: "Actors", icon: Box },
     { id: "requests", label: "Requests", icon: Activity },
-    { id: "websockets", label: "WebSockets", icon: Cable }
+    { id: "websockets", label: "WebSockets", icon: Cable },
+    { id: "logs", label: "Logs", icon: Logs }
 ] as const
 
 export interface ConsoleAppProps {
@@ -79,6 +81,7 @@ export function ConsoleApp({ client, toggleTheme }: ConsoleAppProps) {
                     {view === "actors" && <ActorObserver client={client} navigation={{ actorName: actor, onSelectActor: setActor }} {...range} />}
                     {view === "requests" && <RequestObserver client={client} {...range} />}
                     {view === "websockets" && <WebSocketObserver client={client} onSelectActor={selectActor} {...range} />}
+                    {view === "logs" && <LogObserver client={client} {...range} />}
                 </main>
             </div>
         </div>

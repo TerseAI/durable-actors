@@ -109,6 +109,7 @@ async fn run_activation(
     let config = ActorHostConfig::from_lookup(|key| environment.get(key).cloned())?;
     let (readiness, ready_response) = tokio::sync::oneshot::channel();
     let warm = WarmHost {
+        logs: None,
         operation: Some(crate::sandbox::assignment::InitialOperation {
             request: if before >= 2 {
                 crate::sandbox::assignment::InitialRequest::Socket {

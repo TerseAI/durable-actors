@@ -267,6 +267,8 @@ async fn observability_requires_admin_credentials() -> Result<()> {
         "/v1/projects/default/observe/actors",
         "/v1/projects/default/observe/events",
         "/v1/projects/default/observe/requests/events",
+        "/v1/projects/default/observe/logs",
+        "/v1/projects/default/observe/logs/events",
         "/v1/projects/default/observe/requests",
         "/v1/projects/default/observe/metrics",
         "/v1/projects/default/observe/queue-waits",
@@ -288,6 +290,7 @@ async fn observability_requires_admin_credentials() -> Result<()> {
 struct Fixture {
     lifecycle: LifecycleStore,
     traces: crate::request_traces::TraceStore,
+    logs: crate::customer_logs::LogStore,
     changes: crate::postgres::notifications::ChangeFeed,
     admin: AdminService,
     _runtime: RuntimeFixture,
@@ -325,15 +328,18 @@ impl Fixture {
         )?;
         let changes = crate::postgres::notifications::ChangeFeed::default();
         let lifecycle = LifecycleStore::default();
+        let logs = crate::customer_logs::LogStore::default();
         let inspector =
             ActorInspector::new(Arc::new(lifecycle.clone()), store.clone(), changes.clone())
-                .with_traces(traces.clone());
+                .with_traces(traces.clone())
+                .with_logs(logs.clone());
         let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
         Ok(Self {
             lifecycle,
             traces,
+            logs,
             changes,
             admin,
             _runtime: runtime,
@@ -952,6 +958,71 @@ async fn state_inspection_reads_committed_values_and_retained_attribution() -> R
     assert!(isolated["snapshot"].is_null());
     assert_eq!(
         fixture.get(&format!("{path}&version=0")).await?.status(),
+        StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn customer_log_history_and_live_stream_filter_tenants_and_queries() -> Result<()> {
+    use crate::customer_logs::{CustomerLog, LogStream};
+    let fixture = Fixture::start().await?;
+    for project in ["alpha", "beta"] {
+        let actor = ActorKey {
+            project_id: project.into(),
+            ..fixture.actor("unsaved")
+        };
+        fixture.logs.record(
+            &actor,
+            "host",
+            "session",
+            vec![CustomerLog {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                timestamp_ms: 100,
+                stream: LogStream::Stdout,
+                level: "INFO".into(),
+                message: format!("{project} progress"),
+                fields: json!({"count":4}),
+                request_id: None,
+            }],
+            0,
+        )?;
+    }
+    let page: Value = fixture
+        .get("/v1/projects/alpha/observe/logs?search=progress&limit=1")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(page["records"].as_array().unwrap().len(), 1);
+    assert_eq!(page["records"][0]["projectId"], "alpha");
+    assert_eq!(page["records"][0]["fields"]["count"], 4);
+    let mut live = fixture
+        .get("/v1/projects/alpha/observe/logs/events?level=INFO")
+        .await?
+        .error_for_status()?;
+    let initial = stream_inventory(&mut live).await?;
+    assert_eq!(initial["records"].as_array().unwrap().len(), 1);
+    assert_eq!(initial["records"][0]["projectId"], "alpha");
+    assert_eq!(
+        fixture
+            .get("/v1/projects/alpha/observe/logs?limit=501")
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .get("/v1/projects/alpha/observe/logs?fromMs=200&toMs=100")
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .get("/v1/projects/alpha/observe/logs/events?cursor=invalid")
+            .await?
+            .status(),
         StatusCode::BAD_REQUEST
     );
     Ok(())

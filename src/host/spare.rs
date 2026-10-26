@@ -15,6 +15,7 @@ pub(super) struct WarmHost {
     pub listener: TcpListener,
     pub executor: WarmExecutor,
     pub javascript: tokio::process::Child,
+    pub logs: Option<super::customer_logs::CustomerLogs>,
     pub storage: WarmStorage,
     pub control_plane: Option<WarmControlPlane>,
     pub replication: Arc<dyn Replicator>,
@@ -51,6 +52,8 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let configured_runtime = std::env::var("DURABLE_ACTORS_EXECUTOR_RUNTIME").ok();
     let runtime = executor_runtime(None, configured_runtime.as_deref())?;
     let mut javascript = spawn_executor_process(true, &socket, runtime)?;
+    let mut logs = super::customer_logs::CustomerLogs::new(Arc::new(crate::clock::SystemClock));
+    logs.capture(&mut javascript)?;
     let (warmed, control_plane) = tokio::join!(
         async {
             tokio::try_join!(
@@ -85,6 +88,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
                 listener,
                 executor,
                 javascript,
+                logs: Some(logs),
                 storage,
                 control_plane,
                 replication,

@@ -25,6 +25,11 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
 
 pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
+        .route("/v1/projects/{project_id}/observe/logs", get(log_history))
+        .route(
+            "/v1/projects/{project_id}/observe/logs/events",
+            get(log_events),
+        )
         .route("/v1/projects/{project_id}/observe/state", get(actor_state))
         .route(
             "/v1/projects/{project_id}/observe/state/history",
@@ -79,6 +84,7 @@ struct InspectionApi {
 #[derive(Clone)]
 pub(super) struct ActorInspector {
     traces: crate::request_traces::TraceStore,
+    logs: crate::customer_logs::LogStore,
     state: Arc<dyn crate::bucket::ActorStateReader>,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
     changes: crate::postgres::notifications::ChangeFeed,
@@ -92,16 +98,75 @@ impl ActorInspector {
     ) -> Self {
         Self {
             traces: crate::request_traces::TraceStore::default(),
+            logs: crate::customer_logs::LogStore::default(),
             inventory,
             state,
             changes,
         }
     }
 
+    pub(super) fn with_logs(mut self, logs: crate::customer_logs::LogStore) -> Self {
+        self.logs = logs;
+        self
+    }
+
     pub(super) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
         self.traces = traces;
         self
     }
+}
+
+async fn log_history(
+    State(state): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<crate::customer_logs::LogQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let project = project_id(path)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query
+        .validate_for(&project)
+        .map_err(ApiError::bad_request)?;
+    let page = state
+        .inspector
+        .logs
+        .history(&project, &query)
+        .await
+        .map_err(|_| ApiError::unavailable("Customer log history unavailable"))?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(page)).into_response())
+}
+
+async fn log_events(
+    State(state): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<crate::customer_logs::LogQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    use axum::response::sse::{KeepAlive, Sse};
+    use tokio_stream::wrappers::ReceiverStream;
+    let project = project_id(path)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query
+        .validate_for(&project)
+        .map_err(ApiError::bad_request)?;
+    if query.cursor.is_some() {
+        return Err(ApiError::bad_request(
+            "live logs do not accept a history cursor",
+        ));
+    }
+    let store = state.inspector.logs;
+    let updates = store.live.subscribe();
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    tokio::spawn(crate::customer_logs::live::stream(
+        store, project, query, updates, sender,
+    ));
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        Sse::new(ReceiverStream::new(receiver))
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
+    )
+        .into_response())
 }
 
 async fn actor_inventory(

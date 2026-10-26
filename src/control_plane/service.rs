@@ -40,6 +40,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 pub struct ControlPlaneService {
     pub(super) lifecycle: crate::actor_lifecycle::LifecycleStore,
     pub(super) traces: crate::request_traces::TraceStore,
+    pub(super) logs: crate::customer_logs::LogStore,
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
@@ -81,6 +82,7 @@ impl ControlPlaneService {
         Self {
             lifecycle: Default::default(),
             traces: crate::request_traces::TraceStore::default(),
+            logs: crate::customer_logs::LogStore::default(),
             changes: Default::default(),
             runtime_access: None,
             gateway: None,
@@ -119,6 +121,11 @@ impl ControlPlaneService {
 
     pub(crate) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
         self.traces = traces;
+        self
+    }
+
+    pub(crate) fn with_logs(mut self, logs: crate::customer_logs::LogStore) -> Self {
+        self.logs = logs;
         self
     }
 
@@ -460,7 +467,9 @@ impl ActorControlPlaneService for ControlPlaneService {
             .map_err(|error| Status::invalid_argument(format!("invalid command: {error:#}")))?;
         if !matches!(
             command,
-            ControlPlaneCommand::Lifecycle { .. } | ControlPlaneCommand::RequestTraces { .. }
+            ControlPlaneCommand::Lifecycle { .. }
+                | ControlPlaneCommand::RequestTraces { .. }
+                | ControlPlaneCommand::CustomerLogs { .. }
         ) {
             self.ensure_project_access(&principal.actor.project_id)
                 .await
@@ -539,6 +548,21 @@ impl ControlPlaneService {
                         dropped,
                     )
                     .await?;
+                Ok(ControlPlaneCommandReply::Unit)
+            }
+            ControlPlaneCommand::CustomerLogs {
+                report_id,
+                logs,
+                dropped,
+            } => {
+                self.logs.record_report(
+                    &report_id,
+                    &principal.actor,
+                    principal.host_id.as_str(),
+                    &principal.session_id,
+                    logs,
+                    dropped,
+                )?;
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::GetAlarm => {

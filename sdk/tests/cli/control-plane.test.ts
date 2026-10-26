@@ -170,6 +170,7 @@ test("request history uses bounded filters with server-side credentials", async 
 })
 
 for (const [method, path] of [
+    ["listLogs", "logs"],
     ["getMetrics", "metrics"],
     ["listQueueWaits", "queue-waits"],
     ["listWebSockets", "websockets"],
@@ -186,3 +187,18 @@ for (const [method, path] of [
         assert.deepEqual(await client[method](new URLSearchParams({ fromMs: "10", toMs: "20" })), { saved: true })
     })
 }
+
+test("log streams forward filters using server-side credentials and cancellation", async () => {
+    const controller = new AbortController()
+    const client = new ControlPlaneClient(connection, async (url, options) => {
+        assert.equal(url, "https://control.example/v1/projects/default/observe/logs/events?actorId=a%2Fb&level=WARN")
+        assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
+        assert.equal(options?.signal, controller.signal)
+        return new Response("event: logs\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } })
+    })
+    const response = await client.openLogStream(
+        controller.signal,
+        new URLSearchParams({ actorId: "a/b", level: "WARN" })
+    )
+    assert.match(await response.text(), /event: logs/u)
+})

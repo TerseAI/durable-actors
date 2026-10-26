@@ -192,6 +192,7 @@ class Worker(Channel):
         try:
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
+                "-u",
                 "-m",
                 "durable_actors.host",
                 "--worker",

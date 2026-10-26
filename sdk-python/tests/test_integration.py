@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import socket
 import subprocess
@@ -225,6 +226,65 @@ class Relay(Actor):
     with actor_server(tmp_path, "relay_actors.py", free_port()) as (client, _):
         assert client.invoke("Relay", "one", "forward", []) == 3
         assert client.invoke("Relay", "one", "forward", []) == 6
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+)
+def test_unflushed_customer_output_streams_before_the_request_finishes(tmp_path, monkeypatch):
+    monkeypatch.delenv("PYTHONUNBUFFERED", raising=False)
+    (tmp_path / "actors.py").write_text("""import sys
+from threading import Event
+from durable_actors import Actor, ephemeral, interleave
+class Logging(Actor):
+    release: Event = ephemeral(default_factory=Event)
+    @interleave
+    def hold(self) -> None:
+        print("python stdout before completion")
+        print("python stderr before completion", file=sys.stderr)
+        if not self.release.wait(10):
+            raise TimeoutError("waiting for finish")
+    def finish(self) -> None:
+        self.release.set()
+""")
+    with actor_server(tmp_path, "actors.py", free_port()) as (client, _):
+        logs = f"{client.origin}/v1/projects/{client.project_id}/observe/logs"
+        with (
+            httpx.stream(
+                "GET",
+                f"{logs}/events",
+                headers=client.headers,
+                timeout=5,
+                params={"actorName": "Logging", "actorId": "one"},
+            ) as stream,
+            ThreadPoolExecutor(max_workers=1) as callers,
+        ):
+            stream.raise_for_status()
+            pending = callers.submit(client.invoke, "Logging", "one", "hold", [])
+            observed = {}
+            deadline = time.monotonic() + 8
+            try:
+                for line in stream.iter_lines():
+                    assert time.monotonic() < deadline, "customer output did not arrive live"
+                    if not line.startswith("data: "):
+                        continue
+                    for record in json.loads(line[6:])["records"]:
+                        observed[record["message"]] = record
+                    if all(
+                        f"python {channel} before completion" in observed
+                        for channel in ("stdout", "stderr")
+                    ):
+                        break
+                assert not pending.done(), "customer output waited for request completion"
+                for channel in ("stdout", "stderr"):
+                    record = observed[f"python {channel} before completion"]
+                    assert record["stream"] == channel
+                    assert record["projectId"] == client.project_id
+                    assert (record["actorName"], record["actorId"]) == ("Logging", "one")
+                    assert record.get("requestId") is None
+            finally:
+                client.invoke("Logging", "one", "finish", [])
+            assert pending.result(timeout=5) is None
 
 
 @contextmanager

@@ -108,3 +108,78 @@ impl ObjectPlacementStore for UnusedPlacement {
         unreachable!("lifecycle telemetry must not read ownership")
     }
 }
+
+#[tokio::test]
+async fn customer_logs_use_authenticated_identity_without_ownership_or_state() -> Result<()> {
+    use crate::customer_logs::{CustomerLog, LogQuery, LogStream};
+    let issuer = test_issuer()?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    let actor = ActorKey {
+        project_id: "logs-project".into(),
+        actor_name: "Counter".into(),
+        actor_id: "unsaved".into(),
+    };
+    let host = HostId::new("host.v3.logs");
+    let session = uuid::Uuid::new_v4().to_string();
+    let token = issuer
+        .issue_host(None, &host, &session, "test", "us-east", &actor)?
+        .token;
+    let service = ControlPlaneService::new(
+        Arc::new(UnusedPlacement),
+        auth,
+        Arc::new(LocalAdminRegistry::default()),
+        issuer,
+        Arc::new(UnavailableProvisioner),
+    );
+    let report_id = uuid::Uuid::new_v4().to_string();
+    let command = ControlPlaneCommand::CustomerLogs {
+        report_id,
+        logs: vec![CustomerLog {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            timestamp_ms: 100,
+            stream: LogStream::Stderr,
+            level: "ERROR".into(),
+            message: "failed before any state write".into(),
+            fields: serde_json::json!({"projectId":"spoofed","hostId":"spoofed","n":7}),
+            request_id: None,
+        }],
+        dropped: 3,
+    };
+    let command = super::super::super::protocol::encode_command(command)?;
+    let rejected = service.execute(Request::new(command.clone())).await;
+    assert_eq!(rejected.unwrap_err().code(), tonic::Code::Unauthenticated);
+    for _ in 0..2 {
+        let mut request = Request::new(command.clone());
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse()?);
+        service.execute(request).await?;
+    }
+    let page = service
+        .logs
+        .history(&actor.project_id, &LogQuery::default())
+        .await?;
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.dropped, 3);
+    let record = &page.records[0];
+    assert_eq!(record.project_id, actor.project_id);
+    assert_eq!(record.actor_id, "unsaved");
+    assert_eq!(record.host_id, host.as_str());
+    assert_eq!(record.session_id, session);
+    assert_eq!(record.log.fields["n"], 7);
+    assert!(
+        service
+            .logs
+            .history("spoofed", &LogQuery::default())
+            .await?
+            .records
+            .is_empty()
+    );
+    Ok(())
+}

@@ -1,5 +1,6 @@
 import { createParser } from "eventsource-parser"
 
+import { type LogPage, type LogQuery, isLogPage } from "./log-data.js"
 import { type OverviewMetrics, parseOverviewMetrics } from "./overview-metrics.js"
 import { type QueueWaitRow, queueWaitRows } from "./queue-wait.js"
 import { type SocketSessionRow, sessionRows } from "./socket-sessions.js"
@@ -26,6 +27,8 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
+    listLogs?(query: LogQuery, signal?: AbortSignal): Promise<LogPage>
+    watchLogs?(onPage: (page: LogPage) => void, signal: AbortSignal, query?: LogQuery): Promise<void>
     getState?(query: StateQuery, signal?: AbortSignal): Promise<StateResponse>
     listStateHistory?(query: Omit<StateQuery, "version"> & { before?: number; limit?: number }, signal?: AbortSignal): Promise<StateHistoryPage>
     getMetrics?(range: ResolvedRange, signal?: AbortSignal): Promise<OverviewMetrics>
@@ -44,6 +47,16 @@ class HttpObserverClient implements ObserverClient {
         private readonly baseUrl: string = "/api/observe",
         private readonly request: typeof fetch = globalThis.fetch.bind(globalThis)
     ) {}
+
+    async listLogs(query: LogQuery, signal?: AbortSignal): Promise<LogPage> {
+        const result = await this.get(`logs${queryString(query)}`, signal)
+        if (!isLogPage(result)) throw new Error("Invalid log history response")
+        return result
+    }
+
+    async watchLogs(onPage: (page: LogPage) => void, signal: AbortSignal, query: LogQuery = {}): Promise<void> {
+        return this.watch(`logs/events${queryString(query)}`, "logs", isLogPage, onPage, signal)
+    }
 
     async getState(query: StateQuery, signal?: AbortSignal): Promise<StateResponse> {
         return parseStateResponse(await this.get(`state${queryString(query)}`, signal))

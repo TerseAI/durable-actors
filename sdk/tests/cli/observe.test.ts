@@ -21,6 +21,55 @@ const metricsClient = {
 
 const assets = new URL("./", import.meta.resolve("durable-actors-observer/standalone/index.html"))
 
+test("log streaming remains available when history fails and forwards all filters", async t => {
+    const expected = {
+        actorName: "Counter",
+        actorId: "one",
+        requestId: "request-1",
+        level: "WARN",
+        search: "hello",
+        fromMs: "10",
+        toMs: "20"
+    }
+    const observer = new Observer(
+        {
+            ...metricsClient,
+            checkConnection: async () => {},
+            listActors: async () => ({}),
+            listLogs: async (query, signal) => {
+                assert.deepEqual(Object.fromEntries(query), { ...expected, limit: "100", cursor: "next+page" })
+                assert.ok(signal)
+                throw new Error("private-admin-key")
+            },
+            openLogStream: async (signal, query) => {
+                assert.deepEqual(Object.fromEntries(query!), expected)
+                assert.ok(signal)
+                return new Response('event: logs\ndata: {"records":[]}\n\n', {
+                    headers: { "content-type": "text/event-stream" }
+                })
+            }
+        },
+        async () => {},
+        assets
+    )
+    t.after(() => observer.close())
+    const { url } = await observer.start(false)
+    const history = await fetch(
+        `${url}/api/observe/logs?${new URLSearchParams({ ...expected, limit: "100", cursor: "next+page" })}`
+    )
+    assert.equal(history.status, 503)
+    assert.doesNotMatch(await history.text(), /private-admin-key/u)
+    const stream = await fetch(`${url}/api/observe/logs/events?${new URLSearchParams(expected)}`)
+    assert.equal(stream.status, 200)
+    assert.equal(stream.headers.get("x-accel-buffering"), "no")
+    assert.match(await stream.text(), /event: logs/u)
+    assert.equal((await fetch(`${url}/api/observe/logs`, { method: "POST" })).status, 405)
+    assert.equal(
+        (await fetch(`${url}/api/observe/logs/events`, { headers: { origin: "https://untrusted.example" } })).status,
+        403
+    )
+})
+
 test("observer serves the installed UI package by default", async t => {
     const observer = new Observer(
         { ...metricsClient, checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
