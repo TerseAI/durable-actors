@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8,6 +14,7 @@ use crate::{actor_state::ActorStorageKey, host_leases::HostLease};
 
 #[derive(Default)]
 pub(crate) struct LocalObjectPlacementStore {
+    reads: AtomicUsize,
     placements: Mutex<HashMap<ActorStorageKey, ObjectPlacement>>,
 }
 
@@ -20,6 +27,7 @@ impl ObjectPlacementStore for LocalObjectPlacementStore {
         Option<ObjectPlacement>,
         Option<crate::bucket::OwnershipHint>,
     )> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         Ok((self.get(object).await?, None))
     }
 
@@ -34,6 +42,10 @@ impl ObjectPlacementStore for LocalObjectPlacementStore {
 }
 
 impl LocalObjectPlacementStore {
+    pub fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+
     pub fn set_owner(
         &self,
         object: &ActorStorageKey,

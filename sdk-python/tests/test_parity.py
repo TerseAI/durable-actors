@@ -24,7 +24,7 @@ GRANT = {
 }
 
 
-def test_socket_authorization_and_backend_broadcast_use_placement_and_route():
+def test_socket_authorization_and_backend_broadcast_use_gateway():
     calls = []
 
     def handle(request):
@@ -45,12 +45,11 @@ def test_socket_authorization_and_backend_broadcast_use_placement_and_route():
             client.broadcast("Chat", "one", {"text": "hello"})
             client.broadcast("Chat", "one", {"text": "again"})
     assert calls[0][1]["homeRegion"] == "west"
-    assert calls[1][0].endswith("/find")
-    assert calls[1][1] == {"homeRegion": "west"}
-    assert len(calls) == 4
-    for _, body, credential in calls[2:]:
-        assert credential == "Bearer ticket"
-        assert body["ownerEpoch"] == 1
+    assert len(calls) == 3
+    for path, body, credential in calls[1:]:
+        assert path.endswith("/socket-effects")
+        assert credential is None
+        assert "ownerEpoch" not in body
         effect = body["effects"][0]
         assert effect["type"] == "broadcast"
         assert json.loads(effect["message"]["data"])["text"] in {"hello", "again"}
@@ -70,7 +69,7 @@ def test_broadcast_with_unknown_outcome_is_not_replayed():
             with pytest.raises(ActorInvocationError) as error:
                 client.broadcast("Chat", "one", "hello")
     assert error.value.code == "outcome_unknown"
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_generated_authorizations_are_typed_and_dispatch_to_the_correct_actor(

@@ -258,9 +258,9 @@ async fn control_plane_routes(
     )?);
     let placements = storage.clone();
     let connections = crate::sandbox::connections::HostConnections::new()?;
-    let socket_bus = match redis {
+    let socket_bus = match &redis {
         Some(redis) => super::socket_bus::RedisSocketBus::start(
-            redis,
+            redis.clone(),
             SOCKET_BUS_NAMESPACE,
             config.max_socket_connections,
             config.gateway_accept_connections,
@@ -311,6 +311,12 @@ async fn control_plane_routes(
     .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
+    if let Some(redis) = redis {
+        service.routes =
+            service
+                .routes
+                .with_redis(redis, "durable-actors:v1:route-invalidations", stop.clone());
+    }
     service.lifecycle = lifecycle;
     service.changes = changes;
     service.gateway = Some(gateway);

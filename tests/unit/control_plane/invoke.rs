@@ -122,16 +122,7 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
     let reply: Value = response.json().await?;
     assert_eq!(reply["outcome"]["type"], "completed");
     assert!(reply["outcome"]["result"].is_null());
-    assert_eq!(reply["target"]["ownerEpoch"], 1);
-    assert!(reply["target"].get("hostState").is_none());
-    assert_eq!(reply["target"]["route"], fixture.origin);
-    assert!(reply["target"]["expiresAtMs"].as_i64().unwrap() > 0);
-    assert!(
-        reply["target"]["route"]
-            .as_str()
-            .unwrap()
-            .starts_with("http://127.0.0.1:")
-    );
+    assert!(reply.get("target").is_none());
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     let requests = fixture.host.requests.lock().unwrap();
     let routing_ms = requests[0].1["routingMs"].as_f64().unwrap();
@@ -144,10 +135,6 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
         .verifier
         .authenticate_authorization(&requests[0].0)?;
     assert_eq!(principal.actor.actor_id, "one");
-    assert_eq!(
-        requests[0].0,
-        format!("Bearer {}", reply["target"]["token"].as_str().unwrap())
-    );
     Ok(())
 }
 
@@ -299,50 +286,40 @@ async fn combined_invocation_does_not_replay_failed_or_ambiguous_dispatches() ->
 }
 
 #[tokio::test]
-async fn gateway_forwards_cached_calls_and_rejects_wrong_capabilities() -> Result<()> {
+async fn gateway_routes_actor_calls_and_rejects_host_tickets() -> Result<()> {
     let fixture = Fixture::start(vec![
         (StatusCode::OK, json!({"type":"completed","result":1})),
         (StatusCode::OK, json!({"type":"completed","result":2})),
     ])
     .await?;
-    let first: Value = fixture
-        .call(
-            "api-key",
-            json!({"requestId":"first","method":"clear","args":[]}),
-        )
+    let request = json!({"requestId":"call","method":"clear","args":[]});
+    fixture
+        .call("api-key", request.clone())
         .await?
-        .json()
-        .await?;
-    let token = first["target"]["token"].as_str().unwrap();
-    let request = json!({"requestId":"cached","ownerEpoch":1,"method":"clear","args":[]});
+        .error_for_status()?;
+    let token = fixture.host.requests.lock().unwrap()[0]
+        .0
+        .strip_prefix("Bearer ")
+        .unwrap()
+        .to_owned();
+    fixture.service.routes.invalidate_project("default").await;
     assert_eq!(
-        fixture.call("api-key", request.clone()).await?.status(),
+        fixture.call(&token, request.clone()).await?.status(),
         StatusCode::UNAUTHORIZED
     );
-    let mut wrong_epoch = request.clone();
-    wrong_epoch["ownerEpoch"] = 2.into();
+    let mut host_request = request.clone();
+    host_request["ownerEpoch"] = 1.into();
     assert_eq!(
-        fixture.call(token, wrong_epoch).await?.status(),
-        StatusCode::UNAUTHORIZED
+        fixture.call("api-key", host_request).await?.status(),
+        StatusCode::BAD_REQUEST
     );
-    let wrong_actor = reqwest::Client::new()
-        .post(format!(
-            "{}/v1/projects/default/actors/ChatRoom/other/invoke",
-            fixture.origin
-        ))
-        .bearer_auth(token)
-        .json(&request)
-        .send()
-        .await?;
-    assert_eq!(wrong_actor.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
-    let cached: Value = fixture
-        .call(token, request)
+    let reply: Value = fixture
+        .call("api-key", request)
         .await?
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(cached, json!({"type":"completed","result":2}));
+    assert_eq!(reply, json!({"outcome":{"type":"completed","result":2}}));
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
     Ok(())
 }
@@ -351,10 +328,8 @@ async fn gateway_forwards_cached_calls_and_rejects_wrong_capabilities() -> Resul
 async fn backend_socket_effects_reach_connected_clients() -> Result<()> {
     let fixture = Fixture::start(vec![]).await?;
     let mut socket = fixture.connect().await?;
-    let target = fixture.find_actor().await?;
-    let token = target["token"].as_str().unwrap();
     let response = fixture
-        .post("socket-effects", token, broadcast(&target))
+        .post("socket-effects", "api-key", broadcast())
         .await?;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
@@ -368,15 +343,7 @@ async fn backend_socket_effects_reach_connected_clients() -> Result<()> {
 async fn backend_socket_effects_reach_clients_connected_to_another_replica() -> Result<()> {
     let fixture = Fixture::start(vec![]).await?;
     let mut socket = fixture.connect().await?;
-    let target = fixture.find_actor().await?;
-    let token = target["token"].as_str().unwrap();
-    let response = post_actor(
-        &fixture.replica,
-        "socket-effects",
-        token,
-        broadcast(&target),
-    )
-    .await?;
+    let response = post_actor(&fixture.replica, "socket-effects", "api-key", broadcast()).await?;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
         next_message(&mut socket).await?,
@@ -549,12 +516,23 @@ impl Fixture {
     }
 
     async fn find_actor(&self) -> Result<Value> {
-        Ok(self
+        let reply: Value = self
             .post("find-actor", "api-key", json!({}))
             .await?
             .error_for_status()?
             .json()
-            .await?)
+            .await?;
+        assert_eq!(reply, json!({"homeRegion":"north-america-east"}));
+        let actor = ActorKey {
+            project_id: "default".into(),
+            actor_name: "ChatRoom".into(),
+            actor_id: "one".into(),
+        };
+        let target = self
+            .service
+            .resolve_actor_route(&actor, None, None, None, None)
+            .await?;
+        Ok(json!({"token": target.token, "ownerEpoch": target.owner_epoch}))
     }
 }
 
@@ -611,8 +589,8 @@ async fn post_actor(
         .await?)
 }
 
-fn broadcast(target: &Value) -> Value {
-    json!({"ownerEpoch":target["ownerEpoch"], "effects":[{"type":"broadcast", "message":{"type":"text", "data":"hello"}, "except_connection_ids":[], "tags":[]}]})
+fn broadcast() -> Value {
+    json!({ "effects":[{"type":"broadcast", "message":{"type":"text", "data":"hello"}, "except_connection_ids":[], "tags":[]}]})
 }
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -681,10 +659,6 @@ struct InvocationProvisioner {
 }
 #[async_trait]
 impl HostProvisioner for InvocationProvisioner {
-    fn host_idle_timeout_ms(&self) -> u64 {
-        10_000
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,

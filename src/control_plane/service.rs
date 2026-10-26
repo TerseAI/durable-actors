@@ -43,6 +43,7 @@ pub struct ControlPlaneService {
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
+    pub(super) routes: super::routes::RouteCache,
     pub(super) gateway: Option<super::gateway::Gateway>,
     placements: Arc<dyn ObjectPlacementStore>,
     pub(super) auth: ActorJwtVerifier,
@@ -84,6 +85,7 @@ impl ControlPlaneService {
             changes: Default::default(),
             runtime_access: None,
             gateway: None,
+            routes: Default::default(),
             region: None,
             placements,
             auth,
@@ -156,6 +158,7 @@ impl ControlPlaneService {
             self.terminate_deployment_hosts(&previous).await?;
         }
         let changed = update.register(spec, contract).await?;
+        self.routes.invalidate_project(&spec.project_id).await;
         self.changes.notify().await;
         Ok(changed || replacing)
     }
@@ -230,11 +233,13 @@ impl ControlPlaneService {
         };
         self.terminate_deployment_hosts(&previous).await?;
         update.remove().await?;
+        self.routes.invalidate_project(project_id).await;
         self.changes.notify().await;
         Ok(true)
     }
 
     pub(super) async fn terminate_deployment_hosts(&self, spec: &HostLaunchSpec) -> Result<()> {
+        self.routes.invalidate_project(&spec.project_id).await;
         let started_at = Instant::now();
         match self
             .provisioner
@@ -332,6 +337,31 @@ impl ControlPlaneService {
         operation: Option<&InitialOperation>,
     ) -> Result<ActorTarget> {
         actor.validate()?;
+        self.validate_home_region(home_region)?;
+        if let Some(cached) = self.routes.get(actor).await {
+            if let Some(assigned) = home_region {
+                if assigned != cached.placement.home_region
+                    || (!cached.overrides_regions
+                        && self
+                            .region
+                            .as_deref()
+                            .is_some_and(|region| region != assigned))
+                {
+                    return Err(RegionConflict.into());
+                }
+            }
+            return self.issue_actor_target(
+                actor,
+                RoutedActor {
+                    initial_reply: None,
+                    host_state: HostState::Warm,
+                    placement: cached.placement,
+                    host_config_key: cached.host_config_key,
+                },
+                timings,
+                grant,
+            );
+        }
         let target = self
             .route_actor_when_ready(
                 actor,
@@ -359,32 +389,20 @@ impl ControlPlaneService {
         mut timings: Option<&mut TargetResolutionTimings>,
         grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
-        let resolved_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?;
-        let idle_expires_at_ms = resolved_at_ms.saturating_add(
-            target
-                .spec
-                .sandboxes
-                .get(&actor.actor_name)
-                .and_then(|options| options.idle_timeout_ms)
-                .unwrap_or_else(|| self.provisioner.host_idle_timeout_ms()),
-        );
         let issued = self.host_token_issuer.issue_invocation_target(
             actor,
-            &target.lease.id,
-            &target.lease.session_id,
-            &target.spec.host_config_key(),
+            &target.placement.lease.id,
+            &target.placement.lease.session_id,
+            &target.host_config_key,
             &target.placement.home_region,
             target.placement.owner_epoch,
             grant,
-            &target.lease.route,
+            &target.placement.lease.route,
         )?;
-        let expires_at_ms = issued.expires_at_ms.min(i64::try_from(
-            idle_expires_at_ms.min(target.lease.expires_at_ms),
-        )?);
         if let Some(timings) = timings.as_deref_mut() {
             timings.invocation_token_issued_at_ms = Some(timings.elapsed_ms());
         }
-        let route = target.lease.route;
+        let route = target.placement.lease.route;
         if let Some(timings) = timings {
             timings.route_selected_at_ms = Some(timings.elapsed_ms());
         }
@@ -395,7 +413,6 @@ impl ControlPlaneService {
             route,
             token: issued.token,
             owner_epoch: target.placement.owner_epoch,
-            expires_at_ms,
         })
     }
 }
@@ -408,7 +425,6 @@ pub(super) struct ActorTarget {
     pub route: String,
     pub token: String,
     pub owner_epoch: u64,
-    pub expires_at_ms: i64,
 }
 
 pub(super) struct TargetResolutionTimings {
@@ -487,6 +503,17 @@ impl ControlPlaneService {
         match command {
             ControlPlaneCommand::Lifecycle { report } => {
                 use crate::clock::Clock;
+                let invalidation = matches!(
+                    report.kind,
+                    crate::actor_lifecycle::LifecycleKind::Draining
+                        | crate::actor_lifecycle::LifecycleKind::Stopped
+                )
+                .then(|| super::routes::RouteIdentity {
+                    actor: principal.actor.clone(),
+                    host: principal.host_id.clone(),
+                    session: principal.session_id.clone(),
+                    epoch: report.owner_epoch,
+                });
                 self.lifecycle
                     .record(crate::actor_lifecycle::LifecycleEvent {
                         organization_id: principal.organization_id.clone(),
@@ -499,6 +526,9 @@ impl ControlPlaneService {
                         report,
                     })
                     .await?;
+                if let Some(identity) = invalidation {
+                    self.routes.invalidate(identity).await;
+                }
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::SocketOperation { .. } => {
@@ -642,6 +672,7 @@ impl ControlPlaneService {
         operation: Option<&InitialOperation>,
     ) -> Result<RoutedActor> {
         self.validate_home_region(home_region)?;
+        let generation = self.routes.generation();
         let spec = self
             .runtime_deployment(&actor.project_id)
             .await?
@@ -680,6 +711,9 @@ impl ControlPlaneService {
             timings.lease_checked_at_ms = Some(timings.elapsed_ms());
         }
         if let Some(target) = active {
+            self.routes
+                .remember(actor, target.cached(overrides_regions), generation)
+                .await;
             return Ok(target);
         }
         let target = self
@@ -698,6 +732,9 @@ impl ControlPlaneService {
         if let Some(timings) = timings {
             timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
         }
+        self.routes
+            .remember(actor, target.cached(overrides_regions), generation)
+            .await;
         Ok(target)
     }
 
@@ -782,8 +819,7 @@ impl ControlPlaneService {
                 state_object: None,
                 last_request_id: None,
             },
-            lease,
-            spec: spec.clone(),
+            host_config_key: spec.host_config_key(),
         })
     }
 
@@ -853,8 +889,7 @@ impl ControlPlaneService {
             initial_reply: None,
             host_state: HostState::Warm,
             placement: placement.clone(),
-            lease: lease.clone(),
-            spec: spec.clone(),
+            host_config_key: spec.host_config_key(),
         }))
     }
 }
@@ -930,8 +965,6 @@ impl std::error::Error for RegionConflict {}
 
 #[async_trait]
 pub(crate) trait HostProvisioner: Send + Sync {
-    fn host_idle_timeout_ms(&self) -> u64;
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -1023,10 +1056,6 @@ impl SandboxHostProvisioner {
 
 #[async_trait]
 impl HostProvisioner for SandboxHostProvisioner {
-    fn host_idle_timeout_ms(&self) -> u64 {
-        self.runtime.host_idle_timeout_ms
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -1392,8 +1421,17 @@ struct RoutedActor {
     initial_reply: Option<Value>,
     host_state: HostState,
     placement: ObjectPlacement,
-    lease: HostLease,
-    spec: HostLaunchSpec,
+    host_config_key: String,
+}
+
+impl RoutedActor {
+    fn cached(&self, overrides_regions: bool) -> super::routes::CachedRoute {
+        super::routes::CachedRoute {
+            placement: self.placement.clone(),
+            host_config_key: self.host_config_key.clone(),
+            overrides_regions,
+        }
+    }
 }
 
 fn elapsed_ms(started_at: Instant) -> f64 {

@@ -65,10 +65,11 @@ async fn handoff(routing: Option<Arc<dyn RoutingHints>>) -> Result<()> {
         .error_for_status()?
         .json()
         .await?;
-    let next = fixture.verifier.authenticate_authorization(&format!(
-        "Bearer {}",
-        replacement["token"].as_str().unwrap()
-    ))?;
+    assert_eq!(replacement, json!({"homeRegion":"north-america-east"}));
+    let target = fixture.find_actor().await?;
+    let next = fixture
+        .verifier
+        .authenticate_authorization(&format!("Bearer {}", target["token"].as_str().unwrap()))?;
     assert_ne!(principal.session_id, next.session_id);
 
     report(&fixture, &principal, LifecycleKind::Heartbeat, 1).await?;
