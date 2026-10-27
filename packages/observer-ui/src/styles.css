@@ -1384,6 +1384,8 @@
 }
 .socket-timeline-panel {
     margin-bottom: 14px;
+}
+.overview-panel.socket-timeline-panel {
     overflow: visible;
 }
 .socket-panel-heading {
