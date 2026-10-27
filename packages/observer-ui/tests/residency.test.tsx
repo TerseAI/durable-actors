@@ -75,16 +75,18 @@ test("the instance list and residency lanes share activity order, filters, and i
     )
     const timeline = await view.findByRole("group", { name: "Instance residency timeline" })
     assert.deepEqual(
-        within(timeline)
-            .getAllByRole("button", { name: /^Inspect instance/ })
-            .map(button => button.textContent),
+        [...timeline.querySelectorAll(".socket-timeline-label strong")].map(label => label.textContent),
         rows()
     )
+    assert.equal(timeline.querySelector("button.socket-timeline-label"), null)
     fireEvent.focus(within(timeline).getByRole("button", { name: /recent-dormant: In memory/ }))
     assert.match(view.getByRole("tooltip").textContent!, /recent-dormant.*In memory.*4 s/)
     fireEvent.change(view.getByRole("combobox", { name: "Instance state" }), { target: { value: "dormant" } })
     assert.deepEqual(rows(), ["recent-dormant", "older-dormant"])
-    assert.equal(within(timeline).queryByRole("button", { name: "Inspect instance old-live" }), null)
+    assert.deepEqual(
+        [...timeline.querySelectorAll(".socket-timeline-label strong")].map(label => label.textContent),
+        ["recent-dormant", "older-dormant"]
+    )
     await act(async () =>
         publish({
             ...inventory,

@@ -26,6 +26,8 @@ The package exports `ActorObserver`, `RequestObserver`, `Overview`, `WebSocketOb
 
 Pass your own `ObserverClient` to connect these views to a hosted backend, or configure `HttpObserverClient` with your API prefix and fetch implementation. React remains a peer dependency. `ConsoleApp` provides the complete navigation shell and requires a `toggleTheme` callback; individual views can be placed inside your own navigation.
 
+`Overview` shows a compact list of actor types below the runtime summary. Select a type to inspect its instances. The list has no metric columns, filters, or threshold legend.
+
 Control-plane endpoints require a project in the path: `/v1/projects/{project_id}/observe/...`. The hosted backend should authorize access to that project and proxy the routes using its server-side admin credential. The CLI's `/api/observe` proxy uses its configured `DURABLE_ACTORS_PROJECT_ID`. Request traces include a required `projectId`; older stored traces without one are excluded from project results.
 
 The observer version follows the SDK and runtime version. Run `bun run --bun release:prepare <version>` at the repository root before publishing a GitHub release. Release preflight checks all versions, and the workflow publishes the observer before the SDK. The SDK's `workspace:*` dependency becomes the exact observer version when packed.
@@ -46,7 +48,7 @@ Durations include queue wait, actor processing, and persistence. Gaps are calcul
 
 Actor pages list every known instance, ordered by its latest request activity, including dormant instances. The Last active column shows a relative time with the exact timestamp on hover; unavailable timestamps sort last. Activity timestamps include request admission and completion, and do not advance on lifecycle heartbeats.
 
-The residency timeline shows one lane per instance in the same order as the list. Green segments mean in memory, purple means dormant, and hatching means unknown. Search and state filters apply to both views. Hover or focus a segment for its timestamps and duration; select a segment or instance to inspect it. The shared time range controls the timeline, while the inventory continues to list all known instances.
+Residency and WebSocket timelines share the same axis, row labels, bars, and time scale. The residency timeline shows one lane per instance in the same order as the list. Green segments mean in memory, purple means dormant, and hatching means unknown. Search and state filters apply to both views. Hover or focus a segment for its timestamps and duration; select a segment or instance to inspect it. The shared time range controls the timeline, while the inventory continues to list all known instances.
 
 Residency uses lifecycle reports, including immediate notifications when the executor loads or evicts an instance. Missing reports become unknown after 35 seconds; stopped hosts remain dormant until a later activation. Time before retained evidence is blank. ClickHouse history follows analytics retention; the local and Postgres analytics runtimes retain up to 100,000 lifecycle reports for 24 hours in memory, and their inventory lasts for the runtime process (up to 10,000 instances). Timeline queries return the latest 10,000 reports and show a notice when truncated. Older deployments without activity timestamps display Unknown until the next request.
 
