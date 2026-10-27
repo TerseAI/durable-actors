@@ -56,6 +56,8 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
                 max_starting: 1,
                 idle_ttl_seconds: 600,
                 refill_interval: Duration::from_secs(1),
+                retire_concurrency: 8,
+                reap_interval: Duration::from_secs(30),
                 regions: vec![],
                 resources: ResourceLimits::default(),
             },
@@ -130,6 +132,8 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
                 max_starting: 1,
                 idle_ttl_seconds: 600,
                 refill_interval: Duration::from_secs(1),
+                retire_concurrency: 8,
+                reap_interval: Duration::from_secs(30),
                 regions: vec![],
                 resources: ResourceLimits::default(),
             },
@@ -174,7 +178,7 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
         let provider = Arc::new(Provider { fail: false.into(), pause: None.into() });
         let pool = SparePool::new(PostgresDatabase::connect(&fixture.url).await?, provider, PoolConfig {
             control_plane_url: None, kind: SpareKind::Actor, idle: 2, fleet_maximum: 4,
-            max_starting: 2, idle_ttl_seconds: 600, refill_interval: Duration::from_secs(1), regions: vec![],
+            max_starting: 2, idle_ttl_seconds: 600, refill_interval: Duration::from_secs(1), retire_concurrency: 8, reap_interval: Duration::from_secs(30), regions: vec![],
             resources: ResourceLimits::default(),
         });
         for name in ["evicted", "warm"] {

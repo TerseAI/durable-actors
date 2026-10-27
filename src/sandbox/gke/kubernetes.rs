@@ -24,6 +24,8 @@ const MANAGED: &str = "app.kubernetes.io/managed-by=terse";
 pub(crate) struct GkeConfig {
     pub namespace: String,
     pub zones: BTreeMap<String, Vec<String>>,
+    pub reap_interval: Duration,
+    pub reap_concurrency: usize,
 }
 
 /// Reads pod state from one shared watch so provisioning costs a single API call per pod.
@@ -41,7 +43,12 @@ impl Kubernetes {
         let (changed, changes) = watch::channel(());
         let tasks = [
             AbortOnDropHandle::new(tokio::spawn(observe(pods.clone(), writer, changed))),
-            AbortOnDropHandle::new(tokio::spawn(reap(pods.clone(), observed.clone()))),
+            AbortOnDropHandle::new(tokio::spawn(reap(
+                pods.clone(),
+                observed.clone(),
+                config.reap_interval,
+                config.reap_concurrency,
+            ))),
         ];
         Self {
             pods,
@@ -205,25 +212,30 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
         .await;
 }
 
-async fn reap(pods: Api<Pod>, observed: Store<Pod>) {
+async fn reap(pods: Api<Pod>, observed: Store<Pod>, interval: Duration, concurrency: usize) {
     loop {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        if let Err(error) = reap_completed(&pods, &observed).await {
-            tracing::warn!(%error, "completed pod cleanup failed");
-        }
+        tokio::time::sleep(interval).await;
+        reap_completed(&pods, &observed, concurrency).await;
     }
 }
 
-async fn reap_completed(pods: &Api<Pod>, observed: &Store<Pod>) -> Result<()> {
-    for pod in observed.state().iter().filter(|pod| is_terminal(pod)) {
-        delete_pod(
-            pods,
-            &pod.name_any(),
-            &pod.uid().context("pod UID missing")?,
-        )
-        .await?;
-    }
-    Ok(())
+// Each finished pod costs one DELETE; scanning the watched copy between them makes no API calls.
+async fn reap_completed(pods: &Api<Pod>, observed: &Store<Pod>, concurrency: usize) {
+    let completed = observed
+        .state()
+        .into_iter()
+        .filter(|pod| is_terminal(pod) && pod.metadata.deletion_timestamp.is_none());
+    futures_util::stream::iter(completed)
+        .for_each_concurrent(concurrency, |pod| async move {
+            let deleted = match pod.uid() {
+                Some(uid) => delete_pod(pods, &pod.name_any(), &uid).await,
+                None => Err(anyhow::anyhow!("pod UID missing")),
+            };
+            if let Err(error) = deleted {
+                tracing::warn!(%error, name = %pod.name_any(), "completed pod cleanup failed");
+            }
+        })
+        .await;
 }
 
 fn spare_pod(request: &CreateSpareRequest, zones: &[String], token: &str) -> Result<Pod> {

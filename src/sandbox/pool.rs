@@ -23,6 +23,8 @@ pub(crate) struct PoolConfig {
     pub max_starting: u32,
     pub idle_ttl_seconds: u32,
     pub refill_interval: Duration,
+    pub retire_concurrency: usize,
+    pub reap_interval: Duration,
     pub regions: Vec<String>,
     pub resources: ResourceLimits,
 }
@@ -150,7 +152,7 @@ impl SparePool {
         let mut jobs = tokio::task::JoinSet::new();
         let mut cleaning = false;
         let mut reaping = false;
-        let mut reap_interval = tokio::time::interval(Duration::from_secs(30));
+        let mut reap_interval = tokio::time::interval(self.config.reap_interval);
         reap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut interval = tokio::time::interval(self.config.refill_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -318,7 +320,7 @@ impl SparePool {
         use futures_util::StreamExt;
         let results = futures_util::stream::iter(self.store.retiring().await?)
             .map(|handle| self.retire(handle))
-            .buffer_unordered(8)
+            .buffer_unordered(self.config.retire_concurrency)
             .collect::<Vec<_>>()
             .await;
         for result in results {

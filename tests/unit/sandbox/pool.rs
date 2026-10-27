@@ -320,6 +320,8 @@ fn config(idle: u32) -> PoolConfig {
         max_starting: 8,
         idle_ttl_seconds: 600,
         refill_interval: Duration::from_secs(1),
+        retire_concurrency: 8,
+        reap_interval: Duration::from_secs(30),
         regions: vec!["region".into()],
         resources: ResourceLimits::default(),
     }

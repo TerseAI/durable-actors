@@ -101,6 +101,10 @@ spec:
             - {name: DURABLE_ACTORS_SPARE_IDLE, value: {{ .Values.actors.warm | quote }}}
             - {name: DURABLE_ACTORS_SPARE_MAX_STARTING, value: {{ .Values.actors.maxStarting | quote }}}
             - {name: DURABLE_ACTORS_SPARE_REFILL_INTERVAL_MS, value: {{ .Values.actors.refillIntervalMs | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY, value: {{ .Values.actors.retireConcurrency | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_REAP_INTERVAL_MS, value: {{ .Values.actors.registryReapIntervalMs | quote }}}
+            - {name: DURABLE_ACTORS_GKE_REAP_INTERVAL_MS, value: {{ .Values.actors.reapIntervalMs | quote }}}
+            - {name: DURABLE_ACTORS_GKE_REAP_CONCURRENCY, value: {{ .Values.actors.reapConcurrency | quote }}}
             - {name: DURABLE_ACTORS_HOST_CPU_MILLIS, value: {{ .Values.actors.cpuMillis | quote }}}
             {{- with .Values.actors.cpuLimitMillis }}
             - {name: DURABLE_ACTORS_HOST_CPU_LIMIT_MILLIS, value: {{ . | quote }}}

@@ -111,10 +111,14 @@ test("allows extra controllers and a small warm pool", () => {
     assert.match(output, /kind: PodDisruptionBudget/)
 })
 
-test("configures how fast warm pools refill", () => {
-    const output = manifests({ actors: { maxStarting: 128, refillIntervalMs: 250 } })
+test("configures how fast warm pools refill and drain", () => {
+    const output = manifests({ actors: { maxStarting: 128, refillIntervalMs: 250, retireConcurrency: 128, reapIntervalMs: 500, reapConcurrency: 32, registryReapIntervalMs: 5000 } })
     assert.match(output, /DURABLE_ACTORS_SPARE_MAX_STARTING, value: "128"/)
     assert.match(output, /DURABLE_ACTORS_SPARE_REFILL_INTERVAL_MS, value: "250"/)
+    assert.match(output, /DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY, value: "128"/)
+    assert.match(output, /DURABLE_ACTORS_GKE_REAP_INTERVAL_MS, value: "500"/)
+    assert.match(output, /DURABLE_ACTORS_GKE_REAP_CONCURRENCY, value: "32"/)
+    assert.match(output, /DURABLE_ACTORS_SPARE_REAP_INTERVAL_MS, value: "5000"/)
 })
 
 for (const [name, overrides] of [

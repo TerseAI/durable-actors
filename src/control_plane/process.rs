@@ -721,6 +721,23 @@ fn sandbox_provider_config(
                 )?
                 .into(),
             ),
+            retire_concurrency: pool_number(
+                get,
+                "DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY",
+                64,
+                1,
+                1024,
+            )? as usize,
+            reap_interval: Duration::from_millis(
+                pool_number(
+                    get,
+                    "DURABLE_ACTORS_SPARE_REAP_INTERVAL_MS",
+                    30_000,
+                    500,
+                    600_000,
+                )?
+                .into(),
+            ),
             regions,
             resources: host_resources(get)?,
         },
@@ -754,6 +771,23 @@ fn sandbox_backend(
                     namespace: get("DURABLE_ACTORS_GKE_NAMESPACE")
                         .unwrap_or_else(|| "terse-sandboxes".into()),
                     zones,
+                    reap_interval: Duration::from_millis(
+                        pool_number(
+                            get,
+                            "DURABLE_ACTORS_GKE_REAP_INTERVAL_MS",
+                            1000,
+                            100,
+                            60_000,
+                        )?
+                        .into(),
+                    ),
+                    reap_concurrency: pool_number(
+                        get,
+                        "DURABLE_ACTORS_GKE_REAP_CONCURRENCY",
+                        64,
+                        1,
+                        1024,
+                    )? as usize,
                 }),
                 regions,
             ))
