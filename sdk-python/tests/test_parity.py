@@ -11,12 +11,6 @@ from durable_actors import ActorInvocationError, Client
 from durable_actors.codegen import generate_client
 from durable_actors.contract import public_contract
 
-TARGET = {
-    "route": "http://host.test",
-    "token": "ticket",
-    "ownerEpoch": 1,
-    "expiresAtMs": 9999999999999,
-}
 GRANT = {
     "websocketUrl": "wss://host.test/socket",
     "homeRegion": "west",
@@ -33,8 +27,6 @@ def test_socket_authorization_and_backend_broadcast_use_gateway():
         )
         if request.url.path.endswith("/find-websocket"):
             return httpx.Response(200, json=GRANT)
-        if request.url.path.endswith("/find"):
-            return httpx.Response(200, json=TARGET)
         return httpx.Response(204)
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
@@ -60,8 +52,6 @@ def test_broadcast_with_unknown_outcome_is_not_replayed():
 
     def handle(request):
         calls.append(request.url.path)
-        if request.url.path.endswith("/find"):
-            return httpx.Response(200, json=TARGET)
         raise httpx.ReadError("reply lost")
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
@@ -137,7 +127,7 @@ def test_client_telemetry_reports_outcomes_without_credentials_or_arguments():
     with httpx.Client(
         transport=httpx.MockTransport(
             lambda request: httpx.Response(
-                200, json={"target": TARGET, "outcome": {"type": "completed", "result": 1}}
+                200, json={"outcome": {"type": "completed", "result": 1}}
             )
         )
     ) as http:
@@ -240,13 +230,7 @@ def test_source_class_references_preserve_signatures_and_use_the_transport(tmp_p
     def handle(request):
         body = json.loads(request.content)
         value = sum(body["args"]) if body["method"] == "total" else body["args"][0]
-        outcome = {"type": "completed", "result": value}
-        return httpx.Response(
-            200,
-            json={"target": TARGET, "outcome": outcome}
-            if request.url.host != "host.test"
-            else outcome,
-        )
+        return httpx.Response(200, json={"outcome": {"type": "completed", "result": value}})
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
         with Client(http=http) as transport:

@@ -51,21 +51,27 @@ impl LocalObjectPlacementStore {
         object: &ActorStorageKey,
         lease: HostLease,
         home_region: &str,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         validate_region(home_region)?;
-        self.placements.lock().unwrap().insert(
+        let mut placements = self.placements.lock().unwrap();
+        let owner_epoch = match placements.get(object) {
+            Some(current) if current.lease.session_id == lease.session_id => current.owner_epoch,
+            Some(current) => current.owner_epoch + 1,
+            None => 1,
+        };
+        placements.insert(
             object.clone(),
             ObjectPlacement {
                 owner: lease.id.clone(),
                 lease,
                 object: object.clone(),
-                owner_epoch: 1,
+                owner_epoch,
                 home_region: home_region.into(),
                 state_version: 0,
                 state_object: None,
                 last_request_id: None,
             },
         );
-        Ok(())
+        Ok(owner_epoch)
     }
 }

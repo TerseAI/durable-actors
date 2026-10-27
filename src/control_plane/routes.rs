@@ -43,7 +43,7 @@ impl RouteEntry {
         if next == previous {
             self.rank() >= current.rank()
         } else {
-            matches!(self, Self::Active(_)) || next.epoch > previous.epoch
+            next.epoch > previous.epoch
         }
     }
 
@@ -100,7 +100,7 @@ impl Default for MemoryRoutes {
 impl RouteStore for MemoryRoutes {
     async fn get(&self, actor: &ActorKey) -> Option<RouteEntry> {
         let stamped = self.entries.get(actor).await?;
-        (stamped.generation == self.current()).then_some(stamped.entry)
+        stamped.visible(self.current()).then_some(stamped.entry)
     }
 
     async fn generation(&self, _: &str) -> Option<u64> {
@@ -142,7 +142,9 @@ impl MemoryRoutes {
             .and_compute_with(|current| async move {
                 let generation = self.current();
                 if observed.is_some_and(|observed| observed != generation)
-                    || current.is_some_and(|current| !entry.supersedes(&current.value().entry))
+                    || current
+                        .filter(|current| current.value().visible(generation))
+                        .is_some_and(|current| !entry.supersedes(&current.value().entry))
                 {
                     Op::Nop
                 } else {
@@ -178,6 +180,12 @@ struct Stamped {
     entry: RouteEntry,
 }
 
+impl Stamped {
+    fn visible(&self, generation: u64) -> bool {
+        self.generation == generation || !matches!(self.entry, RouteEntry::Active(_))
+    }
+}
+
 struct EntryLifetime;
 
 impl Expiry<ActorKey, Stamped> for EntryLifetime {
@@ -196,20 +204,23 @@ impl Expiry<ActorKey, Stamped> for EntryLifetime {
     }
 }
 
-// A project generation lets one INCR retire every entry in the project.
+// One INCR of the project generation retires its active routes; shutdown states outlive deploys.
 const CURRENT_ENTRY: &str = "
-local entry = redis.call('HMGET', KEYS[1], 'generation', 'entry')
-if entry[2] and entry[1] == (redis.call('GET', KEYS[2]) or '0') then return entry[2] end
+local entry = redis.call('HMGET', KEYS[1], 'generation', 'state', 'entry')
+if entry[3] and (entry[2] ~= 'active' or entry[1] == (redis.call('GET', KEYS[2]) or '0')) then
+  return entry[3]
+end
 return false";
 // Mirrors `MemoryRoutes::write`; ARGV[6] is the generation a resolved route was read under.
 const PUT_ENTRY: &str = "
 local generation = redis.call('GET', KEYS[2]) or '0'
 if ARGV[6] ~= '' and ARGV[6] ~= generation then return 0 end
 local rank = {active = 0, draining = 1, stopped = 2}
-local current = redis.call('HMGET', KEYS[1], 'identity', 'epoch', 'state')
+local current = redis.call('HMGET', KEYS[1], 'identity', 'epoch', 'state', 'generation')
+if current[3] == 'active' and current[4] ~= generation then current = {} end
 if current[1] == ARGV[1] then
   if rank[ARGV[3]] < rank[current[3]] then return 0 end
-elseif current[1] and ARGV[3] ~= 'active' and tonumber(ARGV[2]) <= tonumber(current[2]) then
+elseif current[1] and tonumber(ARGV[2]) <= tonumber(current[2]) then
   return 0
 end
 redis.call('HSET', KEYS[1], 'generation', generation,

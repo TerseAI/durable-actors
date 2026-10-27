@@ -40,11 +40,13 @@ async fn routes_follow_host_lifecycle(routes: &dyn RouteStore) {
     routes.remember(&actor, current.clone(), generation).await;
     assert_eq!(routes.get(&actor).await, None);
 
-    let generation = routes.generation(&actor.project_id).await;
     routes
         .put(&actor, RouteEntry::Draining(identity.clone()))
         .await;
+    routes.remove_project(&actor.project_id).await;
+    let generation = routes.generation(&actor.project_id).await;
     routes.remember(&actor, current, generation).await;
+    routes.remember(&actor, route(&actor, 1), generation).await;
     assert_eq!(
         routes.get(&actor).await,
         Some(RouteEntry::Draining(identity))

@@ -688,7 +688,8 @@ impl HostProvisioner for InvocationProvisioner {
                 spec.host_config_key()
             )))
         };
-        self.placements
+        let owner_epoch = self
+            .placements
             .set_owner(&actor.storage_key(), lease.clone(), region)?;
         let initial_reply = if self.host.assign_operation.load(Ordering::SeqCst) {
             use crate::sandbox::assignment::InitialRequest;
@@ -728,7 +729,7 @@ impl HostProvisioner for InvocationProvisioner {
         } else {
             None
         };
-        Ok((lease, 1, initial_reply))
+        Ok((lease, owner_epoch, initial_reply))
     }
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
         anyhow::bail!("unexpected termination")
