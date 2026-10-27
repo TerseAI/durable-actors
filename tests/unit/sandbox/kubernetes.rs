@@ -273,8 +273,9 @@ async fn finished_pods_are_reaped_once_from_the_watch() -> Result<()> {
                 Json(json!({"apiVersion":"v1","kind":"Status","status":"Success"}))
             }),
         );
-    let (_cluster, _server) = fake_cluster(routes).await?;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (cluster, _server) = fake_cluster(routes).await?;
+    cluster.observed.wait_until_ready().await?;
+    cluster.reap_finished().await?;
     let deleted = deleted.lock().unwrap().clone();
     assert!(
         deleted.contains(&"done".to_owned()) && deleted.contains(&"crashed".to_owned()),
@@ -303,7 +304,6 @@ async fn fake_cluster(
         GkeConfig {
             namespace: "sandboxes".into(),
             zones: BTreeMap::from([("north-america-west".into(), vec!["us-west4-a".into()])]),
-            reap_interval: Duration::from_millis(50),
             reap_concurrency: 4,
         },
     );

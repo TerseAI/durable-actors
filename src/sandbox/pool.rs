@@ -25,6 +25,7 @@ pub(crate) struct PoolConfig {
     pub refill_interval: Duration,
     pub retire_concurrency: usize,
     pub reap_interval: Duration,
+    pub pod_reap_interval: Duration,
     pub regions: Vec<String>,
     pub resources: ResourceLimits,
 }
@@ -143,17 +144,21 @@ impl SparePool {
         Ok(ids)
     }
 
-    pub fn start(self: &Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
-        tokio::spawn(self.clone().prewarm(stop.child_token()));
-        tokio::spawn(self.clone().run(registry, stop));
+    /// Keeps this replica's connections to ready spares warm; every serving replica needs this.
+    pub fn start(self: &Arc<Self>, stop: CancellationToken) {
+        tokio::spawn(self.clone().prewarm(stop));
     }
 
-    async fn run(self: Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
+    /// Fills, trims and cleans up the pool. Only the single pool manager runs this.
+    pub async fn run(self: Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
         let mut jobs = tokio::task::JoinSet::new();
         let mut cleaning = false;
         let mut reaping = false;
+        let mut reaping_pods = false;
         let mut reap_interval = tokio::time::interval(self.config.reap_interval);
         reap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut pod_reap_interval = tokio::time::interval(self.config.pod_reap_interval);
+        pod_reap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut interval = tokio::time::interval(self.config.refill_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -169,6 +174,10 @@ impl SparePool {
                             reaping = false;
                             report(result);
                         }
+                        Ok(Background::PodReap(result)) => {
+                            reaping_pods = false;
+                            report(result);
+                        }
                         Ok(Background::Cleanup(result)) => {
                             cleaning = false;
                             report(result);
@@ -181,6 +190,12 @@ impl SparePool {
                     reaping = true;
                     let pool = self.clone();
                     jobs.spawn(async move { Background::Reap(pool.forget_stopped().await) });
+                    continue;
+                }
+                _ = pod_reap_interval.tick(), if !reaping_pods => {
+                    reaping_pods = true;
+                    let pool = self.clone();
+                    jobs.spawn(async move { Background::PodReap(pool.provider.reap_finished().await) });
                     continue;
                 }
                 _ = interval.tick() => {},
@@ -358,6 +373,7 @@ struct Build {
 
 enum Background {
     Reap(Result<()>),
+    PodReap(Result<()>),
     Build(Result<()>),
     Cleanup(Result<()>),
 }

@@ -273,7 +273,6 @@ async fn control_plane_routes(
         &issuer,
         runtime_access.clone(),
         database.clone(),
-        registry.clone(),
         stop.clone(),
         connections,
     )
@@ -383,37 +382,17 @@ async fn sandbox_provisioner(
     issuer: &super::ActorJwtIssuer,
     access: Arc<crate::bucket::access::RuntimeAccess>,
     database: PostgresDatabase,
-    registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
     connections: crate::sandbox::connections::HostConnections,
 ) -> Result<super::service::SandboxHostProvisioner> {
-    let secrets = Arc::new(crate::sandbox::secrets::KubernetesSecrets::new(
-        config.secret_namespace,
-    ));
-    let provider = Arc::new(match config.backend {
-        SandboxBackend::Gke(gke) => {
-            crate::sandbox::gke::provider(gke, secrets, connections).await?
-        }
-        SandboxBackend::Modal(modal) => {
-            crate::sandbox::modal::provider(
-                modal,
-                &[
-                    &config.runtime_images.typescript,
-                    &config.runtime_images.python,
-                ],
-                secrets,
-                connections,
-            )
-            .await?
-        }
-    });
+    let provider = sandbox_provider(&config, connections).await?;
     let pool = crate::sandbox::pool::SparePool::with_runtime_images(
         database,
         provider.clone(),
         config.pool,
         Some(config.runtime_images.clone()),
     );
-    pool.start(registry, stop);
+    pool.start(stop);
     Ok(super::service::SandboxHostProvisioner::new(
         provider,
         config.runtime,
@@ -423,6 +402,64 @@ async fn sandbox_provisioner(
     .with_runtime_access(access)
     .with_pool(pool)
     .with_resource_bounds(config.resource_bounds))
+}
+
+async fn sandbox_provider(
+    config: &SandboxProviderConfig,
+    connections: crate::sandbox::connections::HostConnections,
+) -> Result<Arc<dyn crate::sandbox::SandboxProvider>> {
+    let secrets = Arc::new(crate::sandbox::secrets::KubernetesSecrets::new(
+        config.secret_namespace.clone(),
+    ));
+    Ok(Arc::new(match &config.backend {
+        SandboxBackend::Gke(gke) => {
+            crate::sandbox::gke::provider(gke.clone(), secrets, connections).await?
+        }
+        SandboxBackend::Modal(modal) => {
+            crate::sandbox::modal::provider(
+                modal.clone(),
+                &[
+                    &config.runtime_images.typescript,
+                    &config.runtime_images.python,
+                ],
+                secrets,
+                connections,
+            )
+            .await?
+        }
+    }))
+}
+
+/// Runs the one replica that fills, trims and cleans up the warm pool for every serving replica.
+pub async fn serve_pool_manager(
+    config: ControlPlaneProcessConfig,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let database = PostgresDatabase::lazy_with_max_connections(
+        &config.storage.postgres_url,
+        config.storage.postgres_max_connections,
+    )?;
+    let registry = Arc::new(super::PostgresAdminRegistry::from_database(
+        database.clone(),
+    ));
+    let provider = sandbox_provider(
+        &config.sandbox_provider,
+        crate::sandbox::connections::HostConnections::new()?,
+    )
+    .await?;
+    let pool = crate::sandbox::pool::SparePool::with_runtime_images(
+        database,
+        provider,
+        config.sandbox_provider.pool,
+        Some(config.sandbox_provider.runtime_images),
+    );
+    let stop = tokio_util::sync::CancellationToken::new();
+    let housekeeping = tokio::spawn(pool.run(registry, stop.clone()));
+    info!("durable-actors pool manager is ready");
+    shutdown.await;
+    stop.cancel();
+    housekeeping.await?;
+    Ok(())
 }
 
 impl ControlPlaneProcessConfig {
@@ -738,6 +775,16 @@ fn sandbox_provider_config(
                 )?
                 .into(),
             ),
+            pod_reap_interval: Duration::from_millis(
+                pool_number(
+                    get,
+                    "DURABLE_ACTORS_SPARE_POD_REAP_INTERVAL_MS",
+                    1000,
+                    100,
+                    60_000,
+                )?
+                .into(),
+            ),
             regions,
             resources: host_resources(get)?,
         },
@@ -771,16 +818,6 @@ fn sandbox_backend(
                     namespace: get("DURABLE_ACTORS_GKE_NAMESPACE")
                         .unwrap_or_else(|| "terse-sandboxes".into()),
                     zones,
-                    reap_interval: Duration::from_millis(
-                        pool_number(
-                            get,
-                            "DURABLE_ACTORS_GKE_REAP_INTERVAL_MS",
-                            1000,
-                            100,
-                            60_000,
-                        )?
-                        .into(),
-                    ),
                     reap_concurrency: pool_number(
                         get,
                         "DURABLE_ACTORS_GKE_REAP_CONCURRENCY",

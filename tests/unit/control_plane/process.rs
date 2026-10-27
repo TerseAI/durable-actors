@@ -162,16 +162,14 @@ fn pool_drain_rates_are_configurable_and_validated() -> Result<()> {
         Duration::from_secs(30)
     );
     assert_eq!(
-        (
-            gke(&defaults).reap_interval,
-            gke(&defaults).reap_concurrency
-        ),
-        (Duration::from_secs(1), 64)
+        defaults.sandbox_provider.pool.pod_reap_interval,
+        Duration::from_secs(1)
     );
+    assert_eq!(gke(&defaults).reap_concurrency, 64);
     values.extend([
         ("DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY", "128"),
         ("DURABLE_ACTORS_SPARE_REAP_INTERVAL_MS", "2000"),
-        ("DURABLE_ACTORS_GKE_REAP_INTERVAL_MS", "500"),
+        ("DURABLE_ACTORS_SPARE_POD_REAP_INTERVAL_MS", "500"),
         ("DURABLE_ACTORS_GKE_REAP_CONCURRENCY", "16"),
     ]);
     let configured = parse(&values)?;
@@ -181,16 +179,14 @@ fn pool_drain_rates_are_configurable_and_validated() -> Result<()> {
         Duration::from_secs(2)
     );
     assert_eq!(
-        (
-            gke(&configured).reap_interval,
-            gke(&configured).reap_concurrency
-        ),
-        (Duration::from_millis(500), 16)
+        configured.sandbox_provider.pool.pod_reap_interval,
+        Duration::from_millis(500)
     );
+    assert_eq!(gke(&configured).reap_concurrency, 16);
     for (name, value) in [
         ("DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY", "0"),
         ("DURABLE_ACTORS_GKE_REAP_CONCURRENCY", "0"),
-        ("DURABLE_ACTORS_GKE_REAP_INTERVAL_MS", "10"),
+        ("DURABLE_ACTORS_SPARE_POD_REAP_INTERVAL_MS", "10"),
     ] {
         let mut invalid = values.clone();
         invalid.insert(name, value);

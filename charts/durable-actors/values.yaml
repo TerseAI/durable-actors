@@ -23,7 +23,7 @@ actors:
   refillIntervalMs: 1000
   # How fast each controller deletes retired spares and finished pods, and forgets stopped sandboxes.
   retireConcurrency: 64
-  reapIntervalMs: 1000
+  podReapIntervalMs: 1000
   reapConcurrency: 64
   registryReapIntervalMs: 2000
   cpuMillis: 250

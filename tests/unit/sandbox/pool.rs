@@ -322,6 +322,7 @@ fn config(idle: u32) -> PoolConfig {
         refill_interval: Duration::from_secs(1),
         retire_concurrency: 8,
         reap_interval: Duration::from_secs(30),
+        pod_reap_interval: Duration::from_secs(1),
         regions: vec!["region".into()],
         resources: ResourceLimits::default(),
     }
