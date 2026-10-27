@@ -6,6 +6,7 @@ import { ConnectionInventoryNotice } from "./ConnectionInventoryNotice.js"
 import { FilterCombobox } from "./FilterCombobox.js"
 import type { FilterSuggestion } from "./FilterCombobox.js"
 import { RequestObserver } from "./RequestObserver.js"
+import { ResidencyTimeline } from "./ResidencyTimeline.js"
 import { StateInspector } from "./StateInspector.js"
 import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ActorInstance, ActorInventory, ObserverClient } from "./client.js"
@@ -14,10 +15,11 @@ import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
 import { NativeSelect, NativeSelectOption } from "./components/ui/native-select.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
-import { useInventory } from "./observer-hooks.js"
+import { useInventory, usePolledQuery } from "./observer-hooks.js"
 import { useQueueWaits } from "./queue-wait-history.js"
 import { formatWait, queueWaitByActor, queueWaitByInstance, queueWaitTotal } from "./queue-wait.js"
 import type { QueueWaitStats } from "./queue-wait.js"
+import { activityLabel, recentInstances } from "./residency.js"
 import { defaultTimeRange, rangePhrase, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
@@ -381,8 +383,12 @@ function ActorInstances({
 }) {
     const [query, setQuery] = useState("")
     const [status, setStatus] = useState("all")
-    const filtered = instances.filter(instance => matches(instance.actorId, query) && (status === "all" || instance.status === status))
-    filtered.sort((a, b) => Number(b.status === "live") - Number(a.status === "live"))
+    const now = Date.now()
+    const resolved = resolveRange(range, now)
+    const history = usePolledQuery(client, { actorName, ...resolved }, client.listResidency, 5_000)
+    const filtered = recentInstances(instances.filter(instance => matches(instance.actorId, query) && (status === "all" || instance.status === status)))
+    const end = resolved.toMs ?? now
+    const start = resolved.fromMs ?? history.value?.periods.reduce((first, period) => Math.min(first, period.fromMs), end) ?? end
     const selectedInstance = instances.find(instance => instance.actorId === selectedInstanceId)
     if (selectedInstanceId !== undefined)
         return <InstanceDetails key={selectedInstanceId} client={client} id={id} actorName={actorName} actorId={selectedInstanceId} instance={selectedInstance} waits={waits} range={range} />
@@ -393,7 +399,7 @@ function ActorInstances({
                     <h2 id={`${id}-heading`}>
                         {actorName} instances <Badge aria-hidden="true">{instances.length.toLocaleString()}</Badge>
                     </h2>
-                    <p>Select an instance to inspect its persisted state, requests, and WebSocket connections.</p>
+                    <p>All instances, most recently active first. Select one to inspect state, requests, and connections.</p>
                 </div>
             </div>
             {instances.length ? (
@@ -407,6 +413,26 @@ function ActorInstances({
                             <NativeSelectOption value="unknown">Unknown</NativeSelectOption>
                         </NativeSelect>
                     </div>
+                    {history.supported && history.loading && !history.value && <p role="status">Loading residency history…</p>}
+                    {history.supported && history.failed && (
+                        <div role="alert" className="la-observer-notice">
+                            <span>Could not refresh residency history. {history.value ? "The timeline may be out of date." : "Try again to load the timeline."}</span>
+                            <Button variant="outline" size="sm" onClick={history.retry}>
+                                Retry residency history
+                            </Button>
+                        </div>
+                    )}
+                    {history.value && filtered.length > 0 && (
+                        <ResidencyTimeline
+                            instances={filtered}
+                            periods={history.value.periods}
+                            start={start < end ? start : end - 3_600_000}
+                            end={end}
+                            endLabel={range.kind === "absolute" ? "end" : "now"}
+                            onSelect={onSelectInstance}
+                        />
+                    )}
+                    {history.value?.truncated && <p role="status">Residency history is limited to the latest 10,000 reports. Choose a shorter time range to see more detail.</p>}
                     <div className="la-observer-table-frame">
                         {filtered.length ? (
                             <Table aria-label={`${actorName} instances`} className="la-observer-instance-table">
@@ -415,6 +441,9 @@ function ActorInstances({
                                         <TableHead scope="col">Instance</TableHead>
                                         <TableHead scope="col">State</TableHead>
                                         <TableHead scope="col">Connections</TableHead>
+                                        <TableHead scope="col" aria-sort="descending">
+                                            Last active ↓
+                                        </TableHead>
                                         {waits && (
                                             <TableHead scope="col" className="la-observer-wait-cell">
                                                 Avg queue wait
@@ -440,6 +469,15 @@ function ActorInstances({
                                                 </Badge>
                                             </TableCell>
                                             <TableCell>{instance.connections.length.toLocaleString()}</TableCell>
+                                            <TableCell className="la-observer-last-active">
+                                                {instance.lastActiveAtMs == null ? (
+                                                    "Unknown"
+                                                ) : (
+                                                    <time dateTime={new Date(instance.lastActiveAtMs).toISOString()} title={new Date(instance.lastActiveAtMs).toLocaleString()}>
+                                                        {activityLabel(instance.lastActiveAtMs, now)}
+                                                    </time>
+                                                )}
+                                            </TableCell>
                                             {waits && (
                                                 <TableCell className="la-observer-wait-cell">
                                                     <QueueWait stats={waits.get(instance.actorId)} />

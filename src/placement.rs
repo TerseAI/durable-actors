@@ -51,7 +51,7 @@ pub fn validate_region(region: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ActorResidency {
     Live,
@@ -64,6 +64,7 @@ pub enum ActorResidency {
 pub struct ActorInstanceOverview {
     pub actor_id: String,
     pub status: ActorResidency,
+    pub last_active_at_ms: Option<u64>,
     pub connections: Vec<ActorConnectionInventory>,
     pub waiting: Option<Vec<crate::host_leases::WaitingOperation>>,
 }
@@ -88,6 +89,32 @@ pub struct ActorInventory {
 #[async_trait]
 pub trait ActorInventoryReader: Send + Sync {
     async fn actor_inventory(&self, project_id: &str) -> Result<ActorInventorySnapshot>;
+
+    async fn residency_history(
+        &self,
+        _project_id: &str,
+        _actor_name: &str,
+        _from_ms: u64,
+        _to_ms: u64,
+    ) -> Result<ResidencyHistory> {
+        Ok(ResidencyHistory::default())
+    }
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResidencyHistory {
+    pub periods: Vec<ResidencyPeriod>,
+    pub truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResidencyPeriod {
+    pub actor_id: String,
+    pub status: ActorResidency,
+    pub from_ms: u64,
+    pub to_ms: u64,
 }
 
 #[derive(Serialize)]

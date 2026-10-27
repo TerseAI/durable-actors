@@ -2,6 +2,7 @@ import { createParser } from "eventsource-parser"
 
 import { type OverviewMetrics, parseOverviewMetrics } from "./overview-metrics.js"
 import { type QueueWaitRow, queueWaitRows } from "./queue-wait.js"
+import { type ResidencyHistory, type ResidencyQuery, parseResidencyHistory } from "./residency.js"
 import { type SocketSessionRow, sessionRows } from "./socket-sessions.js"
 import { type StateHistoryPage, type StateQuery, type StateResponse, parseStateHistory, parseStateResponse } from "./state-data.js"
 import type { ResolvedRange } from "./time-range.js"
@@ -11,6 +12,7 @@ type ActorResidency = "live" | "dormant" | "unknown"
 interface ActorInstance {
     actorId: string
     status: ActorResidency
+    lastActiveAtMs?: number | null
     connections: ActorConnection[]
     waiting?: { id: string; operation: string }[] | null
 }
@@ -26,6 +28,7 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
+    listResidency?(query: ResidencyQuery, signal?: AbortSignal): Promise<ResidencyHistory>
     getState?(query: StateQuery, signal?: AbortSignal): Promise<StateResponse>
     listStateHistory?(query: Omit<StateQuery, "version"> & { before?: number; limit?: number }, signal?: AbortSignal): Promise<StateHistoryPage>
     getMetrics?(range: ResolvedRange, signal?: AbortSignal): Promise<OverviewMetrics>
@@ -44,6 +47,10 @@ class HttpObserverClient implements ObserverClient {
         private readonly baseUrl: string = "/api/observe",
         private readonly request: typeof fetch = globalThis.fetch.bind(globalThis)
     ) {}
+
+    async listResidency(query: ResidencyQuery, signal?: AbortSignal): Promise<ResidencyHistory> {
+        return parseResidencyHistory(await this.get(`residency${queryString(query)}`, signal))
+    }
 
     async getState(query: StateQuery, signal?: AbortSignal): Promise<StateResponse> {
         return parseStateResponse(await this.get(`state${queryString(query)}`, signal))
@@ -172,6 +179,7 @@ function isActorInstance(value: unknown): value is ActorInstance {
         typeof value.actorId === "string" &&
         "status" in value &&
         ["live", "dormant", "unknown"].includes(String(value.status)) &&
+        (!("lastActiveAtMs" in value) || value.lastActiveAtMs == null || (typeof value.lastActiveAtMs === "number" && Number.isSafeInteger(value.lastActiveAtMs) && value.lastActiveAtMs >= 0)) &&
         "connections" in value &&
         Array.isArray(value.connections) &&
         value.connections.every(isActorConnection) &&

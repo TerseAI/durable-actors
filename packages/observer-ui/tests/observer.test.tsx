@@ -330,6 +330,7 @@ test("SSE snapshots and heartbeats preserve the selected instance and its live s
     const client = new HttpObserverClient("/api/observe", async url => {
         if (String(url).includes("/requests/")) return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } })
         if (String(url).includes("/queue-waits")) return Response.json([])
+        if (String(url).includes("/residency")) return Response.json({ periods: [], truncated: false })
         if (String(url).includes("/state/history")) return Response.json({ records: [], retention: null, nextBefore: null })
         if (String(url).includes("/state")) return Response.json({ snapshot: null, schema: null })
         requests++

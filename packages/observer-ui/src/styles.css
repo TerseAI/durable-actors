@@ -2539,3 +2539,91 @@
     color: var(--muted-foreground);
     font-size: 10px;
 }
+
+.residency-history {
+    margin: 16px 0 24px;
+}
+.residency-heading,
+.residency-legend,
+.residency-legend > span {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.residency-heading {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+.residency-legend {
+    color: var(--muted-foreground);
+    font-size: 11px;
+}
+.residency-legend > span {
+    gap: 5px;
+}
+.residency-legend i {
+    display: inline-block;
+    width: 12px;
+    height: 8px;
+    border-radius: 2px;
+}
+.residency-swatch-live {
+    background: var(--success);
+}
+.residency-swatch-dormant {
+    background: var(--chart-2, #8b7ac7);
+}
+.residency-swatch-unknown {
+    background: repeating-linear-gradient(135deg, var(--muted) 0 3px, var(--muted-foreground) 3px 4px);
+}
+.residency-timeline .socket-timeline-body {
+    max-height: 320px;
+    overflow-y: auto;
+}
+.residency-instance {
+    color: var(--foreground);
+    text-align: left;
+    background: none;
+    font-family: inherit;
+    cursor: pointer;
+}
+.residency-instance:hover {
+    background: var(--accent);
+}
+.residency-lane {
+    height: 38px;
+}
+.residency-bar {
+    position: absolute;
+    top: 11px;
+    height: 16px;
+    min-width: 2px;
+    padding: 0;
+    border: 1px solid var(--background);
+    border-radius: 3px;
+    cursor: pointer;
+}
+.residency-bar:hover,
+.residency-bar:focus-visible,
+.residency-instance:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    z-index: 2;
+}
+.residency-no-history {
+    display: block;
+    padding: 10px;
+    color: var(--muted-foreground);
+    font-size: 11px;
+}
+.la-observer .residency-caption {
+    min-height: 36px;
+    max-width: none;
+    margin-top: 8px;
+    font-size: 11px;
+}
+.la-observer-last-active {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}

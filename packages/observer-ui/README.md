@@ -42,6 +42,16 @@ Request details open in a right-side [shadcn Drawer](https://ui.shadcn.com/docs/
 
 Durations include queue wait, actor processing, and persistence. Gaps are calculated only from the calls loaded in the current view; filtered or unretained calls are not included. The waterfall uses request traces, so internal helper calls within one invocation are not separate spans. Embed `RequestTimeline` directly with `records` and an `onSelect(record, trigger)` callback when providing your own request controls.
 
+## Actor instances and residency
+
+Actor pages list every known instance, ordered by its latest request activity, including dormant instances. The Last active column shows a relative time with the exact timestamp on hover; unavailable timestamps sort last. Activity timestamps include request admission and completion, and do not advance on lifecycle heartbeats.
+
+The residency timeline shows one lane per instance in the same order as the list. Green segments mean in memory, purple means dormant, and hatching means unknown. Search and state filters apply to both views. Hover or focus a segment for its timestamps and duration; select a segment or instance to inspect it. The shared time range controls the timeline, while the inventory continues to list all known instances.
+
+Residency uses lifecycle reports, including immediate notifications when the executor loads or evicts an instance. Missing reports become unknown after 35 seconds; stopped hosts remain dormant until a later activation. Time before retained evidence is blank. ClickHouse history follows analytics retention; the local and Postgres analytics runtimes retain up to 100,000 lifecycle reports for 24 hours in memory, and their inventory lasts for the runtime process (up to 10,000 instances). Timeline queries return the latest 10,000 reports and show a notice when truncated. Older deployments without activity timestamps display Unknown until the next request.
+
+Custom observer clients can implement `listResidency` to enable the timeline. `HttpObserverClient` and the TypeScript and Python observer proxies use the authenticated project endpoint `/v1/projects/{project_id}/observe/residency?actorName=…`. `ResidencyTimeline` and its props and data types are also exported for embedding.
+
 ## Persisted actor state
 
 Select an actor instance in `ActorObserver` to inspect persisted fields, JSON types, nested values, and version diffs. Request and connection links filter the existing request history. The standard `HttpObserverClient` and `durable-actors observe` include this capability; custom clients implement `getState` and `listStateHistory` to enable it.
