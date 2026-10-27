@@ -338,3 +338,17 @@ pub(super) async fn reserve(store: &PoolStore, key: &str, target: u32) -> Result
 
 #[path = "pool_replenishment.rs"]
 mod replenishment;
+
+#[test]
+fn housekeeping_health_follows_the_loop_heartbeat() -> Result<()> {
+    let pool = SparePool::new(
+        PostgresDatabase::lazy("postgres://localhost/unused")?,
+        Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
+        config(0),
+    );
+    assert!(pool.housekeeping_alive(Duration::from_secs(60)));
+    pool.heartbeat
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    assert!(!pool.housekeeping_alive(Duration::from_secs(60)));
+    Ok(())
+}

@@ -453,10 +453,31 @@ pub async fn serve_pool_manager(
         config.sandbox_provider.pool,
         Some(config.sandbox_provider.runtime_images),
     );
+    let stale_after = (pool.config.refill_interval * 3).max(Duration::from_secs(60));
+    let health = pool.clone();
+    let routes = axum::Router::new().route(
+        "/healthz",
+        axum::routing::get(move || {
+            let alive = health.housekeeping_alive(stale_after);
+            async move {
+                if alive {
+                    axum::http::StatusCode::OK
+                } else {
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind(config.bind)
+        .await
+        .context("bind durable-actors pool manager")?;
     let stop = tokio_util::sync::CancellationToken::new();
     let housekeeping = tokio::spawn(pool.run(registry, stop.clone()));
-    info!("durable-actors pool manager is ready");
-    shutdown.await;
+    info!(bind = %config.bind, "durable-actors pool manager is ready");
+    axum::serve(listener, routes)
+        .with_graceful_shutdown(shutdown)
+        .await
+        .context("serve durable-actors pool manager health")?;
     stop.cancel();
     housekeeping.await?;
     Ok(())

@@ -48,10 +48,8 @@ spec:
       containers:
         - name: control-plane
           image: {{ include "actors.image" $.Values.images.controlPlane | quote }}
-          {{- if eq $workload.role "control_plane" }}
           ports:
             - {name: http, containerPort: 7100}
-          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -68,10 +66,11 @@ spec:
           readinessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 2
+          {{- end }}
+          # The pool manager reports unhealthy once its housekeeping loop stops completing passes.
           livenessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 10
-          {{- end }}
           env:
             - {name: DURABLE_ACTORS_PROCESS_ROLE, value: {{ $workload.role }}}
             - {name: DURABLE_ACTORS_CONTROL_PLANE_BIND, value: "0.0.0.0:7100"}

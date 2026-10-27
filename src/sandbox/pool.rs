@@ -35,6 +35,7 @@ pub(crate) struct SparePool {
     provider: Arc<dyn SandboxProvider>,
     pub config: PoolConfig,
     runtime_images: Option<crate::control_plane::RuntimeImages>,
+    heartbeat: std::sync::atomic::AtomicU64,
 }
 
 impl SparePool {
@@ -58,6 +59,7 @@ impl SparePool {
             provider,
             config,
             runtime_images,
+            heartbeat: now_ms().into(),
         })
     }
 
@@ -140,8 +142,13 @@ impl SparePool {
                 ids.push(serde_json::from_str::<SpareHandle>(&handle)?.resource_id);
             }
         }
-        self.cleanup().await?;
         Ok(ids)
+    }
+
+    /// Whether the housekeeping loop finished a pass within `stale_after`; a hung loop fails this.
+    pub fn housekeeping_alive(&self, stale_after: Duration) -> bool {
+        let last = self.heartbeat.load(std::sync::atomic::Ordering::Relaxed);
+        now_ms().saturating_sub(last) <= stale_after.as_millis() as u64
     }
 
     /// Keeps this replica's connections to ready spares warm; every serving replica needs this.
@@ -223,6 +230,8 @@ impl SparePool {
                 let pool = self.clone();
                 jobs.spawn(async move { Background::Cleanup(pool.cleanup().await) });
             }
+            self.heartbeat
+                .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -376,6 +385,12 @@ enum Background {
     PodReap(Result<()>),
     Build(Result<()>),
     Cleanup(Result<()>),
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 fn report(result: Result<()>) {

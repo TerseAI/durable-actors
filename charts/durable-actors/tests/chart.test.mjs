@@ -119,7 +119,8 @@ test("runs exactly one pool manager beside the serving control plane", () => {
     assert.match(manager, /replicas: 1\b/)
     assert.match(manager, /strategy: \{type: Recreate\}/)
     assert.match(manager, /DURABLE_ACTORS_PROCESS_ROLE, value: pool_manager/)
-    assert.doesNotMatch(manager, /containerPort|readinessProbe/)
+    assert.doesNotMatch(manager, /readinessProbe/)
+    assert.match(manager, /livenessProbe:\n\s+httpGet: \{path: \/healthz/)
     assert.match(serving, /replicas: 3\b/)
 })
 
