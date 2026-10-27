@@ -114,5 +114,7 @@ function periodLabel(period: ResidencyPeriod): string {
 
 function tickTime(time: number, span: number): string {
     const date = new Date(time)
-    return span > 2 * 86_400_000 ? date.toLocaleDateString([], { month: "short", day: "numeric" }) : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+    return span > 2 * 86_400_000
+        ? date.toLocaleDateString([], { month: "short", day: "numeric" })
+        : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: span <= 270_000 ? "2-digit" : undefined, hour12: false })
 }
