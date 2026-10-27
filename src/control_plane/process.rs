@@ -211,18 +211,7 @@ async fn control_plane_routes(
         };
         Arc::new(ActorAdmission::new(limits, reservations).with_database(database.clone()))
     });
-    let routing: Arc<dyn crate::actor_lifecycle::routing::RoutingHints> = match &redis {
-        Some(redis) => Arc::new(crate::actor_lifecycle::routing::RedisRoutingHints::new(
-            redis.clone(),
-            "durable-actors:v1:shutdown",
-            retention,
-        )),
-        None => Arc::new(crate::actor_lifecycle::routing::MemoryRoutingHints::new(
-            retention,
-        )),
-    };
     let mut lifecycle = lifecycle
-        .with_routing(routing)
         .with_usage_topic(config.usage_topic.as_deref())
         .await?;
     if config.usage_topic.is_some()
@@ -312,10 +301,10 @@ async fn control_plane_routes(
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
     if let Some(redis) = redis {
-        service.routes =
-            service
-                .routes
-                .with_redis(redis, "durable-actors:v1:route-invalidations", stop.clone());
+        service.routes = Arc::new(super::routes::RedisRoutes::new(
+            redis,
+            "durable-actors:v1:routes",
+        ));
     }
     service.lifecycle = lifecycle;
     service.changes = changes;

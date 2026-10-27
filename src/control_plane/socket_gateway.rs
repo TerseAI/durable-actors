@@ -130,10 +130,7 @@ impl SocketGateway {
         actor: &ActorKey,
         target: &ActorTarget,
     ) {
-        service
-            .routes
-            .invalidate_route(actor, &target.route, target.owner_epoch)
-            .await;
+        service.routes.remove(actor, &target.identity).await;
     }
 
     async fn dispatch(

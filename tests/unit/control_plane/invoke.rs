@@ -302,7 +302,7 @@ async fn gateway_routes_actor_calls_and_rejects_host_tickets() -> Result<()> {
         .strip_prefix("Bearer ")
         .unwrap()
         .to_owned();
-    fixture.service.routes.invalidate_project("default").await;
+    fixture.service.routes.remove_project("default").await;
     assert_eq!(
         fixture.call(&token, request.clone()).await?.status(),
         StatusCode::UNAUTHORIZED
@@ -373,13 +373,13 @@ impl Fixture {
         replies: Vec<(StatusCode, Value)>,
         existing: bool,
     ) -> Result<Self> {
-        Self::start_with_routing(replies, existing, None).await
+        Self::start_with_routes(replies, existing, None).await
     }
 
-    async fn start_with_routing(
+    async fn start_with_routes(
         replies: Vec<(StatusCode, Value)>,
         existing: bool,
-        routing: Option<Arc<dyn crate::actor_lifecycle::routing::RoutingHints>>,
+        route_store: Option<Arc<dyn crate::control_plane::routes::RouteStore>>,
     ) -> Result<Self> {
         let host = Arc::new(HostFixture {
             assign_operation: false.into(),
@@ -472,8 +472,8 @@ impl Fixture {
                 placements: placements.clone(),
             }),
         );
-        if let Some(routing) = routing {
-            service.lifecycle = service.lifecycle.with_routing(routing);
+        if let Some(route_store) = route_store {
+            service.routes = route_store;
         }
         let hub = super::super::super::socket_bus::MemorySocketHub::default();
         let (origin, server, gateway) = serve_replica(&service, &admin, &issuer, &hub).await?;

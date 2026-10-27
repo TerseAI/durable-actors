@@ -1,75 +1,54 @@
 use super::*;
 
-#[tokio::test(start_paused = true)]
-async fn routes_survive_time_and_only_matching_invalidations_remove_them() {
-    let cache = RouteCache::default();
-    let actor = ActorKey {
-        project_id: "project".into(),
-        actor_name: "Counter".into(),
-        actor_id: "one".into(),
-    };
-    let old = route(&actor, 1);
-    cache
-        .remember(&actor, old.clone(), cache.generation())
-        .await;
-    tokio::time::advance(std::time::Duration::from_secs(86_400)).await;
-    assert_eq!(cache.get(&actor).await, Some(old.clone()));
-    let current = route(&actor, 2);
-    cache
-        .remember(&actor, current.clone(), cache.generation())
-        .await;
-    cache
-        .invalidate(RouteIdentity::new(&actor, &old.placement))
-        .await;
-    assert_eq!(cache.get(&actor).await, Some(current.clone()));
-    let generation = cache.generation();
-    cache
-        .invalidate(RouteIdentity::new(&actor, &current.placement))
-        .await;
-    cache.remember(&actor, current, generation).await;
-    assert_eq!(cache.get(&actor).await, None);
+#[tokio::test]
+async fn memory_routes_follow_host_lifecycle() {
+    routes_follow_host_lifecycle(&MemoryRoutes::default()).await;
 }
 
 #[tokio::test]
-async fn invalidations_reach_other_gateway_caches() -> anyhow::Result<()> {
+async fn redis_routes_follow_host_lifecycle() -> anyhow::Result<()> {
     let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_REDIS_URL") else {
         return Ok(());
     };
     let redis = Redis::connect(&crate::redis_client::RedisConfig { url, ca_cert: None })?;
-    let stop = CancellationToken::new();
-    let channel = format!("test-routes:{}", uuid::Uuid::new_v4());
-    let a = RouteCache::default().with_redis(redis.clone(), &channel, stop.clone());
-    let b = RouteCache::default().with_redis(redis, &channel, stop.clone());
-    wait_for(|| a.connected.load(Ordering::SeqCst) && b.connected.load(Ordering::SeqCst)).await;
+    let namespace = format!("test-routes:{}", uuid::Uuid::new_v4());
+    routes_follow_host_lifecycle(&RedisRoutes::new(redis, &namespace)).await;
+    Ok(())
+}
+
+async fn routes_follow_host_lifecycle(routes: &dyn RouteStore) {
     let actor = ActorKey {
         project_id: "project".into(),
         actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
-    let target = route(&actor, 1);
-    b.remember(&actor, target.clone(), b.generation()).await;
-    let generation = b.generation();
-    a.invalidate(RouteIdentity::new(&actor, &target.placement))
-        .await;
-    wait_for(|| b.generation() > generation).await;
-    assert_eq!(b.get(&actor).await, None);
-    b.remember(&actor, target, b.generation()).await;
-    let generation = b.generation();
-    a.invalidate_project(&actor.project_id).await;
-    wait_for(|| b.generation() > generation).await;
-    assert_eq!(b.get(&actor).await, None);
-    stop.cancel();
-    Ok(())
-}
+    let old = RouteIdentity::of(&route(&actor, 1).placement);
+    let current = route(&actor, 2);
+    let identity = RouteIdentity::of(&current.placement);
+    let active = Some(RouteEntry::Active(current.clone()));
+    let generation = routes.generation(&actor.project_id).await;
+    routes.remember(&actor, current.clone(), generation).await;
+    routes.remove(&actor, &old).await;
+    routes.renew(&actor, &identity).await;
+    assert_eq!(routes.get(&actor).await, active);
+    routes.remove(&actor, &identity).await;
+    assert_eq!(routes.get(&actor).await, None);
 
-async fn wait_for(predicate: impl Fn() -> bool) {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !predicate() {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    routes.remember(&actor, current.clone(), generation).await;
+    routes.remove_project(&actor.project_id).await;
+    assert_eq!(routes.get(&actor).await, None);
+    routes.remember(&actor, current.clone(), generation).await;
+    assert_eq!(routes.get(&actor).await, None);
+
+    let generation = routes.generation(&actor.project_id).await;
+    routes
+        .put(&actor, RouteEntry::Draining(identity.clone()))
+        .await;
+    routes.remember(&actor, current, generation).await;
+    assert_eq!(
+        routes.get(&actor).await,
+        Some(RouteEntry::Draining(identity))
+    );
 }
 
 fn route(actor: &ActorKey, epoch: u64) -> CachedRoute {

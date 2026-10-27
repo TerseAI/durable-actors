@@ -32,6 +32,7 @@ use super::{
     auth::{ActorJwtVerifier, ActorPrincipal},
     issuer::ActorJwtIssuer,
     protocol::{ControlPlaneCommand, ControlPlaneCommandReply, decode_command, encode_reply},
+    routes::{RouteEntry, RouteIdentity},
 };
 
 const FALLBACK_REGION: &str = "north-america-central";
@@ -43,7 +44,7 @@ pub struct ControlPlaneService {
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
-    pub(super) routes: super::routes::RouteCache,
+    pub(super) routes: Arc<dyn super::routes::RouteStore>,
     pub(super) gateway: Option<super::gateway::Gateway>,
     placements: Arc<dyn ObjectPlacementStore>,
     pub(super) auth: ActorJwtVerifier,
@@ -85,7 +86,7 @@ impl ControlPlaneService {
             changes: Default::default(),
             runtime_access: None,
             gateway: None,
-            routes: Default::default(),
+            routes: Arc::new(super::routes::MemoryRoutes::default()),
             region: None,
             placements,
             auth,
@@ -158,7 +159,7 @@ impl ControlPlaneService {
             self.terminate_deployment_hosts(&previous).await?;
         }
         let changed = update.register(spec, contract).await?;
-        self.routes.invalidate_project(&spec.project_id).await;
+        self.routes.remove_project(&spec.project_id).await;
         self.changes.notify().await;
         Ok(changed || replacing)
     }
@@ -233,13 +234,13 @@ impl ControlPlaneService {
         };
         self.terminate_deployment_hosts(&previous).await?;
         update.remove().await?;
-        self.routes.invalidate_project(project_id).await;
+        self.routes.remove_project(project_id).await;
         self.changes.notify().await;
         Ok(true)
     }
 
     pub(super) async fn terminate_deployment_hosts(&self, spec: &HostLaunchSpec) -> Result<()> {
-        self.routes.invalidate_project(&spec.project_id).await;
+        self.routes.remove_project(&spec.project_id).await;
         let started_at = Instant::now();
         match self
             .provisioner
@@ -338,17 +339,16 @@ impl ControlPlaneService {
     ) -> Result<ActorTarget> {
         actor.validate()?;
         self.validate_home_region(home_region)?;
-        if let Some(cached) = self.routes.get(actor).await {
-            if let Some(assigned) = home_region {
-                if assigned != cached.placement.home_region
+        if let Some(RouteEntry::Active(cached)) = self.routes.get(actor).await {
+            if let Some(assigned) = home_region
+                && (assigned != cached.placement.home_region
                     || (!cached.overrides_regions
                         && self
                             .region
                             .as_deref()
-                            .is_some_and(|region| region != assigned))
-                {
-                    return Err(RegionConflict.into());
-                }
+                            .is_some_and(|region| region != assigned)))
+            {
+                return Err(RegionConflict.into());
             }
             return self.issue_actor_target(
                 actor,
@@ -402,6 +402,7 @@ impl ControlPlaneService {
         if let Some(timings) = timings.as_deref_mut() {
             timings.invocation_token_issued_at_ms = Some(timings.elapsed_ms());
         }
+        let identity = RouteIdentity::of(&target.placement);
         let route = target.placement.lease.route;
         if let Some(timings) = timings {
             timings.route_selected_at_ms = Some(timings.elapsed_ms());
@@ -413,6 +414,7 @@ impl ControlPlaneService {
             route,
             token: issued.token,
             owner_epoch: target.placement.owner_epoch,
+            identity,
         })
     }
 }
@@ -425,6 +427,7 @@ pub(super) struct ActorTarget {
     pub route: String,
     pub token: String,
     pub owner_epoch: u64,
+    pub identity: RouteIdentity,
 }
 
 pub(super) struct TargetResolutionTimings {
@@ -503,17 +506,7 @@ impl ControlPlaneService {
         match command {
             ControlPlaneCommand::Lifecycle { report } => {
                 use crate::clock::Clock;
-                let invalidation = matches!(
-                    report.kind,
-                    crate::actor_lifecycle::LifecycleKind::Draining
-                        | crate::actor_lifecycle::LifecycleKind::Stopped
-                )
-                .then(|| super::routes::RouteIdentity {
-                    actor: principal.actor.clone(),
-                    host: principal.host_id.clone(),
-                    session: principal.session_id.clone(),
-                    epoch: report.owner_epoch,
-                });
+                self.follow_host_route(principal, &report).await;
                 self.lifecycle
                     .record(crate::actor_lifecycle::LifecycleEvent {
                         organization_id: principal.organization_id.clone(),
@@ -526,9 +519,6 @@ impl ControlPlaneService {
                         report,
                     })
                     .await?;
-                if let Some(identity) = invalidation {
-                    self.routes.invalidate(identity).await;
-                }
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::SocketOperation { .. } => {
@@ -600,6 +590,27 @@ impl ControlPlaneService {
         }
     }
 
+    async fn follow_host_route(
+        &self,
+        principal: &ActorPrincipal,
+        report: &crate::actor_lifecycle::LifecycleReport,
+    ) {
+        use crate::actor_lifecycle::LifecycleKind;
+        let identity = RouteIdentity {
+            host: principal.host_id.clone(),
+            session: principal.session_id.clone(),
+            epoch: report.owner_epoch,
+        };
+        let actor = &principal.actor;
+        match report.kind {
+            LifecycleKind::Started | LifecycleKind::Heartbeat => {
+                self.routes.renew(actor, &identity).await
+            }
+            LifecycleKind::Draining => self.routes.put(actor, RouteEntry::Draining(identity)).await,
+            LifecycleKind::Stopped => self.routes.put(actor, RouteEntry::Stopped(identity)).await,
+        }
+    }
+
     pub(super) fn authorize_socket_host(
         &self,
         principal: &ActorPrincipal,
@@ -647,16 +658,7 @@ impl ControlPlaneService {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             if host.lease.expires_at_ms <= crate::clock::Clock::now_ms(&crate::clock::SystemClock)?
-                || self
-                    .lifecycle
-                    .routing(
-                        &actor.storage_key(),
-                        host.lease.id.as_str(),
-                        &host.lease.session_id,
-                        host.epoch,
-                    )
-                    .await
-                    != Some(crate::actor_lifecycle::LifecycleKind::Draining)
+                || self.routes.get(actor).await != Some(RouteEntry::Draining(host.identity.clone()))
             {
                 return Ok(());
             }
@@ -672,7 +674,7 @@ impl ControlPlaneService {
         operation: Option<&InitialOperation>,
     ) -> Result<RoutedActor> {
         self.validate_home_region(home_region)?;
-        let generation = self.routes.generation();
+        let generation = self.routes.generation(&actor.project_id).await;
         let spec = self
             .runtime_deployment(&actor.project_id)
             .await?
@@ -706,7 +708,7 @@ impl ControlPlaneService {
         let lease_checked = current.as_ref().is_some_and(|placement| {
             host_matches_config(&placement.owner, &spec.host_config_key())
         });
-        let active = self.active_target(&current, &spec).await?;
+        let active = self.active_target(actor, &current, &spec).await?;
         if lease_checked && let Some(timings) = timings.as_deref_mut() {
             timings.lease_checked_at_ms = Some(timings.elapsed_ms());
         }
@@ -766,7 +768,7 @@ impl ControlPlaneService {
                         if !regions.contains(&placement.home_region) {
                             return Err(RegionConflict.into());
                         }
-                        if let Some(mut target) = self.active_target(&current, spec).await? {
+                        if let Some(mut target) = self.active_target(actor, &current, spec).await? {
                             target.host_state = HostState::Cold;
                             return Ok(target);
                         }
@@ -852,6 +854,7 @@ impl ControlPlaneService {
 
     async fn active_target(
         &self,
+        actor: &ActorKey,
         current: &Option<ObjectPlacement>,
         spec: &HostLaunchSpec,
     ) -> Result<Option<RoutedActor>> {
@@ -867,20 +870,14 @@ impl ControlPlaneService {
         {
             return Ok(None);
         }
-        if self
-            .lifecycle
-            .routing(
-                &placement.object,
-                lease.id.as_str(),
-                &lease.session_id,
-                placement.owner_epoch,
-            )
-            .await
-            .is_some()
+        let identity = RouteIdentity::of(placement);
+        if let Some(RouteEntry::Draining(shutting_down) | RouteEntry::Stopped(shutting_down)) =
+            self.routes.get(actor).await
+            && shutting_down == identity
         {
             return Err(ShuttingDownHost {
                 lease: lease.clone(),
-                epoch: placement.owner_epoch,
+                identity,
             }
             .into());
         }
@@ -897,7 +894,7 @@ impl ControlPlaneService {
 #[derive(Debug)]
 struct ShuttingDownHost {
     lease: HostLease,
-    epoch: u64,
+    identity: RouteIdentity,
 }
 
 impl std::fmt::Display for ShuttingDownHost {

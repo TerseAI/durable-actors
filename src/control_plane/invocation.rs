@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use super::public_api::{
     ActorPath, ApiError, FindActorRequest, PublicApiState, resolve_actor_target,
 };
+use super::service::ActorTarget;
 use crate::actor::ActorInvocation;
 
 pub(super) async fn invoke_alarm(
@@ -33,9 +34,7 @@ pub(super) async fn invoke_alarm(
     let outcome = dispatch(
         service,
         client,
-        &target.route,
-        &target.token,
-        target.owner_epoch,
+        &target,
         &invocation,
         target.host_state,
         started.elapsed().as_secs_f64() * 1000.0,
@@ -104,7 +103,7 @@ async fn resolve_and_dispatch(
                     state
                         .invocations
                         .routes
-                        .invalidate_route(&invocation.actor, &target.route, target.owner_epoch)
+                        .remove(&invocation.actor, &target.identity)
                         .await;
                 }
                 result?
@@ -113,9 +112,7 @@ async fn resolve_and_dispatch(
                 dispatch(
                     &state.invocations,
                     &state.hosts,
-                    &target.route,
-                    &target.token,
-                    target.owner_epoch,
+                    &target,
                     invocation,
                     host_state,
                     started.elapsed().as_secs_f64() * 1000.0,
@@ -185,23 +182,12 @@ pub(super) struct PublishRequest {
 async fn dispatch(
     service: &super::ControlPlaneService,
     client: &reqwest::Client,
-    route: &str,
-    token: &str,
-    owner_epoch: u64,
+    target: &ActorTarget,
     invocation: &ActorInvocation,
     host_state: HostState,
     routing_ms: f64,
 ) -> Result<Value, ApiError> {
-    let result = send_invocation(
-        client,
-        route,
-        token,
-        owner_epoch,
-        invocation,
-        host_state,
-        routing_ms,
-    )
-    .await;
+    let result = send_invocation(client, target, invocation, host_state, routing_ms).await;
     if result.as_ref().map_or(true, |reply| {
         matches!(
             reply["type"].as_str(),
@@ -210,7 +196,7 @@ async fn dispatch(
     }) {
         service
             .routes
-            .invalidate_route(&invocation.actor, route, owner_epoch)
+            .remove(&invocation.actor, &target.identity)
             .await;
     }
     result
@@ -218,9 +204,7 @@ async fn dispatch(
 
 async fn send_invocation(
     client: &reqwest::Client,
-    route: &str,
-    token: &str,
-    owner_epoch: u64,
+    target: &ActorTarget,
     invocation: &ActorInvocation,
     host_state: HostState,
     routing_ms: f64,
@@ -228,16 +212,16 @@ async fn send_invocation(
     let actor = &invocation.actor;
     let url = format!(
         "{}/v1/projects/{}/actors/{}/{}/invoke",
-        route.trim_end_matches('/'),
+        target.route.trim_end_matches('/'),
         actor.project_id,
         actor.actor_name,
         actor.actor_id
     );
     let response = client
         .post(url)
-        .bearer_auth(token)
+        .bearer_auth(&target.token)
         .json(&json!({
-            "requestId":invocation.request_id, "ownerEpoch":owner_epoch,
+            "requestId":invocation.request_id, "ownerEpoch":target.owner_epoch,
             "method":invocation.method, "args":invocation.args, "hostState":host_state, "routingMs":routing_ms,
         }))
         .send()
