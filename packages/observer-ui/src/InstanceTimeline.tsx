@@ -1,3 +1,4 @@
+import { useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 
 const laneHeight = 18
@@ -69,6 +70,22 @@ export function InstanceTimelineBar({ scale, from, to, track = 0, className = ""
             style={{ ...scale.interval(from, to), top: lanePadding + track * laneHeight + (laneHeight - barHeight) / 2, ...style }}
         />
     )
+}
+
+export function useTimelineHover<T>() {
+    const [hover, setHover] = useState<{ item: T; left: number; top: number; below: boolean }>()
+    const show = (item: T, target: HTMLElement) => {
+        const bar = target.getBoundingClientRect()
+        const frame = target.closest(".socket-timeline")!.getBoundingClientRect()
+        const below = bar.top - frame.top < 150
+        setHover({
+            item,
+            left: Math.min(Math.max(bar.left - frame.left + bar.width / 2, 120), frame.width - 120),
+            top: below ? bar.bottom - frame.top : bar.top - frame.top,
+            below
+        })
+    }
+    return { hover, show, hide: () => setHover(undefined) }
 }
 
 type TimelineScale = ReturnType<typeof timelineScale>

@@ -1,6 +1,4 @@
-import { useState } from "react"
-
-import { InstanceTimeline, InstanceTimelineBar, InstanceTimelineRow } from "./InstanceTimeline.js"
+import { InstanceTimeline, InstanceTimelineBar, InstanceTimelineRow, useTimelineHover } from "./InstanceTimeline.js"
 import type { ActorInstance } from "./client.js"
 import type { ResidencyPeriod } from "./residency.js"
 import { formatDuration } from "./socket-sessions.js"
@@ -15,7 +13,7 @@ export interface ResidencyTimelineProps {
 }
 
 export function ResidencyTimeline({ instances, periods, start, end, endLabel = "now", onSelect }: ResidencyTimelineProps) {
-    const [hover, setHover] = useState<ResidencyPeriod>()
+    const { hover, show, hide } = useTimelineHover<ResidencyPeriod>()
     const byInstance = new Map<string, ResidencyPeriod[]>()
     for (const period of periods) {
         if (period.toMs <= start || period.fromMs >= end) continue
@@ -42,7 +40,20 @@ export function ResidencyTimeline({ instances, periods, start, end, endLabel = "
                     </li>
                 </ul>
             </div>
-            <InstanceTimeline start={start} end={end} endLabel={endLabel} label="Instance residency timeline" onMouseLeave={() => setHover(undefined)}>
+            <InstanceTimeline
+                start={start}
+                end={end}
+                endLabel={endLabel}
+                label="Instance residency timeline"
+                onMouseLeave={hide}
+                overlay={
+                    hover && (
+                        <div role="tooltip" className={`socket-tooltip${hover.below ? " socket-tooltip-below" : ""}`} style={{ left: hover.left, top: hover.top }}>
+                            {hover.item.actorId} · {periodLabel(hover.item)}
+                        </div>
+                    )
+                }
+            >
                 {scale =>
                     instances.map(instance => (
                         <InstanceTimelineRow key={instance.actorId} actorId={instance.actorId}>
@@ -58,10 +69,10 @@ export function ResidencyTimeline({ instances, periods, start, end, endLabel = "
                                             className={`residency-swatch-${period.status}`}
                                             aria-label={`${instance.actorId}: ${periodLabel(period)}`}
                                             onClick={() => onSelect(instance.actorId)}
-                                            onMouseEnter={() => setHover(period)}
-                                            onMouseLeave={() => setHover(undefined)}
-                                            onFocus={() => setHover(period)}
-                                            onBlur={() => setHover(undefined)}
+                                            onMouseEnter={event => show(period, event.currentTarget)}
+                                            onMouseLeave={hide}
+                                            onFocus={event => show(period, event.currentTarget)}
+                                            onBlur={hide}
                                         />
                                     ))
                             ) : (
@@ -71,9 +82,6 @@ export function ResidencyTimeline({ instances, periods, start, end, endLabel = "
                     ))
                 }
             </InstanceTimeline>
-            <p className="residency-caption" role={hover ? "tooltip" : undefined}>
-                {hover ? `${hover.actorId} · ${periodLabel(hover)}` : "Select a segment to inspect an instance. Gaps before retained history are left blank; missing reports are unknown."}
-            </p>
         </div>
     )
 }

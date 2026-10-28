@@ -1435,6 +1435,7 @@
 }
 .socket-timeline-axis {
     height: 34px;
+    border-bottom: 1px solid var(--border);
     color: var(--muted-foreground);
     font: 10px var(--console-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
 }
@@ -1442,11 +1443,9 @@
     display: flex;
     align-items: flex-end;
     padding-bottom: 8px;
-    border-bottom: 1px solid transparent;
 }
 .socket-timeline-axis > div {
     position: relative;
-    border-bottom: 1px solid var(--border);
 }
 .socket-timeline-axis > div > span {
     position: absolute;
@@ -1469,6 +1468,7 @@
     position: absolute;
     inset: 0 0 0 176px;
     pointer-events: none;
+    box-shadow: inset -1px 0 var(--border);
 }
 .socket-timeline-grid i {
     position: absolute;
@@ -1477,8 +1477,8 @@
     width: 1px;
     background: var(--border);
 }
-.socket-timeline-row + .socket-timeline-row {
-    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+.socket-timeline-row {
+    border-bottom: 1px solid var(--border);
 }
 .socket-timeline-label {
     display: flex;
@@ -1503,7 +1503,6 @@
 .socket-timeline-lanes {
     position: relative;
     align-self: center;
-    border-right: 1px solid var(--foreground);
     min-height: 34px;
 }
 .socket-bar {
@@ -2443,13 +2442,6 @@
     display: block;
     padding: 10px;
     color: var(--muted-foreground);
-    font-size: 11px;
-}
-.la-observer .residency-caption {
-    min-height: 36px;
-    max-width: none;
-    margin: 0;
-    padding: 0 18px 12px;
     font-size: 11px;
 }
 .la-observer-last-active {

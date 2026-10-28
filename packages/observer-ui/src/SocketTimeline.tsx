@@ -1,7 +1,6 @@
-import { useState } from "react"
 import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from "react"
 
-import { InstanceTimeline, InstanceTimelineBar, InstanceTimelineRow } from "./InstanceTimeline.js"
+import { InstanceTimeline, InstanceTimelineBar, InstanceTimelineRow, useTimelineHover } from "./InstanceTimeline.js"
 import { formatDuration, metadataSummary, sessionDuration } from "./socket-sessions.js"
 import type { SocketSession } from "./socket-sessions.js"
 
@@ -34,27 +33,16 @@ interface Placed {
 const maxLanes = 40
 
 export function SocketTimeline({ sessions, start, end, endLabel = "now", selected, onSelect }: SocketTimelineProps) {
-    const [hover, setHover] = useState<{ session: SocketSession; left: number; top: number; below: boolean }>()
+    const { hover, show, hide } = useTimelineHover<SocketSession>()
     const lanes = packLanes(sessions, start, end)
     const visible = lanes.slice(0, maxLanes)
-    const show = (session: SocketSession, target: HTMLElement) => {
-        const bar = target.getBoundingClientRect()
-        const frame = target.closest(".socket-timeline")!.getBoundingClientRect()
-        const below = bar.top - frame.top < 150
-        setHover({
-            session,
-            left: Math.min(Math.max(bar.left - frame.left + bar.width / 2, 120), frame.width - 120),
-            top: below ? bar.bottom - frame.top : bar.top - frame.top,
-            below
-        })
-    }
     return (
         <InstanceTimeline
             start={start}
             end={end}
             endLabel={endLabel}
             label="Connection timeline"
-            onMouseLeave={() => setHover(undefined)}
+            onMouseLeave={hide}
             footer={
                 lanes.length > maxLanes && (
                     <p className="socket-timeline-more">
@@ -65,26 +53,26 @@ export function SocketTimeline({ sessions, start, end, endLabel = "now", selecte
             overlay={
                 hover && (
                     <div role="tooltip" className={`socket-tooltip${hover.below ? " socket-tooltip-below" : ""}`} style={{ left: hover.left, top: hover.top }}>
-                        <TooltipMetadata metadata={hover.session.metadata} />
+                        <TooltipMetadata metadata={hover.item.metadata} />
                         <dl>
                             <dt>Connection</dt>
-                            <dd>{shortId(hover.session.connectionId)}</dd>
+                            <dd>{shortId(hover.item.connectionId)}</dd>
                             <dt>Instance</dt>
                             <dd>
-                                {hover.session.actorName} / {hover.session.actorId}
+                                {hover.item.actorName} / {hover.item.actorId}
                             </dd>
                             <dt>Status</dt>
-                            <dd>{statusLabel(hover.session.status)}</dd>
+                            <dd>{statusLabel(hover.item.status)}</dd>
                             <dt>Opened</dt>
                             <dd>
-                                {hover.session.openedAtMs === null
+                                {hover.item.openedAtMs === null
                                     ? "Before retained history"
-                                    : `${hover.session.estimatedStart ? "≈ " : ""}${new Date(hover.session.openedAtMs).toLocaleTimeString([], { hour12: false })}`}
+                                    : `${hover.item.estimatedStart ? "≈ " : ""}${new Date(hover.item.openedAtMs).toLocaleTimeString([], { hour12: false })}`}
                             </dd>
                             <dt>Duration</dt>
-                            <dd>{durationLabel(hover.session, end)}</dd>
+                            <dd>{durationLabel(hover.item, end)}</dd>
                             <dt>Messages</dt>
-                            <dd>{hover.session.messages.toLocaleString()}</dd>
+                            <dd>{hover.item.messages.toLocaleString()}</dd>
                         </dl>
                     </div>
                 )
@@ -107,7 +95,7 @@ export function SocketTimeline({ sessions, start, end, endLabel = "now", selecte
                                     onClick={event => onSelect(placed.session, event.currentTarget)}
                                     onMouseEnter={(event: ReactMouseEvent<HTMLElement>) => show(placed.session, event.currentTarget)}
                                     onFocus={(event: ReactFocusEvent<HTMLElement>) => show(placed.session, event.currentTarget)}
-                                    onBlur={() => setHover(undefined)}
+                                    onBlur={hide}
                                 />
                             ))
                         )}
