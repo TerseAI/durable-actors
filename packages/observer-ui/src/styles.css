@@ -160,7 +160,7 @@
 .la-observer-summary > div {
     flex: 1;
     min-width: 0;
-    padding: 20px 24px 0;
+    padding: 20px 24px 12px;
 }
 .la-observer-summary > div + div {
     border-left: 1px solid var(--border);
@@ -538,7 +538,7 @@
         flex-wrap: wrap;
     }
     .la-observer-summary > div {
-        padding: 16px 16px 0;
+        padding: 16px 16px 12px;
         flex-basis: 33%;
     }
     .la-observer-summary:has(> div:nth-child(4)) > div {
@@ -1180,6 +1180,9 @@
     padding-top: 12px;
     font-size: 11px;
     color: var(--muted-foreground);
+}
+.overview-health .overview-signal {
+    padding: 0;
 }
 .overview-section-heading {
     display: flex;
