@@ -211,18 +211,7 @@ async fn control_plane_routes(
         };
         Arc::new(ActorAdmission::new(limits, reservations).with_database(database.clone()))
     });
-    let routing: Arc<dyn crate::actor_lifecycle::routing::RoutingHints> = match &redis {
-        Some(redis) => Arc::new(crate::actor_lifecycle::routing::RedisRoutingHints::new(
-            redis.clone(),
-            "durable-actors:v1:shutdown",
-            retention,
-        )),
-        None => Arc::new(crate::actor_lifecycle::routing::MemoryRoutingHints::new(
-            retention,
-        )),
-    };
     let mut lifecycle = lifecycle
-        .with_routing(routing)
         .with_usage_topic(config.usage_topic.as_deref())
         .await?;
     if config.usage_topic.is_some()
@@ -258,9 +247,9 @@ async fn control_plane_routes(
     )?);
     let placements = storage.clone();
     let connections = crate::sandbox::connections::HostConnections::new()?;
-    let socket_bus = match redis {
+    let socket_bus = match &redis {
         Some(redis) => super::socket_bus::RedisSocketBus::start(
-            redis,
+            redis.clone(),
             SOCKET_BUS_NAMESPACE,
             config.max_socket_connections,
             config.gateway_accept_connections,
@@ -284,7 +273,6 @@ async fn control_plane_routes(
         &issuer,
         runtime_access.clone(),
         database.clone(),
-        registry.clone(),
         stop.clone(),
         connections,
     )
@@ -311,6 +299,12 @@ async fn control_plane_routes(
     .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
+    if let Some(redis) = redis {
+        service.routes = Arc::new(super::routes::RedisRoutes::new(
+            redis,
+            "durable-actors:v1:routes",
+        ));
+    }
     service.lifecycle = lifecycle;
     service.changes = changes;
     service.gateway = Some(gateway);
@@ -388,37 +382,17 @@ async fn sandbox_provisioner(
     issuer: &super::ActorJwtIssuer,
     access: Arc<crate::bucket::access::RuntimeAccess>,
     database: PostgresDatabase,
-    registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
     connections: crate::sandbox::connections::HostConnections,
 ) -> Result<super::service::SandboxHostProvisioner> {
-    let secrets = Arc::new(crate::sandbox::secrets::KubernetesSecrets::new(
-        config.secret_namespace,
-    ));
-    let provider = Arc::new(match config.backend {
-        SandboxBackend::Gke(gke) => {
-            crate::sandbox::gke::provider(gke, secrets, connections).await?
-        }
-        SandboxBackend::Modal(modal) => {
-            crate::sandbox::modal::provider(
-                modal,
-                &[
-                    &config.runtime_images.typescript,
-                    &config.runtime_images.python,
-                ],
-                secrets,
-                connections,
-            )
-            .await?
-        }
-    });
+    let provider = sandbox_provider(&config, connections).await?;
     let pool = crate::sandbox::pool::SparePool::with_runtime_images(
         database,
         provider.clone(),
         config.pool,
         Some(config.runtime_images.clone()),
     );
-    pool.start(registry, stop);
+    pool.start(stop);
     Ok(super::service::SandboxHostProvisioner::new(
         provider,
         config.runtime,
@@ -428,6 +402,85 @@ async fn sandbox_provisioner(
     .with_runtime_access(access)
     .with_pool(pool)
     .with_resource_bounds(config.resource_bounds))
+}
+
+async fn sandbox_provider(
+    config: &SandboxProviderConfig,
+    connections: crate::sandbox::connections::HostConnections,
+) -> Result<Arc<dyn crate::sandbox::SandboxProvider>> {
+    let secrets = Arc::new(crate::sandbox::secrets::KubernetesSecrets::new(
+        config.secret_namespace.clone(),
+    ));
+    Ok(Arc::new(match &config.backend {
+        SandboxBackend::Gke(gke) => {
+            crate::sandbox::gke::provider(gke.clone(), secrets, connections).await?
+        }
+        SandboxBackend::Modal(modal) => {
+            crate::sandbox::modal::provider(
+                modal.clone(),
+                &[
+                    &config.runtime_images.typescript,
+                    &config.runtime_images.python,
+                ],
+                secrets,
+                connections,
+            )
+            .await?
+        }
+    }))
+}
+
+/// Runs the one replica that fills, trims and cleans up the warm pool for every serving replica.
+pub async fn serve_pool_manager(
+    config: ControlPlaneProcessConfig,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let database = PostgresDatabase::lazy_with_max_connections(
+        &config.storage.postgres_url,
+        config.storage.postgres_max_connections,
+    )?;
+    let registry = Arc::new(super::PostgresAdminRegistry::from_database(
+        database.clone(),
+    ));
+    let provider = sandbox_provider(
+        &config.sandbox_provider,
+        crate::sandbox::connections::HostConnections::new()?,
+    )
+    .await?;
+    let pool = crate::sandbox::pool::SparePool::with_runtime_images(
+        database,
+        provider,
+        config.sandbox_provider.pool,
+        Some(config.sandbox_provider.runtime_images),
+    );
+    let stale_after = (pool.config.refill_interval * 3).max(Duration::from_secs(60));
+    let health = pool.clone();
+    let routes = axum::Router::new().route(
+        "/healthz",
+        axum::routing::get(move || {
+            let alive = health.housekeeping_alive(stale_after);
+            async move {
+                if alive {
+                    axum::http::StatusCode::OK
+                } else {
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind(config.bind)
+        .await
+        .context("bind durable-actors pool manager")?;
+    let stop = tokio_util::sync::CancellationToken::new();
+    let housekeeping = tokio::spawn(pool.run(registry, stop.clone()));
+    info!(bind = %config.bind, "durable-actors pool manager is ready");
+    axum::serve(listener, routes)
+        .with_graceful_shutdown(shutdown)
+        .await
+        .context("serve durable-actors pool manager health")?;
+    stop.cancel();
+    housekeeping.await?;
+    Ok(())
 }
 
 impl ControlPlaneProcessConfig {
@@ -716,6 +769,43 @@ fn sandbox_provider_config(
             fleet_maximum,
             max_starting: pool_number(get, "DURABLE_ACTORS_SPARE_MAX_STARTING", 32, 1, u32::MAX)?,
             idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
+            refill_interval: Duration::from_millis(
+                pool_number(
+                    get,
+                    "DURABLE_ACTORS_SPARE_REFILL_INTERVAL_MS",
+                    1000,
+                    50,
+                    60_000,
+                )?
+                .into(),
+            ),
+            retire_concurrency: pool_number(
+                get,
+                "DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY",
+                64,
+                1,
+                1024,
+            )? as usize,
+            reap_interval: Duration::from_millis(
+                pool_number(
+                    get,
+                    "DURABLE_ACTORS_SPARE_REAP_INTERVAL_MS",
+                    30_000,
+                    500,
+                    600_000,
+                )?
+                .into(),
+            ),
+            pod_reap_interval: Duration::from_millis(
+                pool_number(
+                    get,
+                    "DURABLE_ACTORS_SPARE_POD_REAP_INTERVAL_MS",
+                    1000,
+                    100,
+                    60_000,
+                )?
+                .into(),
+            ),
             regions,
             resources: host_resources(get)?,
         },
@@ -749,6 +839,13 @@ fn sandbox_backend(
                     namespace: get("DURABLE_ACTORS_GKE_NAMESPACE")
                         .unwrap_or_else(|| "terse-sandboxes".into()),
                     zones,
+                    reap_concurrency: pool_number(
+                        get,
+                        "DURABLE_ACTORS_GKE_REAP_CONCURRENCY",
+                        64,
+                        1,
+                        1024,
+                    )? as usize,
                 }),
                 regions,
             ))
