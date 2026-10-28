@@ -105,9 +105,6 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                             </Badge>
                         )}
                     </div>
-                    {selectedInstanceId === undefined && (
-                        <p>{selectedActorName === undefined ? "Inspect instances, residency, and connections." : "Inspect this actor class’s instances, residency, and connections."}</p>
-                    )}
                 </div>
                 <div className="la-observer-actions">
                     {waits.supported && <TimeRangePicker value={range} onChange={setRange} />}
@@ -131,12 +128,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                         selectedActor ? (
                             <>
                                 {selectedInstanceId === undefined && (
-                                    <InventorySummary
-                                        inventory={{ ...inventory, actors: [selectedActor] }}
-                                        actorName={selectedActorName}
-                                        queueWait={waits.supported ? (totalWait ?? null) : undefined}
-                                        range={range}
-                                    />
+                                    <InventorySummary inventory={{ ...inventory, actors: [selectedActor] }} queueWait={waits.supported ? (totalWait ?? null) : undefined} />
                                 )}
                                 <ActorInstances
                                     client={client}
@@ -156,7 +148,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                         )
                     ) : (
                         <>
-                            <InventorySummary inventory={inventory} queueWait={waits.supported ? (totalWait ?? null) : undefined} range={range} />
+                            <InventorySummary inventory={inventory} queueWait={waits.supported ? (totalWait ?? null) : undefined} />
                             {inventory.actors.length ? (
                                 <ActorTable
                                     inventory={inventory}
@@ -188,7 +180,7 @@ function InventorySkeleton() {
     )
 }
 
-function InventorySummary({ inventory, actorName, queueWait, range }: { inventory: ActorInventory; actorName?: string; queueWait?: QueueWaitStats | null; range: TimeRange }) {
+function InventorySummary({ inventory, queueWait }: { inventory: ActorInventory; queueWait?: QueueWaitStats | null }) {
     const totals = inventory.actors.reduce((sum, actor) => ({ live: sum.live + actor.live, dormant: sum.dormant + actor.dormant, unknown: sum.unknown + actor.unknown }), {
         live: 0,
         dormant: 0,
@@ -199,7 +191,6 @@ function InventorySummary({ inventory, actorName, queueWait, range }: { inventor
             <div>
                 <dt>Total instances</dt>
                 <dd aria-label="Total instances">{(totals.live + totals.dormant + totals.unknown).toLocaleString()}</dd>
-                <p>{actorName === undefined ? `${inventory.actors.length} actor ${inventory.actors.length === 1 ? "type" : "types"}` : "In this actor class"}</p>
             </div>
             <div>
                 <dt>
@@ -207,7 +198,6 @@ function InventorySummary({ inventory, actorName, queueWait, range }: { inventor
                     Live
                 </dt>
                 <dd aria-label="Live instances">{totals.live.toLocaleString()}</dd>
-                <p>Loaded in memory</p>
             </div>
             <div>
                 <dt>
@@ -215,7 +205,6 @@ function InventorySummary({ inventory, actorName, queueWait, range }: { inventor
                     Dormant
                 </dt>
                 <dd aria-label="Dormant instances">{totals.dormant.toLocaleString()}</dd>
-                <p>Currently unloaded</p>
             </div>
             {totals.unknown > 0 && (
                 <div>
@@ -224,14 +213,12 @@ function InventorySummary({ inventory, actorName, queueWait, range }: { inventor
                         Unknown
                     </dt>
                     <dd aria-label="Unknown instances">{totals.unknown.toLocaleString()}</dd>
-                    <p>Awaiting host report</p>
                 </div>
             )}
             {queueWait !== undefined && (
                 <div className="la-observer-queue-wait">
                     <dt>Avg queue wait</dt>
                     <dd aria-label="Average queue wait">{formatWait(queueWait?.averageMs)}</dd>
-                    <p>{queueWait ? `Max ${formatWait(queueWait.maxMs)} · ${queueWait.admitted.toLocaleString()} admitted ${rangePhrase(range)}` : `No admitted requests ${rangePhrase(range)}`}</p>
                 </div>
             )}
         </dl>

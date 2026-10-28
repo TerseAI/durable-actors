@@ -160,7 +160,7 @@
 .la-observer-summary > div {
     flex: 1;
     min-width: 0;
-    padding: 20px 24px;
+    padding: 20px 24px 0;
 }
 .la-observer-summary > div + div {
     border-left: 1px solid var(--border);
@@ -173,16 +173,13 @@
     color: var(--muted-foreground);
 }
 .la-observer-summary dd {
-    margin: 10px 0 4px;
+    margin: 10px 0 0;
     font-size: 1.625rem;
     font-weight: 600;
     line-height: 1.2;
     letter-spacing: -0.03em;
     font-variant-numeric: tabular-nums;
     overflow-wrap: anywhere;
-}
-.la-observer-summary p {
-    font-size: 0.75rem;
 }
 .la-observer-table th.la-observer-wait-cell,
 .la-observer-table td.la-observer-wait-cell,
@@ -541,7 +538,7 @@
         flex-wrap: wrap;
     }
     .la-observer-summary > div {
-        padding: 16px;
+        padding: 16px 16px 0;
         flex-basis: 33%;
     }
     .la-observer-summary:has(> div:nth-child(4)) > div {
@@ -553,9 +550,6 @@
     .la-observer-summary > div:nth-child(n + 3):not(:last-child),
     .la-observer-summary > div:nth-child(4) {
         border-top: 1px solid var(--border);
-    }
-    .la-observer-summary p {
-        font-size: 0.6875rem;
     }
     .la-observer-list-toolbar {
         align-items: stretch;
