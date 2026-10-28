@@ -134,12 +134,13 @@ async fn read_inventory(
         if let Some(actors) = contract.contract["actors"].as_array() {
             for actor in actors {
                 if let Some(name) = actor["actorName"].as_str() {
-                    rows.entry(name.to_owned()).or_insert_with(|| {
+                    let row = rows.entry(name.to_owned()).or_insert_with(|| {
                         crate::placement::ActorInventory {
                             actor_name: name.to_owned(),
                             ..Default::default()
                         }
                     });
+                    row.methods = Some(contract.rpc_methods(name)?);
                 }
             }
         }

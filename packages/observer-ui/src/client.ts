@@ -24,7 +24,7 @@ interface ActorConnection {
 
 interface ActorInventory {
     connectionsComplete: boolean
-    actors: { actorName: string; live: number; dormant: number; unknown: number; instances: ActorInstance[] }[]
+    actors: { actorName: string; methods?: string[]; live: number; dormant: number; unknown: number; instances: ActorInstance[] }[]
 }
 
 interface ObserverClient {
@@ -165,6 +165,7 @@ function isInventory(value: unknown): value is ActorInventory {
         row =>
             row &&
             typeof row.actorName === "string" &&
+            (row.methods === undefined || (Array.isArray(row.methods) && row.methods.every((method: unknown) => typeof method === "string"))) &&
             [row.live, row.dormant, row.unknown].every(count => Number.isSafeInteger(count) && count >= 0) &&
             Array.isArray(row.instances) &&
             row.instances.every(isActorInstance)

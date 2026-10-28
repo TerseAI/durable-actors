@@ -3,7 +3,7 @@ import React, { act } from "react"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
-import type { RequestTrace, RequestTracePage } from "../src/client.js"
+import type { ActorInventory, RequestTrace, RequestTracePage } from "../src/client.js"
 
 import "./dom.js"
 
@@ -40,7 +40,7 @@ function fixture(records: RequestTrace[]) {
         },
         listRequests: async () => page
     }
-    return { client, publish: (records: RequestTrace[]) => publish({ ...page, records }) }
+    return { client, publish: (records: RequestTrace[], snapshot = false) => publish({ ...page, records, snapshot }) }
 }
 
 test("repeated methods share a row while interleaved calls remain individually selectable", async () => {
@@ -67,6 +67,34 @@ test("repeated methods share a row while interleaved calls remain individually s
     assert.equal(timeline.querySelectorAll(".request-waterfall-row").length, 2)
     assert.equal(within(row as HTMLElement).getAllByRole("button").length, 3)
     assert.ok(within(row as HTMLElement).getByText("3 calls"))
+})
+
+test("published methods keep rows and order with no calls, new activity, empty history, and retention", async () => {
+    const source = fixture([])
+    const inventory: ActorInventory = {
+        connectionsComplete: true,
+        actors: [{ actorName: "Room", methods: ["save", "load", "neverCalled"], live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "lobby", status: "live", connections: [] }] }]
+    }
+    const client = { ...source.client, listActors: async () => inventory }
+    const view = render(<RequestObserver client={client} actor={{ actorName: "Room", actorId: "lobby" }} />)
+    const timeline = await view.findByRole("group", { name: "Invocation waterfall" })
+    const labels = () => [...timeline.querySelectorAll(".request-waterfall-label strong")].map(label => label.textContent)
+    const expected = ["load", "neverCalled", "save", "onConnect", "onDisconnect", "onMessage"]
+    assert.deepEqual(labels(), expected)
+    assert.equal(within(timeline).getAllByText("0 calls").length, expected.length)
+    await act(async () => source.publish([{ ...trace, operation: "save" }]))
+    assert.deepEqual(labels(), expected)
+    const save = within(timeline).getByRole("group", { name: "save method calls on Room / lobby" })
+    assert.ok(within(save).getByText("1 call"))
+    fireEvent.click(view.getByRole("button", { name: "History" }))
+    await waitFor(() => assert.equal(within(timeline).queryByRole("button", { name: /Inspect save request/ }), null))
+    assert.deepEqual(labels(), expected)
+    assert.ok(within(save).getByText("0 calls"))
+    fireEvent.click(view.getByRole("button", { name: "Live" }))
+    await act(async () => source.publish([], true))
+    assert.deepEqual(labels(), expected)
+    assert.equal(within(timeline).getAllByText("0 calls").length, expected.length)
+    assert.equal(view.queryByText("Room / elsewhere"), null)
 })
 
 test("method rows keep different projects, actor classes, instances and event kinds separate", async () => {
@@ -186,6 +214,7 @@ test("actor waterfall respects scope, pause, history and the table toggle", asyn
     fireEvent.click(view.getByRole("button", { name: "Waterfall" }))
     fireEvent.click(view.getByRole("button", { name: "History" }))
     await view.findByText("load")
-    assert.equal(view.queryByText("update"), null)
+    assert.ok(view.getByText("update"))
+    assert.ok(within(view.getByRole("group", { name: "update method calls on Room / lobby" })).getByText("0 calls"))
     assert.ok(view.getByRole("group", { name: "Invocation waterfall" }))
 })

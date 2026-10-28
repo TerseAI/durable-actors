@@ -140,6 +140,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                                 )}
                                 <ActorInstances
                                     client={client}
+                                    inventory={inventory}
                                     key={selectedActorName}
                                     id={detailsId}
                                     actorName={selectedActorName}
@@ -170,13 +171,6 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                             )}
                         </>
                     )}
-                    <div className="la-observer-footnote">
-                        <span className="la-observer-refresh-status">
-                            <span className={`la-observer-dot ${failed ? "la-observer-dot-unknown" : client.watchActors ? "la-observer-dot-live" : ""}`} />
-                            {failed ? "Reconnecting…" : client.watchActors ? "Live updates" : "Auto-refresh every 5s"}
-                        </span>
-                        <span>{client.watchActors ? "Changes stream from the control plane." : "Counts follow the latest host heartbeat."}</span>
-                    </div>
                 </>
             )}
         </section>
@@ -364,6 +358,7 @@ function matchesActor(actor: ActorInventory["actors"][number], query: string) {
 
 function ActorInstances({
     client,
+    inventory,
     id,
     actorName,
     instances,
@@ -373,6 +368,7 @@ function ActorInstances({
     onSelectInstance
 }: {
     client: ObserverClient
+    inventory: ActorInventory
     id: string
     actorName: string
     instances: ActorInstance[]
@@ -391,7 +387,19 @@ function ActorInstances({
     const start = resolved.fromMs ?? history.value?.periods.reduce((first, period) => Math.min(first, period.fromMs), end) ?? end
     const selectedInstance = instances.find(instance => instance.actorId === selectedInstanceId)
     if (selectedInstanceId !== undefined)
-        return <InstanceDetails key={selectedInstanceId} client={client} id={id} actorName={actorName} actorId={selectedInstanceId} instance={selectedInstance} waits={waits} range={range} />
+        return (
+            <InstanceDetails
+                key={selectedInstanceId}
+                client={client}
+                inventory={inventory}
+                id={id}
+                actorName={actorName}
+                actorId={selectedInstanceId}
+                instance={selectedInstance}
+                waits={waits}
+                range={range}
+            />
+        )
     return (
         <section id={id} className="la-observer-instances" aria-labelledby={`${id}-heading`}>
             <div className="la-observer-instances-heading">
@@ -515,6 +523,7 @@ function ActorInstances({
 
 function InstanceDetails({
     client,
+    inventory,
     id,
     actorName,
     actorId,
@@ -523,6 +532,7 @@ function InstanceDetails({
     range
 }: {
     client: ObserverClient
+    inventory: ActorInventory
     id: string
     actorName: string
     actorId: string
@@ -558,7 +568,7 @@ function InstanceDetails({
             </div>
             <div hidden={view !== "requests"}>
                 {client.watchRequests || client.listRequests ? (
-                    <RequestObserver client={client} actor={{ actorName, actorId }} timeRange={range} focus={requestFocus} />
+                    <RequestObserver client={client} inventory={inventory} actor={{ actorName, actorId }} timeRange={range} focus={requestFocus} />
                 ) : (
                     <section>
                         <h3>Requests</h3>

@@ -80,6 +80,8 @@ pub struct ActorConnectionInventory {
 #[serde(rename_all = "camelCase")]
 pub struct ActorInventory {
     pub actor_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub methods: Option<Vec<String>>,
     pub live: u64,
     pub dormant: u64,
     pub unknown: u64,

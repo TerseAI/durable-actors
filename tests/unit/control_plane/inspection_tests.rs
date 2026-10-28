@@ -516,6 +516,12 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
     assert_eq!(row["live"], 0);
     assert_eq!(row["dormant"], 0);
     assert_eq!(row["instances"], json!([]));
+    assert_eq!(row["methods"], json!(["clear", "sendMessage"]));
+    let mut stream = fixture
+        .get("/v1/projects/default/observe/events")
+        .await?
+        .error_for_status()?;
+    assert_eq!(stream_inventory(&mut stream).await?, inventory);
     Ok(())
 }
 

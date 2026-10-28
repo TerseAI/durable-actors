@@ -260,7 +260,7 @@ test("a live subscription updates inventory without polling and is aborted on un
         }
     }
     const view = render(<ActorObserver client={client} />)
-    await view.findByText("Live updates")
+    await view.findByRole("button", { name: "Room" })
     await act(async () => publish!({ ...inventory, actors: [] }))
     assert.ok(view.getByText("No actors yet"))
     assert.equal(reads, 0)

@@ -1226,6 +1226,10 @@ components:
                         required: [actorName, live, dormant, unknown, instances]
                         properties:
                             actorName: { type: string }
+                            methods:
+                                type: array
+                                items: { type: string }
+                                description: Published RPC method names, including methods with no calls. Omitted when no deployment contract is available.
                             live: { type: integer, minimum: 0 }
                             dormant: { type: integer, minimum: 0 }
                             unknown: { type: integer, minimum: 0 }
