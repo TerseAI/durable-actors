@@ -97,6 +97,42 @@ test("published methods keep rows and order with no calls, new activity, empty h
     assert.equal(view.queryByText("Room / elsewhere"), null)
 })
 
+test("global timelines ignore idle inventory and include complete methods for live and saved request instances", async () => {
+    const source = fixture([trace])
+    const inventory: ActorInventory = {
+        connectionsComplete: true,
+        actors: [
+            {
+                actorName: "Room",
+                methods: ["save", "load", "neverCalled"],
+                live: 0,
+                dormant: 10_000,
+                unknown: 0,
+                instances: Array.from({ length: 10_000 }, (_, i) => ({ actorId: `idle-${i}`, status: "dormant", connections: [] }))
+            }
+        ]
+    }
+    const client = {
+        ...source.client,
+        listActors: async () => inventory,
+        listRequests: async () => ({ epoch: "history", cursor: 1, capacity: 500, evicted: 0, dropped: 0, records: [{ ...trace, actorId: "archived", operation: "save" }] })
+    }
+    const view = render(<RequestObserver client={client} />)
+    const timeline = await view.findByRole("group", { name: "Invocation waterfall" })
+    await waitFor(() => assert.equal(timeline.querySelectorAll(".request-waterfall-row").length, 6))
+    assert.equal(view.queryByText(/idle-/), null)
+    fireEvent.click(view.getByRole("button", { name: "History" }))
+    await view.findByRole("button", { name: /Inspect save request on Room \/ archived/ })
+    assert.equal(timeline.querySelectorAll(".request-waterfall-row").length, 12)
+    assert.ok(within(timeline).getByRole("group", { name: "neverCalled method calls on Room / archived" }))
+    assert.equal(view.queryByText(/idle-/), null)
+    await act(async () => source.publish([], true))
+    assert.equal(timeline.querySelectorAll(".request-waterfall-row").length, 6)
+    fireEvent.click(view.getByRole("button", { name: "Live" }))
+    assert.equal(view.queryByRole("group", { name: "Invocation waterfall" }), null)
+    assert.ok(view.getByText("No requests yet"))
+})
+
 test("method rows keep different projects, actor classes, instances and event kinds separate", async () => {
     const { client } = fixture([
         trace,

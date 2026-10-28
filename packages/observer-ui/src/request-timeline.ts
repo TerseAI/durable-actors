@@ -38,8 +38,8 @@ function methodRows(calls: { record: RequestTrace; offsetMs: number; gapMs: numb
 export function requestTimelineLanes(inventory: ActorInventory | undefined, records: RequestTrace[], actor?: Pick<RequestTrace, "actorName" | "actorId">): RequestTimelineLane[] {
     const lanes: RequestTimelineLane[] = [...records]
     for (const type of inventory?.actors ?? []) {
-        const instances = new Set([...type.instances.map(instance => instance.actorId), ...records.filter(record => record.actorName === type.actorName).map(record => record.actorId)])
-        if (actor?.actorName === type.actorName) instances.add(actor.actorId)
+        if (actor && actor.actorName !== type.actorName) continue
+        const instances = actor ? [actor.actorId] : new Set(records.filter(record => record.actorName === type.actorName).map(record => record.actorId))
         for (const actorId of instances) {
             for (const operation of type.methods ?? []) lanes.push({ actorName: type.actorName, actorId, kind: "method", operation })
             if (type.methods) {

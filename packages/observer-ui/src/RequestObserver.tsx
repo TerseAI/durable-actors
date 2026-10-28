@@ -48,7 +48,7 @@ function RequestObserver({ client, actor, inventory: providedInventory, timeRang
     const shown = query ? history.page : (frozen ?? page)
     const statusPage = page ?? history.page
     const records = (shown?.records ?? []).filter(record => !actor || (record.actorName === actor.actorName && record.actorId === actor.actorId))
-    const lanes = requestTimelineLanes(providedInventory ?? inventory, (frozen ?? page)?.records ?? [], actor)
+    const lanes = requestTimelineLanes(providedInventory ?? inventory, [...((frozen ?? page)?.records ?? []), ...(query ? records : [])], actor)
     useEffect(() => {
         setFrozen(undefined)
         setQuery(undefined)
