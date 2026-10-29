@@ -22,7 +22,31 @@ test("npm publishes the downloaded tarball as a filesystem path", () => {
 })
 
 test("release waits for runtime and SDK validation", () => {
-    for (const job of ["native-publish", "image-push", "image", "npm", "crate"]) for (const check of ["rust", "npm-ci", "python-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
+    for (const job of ["native-publish", "native-intel-publish", "image-push", "image", "npm", "crate", "python", "python-runtime", "python-runtime-intel"])
+        for (const check of ["rust", "npm-ci", "python-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
+})
+
+test("macOS Intel builds and publishes without gating the release", () => {
+    const runners = ["blacksmith-4vcpu-ubuntu-2204", "blacksmith-4vcpu-ubuntu-2204-arm", "blacksmith-6vcpu-macos-15"]
+    for (const job of ["native", "native-publish"]) assert.deepEqual(nativeRunners(job), runners)
+    for (const job of ["native-intel", "native-intel-publish"]) {
+        assert.deepEqual(nativeRunners(job), ["macos-15-intel"])
+        assert.doesNotMatch(releaseJob(job), /continue-on-error:/)
+    }
+    assert.deepEqual(dependencies("native-intel"), ["preflight"])
+    assert.ok(dependsOn("native-intel-publish", "native-intel"))
+    for (const job of ["native-publish", "npm", "crate", "python-runtime", "python", "image", "helm"])
+        for (const intel of ["native-intel", "native-intel-publish", "python-runtime-intel"]) assert.ok(!dependsOn(job, intel), `${job} must not wait for ${intel}`)
+})
+
+test("Intel Python wheels publish separately after validation", () => {
+    assert.match(releaseJob("python-runtime"), /pattern: python-runtime-blacksmith-\*/)
+    assert.ok(dependsOn("python-runtime-intel", "native-intel-publish"))
+    assert.ok(dependsOn("python-runtime-intel", "python-runtime"))
+    const job = releaseJob("python-runtime-intel")
+    assert.match(job, /name: python-runtime-macos-15-intel/)
+    assert.match(job, /pypa\/gh-action-pypi-publish@/)
+    assert.doesNotMatch(job, /continue-on-error:/)
 })
 
 test("CI and release exercise direct host sockets with the built SDK", () => {
@@ -41,7 +65,7 @@ test("the SDK is packed once after validation and reused by native tests and npm
     assert.match(validation, /bun pm --cwd sdk pack --ignore-scripts/)
     assert.match(validation, /actions\/upload-artifact@[\s\S]*name: sdk-package/)
     assert.equal(validation.match(/bun pm --cwd sdk pack --ignore-scripts/g)?.length, 1)
-    for (const job of ["native-publish", "npm"]) {
+    for (const job of ["native-publish", "native-intel-publish", "npm"]) {
         assert.match(releaseJob(job), /actions\/download-artifact@[\s\S]*name: sdk-package/)
         assert.doesNotMatch(releaseJob(job), /bun (?:run --bun --cwd sdk build|pm --cwd sdk pack)/)
     }
@@ -57,9 +81,12 @@ test("release publishes the observer dependency before the SDK", () => {
 })
 
 test("native package validation resolves the observer from the tested tarball", () => {
-    const job = releaseJob("native-publish")
-    assert.match(job, /DURABLE_ACTORS_TEST_OBSERVER_PACKAGE:.*\/\.artifacts\/durable-actors-observer-\$\{\{ needs\.preflight\.outputs\.version \}\}\.tgz/)
-    assert.match(job, /bun pm pkg set "overrides\.durable-actors-observer=file:\$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"[\s\S]*bun add --cwd examples\/chat --ignore-scripts/)
+    for (const name of ["native-publish", "native-intel-publish"]) {
+        const job = releaseJob(name)
+        assert.match(job, /version: \$\{\{ needs\.preflight\.outputs\.version \}\}/)
+        assert.match(job, /DURABLE_ACTORS_TEST_OBSERVER_PACKAGE:.*\/\.artifacts\/durable-actors-observer-\$\{\{ inputs\.version \}\}\.tgz/)
+        assert.match(job, /bun pm pkg set "overrides\.durable-actors-observer=file:\$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"[\s\S]*bun add --cwd examples\/chat --ignore-scripts/)
+    }
 })
 
 test("native and image builds start independently of validation and stage artifacts", () => {
@@ -123,4 +150,10 @@ function dependencies(name) {
 
 function dependsOn(job, dependency) {
     return dependencies(job).some(name => name === dependency || dependsOn(name, dependency))
+}
+
+function nativeRunners(name) {
+    const job = releaseJob(name)
+    const runners = job.match(/^            runners: '(.+)'$/m)?.[1] ?? job.match(/^                default: '(.+)'$/m)?.[1]
+    return JSON.parse(runners)
 }
