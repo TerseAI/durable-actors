@@ -26,27 +26,21 @@ test("release waits for runtime and SDK validation", () => {
         for (const check of ["rust", "npm-ci", "python-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
 })
 
-test("macOS Intel builds and publishes without gating the release", () => {
-    const runners = ["blacksmith-4vcpu-ubuntu-2204", "blacksmith-4vcpu-ubuntu-2204-arm", "blacksmith-6vcpu-macos-15"]
-    for (const job of ["native", "native-publish"]) assert.deepEqual(nativeRunners(job), runners)
-    for (const job of ["native-intel", "native-intel-publish"]) {
-        assert.deepEqual(nativeRunners(job), ["macos-15-intel"])
-        assert.doesNotMatch(releaseJob(job), /continue-on-error:/)
-    }
-    assert.deepEqual(dependencies("native-intel"), ["preflight"])
-    assert.ok(dependsOn("native-intel-publish", "native-intel"))
-    for (const job of ["native-publish", "npm", "crate", "python-runtime", "python", "image", "helm"])
-        for (const intel of ["native-intel", "native-intel-publish", "python-runtime-intel"]) assert.ok(!dependsOn(job, intel), `${job} must not wait for ${intel}`)
+test("macOS Intel publishes on its own path that primary publishing never waits for", () => {
+    assert.deepEqual(nativeRunners("native-publish"), nativeRunners("native"))
+    assert.ok(!nativeRunners("native").includes("macos-15-intel"))
+    for (const job of ["native-intel", "native-intel-publish"]) assert.deepEqual(nativeRunners(job), ["macos-15-intel"])
+    assert.ok(dependsOn("python-runtime-intel", "native-intel-publish"))
+    for (const job of ["native-publish", "npm", "crate", "python-runtime", "python", "helm"])
+        assert.ok(!dependsOn(job, "native-intel"), `${job} must not wait for macOS Intel`)
 })
 
-test("Intel Python wheels publish separately after validation", () => {
-    assert.match(releaseJob("python-runtime"), /pattern: python-runtime-blacksmith-\*/)
-    assert.ok(dependsOn("python-runtime-intel", "native-intel-publish"))
-    assert.ok(dependsOn("python-runtime-intel", "python-runtime"))
-    const job = releaseJob("python-runtime-intel")
-    assert.match(job, /name: python-runtime-macos-15-intel/)
-    assert.match(job, /pypa\/gh-action-pypi-publish@/)
-    assert.doesNotMatch(job, /continue-on-error:/)
+test("primary Python wheels cover every primary runner and leave Intel to its own job", () => {
+    const pattern = releaseJob("python-runtime").match(/pattern: (\S+)/)[1]
+    const included = runner => new RegExp(`^${pattern.replaceAll("*", ".*")}$`).test(`python-runtime-${runner}`)
+    assert.ok(nativeRunners("native").every(included), `${pattern} must match every primary runner`)
+    assert.ok(!nativeRunners("native-intel").some(included), `${pattern} must exclude Intel`)
+    assert.match(releaseJob("python-runtime-intel"), /name: python-runtime-macos-15-intel/)
 })
 
 test("CI and release exercise direct host sockets with the built SDK", () => {

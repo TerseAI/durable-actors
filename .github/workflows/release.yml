@@ -345,7 +345,7 @@ jobs:
         needs: preflight
         uses: ./.github/workflows/native-build.yml
 
-    # Intel builds and publishes independently so it cannot delay the release.
+    # Blacksmith macOS runners are ARM64, so Intel needs GitHub's slow runner; nothing else waits for it.
     native-intel:
         needs: preflight
         uses: ./.github/workflows/native-build.yml
