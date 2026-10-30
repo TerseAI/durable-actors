@@ -36,6 +36,11 @@ function drizzle<TSchema extends Schema = Record<string, never>>(
     db: ActorDatabase,
     config: DrizzleConfig<TSchema> = {}
 ): DurableActorsDatabase<TSchema> {
+    // The adapter bundles with the actor while `db` comes from the host runtime, which may be older.
+    if (typeof db.query !== "function" || typeof db.transaction !== "function")
+        throw new Error(
+            "durable-actors/drizzle needs db.query and db.transaction, which this actor runtime does not provide; run the actor on a runtime at least as new as its durable-actors SDK"
+        )
     const orm = drizzleProxy<TSchema>(
         async (sql, params, method) => execute(db, sql, params, method),
         async batch =>

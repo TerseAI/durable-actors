@@ -212,3 +212,8 @@ test("migrations apply drizzle-kit output once, in journal order", async () => {
         host.close()
     }
 })
+
+test("runtimes without db.query or db.transaction are rejected with an upgrade message", () => {
+    const olderRuntime = { exec: () => [] } as unknown as Parameters<typeof drizzle>[0]
+    assert.throws(() => drizzle(olderRuntime), /durable-actors\/drizzle needs db\.query and db\.transaction.*runtime/)
+})
