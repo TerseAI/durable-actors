@@ -64,6 +64,7 @@ struct ChangeToken(u64, i64, i64);
 struct Engine {
     connection: Connection,
     synced: ChangeToken,
+    savepoints: usize,
 }
 
 impl Engine {
@@ -76,11 +77,16 @@ impl Engine {
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         anyhow::ensure!(check == "ok", "invalid actor SQLite database");
         let synced = token(&connection)?;
-        Ok(Self { connection, synced })
+        Ok(Self {
+            connection,
+            synced,
+            savepoints: 0,
+        })
     }
 
     fn call(&mut self, call: DatabaseCall) -> Result<Executed> {
         let immediate = call.immediate();
+        let released = matches!(call, DatabaseCall::ReleaseSavepoint { .. });
         let before = token(&self.connection)?;
         let mut opened = false;
         let result = match call {
@@ -92,6 +98,12 @@ impl Engine {
                 });
             }
             DatabaseCall::Rollback => self.rollback()?,
+            DatabaseCall::Savepoint => {
+                opened = self.begin()?;
+                self.savepoint()?
+            }
+            DatabaseCall::ReleaseSavepoint { .. } => self.release_savepoint()?,
+            DatabaseCall::RollbackToSavepoint => self.rollback_to_savepoint()?,
             DatabaseCall::Fields => self.fields()?,
             DatabaseCall::Alarm
             | DatabaseCall::SetAlarm { .. }
@@ -103,8 +115,11 @@ impl Engine {
                 self.write(call)?
             }
         };
-        let committed =
-            immediate && (opened || token(&self.connection)? != before) && self.commit()?;
+        // Immediate writes inside a savepoint commit when the outermost savepoint is released.
+        let committed = immediate
+            && self.savepoints == 0
+            && (opened || released || token(&self.connection)? != before)
+            && self.commit()?;
         Ok(Executed { result, committed })
     }
 
@@ -120,7 +135,10 @@ impl Engine {
             | DatabaseCall::SetAlarm { .. }
             | DatabaseCall::DeleteAlarm { .. }
             | DatabaseCall::Commit
-            | DatabaseCall::Rollback => {
+            | DatabaseCall::Rollback
+            | DatabaseCall::Savepoint
+            | DatabaseCall::ReleaseSavepoint { .. }
+            | DatabaseCall::RollbackToSavepoint => {
                 unreachable!("read and lifecycle calls are not writes")
             }
         }
@@ -230,7 +248,36 @@ impl Engine {
         Ok(true)
     }
 
+    fn savepoint(&mut self) -> Result<DatabaseResult> {
+        self.connection
+            .execute_batch(&format!("SAVEPOINT {}", savepoint_name(self.savepoints)))?;
+        self.savepoints += 1;
+        Ok(DatabaseResult::Done)
+    }
+
+    fn release_savepoint(&mut self) -> Result<DatabaseResult> {
+        let name = self.close_savepoint()?;
+        self.connection.execute_batch(&format!("RELEASE {name}"))?;
+        Ok(DatabaseResult::Done)
+    }
+
+    fn rollback_to_savepoint(&mut self) -> Result<DatabaseResult> {
+        let name = self.close_savepoint()?;
+        self.connection
+            .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))?;
+        Ok(DatabaseResult::Done)
+    }
+
+    fn close_savepoint(&mut self) -> Result<String> {
+        self.savepoints = self
+            .savepoints
+            .checked_sub(1)
+            .ok_or_else(|| anyhow!("no actor savepoint is open"))?;
+        Ok(savepoint_name(self.savepoints))
+    }
+
     fn commit(&mut self) -> Result<bool> {
+        self.savepoints = 0;
         if !self.connection.is_autocommit() {
             self.connection.execute_batch("COMMIT")?;
         }
@@ -241,12 +288,17 @@ impl Engine {
     }
 
     fn rollback(&mut self) -> Result<DatabaseResult> {
+        self.savepoints = 0;
         if !self.connection.is_autocommit() {
             self.connection.execute_batch("ROLLBACK")?;
         }
         self.synced = token(&self.connection)?;
         Ok(DatabaseResult::Done)
     }
+}
+
+fn savepoint_name(depth: usize) -> String {
+    format!("__terse_savepoint_{depth}")
 }
 
 fn token(connection: &Connection) -> Result<ChangeToken> {

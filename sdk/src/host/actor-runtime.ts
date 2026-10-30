@@ -39,6 +39,10 @@ class ActorRuntime {
         }
     ) {
         this.schemas = { ...definition.schemas, contract: definition.state.contract }
+        if (this.interleaved)
+            database.rejectTransactions(
+                `${definition.actorName} uses @Interleave, so overlapping calls cannot roll back nested transactions`
+            )
     }
 
     async handle(command: ActorWorkerCommand): Promise<ActorExecutorReply> {

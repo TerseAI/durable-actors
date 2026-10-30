@@ -52,6 +52,12 @@ pub enum DatabaseCall {
     },
     Commit,
     Rollback,
+    Savepoint,
+    ReleaseSavepoint {
+        #[serde(default)]
+        immediate: bool,
+    },
+    RollbackToSavepoint,
 }
 
 #[derive(Deserialize)]
@@ -94,6 +100,12 @@ enum DatabaseCallWire {
     },
     Commit,
     Rollback,
+    Savepoint,
+    ReleaseSavepoint {
+        #[serde(default)]
+        immediate: bool,
+    },
+    RollbackToSavepoint,
 }
 
 impl<'de> Deserialize<'de> for DatabaseCall {
@@ -138,6 +150,11 @@ impl<'de> Deserialize<'de> for DatabaseCall {
             DatabaseCallWire::DeleteAlarm { immediate } => Self::DeleteAlarm { immediate },
             DatabaseCallWire::Commit => Self::Commit,
             DatabaseCallWire::Rollback => Self::Rollback,
+            DatabaseCallWire::Savepoint => Self::Savepoint,
+            DatabaseCallWire::ReleaseSavepoint { immediate } => {
+                Self::ReleaseSavepoint { immediate }
+            }
+            DatabaseCallWire::RollbackToSavepoint => Self::RollbackToSavepoint,
         })
     }
 }
@@ -170,7 +187,7 @@ impl DatabaseCall {
             } | Self::DeleteAlarm {
                 immediate: true,
                 ..
-            }
+            } | Self::ReleaseSavepoint { immediate: true }
         )
     }
 }

@@ -7,6 +7,8 @@ interface ActorDatabase {
     exec<Row extends object = Record<string, SqliteValue>>(sql: string, ...bindings: SqliteValue[]): Row[]
     /** Executes one SQL statement and returns its column names and rows in column order. */
     query(sql: string, ...bindings: SqliteValue[]): ActorQueryResult
+    /** Runs `operation` in a nested transaction: if it throws, its SQL and `@Persisted` writes roll back and the call continues. */
+    transaction<T>(operation: () => Promise<T>): Promise<T>
 }
 
 interface ActorQueryResult {
