@@ -57,7 +57,7 @@ impl Bucket for ArchiveBucket {
     async fn compare_and_swap(
         &self,
         key: &str,
-        generation: Option<i64>,
+        revision: Option<crate::bucket::StorageRevision>,
         bytes: bytes::Bytes,
     ) -> Result<bool> {
         if key.ends_with(".checkpoint") {
@@ -80,7 +80,7 @@ impl Bucket for ArchiveBucket {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         }
-        self.inner.compare_and_swap(key, generation, bytes).await
+        self.inner.compare_and_swap(key, revision, bytes).await
     }
 }
 
@@ -88,7 +88,7 @@ fn controlled(
     f: &Fixture,
     bytes: usize,
     interval_ms: u64,
-) -> Result<(RapidSnapshots, Arc<ArchiveBucket>)> {
+) -> Result<(AppendLogSnapshots, Arc<ArchiveBucket>)> {
     let archive = Arc::new(ArchiveBucket {
         inner: f.archive.clone(),
         stalled: AtomicBool::new(false),
@@ -103,7 +103,7 @@ fn controlled(
         stalled_checkpoint: AtomicBool::new(false),
         checkpoint_attempts: AtomicU64::new(0),
     });
-    let store = RapidSnapshots::new(
+    let store = AppendLogSnapshots::new(
         archive.clone(),
         Arc::new(BucketSnapshots(archive.clone())),
         f.zones
@@ -288,7 +288,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
         f.archive
             .compare_and_swap(
                 &key,
-                Some(stored.generation),
+                Some(stored.revision.clone()),
                 crate::payload::encode(&checkpoint)?
             )
             .await?
@@ -396,7 +396,7 @@ async fn resumed_checkpoint_retries_without_new_writes() -> Result<()> {
 
 async fn write_history(
     f: &Fixture,
-    writer: &RapidSnapshots,
+    writer: &AppendLogSnapshots,
     count: u64,
 ) -> Result<(Arc<crate::litestream::Litestream>, Vec<Bytes>)> {
     use crate::litestream::{Litestream, Replicator, storage::SqliteCapture};
@@ -953,7 +953,7 @@ async fn unavailable_or_invalid_indexes_preserve_archive_recovery() -> Result<()
         let stored = f.archive.get(&key).await?.unwrap();
         assert!(
             f.archive
-                .compare_and_swap(&key, Some(stored.generation), bytes)
+                .compare_and_swap(&key, Some(stored.revision.clone()), bytes)
                 .await?
         );
         assert_eq!(reader.get(&f.stream.object(2)).await?, Some(state(2, 1)?));

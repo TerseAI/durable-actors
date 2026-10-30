@@ -40,8 +40,8 @@ pub use organization_limits::OrganizationLimits;
 #[cfg(test)]
 pub(crate) use self::auth::ActorInvocationCapability;
 pub use self::process::{
-    AnalyticsBackend, ControlPlaneProcessConfig, ControlPlaneStorageConfig, serve_control_plane,
-    serve_pool_manager,
+    AnalyticsBackend, ControlPlaneProcessConfig, ControlPlaneStorageConfig, StorageProviderConfig,
+    serve_control_plane, serve_pool_manager,
 };
 pub(crate) use self::{
     admin::PostgresAdminRegistry,

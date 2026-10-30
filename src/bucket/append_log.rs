@@ -11,7 +11,6 @@ use tokio_util::sync::CancellationToken;
 mod archive;
 mod checkpoint;
 mod frame;
-mod gcs;
 mod index;
 mod prepared;
 mod reader;
@@ -26,30 +25,49 @@ use tokio_util::task::AbortOnDropHandle;
 use writer::Session;
 
 const ROTATION_INTERVAL: Duration = Duration::from_secs(60);
-pub(crate) const RAPID_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const LOG_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Replica {
-    bucket: String,
-    object: String,
-    generation: i64,
+pub(crate) struct Replica {
+    pub bucket: String,
+    pub object: String,
+    #[serde(flatten)]
+    pub identity: ReplicaIdentity,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ReplicaIdentity {
+    Gcs { generation: i64 },
+    Express {},
 }
 
 #[async_trait]
-trait LogWriter: Send {
+pub(crate) trait LogWriter: Send {
     async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64>;
 }
 
+/// One zone's log storage, implemented by each provider's zonal bucket class.
 #[async_trait]
-trait LogZone: Send + Sync {
+pub(crate) trait LogZone: Send + Sync {
     fn bucket(&self) -> &str;
+    fn validate_identity(&self, replica: &Replica) -> Result<()>;
     async fn open(&self, object: &str) -> Result<(Replica, Box<dyn LogWriter>)>;
     async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes>;
     async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes>;
     async fn delete(&self, replica: &Replica) -> Result<()>;
 }
 
-pub(crate) struct RapidSnapshots {
+fn validate_replica(zone: &dyn LogZone, replica: &Replica, object: &str) -> Result<()> {
+    ensure!(
+        replica.bucket == zone.bucket() && replica.object == object,
+        "invalid log replica descriptor"
+    );
+    zone.validate_identity(replica)
+        .context("invalid log replica descriptor")
+}
+
+pub(crate) struct AppendLogSnapshots {
     storage: Arc<LogStorage>,
     session: Arc<Mutex<Option<Session>>>,
     stop: CancellationToken,
@@ -77,7 +95,39 @@ struct Manifest {
     replicas: Vec<Replica>,
 }
 
-impl RapidSnapshots {
+impl AppendLogSnapshots {
+    pub(crate) fn with_zones(
+        config: &super::SnapshotStoreConfig,
+        archive: Arc<dyn Bucket>,
+        zone: impl Fn(&super::RapidBucket) -> Arc<dyn LogZone>,
+        stop: CancellationToken,
+        actor: Option<&crate::actor::ActorKey>,
+    ) -> Result<Self> {
+        config.validate()?;
+        let super::SnapshotStoreConfig::Rapid {
+            buckets,
+            archive_batch,
+            placement,
+            ..
+        } = config
+        else {
+            anyhow::bail!("append-log persistence configuration required");
+        };
+        let store = Self::new(
+            archive.clone(),
+            Arc::new(standard::StandardSnapshots::new(archive)),
+            buckets.iter().map(zone).collect(),
+            *placement,
+            *archive_batch,
+            Arc::new(crate::litestream::compaction::RustCompactor),
+            stop,
+        )?;
+        if let Some(actor) = actor {
+            store.prepare(actor)?;
+        }
+        Ok(store)
+    }
+
     fn start_cleanup(&self, prefix: String) {
         let storage = self.storage.clone();
         let stop = self.stop.clone();
@@ -102,13 +152,8 @@ impl RapidSnapshots {
         *self.cleanup.lock().unwrap() = Some(AbortOnDropHandle::new(task));
     }
     fn prepare(&self, actor: &crate::actor::ActorKey) -> Result<()> {
-        let prefix = object_name(&crate::storage_paths::snapshots(actor)?)?.replacen(
-            "snapshots-",
-            "logs-",
-            1,
-        );
         *self.storage.prepared.lock().unwrap() = Some(Prepared::new(
-            prefix,
+            log_prefix(actor)?,
             self.storage.zones.clone(),
             self.storage.placement,
         ));
@@ -154,7 +199,7 @@ impl RapidSnapshots {
 }
 
 #[async_trait]
-impl SnapshotStore for RapidSnapshots {
+impl SnapshotStore for AppendLogSnapshots {
     async fn get(&self, object: &str) -> Result<Option<Bytes>> {
         if let Some(bytes) = self
             .session
@@ -288,7 +333,7 @@ impl Manifest {
     fn key(&self) -> Result<String> {
         Ok(format!(
             "{}log~{}.manifest",
-            super::rapid::object_name(&self.stream.prefix)?,
+            object_name(&self.stream.prefix)?,
             self.id
         ))
     }
@@ -298,15 +343,7 @@ impl Manifest {
     fn object(&self) -> Result<String> {
         let actor =
             crate::storage_paths::actor_from_snapshot(&self.stream.object(self.first_version))?;
-        Ok(format!(
-            "{}{}.segment",
-            object_name(&crate::storage_paths::snapshots(&actor)?)?.replacen(
-                "snapshots-",
-                "logs-",
-                1
-            ),
-            self.id
-        ))
+        Ok(format!("{}{}.segment", log_prefix(&actor)?, self.id))
     }
     fn validate(&self, key: &str, prefix: &str, zones: &[Arc<dyn LogZone>]) -> Result<()> {
         ensure!(
@@ -329,12 +366,14 @@ impl Manifest {
         let mut buckets = std::collections::HashSet::new();
         for replica in &self.replicas {
             ensure!(
-                buckets.insert(&replica.bucket)
-                    && zones.iter().any(|zone| zone.bucket() == replica.bucket)
-                    && replica.object == self.object()?
-                    && replica.generation > 0,
+                buckets.insert(&replica.bucket),
                 "invalid log replica descriptor"
             );
+            let zone = zones
+                .iter()
+                .find(|zone| zone.bucket() == replica.bucket)
+                .context("invalid log replica descriptor")?;
+            validate_replica(zone.as_ref(), replica, &self.object()?)?;
         }
         Ok(())
     }
@@ -358,16 +397,20 @@ impl LogStorage {
 }
 
 async fn bounded<T>(operation: impl std::future::Future<Output = Result<T>>) -> Result<T> {
-    tokio::time::timeout(RAPID_OPERATION_TIMEOUT, operation)
+    tokio::time::timeout(LOG_OPERATION_TIMEOUT, operation)
         .await
         .context("log operation timed out")?
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/bucket/rapid.rs"]
+#[path = "../../tests/unit/bucket/append_log.rs"]
 mod tests;
 
-pub(super) fn object_name(logical: &str) -> Result<String> {
+pub(crate) fn log_prefix(actor: &crate::actor::ActorKey) -> Result<String> {
+    Ok(object_name(&crate::storage_paths::snapshots(actor)?)?.replacen("snapshots-", "logs-", 1))
+}
+
+pub(crate) fn object_name(logical: &str) -> Result<String> {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     let root = format!("{}snapshots/", crate::storage_paths::ROOT);
     let relative = logical

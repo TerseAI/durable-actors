@@ -5,9 +5,6 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use google_cloud_auth::credentials::{
-    CacheableResource, Credentials, CredentialsProvider, EntityTag,
-};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -17,9 +14,10 @@ use super::{
 use crate::{
     actor::ActorKey,
     bucket::{
-        BucketSnapshots, GcsBucket, RapidSnapshots, RuntimeStorage, SnapshotStore, WarmStorage,
-        access::{HostStorageConfig, StorageToken, StorageTokens},
+        RuntimeStorage, WarmStorage,
+        access::{BucketLocation, HostBuckets, HostContext, HostStorageConfig, SharedAccess},
     },
+    bundle::ArtifactInstaller,
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
@@ -28,7 +26,7 @@ use crate::{
 
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
-    objects: Option<google_cloud_storage::client::Storage>,
+    artifacts: Option<Box<dyn ArtifactInstaller>>,
     pub(super) stop: CancellationToken,
     observer: Arc<ControlPlaneClient>,
     host: HostId,
@@ -54,30 +52,24 @@ impl HostStorage {
         warm: Option<WarmStorage>,
         actor: ActorKey,
     ) -> Result<Self> {
-        let credentials = HostCredentials::new(config.tokens, client.clone(), stop.clone());
-        let (runtime, objects) = match config.bucket {
-            crate::bucket::access::BucketLocation::Gcs { bucket, .. } => {
-                Self::open_gcs(
-                    &bucket,
-                    config.persistence,
-                    credentials,
-                    warm,
-                    &stop,
-                    &actor,
-                )
-                .await?
-            }
-            crate::bucket::access::BucketLocation::File { directory } => {
-                ensure!(
-                    config.persistence.rapid_settings().is_none(),
-                    "Rapid persistence requires GCS"
-                );
-                let authority = Arc::new(crate::bucket::FileBucket::new(directory)?);
-                (RuntimeStorage::new(authority, Arc::new(SystemClock))?, None)
-            }
-        };
+        let access: SharedAccess = Arc::new(std::sync::RwLock::new(config.access));
+        start_access_refresh(access.clone(), client.clone(), stop.clone());
+        let buckets = open_buckets(
+            config.bucket,
+            warm,
+            client.clone(),
+            HostContext {
+                persistence: &config.persistence,
+                access,
+                stop: &stop,
+                actor: &actor,
+            },
+        )
+        .await?;
+        let runtime = RuntimeStorage::new(buckets.authority, Arc::new(SystemClock))?
+            .with_persistence(config.persistence, buckets.snapshots)?;
         Ok(Self {
-            objects,
+            artifacts: buckets.artifacts,
             observer: client,
             stop,
             runtime: Arc::new(runtime),
@@ -95,52 +87,14 @@ impl HostStorage {
         })
     }
 
-    async fn open_gcs(
-        bucket: &str,
-        persistence: crate::bucket::SnapshotStoreConfig,
-        credentials: HostCredentials,
-        warm: Option<WarmStorage>,
-        stop: &CancellationToken,
-        actor: &ActorKey,
-    ) -> Result<(
-        RuntimeStorage,
-        Option<google_cloud_storage::client::Storage>,
-    )> {
-        let ownership = credentials.scoped(|tokens| &tokens.ownership);
-        let state = credentials.scoped(|tokens| &tokens.state);
-        let (authority, state) = match warm {
-            Some(warm) => (
-                warm.ownership.bind(bucket, ownership)?,
-                warm.state.bind(bucket, state)?,
-            ),
-            None => tokio::try_join!(
-                GcsBucket::with_credentials(bucket, ownership),
-                GcsBucket::with_credentials(bucket, state),
-            )?,
-        };
-        let snapshots: Arc<dyn SnapshotStore> = match persistence.rapid_settings() {
-            Some(_) => Arc::new(RapidSnapshots::gcs(
-                &persistence,
-                state.clients(),
-                stop.clone(),
-                Some(actor),
-            )?),
-            None => Arc::new(BucketSnapshots(Arc::new(state))),
-        };
-        let objects = authority.clients().storage;
-        let runtime = RuntimeStorage::new(Arc::new(authority), Arc::new(SystemClock))?
-            .with_persistence(persistence, snapshots)?;
-        Ok((runtime, Some(objects)))
-    }
-
-    pub(crate) async fn install_code(&self, artifact: &crate::bundle::ActorBundle) -> Result<()> {
-        artifact
-            .install(
-                std::path::Path::new("/customer"),
-                self.objects
-                    .as_ref()
-                    .context("GCS artifact client missing")?,
-            )
+    pub(crate) async fn install_code(
+        &self,
+        artifact: &crate::bundle::ArtifactBundle,
+    ) -> Result<()> {
+        self.artifacts
+            .as_ref()
+            .context("artifact provider does not match host storage")?
+            .install(artifact, std::path::Path::new("/customer"))
             .await
     }
 
@@ -372,100 +326,57 @@ impl HostLeaseRegistry for HostStorage {
     }
 }
 
-#[derive(Clone)]
-struct HostCredentials {
-    tokens: Arc<std::sync::RwLock<Option<StorageTokens>>>,
-    scope: fn(&StorageTokens) -> &StorageToken,
-}
-impl std::fmt::Debug for HostCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("HostCredentials")
-    }
-}
-impl HostCredentials {
-    fn new(
-        tokens: Option<StorageTokens>,
-        client: Arc<ControlPlaneClient>,
-        stop: CancellationToken,
-    ) -> Self {
-        let credentials = Self {
-            tokens: Arc::new(std::sync::RwLock::new(tokens)),
-            scope: |tokens| &tokens.ownership,
-        };
-        let refreshed = credentials.tokens.clone();
-        tokio::spawn(async move {
-            loop {
-                let now = SystemClock.now_ms().unwrap_or(u64::MAX);
-                let host_expiry = client.token_expires_at_ms().unwrap_or(now);
-                let expires = refreshed
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .map_or(host_expiry, |tokens| {
-                        tokens
-                            .ownership
-                            .expires_at_ms
-                            .min(tokens.state.expires_at_ms)
-                            .min(host_expiry)
-                    });
-                let delay = Duration::from_millis(
-                    expires
-                        .saturating_sub(now.saturating_add(30_000))
-                        .clamp(1_000, 600_000),
-                );
-                tokio::select! { _ = stop.cancelled() => return, _ = tokio::time::sleep(delay) => {} }
-                match client.refresh_storage_access().await {
-                    Ok(tokens) => {
-                        *refreshed.write().unwrap() = tokens;
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "could not refresh host storage credentials")
-                    }
-                }
-            }
-        });
-        credentials
-    }
-
-    fn scoped(&self, scope: fn(&StorageTokens) -> &StorageToken) -> Credentials {
-        Self {
-            tokens: self.tokens.clone(),
-            scope,
+async fn open_buckets(
+    location: BucketLocation,
+    warm: Option<WarmStorage>,
+    client: Arc<ControlPlaneClient>,
+    host: HostContext<'_>,
+) -> Result<HostBuckets> {
+    match location {
+        BucketLocation::Gcs { bucket, .. } => {
+            crate::bucket::gcs::host::open(&bucket, warm, host).await
         }
-        .into()
+        BucketLocation::S3 {
+            bucket,
+            region,
+            artifact_bucket,
+        } => {
+            ensure!(warm.is_none(), "S3 hosts cannot reuse GCS storage clients");
+            crate::bucket::s3::host::open(&bucket, &region, artifact_bucket, client, host).await
+        }
+        BucketLocation::File { directory } => {
+            crate::bucket::file::open_host(directory, host.persistence)
+        }
     }
 }
-impl CredentialsProvider for HostCredentials {
-    async fn headers(
-        &self,
-        _: axum::http::Extensions,
-    ) -> std::result::Result<
-        CacheableResource<axum::http::HeaderMap>,
-        google_cloud_auth::errors::CredentialsError,
-    > {
-        let stored = self.tokens.read().unwrap();
-        let token = stored.as_ref().map(self.scope).ok_or_else(|| {
-            google_cloud_auth::errors::CredentialsError::from_msg(false, "GCS credentials missing")
-        })?;
-        let mut headers = axum::http::HeaderMap::new();
-        let mut value: axum::http::HeaderValue = format!("Bearer {}", token.access_token)
-            .parse()
-            .map_err(|_| {
-            google_cloud_auth::errors::CredentialsError::from_msg(
-                false,
-                "invalid storage credential",
-            )
-        })?;
-        value.set_sensitive(true);
-        headers.insert(axum::http::header::AUTHORIZATION, value);
-        Ok(CacheableResource::New {
-            entity_tag: EntityTag::new(),
-            data: headers,
-        })
-    }
-    async fn universe_domain(&self) -> Option<String> {
-        Some("googleapis.com".into())
-    }
+
+fn start_access_refresh(
+    access: SharedAccess,
+    client: Arc<ControlPlaneClient>,
+    stop: CancellationToken,
+) {
+    tokio::spawn(async move {
+        loop {
+            let now = SystemClock.now_ms().unwrap_or(u64::MAX);
+            let host_expiry = client.token_expires_at_ms().unwrap_or(now);
+            let expires = access
+                .read()
+                .unwrap()
+                .as_ref()
+                .map_or(host_expiry, |access| access.expires_at_ms())
+                .min(host_expiry);
+            let delay = Duration::from_millis(
+                expires
+                    .saturating_sub(now.saturating_add(30_000))
+                    .clamp(1_000, 600_000),
+            );
+            tokio::select! { _ = stop.cancelled() => return, _ = tokio::time::sleep(delay) => {} }
+            match client.refresh_storage_access().await {
+                Ok(refreshed) => *access.write().unwrap() = refreshed,
+                Err(error) => tracing::warn!(%error, "could not refresh host storage credentials"),
+            }
+        }
+    });
 }
 
 #[cfg(test)]

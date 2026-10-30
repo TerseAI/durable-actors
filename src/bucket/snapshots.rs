@@ -121,16 +121,6 @@ impl SnapshotStoreConfig {
         let mut names = HashSet::new();
         for placement in buckets {
             crate::storage::validate_bucket(&placement.bucket)?;
-            let (region, suffix) = placement
-                .zone
-                .rsplit_once('-')
-                .ok_or_else(|| anyhow::anyhow!("Rapid placement must name a Google Cloud zone"))?;
-            ensure!(
-                suffix.len() == 1
-                    && suffix.as_bytes()[0].is_ascii_lowercase()
-                    && region.chars().last().is_some_and(|c| c.is_ascii_digit()),
-                "invalid Rapid zone"
-            );
             ensure!(
                 zones.insert(&placement.zone),
                 "Rapid buckets must occupy distinct zones"

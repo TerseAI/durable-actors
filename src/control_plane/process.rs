@@ -4,14 +4,14 @@ use anyhow::{Context, Result, ensure};
 use tracing::{info, warn};
 
 use crate::{
-    bucket::{GcsBucket, RuntimeStorageReader},
+    bucket::{Bucket, GcsBucket, RuntimeStorageReader, s3::AwsStorage},
     postgres::PostgresDatabase,
     redis_client::{Redis, RedisConfig},
     request_traces::{
         TraceStore,
         persistence::{clickhouse::ClickHouseTracePersistence, postgres::PostgresTracePersistence},
     },
-    sandbox::{HostSandboxRuntimeConfig, gke::GkeConfig, modal::ModalConfig},
+    sandbox::{HostSandboxRuntimeConfig, kubernetes::KubernetesConfig, modal::ModalConfig},
 };
 
 use super::{ActorJwtVerifier, ControlPlaneService};
@@ -52,6 +52,22 @@ pub struct ControlPlaneStorageConfig {
     pub bucket: String,
     pub persistence: crate::bucket::SnapshotStoreConfig,
     pub artifact_bucket: String,
+    pub provider: StorageProviderConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StorageProviderConfig {
+    Gcs,
+    S3 { region: String, role_arn: String },
+}
+
+impl StorageProviderConfig {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Gcs => "gcs",
+            Self::S3 { .. } => "s3",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -79,7 +95,7 @@ impl RuntimeImages {
             .code_snapshot
             .as_deref()
             .context("platform image requires a code artifact")?;
-        let bundle = crate::bundle::ActorBundle::decode(artifact)?;
+        let bundle = crate::bundle::ArtifactBundle::decode(artifact)?;
         self.for_entrypoint(bundle.entrypoint()?)
     }
 
@@ -104,7 +120,7 @@ pub struct SandboxProviderConfig {
 }
 
 pub(crate) enum SandboxBackend {
-    Gke(GkeConfig),
+    Kubernetes(KubernetesConfig),
     Modal(ModalConfig),
 }
 
@@ -224,27 +240,23 @@ async fn control_plane_routes(
             ),
         ));
     }
-    let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
+    let provider = StorageProvider::connect(&config.storage).await?;
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let snapshots =
-        snapshot_store(authority.clone(), &config.storage.persistence, stop.clone()).await?;
+    let snapshots = snapshot_store(&provider, &config.storage.persistence, stop.clone()).await?;
     let storage = Arc::new(
         RuntimeStorageReader::new(
-            authority,
+            provider.authority(),
             Arc::new(crate::clock::SystemClock),
             Arc::new(crate::litestream::EmbeddedRestore),
         )?
         .with_persistence(config.storage.persistence, snapshots)?,
     );
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
-        crate::bucket::access::BucketLocation::Gcs {
-            artifact_bucket: config.storage.artifact_bucket.clone(),
-            bucket: config.storage.bucket.clone(),
-        },
+        provider.access(&config.storage.bucket, &config.storage.artifact_bucket)?,
         storage.persistence.clone(),
-    )?);
+    ));
     let placements = storage.clone();
     let connections = crate::sandbox::connections::HostConnections::new()?;
     let socket_bus = match &redis {
@@ -326,21 +338,73 @@ async fn control_plane_routes(
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
 
+enum StorageProvider {
+    Gcs(Arc<GcsBucket>),
+    S3(AwsStorage),
+}
+
+impl StorageProvider {
+    async fn connect(storage: &ControlPlaneStorageConfig) -> Result<Self> {
+        Ok(match &storage.provider {
+            StorageProviderConfig::Gcs => {
+                Self::Gcs(Arc::new(GcsBucket::new(&storage.bucket).await?))
+            }
+            StorageProviderConfig::S3 { region, role_arn } => {
+                Self::S3(AwsStorage::connect(&storage.bucket, region, role_arn).await?)
+            }
+        })
+    }
+
+    fn authority(&self) -> Arc<dyn Bucket> {
+        match self {
+            Self::Gcs(bucket) => bucket.clone(),
+            Self::S3(aws) => aws.bucket.clone(),
+        }
+    }
+
+    fn access(
+        &self,
+        bucket: &str,
+        artifact_bucket: &str,
+    ) -> Result<Box<dyn crate::bucket::access::AccessIssuer>> {
+        Ok(match self {
+            Self::Gcs(_) => Box::new(crate::bucket::gcs::GcsAccess::from_environment(
+                bucket.into(),
+                artifact_bucket.into(),
+            )?),
+            Self::S3(aws) => Box::new(aws.access(artifact_bucket)),
+        })
+    }
+}
+
 async fn snapshot_store(
-    authority: Arc<GcsBucket>,
+    provider: &StorageProvider,
     persistence: &crate::bucket::SnapshotStoreConfig,
     stop: tokio_util::sync::CancellationToken,
 ) -> Result<Arc<dyn crate::bucket::SnapshotStore>> {
-    if persistence.rapid_settings().is_none() {
-        return Ok(Arc::new(crate::bucket::BucketSnapshots(authority)));
+    let Some((_, archive)) = persistence.rapid_settings() else {
+        return Ok(Arc::new(crate::bucket::BucketSnapshots(
+            provider.authority(),
+        )));
+    };
+    match provider {
+        StorageProvider::Gcs(gcs) => {
+            crate::bucket::gcs::rapid::validate(persistence, gcs.clients()).await?;
+            Ok(Arc::new(crate::bucket::gcs::rapid::snapshots(
+                persistence,
+                gcs.clients(),
+                stop,
+                None,
+            )?))
+        }
+        StorageProvider::S3(aws) => Ok(Arc::new(crate::bucket::s3::express::snapshots(
+            persistence,
+            Arc::new(crate::bucket::S3Bucket::new(archive, aws.client.clone())?),
+            Arc::new(crate::bucket::s3::S3ExpressLogs::new(aws.client.clone())),
+            stop,
+            None,
+        )?)),
     }
-    crate::bucket::RapidSnapshots::validate_gcs(persistence, authority.clients()).await?;
-    Ok(Arc::new(crate::bucket::RapidSnapshots::gcs(
-        persistence,
-        authority.clients(),
-        stop,
-        None,
-    )?))
 }
 
 async fn telemetry_stores(
@@ -412,8 +476,8 @@ async fn sandbox_provider(
         config.secret_namespace.clone(),
     ));
     Ok(Arc::new(match &config.backend {
-        SandboxBackend::Gke(gke) => {
-            crate::sandbox::gke::provider(gke.clone(), secrets, connections).await?
+        SandboxBackend::Kubernetes(kubernetes) => {
+            crate::sandbox::kubernetes::provider(kubernetes.clone(), secrets, connections).await?
         }
         SandboxBackend::Modal(modal) => {
             crate::sandbox::modal::provider(
@@ -522,6 +586,7 @@ impl ControlPlaneProcessConfig {
         let bucket = required(&mut get, "DURABLE_ACTORS_BUCKET")?;
         crate::storage::validate_bucket(&bucket)?;
         let persistence = persistence_config(&mut get)?;
+        let provider = storage_provider_config(&mut get, &persistence)?;
         let artifact_bucket = if persistence.rapid_settings().is_none() {
             get("DURABLE_ACTORS_ARTIFACT_BUCKET").unwrap_or_else(|| bucket.clone())
         } else {
@@ -540,9 +605,14 @@ impl ControlPlaneProcessConfig {
             trace_retention: trace_retention(&mut get)?,
             analytics: analytics_backend(&mut get)?,
             bucket,
+            provider,
         };
-        let sandbox_provider =
-            sandbox_provider_config(&mut get, &jwt_issuer, &invocation_audience)?;
+        let sandbox_provider = sandbox_provider_config(
+            &mut get,
+            &jwt_issuer,
+            &invocation_audience,
+            storage.provider.name(),
+        )?;
         let region = region.or_else(|| sandbox_provider.pool.regions.first().cloned());
         ensure!(
             region
@@ -576,6 +646,34 @@ impl ControlPlaneProcessConfig {
             redis: redis_config(&mut get)?,
             organization_limits: super::OrganizationLimits::from_lookup(&mut get, true)?,
         })
+    }
+}
+
+fn storage_provider_config(
+    get: &mut impl FnMut(&str) -> Option<String>,
+    persistence: &crate::bucket::SnapshotStoreConfig,
+) -> Result<StorageProviderConfig> {
+    match get("DURABLE_ACTORS_STORAGE_PROVIDER")
+        .as_deref()
+        .unwrap_or("gcs")
+    {
+        "gcs" => {
+            crate::bucket::gcs::rapid::validate_zones(persistence)?;
+            Ok(StorageProviderConfig::Gcs)
+        }
+        "s3" => {
+            crate::bucket::s3::express::validate_zones(persistence)?;
+            let region = required(get, "DURABLE_ACTORS_AWS_REGION")?;
+            ensure!(
+                !region.is_empty() && region.trim() == region,
+                "DURABLE_ACTORS_AWS_REGION must not be empty or contain surrounding whitespace"
+            );
+            Ok(StorageProviderConfig::S3 {
+                region,
+                role_arn: required(get, "DURABLE_ACTORS_AWS_ACTOR_ROLE_ARN")?,
+            })
+        }
+        _ => anyhow::bail!("DURABLE_ACTORS_STORAGE_PROVIDER must be gcs or s3"),
     }
 }
 
@@ -731,6 +829,7 @@ fn sandbox_provider_config(
     get: &mut impl FnMut(&str) -> Option<String>,
     jwt_issuer: &str,
     invocation_audience: &str,
+    storage_provider: &str,
 ) -> Result<SandboxProviderConfig> {
     let public_origin = validated_http_url(
         &required(get, "DURABLE_ACTORS_PUBLIC_URL")?,
@@ -756,7 +855,7 @@ fn sandbox_provider_config(
         idle <= fleet_maximum,
         "DURABLE_ACTORS_SPARE_IDLE must not exceed DURABLE_ACTORS_SPARE_FLEET_MAX"
     );
-    let (backend, regions) = sandbox_backend(get, &control_plane_url)?;
+    let (backend, regions) = sandbox_backend(get, &control_plane_url, storage_provider)?;
     Ok(SandboxProviderConfig {
         runtime_images: RuntimeImages {
             typescript: runtime_image(get, "DURABLE_ACTORS_TYPESCRIPT_IMAGE")?,
@@ -810,7 +909,7 @@ fn sandbox_provider_config(
             resources: host_resources(get)?,
         },
         backend,
-        secret_namespace: get("DURABLE_ACTORS_GKE_NAMESPACE")
+        secret_namespace: get("DURABLE_ACTORS_KUBERNETES_NAMESPACE")
             .unwrap_or_else(|| "terse-sandboxes".into()),
         public_origin,
         resource_bounds: resource_bounds(get)?,
@@ -826,26 +925,29 @@ fn sandbox_provider_config(
 fn sandbox_backend(
     get: &mut impl FnMut(&str) -> Option<String>,
     control_plane_url: &str,
+    storage_provider: &str,
 ) -> Result<(SandboxBackend, Vec<String>)> {
     match get("DURABLE_ACTORS_SANDBOX_PROVIDER")
         .as_deref()
-        .unwrap_or("gke")
+        .unwrap_or("kubernetes")
     {
-        "gke" => {
+        "kubernetes" => {
             let zones = placement_zones(get)?;
             let regions = zones.keys().cloned().collect();
             Ok((
-                SandboxBackend::Gke(GkeConfig {
-                    namespace: get("DURABLE_ACTORS_GKE_NAMESPACE")
+                SandboxBackend::Kubernetes(KubernetesConfig {
+                    namespace: get("DURABLE_ACTORS_KUBERNETES_NAMESPACE")
                         .unwrap_or_else(|| "terse-sandboxes".into()),
                     zones,
                     reap_concurrency: pool_number(
                         get,
-                        "DURABLE_ACTORS_GKE_REAP_CONCURRENCY",
+                        "DURABLE_ACTORS_KUBERNETES_REAP_CONCURRENCY",
                         64,
                         1,
                         1024,
                     )? as usize,
+                    runtime_class: runtime_class(get)?,
+                    storage_provider: storage_provider.into(),
                 }),
                 regions,
             ))
@@ -887,6 +989,7 @@ fn sandbox_backend(
                     app_name,
                     regions,
                     timeout: Duration::from_secs(seconds.into()),
+                    storage_provider: storage_provider.into(),
                 }),
                 canonical,
             ))
@@ -908,13 +1011,25 @@ fn modal_region(region: &str) -> Option<&'static str> {
     }
 }
 
+fn runtime_class(get: &mut impl FnMut(&str) -> Option<String>) -> Result<String> {
+    let name = get("DURABLE_ACTORS_KUBERNETES_RUNTIME_CLASS").unwrap_or_else(|| "gvisor".into());
+    ensure!(
+        (1..=253).contains(&name.len())
+            && name.bytes().all(|byte| byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || b".-".contains(&byte)),
+        "DURABLE_ACTORS_KUBERNETES_RUNTIME_CLASS must name a RuntimeClass"
+    );
+    Ok(name)
+}
+
 fn placement_zones(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<BTreeMap<String, Vec<String>>> {
-    if let Some(zone) = get("DURABLE_ACTORS_GKE_ZONE") {
+    if let Some(zone) = get("DURABLE_ACTORS_KUBERNETES_ZONE") {
         ensure!(
-            get("DURABLE_ACTORS_GKE_ZONES").is_none(),
-            "configure GKE_ZONE or GKE_ZONES, not both"
+            get("DURABLE_ACTORS_KUBERNETES_ZONES").is_none(),
+            "configure KUBERNETES_ZONE or KUBERNETES_ZONES, not both"
         );
         let region = super::regions::storage_region(&zone)?.to_owned();
         return compute_zones(&serde_json::to_string(&BTreeMap::from([(
@@ -922,7 +1037,7 @@ fn placement_zones(
             vec![zone],
         )]))?);
     }
-    compute_zones(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)
+    compute_zones(&required(get, "DURABLE_ACTORS_KUBERNETES_ZONES")?)
 }
 
 fn compute_zones(value: &str) -> Result<BTreeMap<String, Vec<String>>> {
@@ -947,7 +1062,7 @@ fn compute_zones(value: &str) -> Result<BTreeMap<String, Vec<String>>> {
         .collect();
     ensure!(
         !zones.is_empty(),
-        "at least one GKE placement zone is required"
+        "at least one Kubernetes placement zone is required"
     );
     for (region, placements) in &zones {
         ensure!(
@@ -965,7 +1080,7 @@ fn compute_zones(value: &str) -> Result<BTreeMap<String, Vec<String>>> {
         for zone in placements {
             ensure!(
                 super::regions::storage_region(zone)? == region,
-                "GKE zone does not match canonical region {region}"
+                "Kubernetes zone does not match canonical region {region}"
             );
         }
     }
@@ -1078,6 +1193,6 @@ mod tests;
 
 fn runtime_image(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {
     let image = required(get, name)?;
-    crate::sandbox::gke::validate_image(&image).with_context(|| format!("invalid {name}"))?;
+    crate::sandbox::validate_image(&image).with_context(|| format!("invalid {name}"))?;
     Ok(image)
 }

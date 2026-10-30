@@ -12,7 +12,7 @@ use tracing::{error, info};
 
 use crate::{
     actor::{ActorExecutorConnection, ActorExecutorListener},
-    bucket::RAPID_OPERATION_TIMEOUT,
+    bucket::LOG_OPERATION_TIMEOUT,
     bundle::ActorRuntime,
     clock::SystemClock,
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
@@ -30,7 +30,7 @@ const HOST_ACTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the executor waits for its host to attach. Falling back from Rapid can
 /// spend two operation timeouts before Standard starts: the failed open, then
 /// deleting the replicas that did open.
-const EXECUTOR_STARTUP_TIMEOUT: Duration = RAPID_OPERATION_TIMEOUT.saturating_mul(3);
+const EXECUTOR_STARTUP_TIMEOUT: Duration = LOG_OPERATION_TIMEOUT.saturating_mul(3);
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -262,7 +262,7 @@ async fn prepare_actor_host(
         Some(warm) => (
             Some(warm.listener),
             Some((warm.executor, warm.javascript)),
-            Some(warm.storage),
+            warm.storage,
             warm.control_plane,
         ),
         None => (None, None, None, None),
@@ -633,6 +633,7 @@ fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Comma
         ]);
         command
     };
+    configure_executor_environment(&mut command, std::env::vars_os());
     command
         .env(
             "DURABLE_ACTORS_GENERIC_EXECUTOR",
@@ -643,15 +644,30 @@ fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Comma
             "DURABLE_ACTORS_HOST_STARTUP_MS",
             EXECUTOR_STARTUP_TIMEOUT.as_millis().to_string(),
         )
-        .env_remove("DURABLE_ACTORS_SPARE_TOKEN")
-        .env_remove("DURABLE_ACTORS_RUNTIME_CONFIG")
-        .env_remove("DURABLE_ACTORS_HOST_TOKEN")
-        .env_remove("GOOGLE_APPLICATION_CREDENTIALS")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
     command
+}
+
+fn configure_executor_environment(
+    command: &mut Command,
+    inherited: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) {
+    command
+        .env_clear()
+        .envs(inherited.into_iter().filter(|(name, _)| {
+            let name = name.to_string_lossy().to_ascii_uppercase();
+            !crate::bucket::is_credential_variable(&name)
+                && !matches!(
+                    name.as_str(),
+                    "DURABLE_ACTORS_SPARE_TOKEN"
+                        | "DURABLE_ACTORS_RUNTIME_CONFIG"
+                        | "DURABLE_ACTORS_HOST_TOKEN"
+                )
+        }))
+        .envs(crate::bucket::executor_environment());
 }
 
 #[cfg(test)]
