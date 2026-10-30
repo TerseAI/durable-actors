@@ -5,6 +5,13 @@ type SqliteValue = string | number | bigint | Uint8Array | null
 interface ActorDatabase {
     /** Executes one SQL statement with positional bindings and returns its rows. */
     exec<Row extends object = Record<string, SqliteValue>>(sql: string, ...bindings: SqliteValue[]): Row[]
+    /** Executes one SQL statement and returns its column names and rows in column order. */
+    query(sql: string, ...bindings: SqliteValue[]): ActorQueryResult
+}
+
+interface ActorQueryResult {
+    readonly columns: string[]
+    readonly rows: SqliteValue[][]
 }
 
 type PersistenceMode = "atomic" | "immediate"
@@ -39,4 +46,4 @@ async function runWithActorDatabase<T>(actor: object, mode: PersistenceMode, ope
 }
 
 export { actorDatabaseMode, isActorInvocation, runWithActorDatabase }
-export type { ActorDatabase, SqliteValue }
+export type { ActorDatabase, ActorQueryResult, SqliteValue }

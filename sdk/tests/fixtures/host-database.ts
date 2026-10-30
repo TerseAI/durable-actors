@@ -7,13 +7,25 @@ import type { JsonObject, JsonValue } from "../../src/json.js"
 
 type Binding = null | bigint | number | string | Uint8Array
 
+interface Statement {
+    all(...bindings: Binding[]): Record<string, Binding>[]
+    run(...bindings: Binding[]): unknown
+    get(...bindings: Binding[]): Record<string, Binding> | null | undefined
+}
+
+interface BunStatement extends Statement {
+    readonly columnNames: string[]
+    values(...bindings: Binding[]): Binding[][]
+}
+
+interface NodeStatement extends Statement {
+    columns(): { name: string }[]
+    setReturnArrays(enabled: boolean): void
+}
+
 interface Connection {
     exec(sql: string): void
-    prepare(sql: string): {
-        all(...bindings: Binding[]): Record<string, Binding>[]
-        run(...bindings: Binding[]): unknown
-        get(...bindings: Binding[]): Record<string, Binding> | null | undefined
-    }
+    prepare(sql: string): Statement
     close(): void
 }
 
@@ -122,9 +134,8 @@ export class HostDatabase {
     }
 
     private exec(sql: string, bindings: Binding[]): DatabaseResult {
-        const rows = this.connection.prepare(sql).all(...bindings)
-        const columns = Object.keys(rows[0] ?? {})
-        return { type: "rows", columns, rows: rows.map(row => columns.map(column => encode(row[column]!))) }
+        const { columns, rows } = positionalRows(this.connection.prepare(sql), bindings)
+        return { type: "rows", columns, rows: rows.map(row => row.map(encode)) }
     }
 
     private persist(name: string, value: JsonValue): void {
@@ -200,6 +211,16 @@ function encode(value: Binding): DatabaseValue {
         return Number.isInteger(value) ? { type: "integer", value: value.toString() } : { type: "real", value }
     if (typeof value === "string") return { type: "text", value }
     return { type: "blob", value: Buffer.from(value).toString("base64") }
+}
+
+function positionalRows(statement: Statement, bindings: Binding[]): { columns: string[]; rows: Binding[][] } {
+    if ("values" in statement) {
+        const bun = statement as BunStatement
+        return { rows: bun.values(...bindings), columns: bun.columnNames }
+    }
+    const node = statement as NodeStatement
+    node.setReturnArrays(true)
+    return { rows: node.all(...bindings) as unknown as Binding[][], columns: node.columns().map(column => column.name) }
 }
 
 function freshPath(): string {

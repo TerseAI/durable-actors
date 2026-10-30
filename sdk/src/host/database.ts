@@ -1,6 +1,6 @@
 import type { ActorAlarmState, ActorAlarmStorage } from "../actor/alarm.js"
 import { actorDatabaseMode } from "../actor/database.js"
-import type { ActorDatabase, SqliteValue } from "../actor/database.js"
+import type { ActorDatabase, ActorQueryResult, SqliteValue } from "../actor/database.js"
 import { errorMessage } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
@@ -49,14 +49,17 @@ class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
     }
 
     exec<Row extends object>(sql: string, ...bindings: SqliteValue[]): Row[] {
+        const { columns, rows } = this.query(sql, ...bindings)
+        return rows.map(row => Object.fromEntries(row.map((value, index) => [columns[index], value])) as Row)
+    }
+
+    query(sql: string, ...bindings: SqliteValue[]): ActorQueryResult {
         // Background SQL would join, and then commit, the open @Atomic transaction.
         if (this.atomicInvocations > 0 && actorDatabaseMode() === "background")
             throw new Error("actor database is unavailable to background work while an @Atomic method runs")
         const result = this.transport({ op: "exec", sql, bindings: bindings.map(encode), immediate: immediate() })
         if (result.type !== "rows") throw unexpected(result)
-        return result.rows.map(
-            row => Object.fromEntries(row.map((value, index) => [result.columns[index], decode(value)])) as Row
-        )
+        return { columns: result.columns, rows: result.rows.map(row => row.map(decode)) }
     }
 
     fields(): JsonObject {
