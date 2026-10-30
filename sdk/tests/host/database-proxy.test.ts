@@ -45,47 +45,41 @@ test("query returns columns and rows in column order, keeping duplicate names", 
     host.close()
 })
 
-test("background work cannot read or write while an @Atomic method runs", async () => {
+test("background work cannot read or write while an explicit transaction runs", async () => {
     const host = new HostDatabase()
     const database = new DatabaseProxy(host.call)
     let release!: () => void
     const gate = new Promise<void>(resolve => (release = resolve))
     let exec!: Promise<unknown>
     let query!: Promise<unknown>
-    await runWithActorDatabase({}, "atomic", async () => {
+    await runWithActorDatabase({}, async () => {
         exec = gate.then(() => database.exec("SELECT 1"))
         query = gate.then(() => database.query("SELECT 1"))
     })
-    await database.atomically(async () => {
+    await database.transaction(async () => {
         release()
-        await assert.rejects(exec, /unavailable to background work/)
-        await assert.rejects(query, /unavailable to background work/)
+        await assert.rejects(exec, /in use by a db.transaction/)
+        await assert.rejects(query, /in use by a db.transaction/)
     })
     host.close()
 })
 
-test("immediate mode asks the host to commit each write", async () => {
+test("ordinary SQL autocommits and explicit scopes group persisted writes", async () => {
     const host = new HostDatabase()
     const database = new DatabaseProxy(host.call)
-    await runWithActorDatabase({}, "immediate", async () => {
-        database.exec("CREATE TABLE entries (value INTEGER)")
-        database.persistField("count", 1)
-    })
-    await runWithActorDatabase({}, "atomic", async () => {
-        database.persistField("count", 2)
-        database.persistField("count", undefined)
-    })
-    assert.deepEqual(
-        host.calls.map(call => ("immediate" in call ? [call.op, call.immediate] : [call.op])),
-        [
-            ["exec", true],
-            ["persist_field", true],
-            ["persist_field", false],
-            ["delete_field", false]
-        ]
+    database.exec("CREATE TABLE entries (value INTEGER)")
+    database.persistField("count", 1)
+    const committed = host.commits
+    await assert.rejects(
+        database.transaction(async () => {
+            database.persistField("count", 2)
+            database.persistField("count", undefined)
+            assert.equal(host.commits, committed)
+            throw new Error("abort")
+        }),
+        /abort/
     )
-    assert.equal(host.commits, 2)
-    database.rollback()
+    assert.equal(host.commits, committed)
     assert.deepEqual(database.fields(), { count: 1 })
     host.close()
 })

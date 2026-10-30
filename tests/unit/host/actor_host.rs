@@ -2216,11 +2216,11 @@ async fn immediate_writes_wait_for_durability_and_share_atomic_versions() -> Res
     Ok(())
 }
 
-struct SavepointWriter {
+struct TransactionWriter {
     admission: watch::Sender<()>,
 }
 #[async_trait]
-impl ActorExecutor for SavepointWriter {
+impl ActorExecutor for TransactionWriter {
     fn supports(&self, _: &str) -> bool {
         true
     }
@@ -2234,15 +2234,19 @@ impl ActorExecutor for SavepointWriter {
     ) -> Result<ActorMethodOutcome> {
         let count = fields(&*database).await?["count"].as_u64().unwrap_or(0);
         if invocation.request_id == "savepoints" {
-            database.call(DatabaseCall::Savepoint).await?;
+            exec(&*database, "BEGIN").await?;
             persist_fields(&*database, json!({ "count": count + 1 }), true).await?;
             persist_fields(&*database, json!({ "count": count + 2 }), true).await?;
             database
-                .call(DatabaseCall::ReleaseSavepoint { immediate: true })
+                .call(DatabaseCall::Exec {
+                    sql: "COMMIT".into(),
+                    bindings: vec![],
+                    immediate: true,
+                })
                 .await?;
-            database.call(DatabaseCall::Savepoint).await?;
+            exec(&*database, "BEGIN").await?;
             persist_fields(&*database, json!({ "count": count + 100 }), true).await?;
-            database.call(DatabaseCall::RollbackToSavepoint).await?;
+            exec(&*database, "ROLLBACK").await?;
         }
         Ok(ActorMethodOutcome::Completed {
             result: json!(fields(&*database).await?["count"].as_u64().unwrap_or(0)),
@@ -2252,14 +2256,14 @@ impl ActorExecutor for SavepointWriter {
 }
 
 #[tokio::test]
-async fn immediate_savepoints_publish_once_on_release_and_never_on_rollback() -> Result<()> {
+async fn sql_transactions_publish_once_on_commit_and_never_on_rollback() -> Result<()> {
     let writes = Arc::new(FakeStateTransport::default());
     let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
         },
-        Arc::new(SavepointWriter {
+        Arc::new(TransactionWriter {
             admission: watch::channel(()).0,
         }),
         Arc::new(FakeAuthority::default()),
@@ -2278,7 +2282,7 @@ async fn immediate_savepoints_publish_once_on_release_and_never_on_rollback() ->
         .into_iter()
         .filter(|snapshot| snapshot.completion.is_none())
         .count();
-    assert_eq!(immediate, 1, "only the released savepoint publishes");
+    assert_eq!(immediate, 1, "only the committed transaction publishes");
     assert_eq!(invoke(&host, "read").await?, completed(2));
     Ok(())
 }

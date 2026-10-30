@@ -40,7 +40,7 @@ async function withOrm(
     const host = new HostDatabase()
     const database = new DatabaseProxy(host.call)
     try {
-        await runWithActorDatabase({}, "atomic", async () => {
+        await runWithActorDatabase({}, async () => {
             for (const statement of SCHEMA_SQL) database.exec(statement)
             await operation(drizzle(database, { schema }), host)
         })
@@ -184,7 +184,7 @@ test("migrations apply drizzle-kit output once, in journal order", async () => {
         m0001: "CREATE TABLE `posts` (`id` integer PRIMARY KEY);"
     }
     try {
-        await runWithActorDatabase({}, "atomic", async () => {
+        await runWithActorDatabase({}, async () => {
             migrate(database, { journal: { ...journal, entries: journal.entries.slice(0, 1) }, migrations })
             migrate(database, { journal: { ...journal, entries: journal.entries.slice(0, 1) }, migrations })
             migrate(database, { journal, migrations })

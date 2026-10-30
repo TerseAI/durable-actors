@@ -4,7 +4,7 @@ import type { SQLiteTransaction } from "drizzle-orm/sqlite-core"
 import { type SqliteRemoteDatabase, type SqliteRemoteResult, drizzle as drizzleProxy } from "drizzle-orm/sqlite-proxy"
 import { createHash } from "node:crypto"
 
-import type { ActorDatabase, SqliteValue } from "./actor/database.js"
+import type { ActorDatabase, RuntimeActorDatabase, SqliteValue } from "./actor/database.js"
 
 type Schema = Record<string, unknown>
 type Method = "run" | "all" | "values" | "get"
@@ -37,7 +37,7 @@ function drizzle<TSchema extends Schema = Record<string, never>>(
     config: DrizzleConfig<TSchema> = {}
 ): DurableActorsDatabase<TSchema> {
     // The adapter bundles with the actor while `db` comes from the host runtime, which may be older.
-    if (typeof db.query !== "function" || typeof db.transaction !== "function")
+    if (!isRuntimeDatabase(db))
         throw new Error(
             "durable-actors/drizzle needs db.query and db.transaction, which this actor runtime does not provide; run the actor on a runtime at least as new as its durable-actors SDK"
         )
@@ -60,7 +60,11 @@ function drizzle<TSchema extends Schema = Record<string, never>>(
     return orm
 }
 
-/** Applies pending drizzle-kit migrations synchronously; call it from the actor constructor. */
+function isRuntimeDatabase(db: ActorDatabase): db is RuntimeActorDatabase {
+    return typeof (db as Partial<RuntimeActorDatabase>).query === "function" && typeof db.transaction === "function"
+}
+
+/** Applies each pending drizzle-kit migration in its own transaction; call it from the actor constructor. */
 function migrate(db: ActorDatabase, { journal, migrations }: DrizzleMigrations): void {
     const ordered = journal.entries.map(entry => {
         const key = `m${entry.idx.toString().padStart(4, "0")}`
@@ -76,18 +80,25 @@ function migrate(db: ActorDatabase, { journal, migrations }: DrizzleMigrations):
     )
     for (const { sql, when } of ordered) {
         if (latest !== undefined && Number(latest.created_at) >= when) continue
-        for (const statement of sql.split("--> statement-breakpoint").map(part => part.trim()))
-            if (statement !== "") db.exec(statement)
-        db.exec(
-            'INSERT INTO "__drizzle_migrations" (hash, created_at) VALUES (?, ?)',
-            createHash("sha256").update(sql).digest("hex"),
-            when
-        )
+        db.exec("BEGIN")
+        try {
+            for (const statement of sql.split("--> statement-breakpoint").map(part => part.trim()))
+                if (statement !== "") db.exec(statement)
+            db.exec(
+                'INSERT INTO "__drizzle_migrations" (hash, created_at) VALUES (?, ?)',
+                createHash("sha256").update(sql).digest("hex"),
+                when
+            )
+            db.exec("COMMIT")
+        } catch (error) {
+            db.exec("ROLLBACK")
+            throw error
+        }
     }
 }
 
 // sqlite-proxy reads a single row for `get` (undefined when there is none) and row arrays otherwise.
-function execute(db: ActorDatabase, sql: string, params: unknown[], method: Method): { rows: any[] } {
+function execute(db: RuntimeActorDatabase, sql: string, params: unknown[], method: Method): { rows: any[] } {
     const { rows } = db.query(sql, ...params.map(binding))
     if (method === "run") return { rows: [] }
     return { rows: method === "get" ? (rows[0] as any[]) : rows }

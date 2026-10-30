@@ -41,7 +41,7 @@ class ActorRuntime {
         this.schemas = { ...definition.schemas, contract: definition.state.contract }
         if (this.interleaved)
             database.rejectTransactions(
-                `${definition.actorName} uses @Interleave, so overlapping calls cannot roll back nested transactions`
+                `${definition.actorName} uses @Interleave, so overlapping calls cannot share an explicit database transaction`
             )
     }
 
@@ -52,14 +52,14 @@ class ActorRuntime {
                 await this.prepare(command)
                 return { type: "hydrated" }
             }
-            if (command.type === "invoke") return await this.atomically(command.method, () => this.invoke(command))
+            if (command.type === "invoke") return await this.invoke(command)
             if (command.type === "evict") {
                 const isGracefuleShutdown = command.graceful
                 await this.close(isGracefuleShutdown)
                 this.reset()
                 return { type: "evicted" }
             }
-            return await this.atomically(lifecycleMethod(command), () => this.handleSocketEvent(command))
+            return await this.handleSocketEvent(command)
         } catch (error) {
             this.reset()
             const failure = failedReply("invalid_actor_state", errorMessage(error))
@@ -78,20 +78,12 @@ class ActorRuntime {
 
         const fields = this.definition.state.fields.filter(field => field.resource).reverse()
 
-        await runWithActorDatabase(this.instance, "immediate", async () => {
+        await runWithActorDatabase(this.instance, async () => {
             for (const field of fields) {
                 const resource = Reflect.get(this.instance!, field.name) as ActorResource
                 await resource.onGracefulShutdown()
             }
         })
-    }
-
-    private atomically(method: string, operation: () => Promise<ActorExecutorReply>): Promise<ActorExecutorReply> {
-        return this.isAtomic(method) ? this.database.atomically(operation) : operation()
-    }
-
-    private isAtomic(method: string): boolean {
-        return this.definition.state.atomicMethods?.includes(method) ?? false
     }
 
     private get interleaved(): boolean {
@@ -128,7 +120,6 @@ class ActorRuntime {
                 async () =>
                     runWithActorDatabase(
                         instance,
-                        this.isAtomic(command.method) ? "atomic" : "immediate",
                         async () => Reflect.apply(method, instance, command.args) as Promise<unknown>
                     ),
                 this.publish,
@@ -176,7 +167,6 @@ class ActorRuntime {
                         )
                     await runWithActorDatabase(
                         instance,
-                        this.isAtomic(methodName) ? "atomic" : "immediate",
                         async () => Reflect.apply(method, instance, args) as Promise<unknown>
                     )
                 },
@@ -248,7 +238,7 @@ class ActorRuntime {
         this.instance = instance
 
         const resources = this.definition.state.fields.filter(field => field.resource)
-        await runWithActorDatabase(instance, "immediate", async () => {
+        await runWithActorDatabase(instance, async () => {
             for (const field of resources) {
                 const resource = Reflect.get(instance, field.name) as ActorResource
                 await resource.onResume()

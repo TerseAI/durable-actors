@@ -5,10 +5,13 @@ type SqliteValue = string | number | bigint | Uint8Array | null
 interface ActorDatabase {
     /** Executes one SQL statement with positional bindings and returns its rows. */
     exec<Row extends object = Record<string, SqliteValue>>(sql: string, ...bindings: SqliteValue[]): Row[]
-    /** Executes one SQL statement and returns its column names and rows in column order. */
-    query(sql: string, ...bindings: SqliteValue[]): ActorQueryResult
-    /** Runs `operation` in a nested transaction: if it throws, its SQL and `@Persisted` writes roll back and the call continues. */
+    /** Runs `operation` in a SQLite transaction: if it throws, its SQL and `@Persisted` writes roll back. Transactions nest. */
     transaction<T>(operation: () => Promise<T>): Promise<T>
+}
+
+// Not public: durable-actors/drizzle reads rows by position, which `exec` cannot return for duplicate column names.
+interface RuntimeActorDatabase extends ActorDatabase {
+    query(sql: string, ...bindings: SqliteValue[]): ActorQueryResult
 }
 
 interface ActorQueryResult {
@@ -16,13 +19,9 @@ interface ActorQueryResult {
     readonly rows: SqliteValue[][]
 }
 
-type PersistenceMode = "atomic" | "immediate"
-type DatabaseMode = PersistenceMode | "background"
-
 interface ActorInvocationContext {
     readonly actor: object
     active: boolean
-    readonly mode: PersistenceMode
 }
 
 const invocation = new AsyncLocalStorage<ActorInvocationContext>()
@@ -32,14 +31,8 @@ function isActorInvocation(actor: object): boolean {
     return context?.actor === actor && context.active
 }
 
-function actorDatabaseMode(): DatabaseMode | undefined {
-    const context = invocation.getStore()
-    if (context === undefined) return undefined
-    return context.active ? context.mode : "background"
-}
-
-async function runWithActorDatabase<T>(actor: object, mode: PersistenceMode, operation: () => Promise<T>): Promise<T> {
-    const context: ActorInvocationContext = { actor, active: true, mode }
+async function runWithActorDatabase<T>(actor: object, operation: () => Promise<T>): Promise<T> {
+    const context: ActorInvocationContext = { actor, active: true }
     try {
         return await invocation.run(context, operation)
     } finally {
@@ -47,5 +40,5 @@ async function runWithActorDatabase<T>(actor: object, mode: PersistenceMode, ope
     }
 }
 
-export { actorDatabaseMode, isActorInvocation, runWithActorDatabase }
-export type { ActorDatabase, ActorQueryResult, SqliteValue }
+export { isActorInvocation, runWithActorDatabase }
+export type { ActorDatabase, ActorQueryResult, RuntimeActorDatabase, SqliteValue }

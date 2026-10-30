@@ -11,7 +11,7 @@ import { assertReply } from "../fixtures/reply.js"
 test("a failed transaction rolls back only its own writes", async () => {
     const host = new HostDatabase()
     const database = new DatabaseProxy(host.call)
-    await runWithActorDatabase({}, "atomic", async () => {
+    await runWithActorDatabase({}, async () => {
         database.exec("CREATE TABLE entries (value INTEGER)")
         database.exec("INSERT INTO entries VALUES (1)")
         await assert.rejects(
@@ -31,7 +31,7 @@ test("a failed transaction rolls back only its own writes", async () => {
 test("transactions nest", async () => {
     const host = new HostDatabase()
     const database = new DatabaseProxy(host.call)
-    await runWithActorDatabase({}, "atomic", async () => {
+    await runWithActorDatabase({}, async () => {
         database.exec("CREATE TABLE entries (value INTEGER)")
         const result = await database.transaction(async () => {
             database.exec("INSERT INTO entries VALUES (1)")
@@ -54,7 +54,7 @@ test("transactions nest", async () => {
 test("immediate writes inside a transaction commit when it is released", async () => {
     const host = new HostDatabase()
     const database = new DatabaseProxy(host.call)
-    await runWithActorDatabase({}, "immediate", async () => {
+    await runWithActorDatabase({}, async () => {
         database.exec("CREATE TABLE entries (value INTEGER)")
         const committed = host.commits
         await database.transaction(async () => {
@@ -81,20 +81,21 @@ test("a failed transaction restores @Persisted fields and the call still succeed
         balance = 10
 
         async spend(amount: number) {
-            await this.db
-                .transaction(async () => {
-                    this.balance -= amount
-                    if (this.balance < 0) throw new Error("insufficient funds")
-                })
-                .catch(() => {})
-            return this.balance
+            return this.db.transaction(async () => {
+                await this.db
+                    .transaction(async () => {
+                        this.balance -= amount
+                        if (this.balance < 0) throw new Error("insufficient funds")
+                    })
+                    .catch(() => {})
+                return this.balance
+            })
         }
     }
     const runtime = new ActorRuntime(
         registerActorClass(Wallet, {
             actorName: "Wallet",
-            fields: [{ name: "balance", persistence: Persistence.Persisted }],
-            atomicMethods: ["spend"]
+            fields: [{ name: "balance", persistence: Persistence.Persisted }]
         }),
         () => {},
         undefined,
