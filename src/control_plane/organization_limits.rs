@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::{
     actor::ActorKey,
-    actor_lifecycle::{LifecycleEvent, LifecycleObserver},
+    actor_lifecycle::{LifecycleEvent, LifecycleObserver, LifecycleReport},
     host::HostId,
     postgres::PostgresDatabase,
 };
@@ -107,7 +107,7 @@ impl ActorAdmission {
 
     pub async fn reserve(
         &self,
-        organization: Option<&str>,
+        organization: &str,
         actor: &ActorKey,
         host: &HostId,
         session: &str,
@@ -123,19 +123,19 @@ impl ActorAdmission {
 
     pub async fn release(
         &self,
-        organization: Option<&str>,
+        organization: &str,
         actor: &ActorKey,
         host: &HostId,
         session: &str,
     ) {
         let activation = Activation::new(organization, actor, host.as_str(), session);
         if let Err(error) = self.reservations.release(&activation).await {
-            tracing::warn!(scope = %activation.scope, error = %format!("{error:#}"), "failed launch kept its activation slot");
+            tracing::warn!(organization_id = organization, error = %format!("{error:#}"), "failed launch kept its activation slot");
         }
     }
 
-    async fn limits(&self, organization: Option<&str>) -> Result<OrganizationLimits> {
-        let (Some(database), Some(organization)) = (&self.database, organization) else {
+    async fn limits(&self, organization: &str) -> Result<OrganizationLimits> {
+        let Some(database) = &self.database else {
             return Ok(self.defaults);
         };
         let row = database.query_opt(
@@ -167,7 +167,17 @@ impl ActorAdmission {
 #[async_trait]
 impl LifecycleObserver for ActorAdmission {
     async fn observe(&self, event: &LifecycleEvent) -> Result<()> {
-        self.reservations.observe(event).await
+        let organization = event
+            .organization_id
+            .as_deref()
+            .context("lifecycle report has no organization")?;
+        let activation = Activation::new(
+            organization,
+            &event.actor,
+            &event.host_id,
+            &event.session_id,
+        );
+        self.reservations.observe(&activation, &event.report).await
     }
 }
 
@@ -175,22 +185,21 @@ impl LifecycleObserver for ActorAdmission {
 pub(super) trait ReservationStore: Send + Sync {
     async fn reserve(&self, activation: &Activation, limits: OrganizationLimits) -> Result<()>;
     async fn release(&self, activation: &Activation) -> Result<()>;
-    async fn observe(&self, event: &LifecycleEvent) -> Result<()>;
+    async fn observe(&self, activation: &Activation, report: &LifecycleReport) -> Result<()>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Activation {
-    scope: String,
+    organization: String,
     actor: ActorKey,
     host: String,
     session: String,
 }
 
 impl Activation {
-    // Deployments registered before organizations existed have none; they keep project-scoped default limits.
-    fn new(organization: Option<&str>, actor: &ActorKey, host: &str, session: &str) -> Self {
+    fn new(organization: &str, actor: &ActorKey, host: &str, session: &str) -> Self {
         Self {
-            scope: organization.unwrap_or(&actor.project_id).into(),
+            organization: organization.into(),
             actor: actor.clone(),
             host: host.into(),
             session: session.into(),

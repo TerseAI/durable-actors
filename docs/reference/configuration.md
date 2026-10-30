@@ -86,7 +86,9 @@ ON CONFLICT (organization_id) DO UPDATE SET
     actor_start_burst = EXCLUDED.actor_start_burst;
 ```
 
-`NULL` inherits the environment default; deleting the row restores all defaults. Deployments without an organization keep default limits per project. Lowering capacity blocks additional starts while existing hosts continue serving. Overrides are operator-only; local opt-in uses environment defaults.
+`NULL` inherits the environment default; deleting the row restores all defaults. Lowering capacity blocks additional starts while existing hosts continue serving. Overrides are operator-only; local opt-in uses environment defaults.
+
+Every deployment must have a valid `organization_id`; local development uses `local`. Upgrading to this schema copies each project override to its organization, keeping the highest value per setting, and drops `durable_actors_project_limits`. Startup fails without changes, listing the affected projects, while any deployment lacks a valid organization or any project override lacks a deployment.
 
 ## Authentication and callbacks
 
@@ -172,7 +174,7 @@ Each message contains the lifecycle event with four additional fields:
 
 | Field | Meaning |
 | --- | --- |
-| `organizationId` | Owning organization supplied at deployment; null for legacy deployments. |
+| `organizationId` | Owning organization supplied at deployment. |
 | `usageId` | Stable `<hostId>:<sessionId>` activation ID, shared by its start and stop. |
 | `revision` | `2 * sequence` for a host report; `2 * sequence + 1` for an estimated stop based on that report. Higher revisions replace lower revisions for the same activation. |
 | `endedAtMs` | `null` for start or a correction from a live host; the real or estimated stop timestamp for stop. |

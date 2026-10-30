@@ -334,7 +334,7 @@ async fn local_routes(
     )?;
     let spec = HostLaunchSpec {
         image_policy: Default::default(),
-        organization_id: Some("local".into()),
+        organization_id: "local".into(),
         sandboxes: Default::default(),
         project_id: options.project_id.clone(),
         source: None,
