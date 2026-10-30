@@ -111,7 +111,10 @@ async fn organization_limits_migration_requires_deployment_organizations() -> Re
             .await
             .map_err(anyhow::Error::new)
             .unwrap_err();
-        assert!(format!("{preflight:#}").contains("deployments without a valid organization_id: legacy"));
+        let preflight = format!("{preflight:#}");
+        assert!(preflight.contains("deployments without a valid organization_id: legacy"));
+        assert!(preflight.contains("HINT: Redeploy each project with organizationId"));
+        // Stands in for the redeploy, which would also replace the project's hosts.
         client
             .batch_execute("UPDATE durable_actors_deployment SET organization_id = 'org' WHERE project_id = 'legacy'")
             .await?;

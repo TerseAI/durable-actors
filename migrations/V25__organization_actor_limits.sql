@@ -8,7 +8,7 @@ BEGIN
     WHERE organization_id IS NULL OR organization_id !~ '^[A-Za-z0-9._-]{1,64}$';
     IF projects IS NOT NULL THEN
         RAISE EXCEPTION 'deployments without a valid organization_id: %', projects
-            USING HINT = 'Redeploy each project with organizationId or set durable_actors_deployment.organization_id, then restart.';
+            USING HINT = 'Redeploy each project with organizationId, then restart. Redeploying replaces its hosts; editing the row would leave running hosts with credentials that lack an organization.';
     END IF;
     SELECT string_agg(l.project_id, ', ' ORDER BY l.project_id) INTO projects
     FROM durable_actors_project_limits l
