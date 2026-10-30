@@ -352,6 +352,28 @@ async fn backend_socket_effects_reach_clients_connected_to_another_replica() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn hint_host_warm_provisions_a_host_without_invoking() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let key = ActorKey {
+        project_id: "default".into(),
+        actor_name: "ChatRoom".into(),
+        actor_id: "one".into(),
+    }
+    .storage_key();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while fixture.placements.get_owner(&key).await?.is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 struct Fixture {
     service: ControlPlaneService,
     gateway: ControlPlaneService,
