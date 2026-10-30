@@ -45,4 +45,8 @@ export class InterleaveTests extends Actor {
     async getEvents(): Promise<string[]> {
         return this.events
     }
+
+    async crash(): Promise<void> {
+        process.exit(1)
+    }
 }
