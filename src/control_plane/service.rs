@@ -758,7 +758,7 @@ impl ControlPlaneService {
                 Ok(target) => return Ok(target),
                 Err(error)
                     if error.is::<AssignmentOutcomeUnknown>()
-                        || error.is::<super::project_limits::AdmissionFailure>() =>
+                        || error.is::<super::organization_limits::AdmissionFailure>() =>
                 {
                     return Err(error);
                 }
@@ -996,7 +996,7 @@ pub(crate) trait HostProvisioner: Send + Sync {
 }
 
 pub(crate) struct SandboxHostProvisioner {
-    admission: Option<Arc<super::project_limits::ActorAdmission>>,
+    admission: Option<Arc<super::organization_limits::ActorAdmission>>,
     runtime_images: Option<super::process::RuntimeImages>,
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     resource_bounds: Option<crate::sandbox::ResourceBounds>,
@@ -1009,7 +1009,7 @@ pub(crate) struct SandboxHostProvisioner {
 impl SandboxHostProvisioner {
     pub(super) fn with_actor_admission(
         mut self,
-        admission: Arc<super::project_limits::ActorAdmission>,
+        admission: Arc<super::organization_limits::ActorAdmission>,
     ) -> Self {
         self.admission = Some(admission);
         self
@@ -1155,12 +1155,17 @@ impl SandboxHostProvisioner {
                 .await;
         };
         let (host, session) = (request.host_id.clone(), request.session_id.clone());
-        admission.reserve(actor, &host, &session).await?;
+        let organization = spec.organization_id.as_deref();
+        admission
+            .reserve(organization, actor, &host, &session)
+            .await?;
         let launched = self
             .provision(spec, region, actor, request, started_at)
             .await;
         if launched.is_err() {
-            admission.release(actor, &host, &session).await;
+            admission
+                .release(organization, actor, &host, &session)
+                .await;
         }
         launched
     }

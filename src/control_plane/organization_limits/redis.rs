@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 
 use super::{
-    Activation, AdmissionRejected, LAUNCH_LEASE_MS, ProjectLimits, REPORT_LEASE_MS,
+    Activation, AdmissionRejected, LAUNCH_LEASE_MS, OrganizationLimits, REPORT_LEASE_MS,
     ReservationStore,
 };
 use crate::{actor_lifecycle::LifecycleEvent, redis_client::Redis};
@@ -24,8 +24,8 @@ impl RedisReservations {
         }
     }
 
-    fn prefix(&self, project: &str) -> String {
-        format!("{}:{{{project}}}", self.namespace)
+    fn prefix(&self, scope: &str) -> String {
+        format!("{}:{{{scope}}}", self.namespace)
     }
 
     fn retention_ms(&self) -> u64 {
@@ -35,8 +35,8 @@ impl RedisReservations {
 
 #[async_trait]
 impl ReservationStore for RedisReservations {
-    async fn reserve(&self, activation: &Activation, limits: ProjectLimits) -> Result<()> {
-        let prefix = self.prefix(&activation.actor.project_id);
+    async fn reserve(&self, activation: &Activation, limits: OrganizationLimits) -> Result<()> {
+        let prefix = self.prefix(&activation.scope);
         let member = activation.member()?;
         let mut command = redis::cmd("EVAL");
         command
@@ -67,7 +67,7 @@ impl ReservationStore for RedisReservations {
     }
 
     async fn release(&self, activation: &Activation) -> Result<()> {
-        let prefix = self.prefix(&activation.actor.project_id);
+        let prefix = self.prefix(&activation.scope);
         let member = activation.member()?;
         let mut command = redis::cmd("EVAL");
         command
@@ -81,8 +81,14 @@ impl ReservationStore for RedisReservations {
     }
 
     async fn observe(&self, event: &LifecycleEvent) -> Result<()> {
-        let prefix = self.prefix(&event.actor.project_id);
-        let member = Activation::new(&event.actor, &event.host_id, &event.session_id).member()?;
+        let activation = Activation::new(
+            event.organization_id.as_deref(),
+            &event.actor,
+            &event.host_id,
+            &event.session_id,
+        );
+        let prefix = self.prefix(&activation.scope);
+        let member = activation.member()?;
         let mut command = redis::cmd("EVAL");
         command
             .arg(include_str!("observe.lua"))

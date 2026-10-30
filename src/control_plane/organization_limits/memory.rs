@@ -8,7 +8,7 @@ use anyhow::{Result, ensure};
 use async_trait::async_trait;
 
 use super::{
-    Activation, AdmissionRejected, LAUNCH_LEASE_MS, ProjectLimits, REPORT_LEASE_MS,
+    Activation, AdmissionRejected, LAUNCH_LEASE_MS, OrganizationLimits, REPORT_LEASE_MS,
     ReservationStore,
 };
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub(in crate::control_plane) struct MemoryReservations {
-    projects: Mutex<HashMap<String, Project>>,
+    scopes: Mutex<HashMap<String, Scope>>,
     clock: Arc<dyn Clock>,
     retention: Duration,
 }
@@ -25,7 +25,7 @@ pub(in crate::control_plane) struct MemoryReservations {
 impl MemoryReservations {
     pub fn new(clock: Arc<dyn Clock>, retention: Duration) -> Self {
         Self {
-            projects: Mutex::new(HashMap::new()),
+            scopes: Mutex::new(HashMap::new()),
             clock,
             retention,
         }
@@ -34,28 +34,26 @@ impl MemoryReservations {
 
 #[async_trait]
 impl ReservationStore for MemoryReservations {
-    async fn reserve(&self, activation: &Activation, limits: ProjectLimits) -> Result<()> {
+    async fn reserve(&self, activation: &Activation, limits: OrganizationLimits) -> Result<()> {
         let now = self.clock.now_ms()?;
-        let mut projects = self.projects.lock().unwrap();
-        let project = projects
-            .entry(activation.actor.project_id.clone())
-            .or_default();
-        project.prune(now);
-        if let Some(state) = project.sessions.get(activation) {
+        let mut scopes = self.scopes.lock().unwrap();
+        let scope = scopes.entry(activation.scope.clone()).or_default();
+        scope.prune(now);
+        if let Some(state) = scope.sessions.get(activation) {
             ensure!(!state.stopped, "actor activation has already stopped");
             return Ok(());
         }
         ensure!(
-            project.active.len() < limits.max_active_actors as usize,
+            scope.active.len() < limits.max_active_actors as usize,
             AdmissionRejected::Quota {
                 limit: limits.max_active_actors
             }
         );
-        project.consume(limits, now)?;
-        project
+        scope.consume(limits, now)?;
+        scope
             .active
             .insert(activation.clone(), now.saturating_add(LAUNCH_LEASE_MS));
-        project.sessions.insert(
+        scope.sessions.insert(
             activation.clone(),
             Session {
                 forget_at: self.forget_at(now),
@@ -66,21 +64,26 @@ impl ReservationStore for MemoryReservations {
     }
 
     async fn release(&self, activation: &Activation) -> Result<()> {
-        let mut projects = self.projects.lock().unwrap();
-        if let Some(project) = projects.get_mut(&activation.actor.project_id) {
-            project.active.remove(activation);
-            project.sessions.remove(activation);
+        let mut scopes = self.scopes.lock().unwrap();
+        if let Some(scope) = scopes.get_mut(&activation.scope) {
+            scope.active.remove(activation);
+            scope.sessions.remove(activation);
         }
         Ok(())
     }
 
     async fn observe(&self, event: &LifecycleEvent) -> Result<()> {
         let now = self.clock.now_ms()?;
-        let activation = Activation::new(&event.actor, &event.host_id, &event.session_id);
-        let mut projects = self.projects.lock().unwrap();
-        let project = projects.entry(event.actor.project_id.clone()).or_default();
-        project.prune(now);
-        let state = project.sessions.entry(activation.clone()).or_default();
+        let activation = Activation::new(
+            event.organization_id.as_deref(),
+            &event.actor,
+            &event.host_id,
+            &event.session_id,
+        );
+        let mut scopes = self.scopes.lock().unwrap();
+        let scope = scopes.entry(activation.scope.clone()).or_default();
+        scope.prune(now);
+        let state = scope.sessions.entry(activation.clone()).or_default();
         if state.stopped
             || (state.epoch > 0 && state.epoch != event.report.owner_epoch)
             || event.report.sequence <= state.sequence
@@ -92,9 +95,9 @@ impl ReservationStore for MemoryReservations {
         state.stopped = event.report.kind == LifecycleKind::Stopped;
         state.forget_at = self.forget_at(now);
         if state.stopped {
-            project.active.remove(&activation);
+            scope.active.remove(&activation);
         } else {
-            project
+            scope
                 .active
                 .insert(activation, now.saturating_add(REPORT_LEASE_MS));
         }
@@ -109,20 +112,20 @@ impl MemoryReservations {
 }
 
 #[derive(Default)]
-struct Project {
+struct Scope {
     active: HashMap<Activation, u64>,
     sessions: HashMap<Activation, Session>,
     tokens: Option<f64>,
     refilled_at: u64,
 }
 
-impl Project {
+impl Scope {
     fn prune(&mut self, now: u64) {
         self.active.retain(|_, expires_at| *expires_at > now);
         self.sessions.retain(|_, state| state.forget_at > now);
     }
 
-    fn consume(&mut self, limits: ProjectLimits, now: u64) -> Result<()> {
+    fn consume(&mut self, limits: OrganizationLimits, now: u64) -> Result<()> {
         let rate = f64::from(limits.starts_per_second);
         let burst = f64::from(limits.start_burst);
         let tokens = (self.tokens.unwrap_or(burst)

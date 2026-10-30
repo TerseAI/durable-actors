@@ -620,9 +620,9 @@ impl ApiError {
         } else if error.is::<super::access::AccessDisabled>() {
             Self::access(error)
         } else if let Some(rejected) =
-            error.downcast_ref::<super::project_limits::AdmissionRejected>()
+            error.downcast_ref::<super::organization_limits::AdmissionRejected>()
         {
-            use super::project_limits::AdmissionRejected;
+            use super::organization_limits::AdmissionRejected;
             let (code, retry_after_seconds) = match rejected {
                 AdmissionRejected::Quota { .. } => ("actor_quota_exceeded", None),
                 AdmissionRejected::Rate {
