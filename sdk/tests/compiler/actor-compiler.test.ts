@@ -118,6 +118,34 @@ test("emittable fields must be public persisted fields with one emission annotat
     }
 })
 
+test("accepts mapped object types and still rejects symbol keys", async () => {
+    const root = await createProject()
+    try {
+        const entrypoint = path.join(root, "src/actors.ts")
+        for (const type of ['Record<"first" | "second", number>', '{ [K in "first" | "second"]: number }']) {
+            await writeFile(
+                entrypoint,
+                `import { Actor } from "durable-actors"
+                export class Room extends Actor { async read(): Promise<${type}> { return { first: 1, second: 2 } } }`
+            )
+            const contract = JSON.stringify(new ActorCompiler().compileContract(entrypoint))
+            assert.match(contract, /"first"/)
+            assert.match(contract, /"second"/)
+        }
+        await writeFile(
+            entrypoint,
+            `import { Actor } from "durable-actors"
+            export class Room extends Actor { async read(): Promise<{ [Symbol.iterator]: number }> { return null! } }`
+        )
+        assert.throws(
+            () => new ActorCompiler().compileContract(entrypoint),
+            /Room.read result must be JSON-compatible; symbol properties/
+        )
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("validates actors without writing files", async () => {
     const root = await createProject()
     try {
