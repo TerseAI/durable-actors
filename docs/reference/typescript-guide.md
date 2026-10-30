@@ -295,7 +295,7 @@ export class Wire extends Actor {
 
 `getStatus` can run while `submit` waits on the clearing network.
 
-Interleaving changes failure handling for the whole class. A failed call normally rolls back its field and SQLite changes. Once any method in a class uses `@Interleave`, no call in that class rolls back, because overlapping calls may already have used the changes.
+Interleaving changes failure handling for the whole class. A failed call normally rolls back its field and SQLite changes. Once any method in a class uses `@Interleave`, no call in that class rolls back, because overlapping calls may already have used the changes. For the same reason, `this.db.transaction` throws in that class.
 
 ## Using SQLite
 
@@ -318,6 +318,7 @@ export class BankAccount extends Actor {
 
 - Each SQL write and each `@Persisted` assignment is saved as it happens, so progress survives a crash mid-method. If the method throws, writes made before the error stay saved.
 - Mark a method `@Atomic` to save all of its writes together when it succeeds, or none if it throws.
+- `await this.db.transaction(async () => { ... })` rolls back only the SQL and `@Persisted` writes inside it when it throws, and rethrows; the method can catch the error and continue. Transactions nest. Without `@Atomic`, writes inside a transaction are saved together when it completes.
 - Assigning a `@Persisted` field writes its JSON value through the same SQL execution path as `this.db.exec()`.
 - Reassign objects and arrays to persist changes: `this.messages = [...this.messages, message]`. Nested mutations such as `this.messages.push(message)` only change memory; they are not saved, even at method completion. Assign `undefined` to remove a saved field value rather than using `delete`.
 - Saved fields are restored before persistence tracking begins. Defaults are inserted only for fields missing from SQLite, so adding a persisted property initializes existing actors without replacing their saved values. Initialization does not delete existing rows.
@@ -325,6 +326,29 @@ export class BankAccount extends Actor {
 - Actor constructors must accept the opaque `ActorContext` and pass it to `super(context)` before using `this`. Classes without a constructor forward the context automatically.
 - `this.db` and `this.id` are available after `super(context)` in constructors and in field initializers, methods, and socket hooks. SQLite is restored before construction; `@Persisted` fields are hydrated afterward.
 - Keep constructor and field-initializer SQL synchronous and repeatable (for example, `CREATE TABLE IF NOT EXISTS`): both run again when actors are restored. Their writes commit with the next successful method or socket hook; a throwing constructor or initializer rolls them back.
+
+Here, `withdraw` rejects an overdraft without failing the call. The trigger aborts the insert, the transaction rolls back the ledger row and the balance change, and the method returns the unchanged balance:
+
+```typescript
+import { Actor, Persisted } from "durable-actors"
+
+export class Account extends Actor {
+    @Persisted balance = 100
+
+    async withdraw(amount: number): Promise<{ ok: boolean; balance: number }> {
+        this.db.exec("CREATE TABLE IF NOT EXISTS ledger (amount INTEGER CHECK (amount <= 100))")
+        try {
+            await this.db.transaction(async () => {
+                this.balance -= amount
+                this.db.exec("INSERT INTO ledger (amount) VALUES (?)", amount)
+            })
+            return { ok: true, balance: this.balance }
+        } catch {
+            return { ok: false, balance: this.balance }
+        }
+    }
+}
+```
 
 ```typescript
 import { Actor, type ActorContext } from "durable-actors"
@@ -337,7 +361,7 @@ export class Ledger extends Actor {
 }
 ```
 
-- The runtime owns transactions and the database file, so `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `ATTACH`, `DETACH`, and `VACUUM` are rejected.
+- The runtime owns transactions and the database file, so `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `ATTACH`, `DETACH`, and `VACUUM` are rejected. Use `this.db.transaction` for a nested transaction.
 - The only allowed PRAGMAs are `table_info`, `table_xinfo`, `index_info`, `index_xinfo`, `index_list`, `foreign_key_list`, `foreign_key_check`, `integrity_check`, `quick_check`, and `user_version`.
 - Names beginning with `__terse_` or `_litestream_` are reserved.
 

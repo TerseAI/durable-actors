@@ -23,6 +23,9 @@ type DatabaseCall =
     | { readonly op: "delete_alarm"; readonly immediate: boolean }
     | { readonly op: "commit" }
     | { readonly op: "rollback" }
+    | { readonly op: "savepoint" }
+    | { readonly op: "release_savepoint"; readonly immediate: boolean }
+    | { readonly op: "rollback_to_savepoint" }
 
 type DatabaseResult =
     | { readonly type: "rows"; readonly columns: string[]; readonly rows: DatabaseValue[][] }
@@ -34,8 +37,12 @@ type DatabaseTransport = (call: DatabaseCall) => DatabaseResult
 
 class DatabaseCommitError extends Error {}
 
+type FieldRestore = (value: JsonValue | undefined) => void
+
 class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
     private atomicInvocations = 0
+    private transactionsUnavailable: string | undefined
+    private readonly fieldRestores = new Map<string, FieldRestore>()
 
     constructor(private readonly transport: DatabaseTransport) {}
 
@@ -49,14 +56,36 @@ class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
     }
 
     exec<Row extends object>(sql: string, ...bindings: SqliteValue[]): Row[] {
-        // Background SQL would join, and then commit, the open @Atomic transaction.
-        if (this.atomicInvocations > 0 && actorDatabaseMode() === "background")
-            throw new Error("actor database is unavailable to background work while an @Atomic method runs")
+        this.assertForegroundAccess()
         const result = this.transport({ op: "exec", sql, bindings: bindings.map(encode), immediate: immediate() })
         if (result.type !== "rows") throw unexpected(result)
         return result.rows.map(
             row => Object.fromEntries(row.map((value, index) => [result.columns[index], decode(value)])) as Row
         )
+    }
+
+    async transaction<T>(operation: () => Promise<T>): Promise<T> {
+        if (this.transactionsUnavailable !== undefined) throw new Error(this.transactionsUnavailable)
+        this.assertForegroundAccess()
+        this.transport({ op: "savepoint" })
+        let result: T
+        try {
+            result = await operation()
+        } catch (error) {
+            this.transport({ op: "rollback_to_savepoint" })
+            this.restoreFields()
+            throw error
+        }
+        this.transport({ op: "release_savepoint", immediate: immediate() })
+        return result
+    }
+
+    rejectTransactions(reason: string): void {
+        this.transactionsUnavailable = reason
+    }
+
+    onFieldRestore(name: string, restore: FieldRestore): void {
+        this.fieldRestores.set(name, restore)
     }
 
     fields(): JsonObject {
@@ -101,6 +130,17 @@ class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
 
     rollback(): void {
         this.transport({ op: "rollback" })
+    }
+
+    private assertForegroundAccess(): void {
+        // Background SQL would join, and then commit, the open @Atomic transaction.
+        if (this.atomicInvocations > 0 && actorDatabaseMode() === "background")
+            throw new Error("actor database is unavailable to background work while an @Atomic method runs")
+    }
+
+    private restoreFields(): void {
+        const fields = this.fields()
+        for (const [name, restore] of this.fieldRestores) restore(fields[name])
     }
 }
 

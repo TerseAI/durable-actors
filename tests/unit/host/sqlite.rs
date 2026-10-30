@@ -220,6 +220,115 @@ async fn rollback_discards_uncommitted_sql_and_fields() -> Result<()> {
     Ok(())
 }
 
+async fn note_bodies(database: &SqliteDatabase) -> Result<serde_json::Value> {
+    let notes = exec(
+        database,
+        "SELECT body FROM notes ORDER BY rowid",
+        vec![],
+        false,
+    )
+    .await?;
+    Ok(serde_json::to_value(notes.result)?["rows"].clone())
+}
+
+#[tokio::test]
+async fn savepoint_rollback_keeps_earlier_writes_in_the_transaction() -> Result<()> {
+    let (_directory, database) = database().await?;
+    exec(&database, "CREATE TABLE notes (body TEXT)", vec![], false).await?;
+    exec(
+        &database,
+        "INSERT INTO notes VALUES ('kept')",
+        vec![],
+        false,
+    )
+    .await?;
+    database.call(DatabaseCall::Savepoint).await?;
+    exec(
+        &database,
+        "INSERT INTO notes VALUES ('outer')",
+        vec![],
+        false,
+    )
+    .await?;
+    database.call(DatabaseCall::Savepoint).await?;
+    exec(
+        &database,
+        "INSERT INTO notes VALUES ('inner')",
+        vec![],
+        false,
+    )
+    .await?;
+    database.call(DatabaseCall::RollbackToSavepoint).await?;
+    database
+        .call(DatabaseCall::ReleaseSavepoint { immediate: false })
+        .await?;
+    assert!(database.call(DatabaseCall::Commit).await?.committed);
+    assert_eq!(
+        note_bodies(&database).await?,
+        json!([[{"type": "text", "value": "kept"}], [{"type": "text", "value": "outer"}]])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn immediate_writes_inside_a_savepoint_commit_on_its_release() -> Result<()> {
+    let (_directory, database) = database().await?;
+    exec(&database, "CREATE TABLE notes (body TEXT)", vec![], true).await?;
+    database.call(DatabaseCall::Savepoint).await?;
+    assert!(
+        !exec(&database, "INSERT INTO notes VALUES ('one')", vec![], true)
+            .await?
+            .committed
+    );
+    assert!(
+        database
+            .call(DatabaseCall::ReleaseSavepoint { immediate: true })
+            .await?
+            .committed
+    );
+    database.call(DatabaseCall::Savepoint).await?;
+    exec(&database, "INSERT INTO notes VALUES ('two')", vec![], true).await?;
+    database.call(DatabaseCall::RollbackToSavepoint).await?;
+    database.call(DatabaseCall::Rollback).await?;
+    assert_eq!(
+        note_bodies(&database).await?,
+        json!([[{"type": "text", "value": "one"}]])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn closing_a_savepoint_requires_an_open_one() -> Result<()> {
+    let (_directory, database) = database().await?;
+    let error = database
+        .call(DatabaseCall::RollbackToSavepoint)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("no actor savepoint is open"));
+    database.call(DatabaseCall::Savepoint).await?;
+    database.call(DatabaseCall::Commit).await?;
+    let error = database
+        .call(DatabaseCall::ReleaseSavepoint { immediate: false })
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("no actor savepoint is open"));
+    Ok(())
+}
+
+#[test]
+fn savepoint_calls_use_snake_case_wire_names() -> Result<()> {
+    let call: DatabaseCall =
+        serde_json::from_value(json!({"op": "release_savepoint", "immediate": true}))?;
+    assert!(matches!(
+        call,
+        DatabaseCall::ReleaseSavepoint { immediate: true }
+    ));
+    assert!(call.immediate());
+    let call: DatabaseCall = serde_json::from_value(json!({"op": "rollback_to_savepoint"}))?;
+    assert!(matches!(call, DatabaseCall::RollbackToSavepoint));
+    Ok(())
+}
+
 #[tokio::test]
 async fn fields_preserve_json_text_and_replacement_removes_missing_names() -> Result<()> {
     let (_directory, database) = database().await?;

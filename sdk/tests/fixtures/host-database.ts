@@ -25,6 +25,7 @@ export class HostDatabase {
     readonly calls: DatabaseCall[] = []
     private readonly connection: Connection
     private transaction = false
+    private savepoints = 0
     private synced: string
 
     constructor(readonly path = freshPath()) {
@@ -88,8 +89,20 @@ export class HostDatabase {
             case "rollback":
                 if (this.transaction) this.connection.exec("ROLLBACK")
                 this.transaction = false
+                this.savepoints = 0
                 this.synced = this.changeToken()
                 return { type: "done" }
+            case "savepoint":
+                return this.write(false, () => this.connection.exec(`SAVEPOINT s${this.savepoints++}`))
+            case "release_savepoint":
+                this.connection.exec(`RELEASE s${--this.savepoints}`)
+                if (call.immediate && this.savepoints === 0) this.commit()
+                return { type: "done" }
+            case "rollback_to_savepoint": {
+                const name = `s${--this.savepoints}`
+                this.connection.exec(`ROLLBACK TO ${name}; RELEASE ${name}`)
+                return { type: "done" }
+            }
         }
     }
 
@@ -117,7 +130,7 @@ export class HostDatabase {
         this.transaction = true
         const before = this.changeToken()
         const result = operation() ?? { type: "done" }
-        if (immediate && (opened || this.changeToken() !== before)) this.commit()
+        if (immediate && this.savepoints === 0 && (opened || this.changeToken() !== before)) this.commit()
         return result
     }
 
@@ -162,6 +175,7 @@ export class HostDatabase {
     private commit(): void {
         if (this.transaction) this.connection.exec("COMMIT")
         this.transaction = false
+        this.savepoints = 0
         const token = this.changeToken()
         if (token !== this.synced) this.commits++
         this.synced = token

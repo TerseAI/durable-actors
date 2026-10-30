@@ -5,6 +5,8 @@ type SqliteValue = string | number | bigint | Uint8Array | null
 interface ActorDatabase {
     /** Executes one SQL statement with positional bindings and returns its rows. */
     exec<Row extends object = Record<string, SqliteValue>>(sql: string, ...bindings: SqliteValue[]): Row[]
+    /** Runs `operation` in a nested transaction: if it throws, its SQL and @Persisted writes roll back and the call continues. */
+    transaction<T>(operation: () => Promise<T>): Promise<T>
 }
 
 type PersistenceMode = "atomic" | "immediate"
