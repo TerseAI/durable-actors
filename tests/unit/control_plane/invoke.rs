@@ -1,6 +1,7 @@
 use super::super::super::socket_gateway::{SocketEventReply, SocketEventRequest};
 use super::*;
 use crate::actor::{ActorSocketEffect, ActorSocketMessage};
+use crate::control_plane::access::AccessSource;
 use axum::{
     Json, Router,
     extract::State,
@@ -8,13 +9,105 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
+
+#[path = "shutdown_routing.rs"]
+mod shutdown_routing;
+
+#[tokio::test]
+async fn assignment_returns_invocation_outcomes_without_a_second_host_request() -> Result<()> {
+    for outcome in [
+        json!({"type":"completed", "result":7}),
+        json!({"type":"failed", "code":"actor_method_failed", "message":"failed"}),
+    ] {
+        let fixture = Fixture::start(vec![(StatusCode::OK, outcome.clone())]).await?;
+        fixture.host.assign_operation.store(true, Ordering::SeqCst);
+        let expiry = (super::super::super::auth::unix_seconds()? + 30) * 1000;
+        let session = fixture
+            .admin
+            .issue_session("default".into(), "subject".into(), expiry)?;
+        let reply: Value = fixture
+            .call(
+                &session.token,
+                json!({"requestId":"first", "method":"sendMessage", "args":["hello"]}),
+            )
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(reply["outcome"], outcome);
+        assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+        let operations = fixture.host.initial_operations.lock().unwrap();
+        assert_eq!(operations.len(), 1);
+        let crate::sandbox::assignment::InitialRequest::Invoke { invocation, grant } =
+            &operations[0].request
+        else {
+            panic!("expected invocation")
+        };
+        assert_eq!(invocation.request_id, "first");
+        assert_eq!(invocation.args, vec![json!("hello")]);
+        assert_eq!(grant.as_ref().unwrap().subject, "subject");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn assignment_socket_effects_are_delivered_once_and_never_cached() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    fixture.host.assign_operation.store(true, Ordering::SeqCst);
+    let _first = fixture.connect().await?;
+    assert_eq!(fixture.host.initial_operations.lock().unwrap().len(), 1);
+    assert!(fixture.host.socket_requests.lock().unwrap().is_empty());
+    let _second = fixture.connect().await?;
+    assert_eq!(fixture.host.initial_operations.lock().unwrap().len(), 1);
+    assert_eq!(fixture.host.socket_requests.lock().unwrap().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn lost_assignment_operation_reply_is_never_redispatched_to_the_ready_host() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    fixture.host.assign_operation.store(true, Ordering::SeqCst);
+    fixture
+        .host
+        .lose_assignment_reply
+        .store(true, Ordering::SeqCst);
+    let response = fixture
+        .call(
+            "api-key",
+            json!({"requestId":"first", "method":"clear", "args":[]}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let reply: Value = response.json().await?;
+    assert_eq!(reply["error"]["code"], "outcome_unknown");
+    assert_eq!(fixture.host.initial_operations.lock().unwrap().len(), 1);
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn suspension_closes_existing_websockets() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let mut socket = fixture.connect().await?;
+    let before = fixture.host.socket_requests.lock().unwrap().len();
+    fixture
+        .admin
+        .set_organization_access("org-test", AccessSource::Admin, false)
+        .await?;
+    fixture.gateway.reconcile_access().await?;
+    socket.send(Message::Text("{}".into())).await?;
+    let message = next_message(&mut socket).await?;
+    assert!(matches!(message, Message::Close(_)));
+    assert_eq!(fixture.host.socket_requests.lock().unwrap().len(), before);
+    Ok(())
+}
 
 #[tokio::test]
 async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() -> Result<()> {
@@ -29,16 +122,7 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
     let reply: Value = response.json().await?;
     assert_eq!(reply["outcome"]["type"], "completed");
     assert!(reply["outcome"]["result"].is_null());
-    assert_eq!(reply["target"]["ownerEpoch"], 1);
-    assert!(reply["target"].get("hostState").is_none());
-    assert_eq!(reply["target"]["route"], fixture.origin);
-    assert!(reply["target"]["expiresAtMs"].as_i64().unwrap() > 0);
-    assert!(
-        reply["target"]["route"]
-            .as_str()
-            .unwrap()
-            .starts_with("http://127.0.0.1:")
-    );
+    assert!(reply.get("target").is_none());
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     let requests = fixture.host.requests.lock().unwrap();
     let routing_ms = requests[0].1["routingMs"].as_f64().unwrap();
@@ -51,10 +135,6 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
         .verifier
         .authenticate_authorization(&requests[0].0)?;
     assert_eq!(principal.actor.actor_id, "one");
-    assert_eq!(
-        requests[0].0,
-        format!("Bearer {}", reply["target"]["token"].as_str().unwrap())
-    );
     Ok(())
 }
 
@@ -206,50 +286,40 @@ async fn combined_invocation_does_not_replay_failed_or_ambiguous_dispatches() ->
 }
 
 #[tokio::test]
-async fn gateway_forwards_cached_calls_and_rejects_wrong_capabilities() -> Result<()> {
+async fn gateway_routes_actor_calls_and_rejects_host_tickets() -> Result<()> {
     let fixture = Fixture::start(vec![
         (StatusCode::OK, json!({"type":"completed","result":1})),
         (StatusCode::OK, json!({"type":"completed","result":2})),
     ])
     .await?;
-    let first: Value = fixture
-        .call(
-            "api-key",
-            json!({"requestId":"first","method":"clear","args":[]}),
-        )
+    let request = json!({"requestId":"call","method":"clear","args":[]});
+    fixture
+        .call("api-key", request.clone())
         .await?
-        .json()
-        .await?;
-    let token = first["target"]["token"].as_str().unwrap();
-    let request = json!({"requestId":"cached","ownerEpoch":1,"method":"clear","args":[]});
+        .error_for_status()?;
+    let token = fixture.host.requests.lock().unwrap()[0]
+        .0
+        .strip_prefix("Bearer ")
+        .unwrap()
+        .to_owned();
+    fixture.service.routes.remove_project("default").await;
     assert_eq!(
-        fixture.call("api-key", request.clone()).await?.status(),
+        fixture.call(&token, request.clone()).await?.status(),
         StatusCode::UNAUTHORIZED
     );
-    let mut wrong_epoch = request.clone();
-    wrong_epoch["ownerEpoch"] = 2.into();
+    let mut host_request = request.clone();
+    host_request["ownerEpoch"] = 1.into();
     assert_eq!(
-        fixture.call(token, wrong_epoch).await?.status(),
-        StatusCode::UNAUTHORIZED
+        fixture.call("api-key", host_request).await?.status(),
+        StatusCode::BAD_REQUEST
     );
-    let wrong_actor = reqwest::Client::new()
-        .post(format!(
-            "{}/v1/projects/default/actors/ChatRoom/other/invoke",
-            fixture.origin
-        ))
-        .bearer_auth(token)
-        .json(&request)
-        .send()
-        .await?;
-    assert_eq!(wrong_actor.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
-    let cached: Value = fixture
-        .call(token, request)
+    let reply: Value = fixture
+        .call("api-key", request)
         .await?
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(cached, json!({"type":"completed","result":2}));
+    assert_eq!(reply, json!({"outcome":{"type":"completed","result":2}}));
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
     Ok(())
 }
@@ -258,10 +328,8 @@ async fn gateway_forwards_cached_calls_and_rejects_wrong_capabilities() -> Resul
 async fn backend_socket_effects_reach_connected_clients() -> Result<()> {
     let fixture = Fixture::start(vec![]).await?;
     let mut socket = fixture.connect().await?;
-    let target = fixture.find_actor().await?;
-    let token = target["token"].as_str().unwrap();
     let response = fixture
-        .post("socket-effects", token, broadcast(&target))
+        .post("socket-effects", "api-key", broadcast())
         .await?;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
@@ -275,15 +343,7 @@ async fn backend_socket_effects_reach_connected_clients() -> Result<()> {
 async fn backend_socket_effects_reach_clients_connected_to_another_replica() -> Result<()> {
     let fixture = Fixture::start(vec![]).await?;
     let mut socket = fixture.connect().await?;
-    let target = fixture.find_actor().await?;
-    let token = target["token"].as_str().unwrap();
-    let response = post_actor(
-        &fixture.replica,
-        "socket-effects",
-        token,
-        broadcast(&target),
-    )
-    .await?;
+    let response = post_actor(&fixture.replica, "socket-effects", "api-key", broadcast()).await?;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
         next_message(&mut socket).await?,
@@ -293,6 +353,9 @@ async fn backend_socket_effects_reach_clients_connected_to_another_replica() -> 
 }
 
 struct Fixture {
+    service: ControlPlaneService,
+    gateway: ControlPlaneService,
+    placements: Arc<LocalObjectPlacementStore>,
     origin: String,
     replica: String,
     admin: AdminService,
@@ -310,7 +373,19 @@ impl Fixture {
         replies: Vec<(StatusCode, Value)>,
         existing: bool,
     ) -> Result<Self> {
+        Self::start_with_routes(replies, existing, None).await
+    }
+
+    async fn start_with_routes(
+        replies: Vec<(StatusCode, Value)>,
+        existing: bool,
+        route_store: Option<Arc<dyn crate::control_plane::routes::RouteStore>>,
+    ) -> Result<Self> {
         let host = Arc::new(HostFixture {
+            assign_operation: false.into(),
+            lose_assignment_reply: false.into(),
+            initial_operations: Mutex::new(vec![]),
+            socket_requests: Mutex::new(vec![]),
             replies: Mutex::new(replies.into()),
             calls: AtomicUsize::new(0),
             requests: Mutex::new(vec![]),
@@ -352,6 +427,8 @@ impl Fixture {
         admin
             .register_deployment(
                 &HostLaunchSpec {
+                    image_policy: Default::default(),
+                    organization_id: "org-test".into(),
                     sandboxes: Default::default(),
                     project_id: "default".into(),
                     source: None,
@@ -384,21 +461,27 @@ impl Fixture {
                 "north-america-east",
             )?;
         }
-        let service = ControlPlaneService::new(
+        let mut service = ControlPlaneService::new(
             placements.clone(),
             auth,
             registry,
             issuer.clone(),
             Arc::new(InvocationProvisioner {
+                host: host.clone(),
                 route: host_origin,
-                placements,
+                placements: placements.clone(),
             }),
         );
-        let directory =
-            Arc::new(super::super::super::socket_directory::MemorySocketDirectory::default());
-        let (origin, server) = serve_replica(&service, &admin, &issuer, directory.clone()).await?;
-        let (replica, replica_server) = serve_replica(&service, &admin, &issuer, directory).await?;
+        if let Some(route_store) = route_store {
+            service.routes = route_store;
+        }
+        let hub = super::super::super::socket_bus::MemorySocketHub::default();
+        let (origin, server, gateway) = serve_replica(&service, &admin, &issuer, &hub).await?;
+        let (replica, replica_server, _) = serve_replica(&service, &admin, &issuer, &hub).await?;
         Ok(Self {
+            service,
+            gateway,
+            placements,
             origin,
             replica,
             admin,
@@ -433,12 +516,23 @@ impl Fixture {
     }
 
     async fn find_actor(&self) -> Result<Value> {
-        Ok(self
+        let reply: Value = self
             .post("find-actor", "api-key", json!({}))
             .await?
             .error_for_status()?
             .json()
-            .await?)
+            .await?;
+        assert_eq!(reply, json!({"homeRegion":"north-america-east"}));
+        let actor = ActorKey {
+            project_id: "default".into(),
+            actor_name: "ChatRoom".into(),
+            actor_id: "one".into(),
+        };
+        let target = self
+            .service
+            .resolve_actor_route(&actor, None, None, None, None)
+            .await?;
+        Ok(json!({"token": target.token, "ownerEpoch": target.owner_epoch}))
     }
 }
 
@@ -454,27 +548,29 @@ async fn serve_replica(
     service: &ControlPlaneService,
     admin: &AdminService,
     issuer: &ActorJwtIssuer,
-    directory: Arc<super::super::super::socket_directory::MemorySocketDirectory>,
-) -> Result<(String, tokio::task::JoinHandle<std::io::Result<()>>)> {
+    hub: &super::super::super::socket_bus::MemorySocketHub,
+) -> Result<(
+    String,
+    tokio::task::JoinHandle<std::io::Result<()>>,
+    ControlPlaneService,
+)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let sockets = super::super::super::socket_gateway::SocketGateway::start(
-        origin.clone(),
-        directory,
-        32768,
+        hub.join(32768),
         true,
         tokio_util::sync::CancellationToken::new(),
-    )
-    .await?;
+        crate::sandbox::connections::HostConnections::new()?.client,
+    )?;
     let mut service = service.clone();
     service.gateway = Some(super::super::super::gateway::Gateway::new(
         issuer,
         origin.clone(),
         sockets,
     )?);
-    let routes = super::super::super::public_api::router(service, admin.clone());
+    let routes = super::super::super::public_api::router(service.clone(), admin.clone());
     let server = tokio::spawn(async move { axum::serve(listener, routes).await });
-    Ok((origin, server))
+    Ok((origin, server, service))
 }
 
 async fn post_actor(
@@ -493,8 +589,8 @@ async fn post_actor(
         .await?)
 }
 
-fn broadcast(target: &Value) -> Value {
-    json!({"ownerEpoch":target["ownerEpoch"], "effects":[{"type":"broadcast", "message":{"type":"text", "data":"hello"}, "except_connection_ids":[], "tags":[]}]})
+fn broadcast() -> Value {
+    json!({ "effects":[{"type":"broadcast", "message":{"type":"text", "data":"hello"}, "except_connection_ids":[], "tags":[]}]})
 }
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -505,6 +601,10 @@ async fn next_message(socket: &mut Socket) -> Result<Message> {
 }
 
 struct HostFixture {
+    assign_operation: std::sync::atomic::AtomicBool,
+    lose_assignment_reply: std::sync::atomic::AtomicBool,
+    initial_operations: Mutex<Vec<crate::sandbox::assignment::InitialOperation>>,
+    socket_requests: Mutex<Vec<String>>,
     replies: Mutex<VecDeque<(StatusCode, Value)>>,
     calls: AtomicUsize,
     requests: Mutex<Vec<(String, Value)>>,
@@ -530,7 +630,16 @@ async fn host_invoke(
     (status, Json(reply)).into_response()
 }
 
-async fn host_socket_event(Json(request): Json<SocketEventRequest>) -> Json<SocketEventReply> {
+async fn host_socket_event(
+    State(state): State<Arc<HostFixture>>,
+    headers: HeaderMap,
+    Json(request): Json<SocketEventRequest>,
+) -> Json<SocketEventReply> {
+    state
+        .socket_requests
+        .lock()
+        .unwrap()
+        .push(headers["authorization"].to_str().unwrap().into());
     let effects = match request.invocation.event {
         ActorSocketEvent::Connect { connection } => vec![ActorSocketEffect::Send {
             connection_id: connection.id,
@@ -544,15 +653,12 @@ async fn host_socket_event(Json(request): Json<SocketEventRequest>) -> Json<Sock
 }
 
 struct InvocationProvisioner {
+    host: Arc<HostFixture>,
     route: String,
     placements: Arc<LocalObjectPlacementStore>,
 }
 #[async_trait]
 impl HostProvisioner for InvocationProvisioner {
-    fn host_idle_timeout_ms(&self) -> u64 {
-        10_000
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -571,18 +677,59 @@ impl HostProvisioner for InvocationProvisioner {
         actor: &ActorKey,
         _: bool,
         _: Option<&crate::bucket::OwnershipHint>,
-    ) -> Result<(HostLease, u64)> {
+        operation: Option<&crate::sandbox::assignment::InitialOperation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
         tokio::time::sleep(Duration::from_millis(25)).await;
         let lease = HostLease {
             route: self.route.clone(),
+            session_id: uuid::Uuid::new_v4().to_string(),
             ..test_lease(&HostId::new(format!(
                 "host.v3.{}.fixture",
                 spec.host_config_key()
             )))
         };
-        self.placements
+        let owner_epoch = self
+            .placements
             .set_owner(&actor.storage_key(), lease.clone(), region)?;
-        Ok((lease, 1))
+        let initial_reply = if self.host.assign_operation.load(Ordering::SeqCst) {
+            use crate::sandbox::assignment::InitialRequest;
+            let operation = operation.context("missing initial operation")?;
+            self.host
+                .initial_operations
+                .lock()
+                .unwrap()
+                .push(operation.clone());
+            if self.host.lose_assignment_reply.load(Ordering::SeqCst) {
+                return Err(crate::sandbox::assignment::AssignmentOutcomeUnknown.into());
+            }
+            Some(match &operation.request {
+                InitialRequest::Invoke { .. } => {
+                    self.host
+                        .replies
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .context("unexpected replay")?
+                        .1
+                }
+                InitialRequest::Socket { invocation } => {
+                    let ActorSocketEvent::Connect { connection } = &invocation.event else {
+                        anyhow::bail!("expected connect")
+                    };
+                    serde_json::to_value(SocketEventReply::Completed {
+                        effects: vec![ActorSocketEffect::Send {
+                            connection_id: connection.id.clone(),
+                            message: ActorSocketMessage::Text {
+                                data: "ready".into(),
+                            },
+                        }],
+                    })?
+                }
+            })
+        } else {
+            None
+        };
+        Ok((lease, owner_epoch, initial_reply))
     }
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
         anyhow::bail!("unexpected termination")

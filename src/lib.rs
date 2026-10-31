@@ -1,4 +1,5 @@
 pub mod actor;
+mod actor_lifecycle;
 pub mod actor_state;
 pub mod bucket;
 pub mod clock;
@@ -10,6 +11,7 @@ mod litestream;
 mod payload;
 pub mod placement;
 mod postgres;
+mod redis_client;
 pub mod sandbox;
 pub mod state_log;
 pub mod state_transport;

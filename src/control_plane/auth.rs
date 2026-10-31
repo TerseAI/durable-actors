@@ -30,6 +30,7 @@ impl ActorTokenPurpose {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActorPrincipal {
+    pub organization_id: Option<String>,
     pub actor: crate::actor::ActorKey,
     pub host_id: HostId,
     pub session_id: String,
@@ -60,6 +61,7 @@ pub(crate) struct ActorJwtVerifier {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorJwtClaims {
+    organization_id: Option<String>,
     actor: crate::actor::ActorKey,
     sub: String,
     #[serde(rename = "processId")]
@@ -233,6 +235,7 @@ impl ActorJwtVerifier {
         );
         claims.actor.validate()?;
         let principal = ActorPrincipal {
+            organization_id: claims.organization_id,
             actor: claims.actor,
             host_id: HostId::new(claims.host_id),
             session_id: claims.session_id,
@@ -276,6 +279,10 @@ impl ActorJwtVerifier {
             ensure!(
                 capability.host_id == principal.host_id,
                 "actor invocation capability targets another host"
+            );
+            ensure!(
+                capability.actor == principal.actor,
+                "actor invocation capability targets another actor"
             );
             capability.actor.validate()?;
             ensure!(

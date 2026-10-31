@@ -10,6 +10,7 @@ from fixtures.executor import ExecutorHost, build, warm_executor
 from fixtures.host_database import HostDatabase
 
 from durable_actors.build import build_actor
+from durable_actors.supervisor import Supervisor
 
 
 async def test_warm_executor_keeps_its_assigned_environment_across_worker_restarts(tmp_path):
@@ -86,7 +87,7 @@ class Counter(Actor):
                 host = ExecutorHost(reader, writer, database)
                 try:
                     if generic:
-                        assert await host.receive() == {"type": "warm", "protocol": 28}
+                        assert await host.receive() == {"type": "warm", "protocol": 30}
                         host.send(
                             {
                                 "type": "load",
@@ -96,10 +97,10 @@ class Counter(Actor):
                         )
                     assert await host.receive() == {
                         "type": "attach",
-                        "protocol": 28,
+                        "protocol": 30,
                         "actor_names": ["Counter"],
                     }
-                    host.send({"type": "attached", "protocol": 28, "actor": actor})
+                    host.send({"type": "attached", "protocol": 30, "actor": actor})
                     host.send(
                         {
                             "type": "command",
@@ -187,7 +188,7 @@ class Sleeper(Actor):
                 receive, send = host.receive, host.send
                 assert (await receive())["type"] == "attach"
                 actor = {"project_id": "local", "actor_name": "Sleeper", "actor_id": "one"}
-                send({"type": "attached", "protocol": 28, "actor": actor})
+                send({"type": "attached", "protocol": 30, "actor": actor})
                 read = {"type": "invoke", "request_id": "r", "method": "read", "args": []}
                 send({"type": "command", "message_id": 0, "command": read})
                 assert (await receive())["reply"]["result"] == [1, 0]
@@ -216,6 +217,57 @@ class Sleeper(Actor):
                 writer.transport.abort()
                 await asyncio.wait_for(writer.wait_closed(), 1)
             await server.wait_closed()
+
+
+class StubWorker:
+    actor_names: list[str] = []
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, message):
+        self.sent.append(message)
+
+    async def read(self):
+        await asyncio.Event().wait()
+
+    async def close(self):
+        pass
+
+
+class StubWriter:
+    def write(self, data):
+        pass
+
+    async def drain(self):
+        pass
+
+
+async def test_commands_during_deferred_replay_share_one_fresh_worker():
+    workers = []
+    release = asyncio.Event()
+
+    async def create_worker(entrypoint, environment):
+        worker = StubWorker()
+        workers.append(worker)
+        await release.wait()
+        return worker
+
+    supervisor = Supervisor(asyncio.StreamReader(), StubWriter(), create_worker)
+    read = {"type": "invoke", "request_id": "r", "method": "read", "args": []}
+    supervisor.evicting = 1
+    supervisor.deferred.append({"type": "command", "message_id": 2, "command": read})
+
+    replay = asyncio.create_task(supervisor.finish_eviction(1))
+    while not workers:
+        await asyncio.sleep(0)
+    await supervisor.accept({"type": "command", "message_id": 3, "command": read})
+    release.set()
+    await replay
+
+    assert len(workers) == 1
+    assert [message.get("message_id") for message in workers[0].sent][1:] == [2, 3]
+    await supervisor.stop_worker()
 
 
 @pytest.mark.parametrize("action", ["evict", "kill_host"])
@@ -264,7 +316,7 @@ class Counter(Actor):
                 receive, send = host.receive, host.send
                 assert (await receive())["type"] == "attach"
                 actor = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
-                send({"type": "attached", "protocol": 28, "actor": actor})
+                send({"type": "attached", "protocol": 30, "actor": actor})
                 invocation = {
                     "type": "invoke",
                     "request_id": "r1",
@@ -304,7 +356,6 @@ class Counter(Actor):
                         "command": {"type": "evict"},
                     }
                 )
-                send({"type": "socket_effects_published", "message_id": 1})
                 replies = [await receive(), await receive()]
                 outcomes = {reply["message_id"]: reply["reply"] for reply in replies}
                 assert outcomes[1]["code"] == "actor_evicted"

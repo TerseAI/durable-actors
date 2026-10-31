@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 
 use crate::{
     actor::ActorKey,
+    actor_lifecycle::{LifecycleEvent, LifecycleKind, LifecycleReport, LifecycleStore},
     bucket::{RuntimeStorage, testing::RuntimeFixture},
+    clock::{Clock, SystemClock},
     host::HostId,
     host_leases::HostLeaseRequest,
 };
@@ -25,19 +27,7 @@ async fn inventory_reads_and_streams_filter_projects_before_grouping() -> Result
             ..fixture.actor(id)
         };
         fixture
-            .store
-            .register_activation(
-                &actor,
-                &HostLeaseRequest {
-                    id: HostId::new(format!("host-{project}-{id}")),
-                    session_id: "session".into(),
-                    route: "http://localhost:7101".into(),
-                    duration_ms: 60_000,
-                },
-                "north-america-east",
-                true,
-                None,
-            )
+            .report_lifecycle(actor, LifecycleKind::Started, 1, vec![])
             .await?;
     }
     let page: Value = fixture
@@ -46,7 +36,7 @@ async fn inventory_reads_and_streams_filter_projects_before_grouping() -> Result
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(page["actors"][0]["unknown"], 1);
+    assert_eq!(page["actors"][0]["live"], 1);
     assert_eq!(page["actors"][0]["instances"].as_array().unwrap().len(), 1);
     let mut stream = fixture
         .get("/v1/projects/alpha/observe/events")
@@ -158,11 +148,114 @@ async fn durability_endpoint_is_not_exposed() -> Result<()> {
 }
 
 #[tokio::test]
+async fn committed_clickhouse_traces_stream_across_replicas_and_recover_on_reconnect() -> Result<()>
+{
+    use crate::{
+        redis_client::{Redis, RedisConfig},
+        request_traces::{
+            TraceStore,
+            live::{LiveTraceFeed, LiveTraceUpdate},
+            persistence::clickhouse::{ClickHouseConfig, ClickHouseTracePersistence},
+        },
+    };
+    let (Ok(url), Ok(redis_url)) = (
+        std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL"),
+        std::env::var("DURABLE_ACTORS_TEST_REDIS_URL"),
+    ) else {
+        return Ok(());
+    };
+    let stop = tokio_util::sync::CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let redis = Redis::connect(&RedisConfig {
+        url: redis_url,
+        ca_cert: None,
+    })?;
+    let mut stores = Vec::new();
+    for _ in 0..2 {
+        let feed = LiveTraceFeed::start(Some(redis.clone()), stop.clone());
+        let mut ready = feed.subscribe();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), ready.recv())
+                .await??
+                .as_ref(),
+            LiveTraceUpdate::Resync
+        ));
+        let mut store = TraceStore::open(Arc::new(ClickHouseTracePersistence::start(
+            ClickHouseConfig {
+                url: url.clone(),
+                database: "trace_test".into(),
+                user: "trace_test".into(),
+                password: "local-test-only".into(),
+            },
+            Duration::from_secs(86400),
+            Arc::new(feed.clone()),
+            stop.clone(),
+        )?))
+        .await?;
+        store.live = Some(feed);
+        stores.push(store);
+    }
+    let writer = stores.remove(0);
+    let fixture = Fixture::start_with_traces(stores.remove(0)).await?;
+    let project = format!("live-{}", uuid::Uuid::new_v4());
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while writer.replay(&project, &Default::default()).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?;
+    let route = format!("/v1/projects/{project}/observe/requests/events");
+    let mut stream = fixture.get(&route).await?.error_for_status()?;
+    let initial = stream_inventory(&mut stream).await?;
+    assert_eq!(initial["snapshot"], true);
+    assert_eq!(initial["records"], json!([]));
+    let trace = |project: &str, id: &str| {
+        serde_json::from_value(json!({
+            "projectId": project, "requestId": id, "actorName": "Counter", "actorId": "one",
+            "kind": "method", "operation": "increment", "connectionId": null,
+            "startedAtMs": 1000, "durationMs": 1, "routingMs": 0, "queueWaitMs": 0,
+            "outcome": "completed"
+        }))
+    };
+    writer
+        .record(
+            "foreign-live",
+            "host",
+            "session",
+            vec![trace("foreign-live", "private")?],
+            0,
+        )
+        .await?;
+    writer
+        .record(
+            &project,
+            "host",
+            "session",
+            vec![trace(&project, "first")?],
+            0,
+        )
+        .await?;
+    let live =
+        tokio::time::timeout(Duration::from_secs(5), stream_inventory(&mut stream)).await??;
+    assert_ne!(live["snapshot"], true);
+    assert_eq!(live["records"].as_array().unwrap().len(), 1);
+    assert_eq!(live["records"][0]["projectId"], project);
+    assert_eq!(live["records"][0]["requestId"], "first");
+    drop(stream);
+    let mut reconnected = fixture.get(&route).await?.error_for_status()?;
+    let restored = stream_inventory(&mut reconnected).await?;
+    assert_eq!(restored["snapshot"], true);
+    assert_eq!(restored["records"], live["records"]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn observability_requires_admin_credentials() -> Result<()> {
     let fixture = Fixture::start().await?;
     let token = fixture
         .issuer
         .issue_host(
+            "org-test",
             &fixture.host,
             &uuid::Uuid::new_v4().to_string(),
             "r1",
@@ -193,6 +286,7 @@ async fn observability_requires_admin_credentials() -> Result<()> {
 }
 
 struct Fixture {
+    lifecycle: LifecycleStore,
     traces: crate::request_traces::TraceStore,
     changes: crate::postgres::notifications::ChangeFeed,
     admin: AdminService,
@@ -230,12 +324,15 @@ impl Fixture {
             issuer.clone(),
         )?;
         let changes = crate::postgres::notifications::ChangeFeed::default();
-        let inspector = ActorInspector::new(store.clone(), store.clone(), changes.clone())
-            .with_traces(traces.clone());
+        let lifecycle = LifecycleStore::default();
+        let inspector =
+            ActorInspector::new(Arc::new(lifecycle.clone()), store.clone(), changes.clone())
+                .with_traces(traces.clone());
         let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
         Ok(Self {
+            lifecycle,
             traces,
             changes,
             admin,
@@ -257,6 +354,38 @@ impl Fixture {
         }
     }
 
+    async fn report_lifecycle(
+        &self,
+        actor: ActorKey,
+        kind: LifecycleKind,
+        sequence: u64,
+        waiting: Vec<crate::host_leases::WaitingOperation>,
+    ) -> Result<()> {
+        let now = SystemClock.now_ms()?;
+        self.lifecycle
+            .record(LifecycleEvent {
+                organization_id: Some("org-test".into()),
+                event_id: format!("session:{sequence}"),
+                actor,
+                host_id: self.host.to_string(),
+                session_id: "session".into(),
+                region: "north-america-east".into(),
+                received_at_ms: now,
+                report: LifecycleReport {
+                    kind,
+                    owner_epoch: 1,
+                    sequence,
+                    started_at_ms: 1,
+                    occurred_at_ms: now,
+                    resources: Default::default(),
+                    resident: Some(kind != LifecycleKind::Stopped),
+                    last_active_at_ms: None,
+                    waiting,
+                },
+            })
+            .await
+    }
+
     async fn get(&self, path: &str) -> Result<reqwest::Response> {
         Ok(self
             .client
@@ -274,18 +403,11 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
-async fn inventory_stream_reports_host_queues_and_fences_expired_sessions() -> Result<()> {
+async fn inventory_stream_follows_lifecycle_reports_and_clears_stopped_queues() -> Result<()> {
     let fixture = Fixture::start().await?;
     let actor = fixture.actor("unsaved");
-    let request = HostLeaseRequest {
-        id: fixture.host.clone(),
-        session_id: "session".into(),
-        route: "http://localhost:7101".into(),
-        duration_ms: 60_000,
-    };
     fixture
-        .store
-        .register_activation(&actor, &request, "north-america-east", true, None)
+        .report_lifecycle(actor.clone(), LifecycleKind::Started, 1, vec![])
         .await?;
     let mut stream = fixture
         .get("/v1/projects/default/observe/events")
@@ -293,21 +415,13 @@ async fn inventory_stream_reports_host_queues_and_fences_expired_sessions() -> R
         .error_for_status()?;
     let first = stream_inventory(&mut stream).await?;
     assert!(first.get("namespaceId").is_none());
-    assert_eq!(first["actors"][0]["unknown"], 1);
+    assert_eq!(first["actors"][0]["live"], 1);
     let waiting = vec![crate::host_leases::WaitingOperation {
         id: "queued-1".into(),
         operation: "sendMessage".into(),
     }];
     fixture
-        .store
-        .renew_activation(
-            &actor,
-            &request,
-            crate::host_leases::ActivationInventory {
-                resident: Some(true),
-                waiting: Some(waiting),
-            },
-        )
+        .report_lifecycle(actor.clone(), LifecycleKind::Heartbeat, 2, waiting)
         .await?;
     fixture.changes.notify().await;
     let connected = stream_inventory(&mut stream).await?;
@@ -317,8 +431,7 @@ async fn inventory_stream_reports_host_queues_and_fences_expired_sessions() -> R
         "sendMessage"
     );
     fixture
-        .store
-        .release_activation(&actor, &fixture.host, "session")
+        .report_lifecycle(actor, LifecycleKind::Stopped, 3, vec![])
         .await?;
     fixture.changes.notify().await;
     let expired = stream_inventory(&mut stream).await?;
@@ -327,17 +440,6 @@ async fn inventory_stream_reports_host_queues_and_fences_expired_sessions() -> R
     assert_eq!(
         expired["actors"][0]["instances"][0]["connections"],
         json!([])
-    );
-    let replacement = HostLeaseRequest {
-        session_id: "replacement".into(),
-        ..request
-    };
-    assert!(
-        fixture
-            .store
-            .renew_activation(&actor, &replacement, Default::default())
-            .await
-            .is_err()
     );
     let inventory: Value = fixture
         .get("/v1/projects/default/observe/actors")
@@ -385,6 +487,8 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
         .admin
         .register_deployment(
             &super::admin::HostLaunchSpec {
+                image_policy: Default::default(),
+                organization_id: "org-test".into(),
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
@@ -412,6 +516,12 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
     assert_eq!(row["live"], 0);
     assert_eq!(row["dormant"], 0);
     assert_eq!(row["instances"], json!([]));
+    assert_eq!(row["methods"], json!(["clear", "sendMessage"]));
+    let mut stream = fixture
+        .get("/v1/projects/default/observe/events")
+        .await?
+        .error_for_status()?;
+    assert_eq!(stream_inventory(&mut stream).await?, inventory);
     Ok(())
 }
 
@@ -850,6 +960,61 @@ async fn state_inspection_reads_committed_values_and_retained_attribution() -> R
     assert_eq!(
         fixture.get(&format!("{path}&version=0")).await?.status(),
         StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn residency_api_filters_projects_and_actors_and_validates_ranges() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    for (project, id) in [("alpha", "one"), ("beta", "two")] {
+        fixture
+            .report_lifecycle(
+                ActorKey {
+                    project_id: project.into(),
+                    ..fixture.actor(id)
+                },
+                LifecycleKind::Stopped,
+                1,
+                vec![],
+            )
+            .await?;
+    }
+    let base = "/v1/projects/alpha/observe/residency";
+    let history: Value = fixture
+        .get(&format!("{base}?actorName=Room.with.dots"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(history["periods"][0]["actorId"], "one");
+    assert_eq!(history["periods"][0]["status"], "dormant");
+    assert_eq!(history["periods"].as_array().unwrap().len(), 1);
+    let empty: Value = fixture
+        .get(&format!("{base}?actorName=Other"))
+        .await?
+        .json()
+        .await?;
+    assert_eq!(empty["periods"], json!([]));
+    for query in [
+        "",
+        "?actorName=Room&fromMs=20&toMs=10",
+        "?actorName=Room&fromMs=-1",
+        "?actorName=Room&extra=1",
+    ] {
+        assert_eq!(
+            fixture.get(&format!("{base}{query}")).await?.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        fixture
+            .client
+            .get(format!("{}{base}?actorName=Room", fixture.origin))
+            .send()
+            .await?
+            .status(),
+        StatusCode::UNAUTHORIZED
     );
     Ok(())
 }

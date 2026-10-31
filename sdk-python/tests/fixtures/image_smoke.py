@@ -52,12 +52,12 @@ class Counter(Actor):
                                 send(
                                     {
                                         "type": "database_result",
-                                        "message_id": message["message_id"],
+                                        "call_id": message["call_id"],
                                         "result": database.call(message["call"]),
                                     }
                                 )
 
-                        assert receive() == {"type": "warm", "protocol": 28}
+                        assert receive() == {"type": "warm", "protocol": 30}
                         send(
                             {
                                 "type": "load",
@@ -67,11 +67,11 @@ class Counter(Actor):
                         )
                         assert receive() == {
                             "type": "attach",
-                            "protocol": 28,
+                            "protocol": 30,
                             "actor_names": ["Counter"],
                         }
                         actor = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
-                        send({"type": "attached", "protocol": 28, "actor": actor})
+                        send({"type": "attached", "protocol": 30, "actor": actor})
                         send(
                             {
                                 "type": "command",
@@ -117,6 +117,9 @@ class FieldStore:
         op = call["op"]
         if op == "fields":
             return {"type": "fields", "fields": self.committed}
+        if op == "exec" and call["sql"] == "BEGIN":
+            self.pending = self.committed.copy()
+            return {"type": "rows", "columns": [], "rows": []}
         if op == "replace_fields":
             self.pending = call["fields"]
         elif op == "commit":

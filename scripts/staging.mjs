@@ -125,8 +125,7 @@ export class Staging {
         console.log(`Building this checkout's runtime and ${this.example} actor bundle…`)
         await this.command("bun", ["run", "--bun", "--cwd", "sdk", "build"], { stream: true })
         const project = JSON.parse(await readFile(path.join(this.examplePath, "package.json"), "utf8"))
-        if (project.dependencies?.["@durable-actors/pi-durable"])
-            await this.command("bun", ["run", "--bun", "--cwd", "packages/pi-durable", "build"], { stream: true })
+        if (project.dependencies?.["@durable-actors/pi-durable"]) await this.command("bun", ["run", "--bun", "--cwd", "packages/pi-durable", "build"], { stream: true })
         await this.command("cargo", ["build", "--locked", "--bin", "durable-actors"], { stream: true })
         this.env.DURABLE_ACTORS_BINARY = path.join(this.root, "target/debug/durable-actors")
         const contract = JSON.parse(await this.command(process.execPath, [path.join(this.root, "sdk/dist/compiler/deployment-build.js"), this.examplePath, "src/actors.ts", this.work]))
@@ -136,7 +135,7 @@ export class Staging {
             await this.saveSetting(key, this.env[key])
         }
         await this.saveSetting("DURABLE_ACTORS_BINARY", this.env.DURABLE_ACTORS_BINARY)
-        return { bundle: await this.uploadBundle(), contract, secretRefs: Object.keys(this.secrets).length ? [this.secretName] : [] }
+        return { organizationId: this.env.DURABLE_ACTORS_ORGANIZATION_ID, bundle: await this.uploadBundle(), contract, secretRefs: Object.keys(this.secrets).length ? [this.secretName] : [] }
     }
 
     async buildRuntimeImage(runtime) {
@@ -191,7 +190,7 @@ export class Staging {
                 if (value !== this.env.DURABLE_ACTORS_PUBLIC_URL) throw new Error("ngrok URL differs from .env.staging; update NGROK_DOMAIN and the three URL settings together")
             }
         })
-        const serving = tunnel.run({ startRuntime: true }).then(code => {
+        const serving = tunnel.run({ startRuntime: true, configuredEndpoints: true }).then(code => {
             throw new Error(`Staging processes stopped (exit ${code})`)
         })
         try {
@@ -212,7 +211,29 @@ export class Staging {
         await mkdir(this.work, { recursive: true })
         const cwd = await mkdtemp(path.join(this.work, "server-"))
         const env = { ...this.env, NGROK_CONFIG: path.join(cwd, "ngrok.yml") }
-        await writeFile(env.NGROK_CONFIG, 'version: "3"\nagent:\n  web_addr: false\n', { mode: 0o600 })
+        const upstream = `http://${this.env.DURABLE_ACTORS_CONTROL_PLANE_BIND}`
+        const socketUrl = `https://${new URL(this.env.DURABLE_ACTORS_PUBLIC_URL).hostname.replaceAll(".", "-")}-socket.internal`
+        const config = {
+            version: "3",
+            agent: { web_addr: false },
+            endpoints: [
+                {
+                    name: "control-plane",
+                    url: this.env.DURABLE_ACTORS_PUBLIC_URL,
+                    upstream: { url: upstream, protocol: "http2" },
+                    traffic_policy: {
+                        on_http_request: [
+                            {
+                                expressions: ["req.url.path == '/v1/socket'"],
+                                actions: [{ type: "forward-internal", config: { url: socketUrl } }]
+                            }
+                        ]
+                    }
+                },
+                { name: "socket", url: socketUrl, upstream: { url: upstream, protocol: "http1" } }
+            ]
+        }
+        await writeFile(env.NGROK_CONFIG, JSON.stringify(config, null, 2), { mode: 0o600 })
         return { cwd, env }
     }
 
@@ -291,18 +312,17 @@ export function stagingEnvironment(document, system = process.env) {
         "KUBECONFIG",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "DURABLE_ACTORS_PROJECT_ID",
+        "DURABLE_ACTORS_ORGANIZATION_ID",
         "DURABLE_ACTORS_POSTGRES_URL",
         "DURABLE_ACTORS_JWT_SIGNING_KEY",
         "DURABLE_ACTORS_SECRET",
         "DURABLE_ACTORS_CONTROL_PLANE_BIND",
         "DURABLE_ACTORS_CONTROL_PLANE_URL",
         "DURABLE_ACTORS_PUBLIC_URL",
-        "DURABLE_ACTORS_GATEWAY_ROUTE",
         "DURABLE_ACTORS_BUCKET",
         "DURABLE_ACTORS_ARTIFACT_BUCKET",
         "DURABLE_ACTORS_ARCHIVE_BUCKET",
         "DURABLE_ACTORS_RAPID_BUCKETS",
-        "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT",
         "DURABLE_ACTORS_GKE_NAMESPACE",
         "DURABLE_ACTORS_GKE_ZONE",
         "NGROK_DOMAIN",
@@ -340,8 +360,7 @@ export function stagingEnvironment(document, system = process.env) {
     const postgres = new URL(configured.DURABLE_ACTORS_POSTGRES_URL)
     if (!["127.0.0.1", "localhost", "[::1]"].includes(postgres.hostname)) throw new Error("Staging script requires a local Postgres database")
     const publicUrl = `https://${configured.NGROK_DOMAIN}`
-    for (const key of ["DURABLE_ACTORS_CONTROL_PLANE_URL", "DURABLE_ACTORS_PUBLIC_URL", "DURABLE_ACTORS_GATEWAY_ROUTE"])
-        if (configured[key] !== publicUrl) throw new Error(`${key} must match NGROK_DOMAIN in .env.staging`)
+    for (const key of ["DURABLE_ACTORS_CONTROL_PLANE_URL", "DURABLE_ACTORS_PUBLIC_URL"]) if (configured[key] !== publicUrl) throw new Error(`${key} must match NGROK_DOMAIN in .env.staging`)
     const env = Object.fromEntries(["PATH", "HOME", "USER", "TMPDIR", "LANG", "LC_ALL", "TERM", "SHELL"].filter(key => system[key] !== undefined).map(key => [key, system[key]]))
     Object.assign(env, configured)
     env.CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE = configured.CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE ?? configured.GOOGLE_APPLICATION_CREDENTIALS

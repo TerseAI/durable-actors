@@ -227,13 +227,11 @@ impl LogStorage {
         manifest: &Manifest,
         fence: bool,
     ) -> Result<Vec<Record>> {
-        let reads = futures_util::future::join_all(
-            self.zones
-                .iter()
-                .zip(&manifest.replicas)
-                .map(|(zone, replica)| bounded(zone.read(replica, fence))),
-        )
-        .await;
+        let reads =
+            futures_util::future::join_all(manifest.replicas.iter().map(|replica| async move {
+                bounded(self.zone(replica)?.read(replica, fence)).await
+            }))
+            .await;
         let mut copies = Vec::new();
         for read in reads {
             match read {
@@ -243,7 +241,7 @@ impl LogStorage {
         }
         ensure!(
             !copies.is_empty(),
-            "acknowledged log is unavailable in both zones"
+            "acknowledged log is unavailable in all configured zones"
         );
         let mut selected = Vec::new();
         for records in copies {

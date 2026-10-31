@@ -28,8 +28,10 @@ export class Counter extends Actor {
     }
 
     async explode(): Promise<never> {
-        this.count = 999
-        throw new CounterExplosionError()
+        return this.db.transaction(async () => {
+            this.count = 999
+            throw new CounterExplosionError()
+        })
     }
 }
 
@@ -95,7 +97,7 @@ const forwarderIdentity = {
 
 const counterDefinition = registerActorClass(Counter, {
     actorName: "Counter",
-    atomicMethods: ["explode"],
+
     fields: [{ name: "count", persistence: Persistence.Persisted }]
 })
 const forwarderDefinition = registerActorClass(Forwarder, { actorName: "Forwarder", fields: [] })
@@ -184,14 +186,16 @@ test("ephemeral caches survive resident calls and reset after atomic failure or 
         }
 
         async fail() {
-            this.count = 999
-            this.cache.set("calls", 999)
-            throw new Error("failed")
+            return this.db.transaction(async () => {
+                this.count = 999
+                this.cache.set("calls", 999)
+                throw new Error("failed")
+            })
         }
     }
     const definition = registerActorClass(CachingCounter, {
         actorName: "CachingCounter",
-        atomicMethods: ["fail"],
+
         fields: [
             { name: "count", persistence: Persistence.Persisted },
             { name: "cache", persistence: Persistence.Ephemeral }
@@ -340,46 +344,6 @@ test("rejecting a connection never publishes live socket effects", async () => {
         event: { type: "connect", connection: { id: "socket-1", metadata: {}, tags: [] } }
     })
     assert.equal(reply.type, "websocket_handled")
-})
-
-test("batches pending stream output in order and surfaces publish failures", async () => {
-    class BurstActor extends Actor {
-        async stream() {
-            for (let index = 0; index < 10; index++) this.broadcast(String(index))
-        }
-    }
-    const batches: (readonly SocketEffect[])[] = []
-    const definition = registerActorClass(BurstActor, { actorName: "BurstActor", fields: [] })
-    const command = {
-        type: "invoke" as const,
-        request_id: "burst",
-        actor: { ...actorIdentity, actor_name: "BurstActor" },
-        method: "stream",
-        args: []
-    }
-    const runtime = new ActorRuntime(
-        definition,
-        () => {},
-        async effects => {
-            batches.push(effects)
-        }
-    )
-    assert.equal((await runtime.handle(command)).type, "invoked")
-    assert.ok(batches.length <= 2, "queued deltas should not each cost a network round trip")
-    assert.deepEqual(
-        batches.flat().map(effect => effect.type === "broadcast" && effect.message.data),
-        Array.from({ length: 10 }, (_, index) => JSON.stringify(String(index)))
-    )
-    const failing = new ActorRuntime(
-        definition,
-        () => {},
-        async () => {
-            throw new Error("publish denied")
-        }
-    )
-    const reply = await failing.handle(command)
-    assert.equal(reply.type, "failed")
-    if (reply.type === "failed") assert.match(reply.message, /publish denied/)
 })
 
 test("keeps a successful actor instance resident and restores it after atomic failure", async () => {

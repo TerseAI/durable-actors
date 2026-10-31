@@ -1,4 +1,3 @@
-use crate::request_tracking::HostState;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
@@ -31,16 +30,26 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
     let gateway = invocations
         .gateway
         .clone()
-        .map(|gateway| gateway.router(invocations.clone(), admin.clone()))
+        .map(|gateway| gateway.router(invocations.clone()))
         .unwrap_or_default();
-    let hosts = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .build()
-        .expect("actor invocation HTTP client");
+    let hosts = invocations
+        .gateway
+        .as_ref()
+        .map(|gateway| gateway.connections.http.clone())
+        .unwrap_or_else(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .expect("actor invocation HTTP client")
+        });
     Router::new()
         .route("/openapi.yaml", get(openapi))
         .route("/healthz", get(health))
+        .route(
+            "/v1/organizations/{organization_id}/access",
+            put(set_organization_access),
+        )
         .route("/v1/projects/{project_id}/sessions", post(issue_session))
         .route(
             "/v1/projects/{project_id}/deployment",
@@ -79,12 +88,9 @@ async fn health(State(state): State<PublicApiState>) -> (StatusCode, &'static st
         .invocations
         .gateway
         .as_ref()
-        .is_some_and(|gateway| gateway.connections.ensure_authority().is_err())
+        .is_some_and(|gateway| gateway.connections.stop.is_cancelled())
     {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "socket gateway lease expired",
-        );
+        return (StatusCode::SERVICE_UNAVAILABLE, "socket gateway stopping");
     }
     (StatusCode::OK, "ok")
 }
@@ -94,6 +100,39 @@ async fn openapi() -> impl IntoResponse {
         [(header::CONTENT_TYPE, "application/yaml")],
         include_str!("../../docs/reference/openapi.yaml"),
     )
+}
+
+async fn set_organization_access(
+    State(state): State<PublicApiState>,
+    Path(organization): Path<String>,
+    headers: HeaderMap,
+    request: Result<Json<AccessRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<AccessRequest>), ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    super::admin::validate_component("organization ID", &organization, 64)
+        .map_err(ApiError::bad_request)?;
+    let Json(request) = request.map_err(ApiError::json)?;
+    state
+        .admin
+        .set_organization_access(&organization, request.source, request.enabled)
+        .await
+        .map_err(ApiError::internal)?;
+    info!(
+        event = "access_updated",
+        organization_id = organization,
+        source = request.source.as_str(),
+        enabled = request.enabled,
+        "access setting updated"
+    );
+    Ok((StatusCode::ACCEPTED, Json(request)))
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AccessRequest {
+    enabled: bool,
+    #[serde(default)]
+    source: super::access::AccessSource,
 }
 
 async fn issue_session(
@@ -189,7 +228,7 @@ async fn get_deployment(
     State(state): State<PublicApiState>,
     path: Path<ProjectPath>,
     headers: HeaderMap,
-) -> Result<Json<RegisterDeploymentRequest>, ApiError> {
+) -> Result<Json<CurrentDeployment>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
     let spec = state
@@ -207,10 +246,12 @@ async fn get_deployment(
     let local_source = spec
         .source
         .map(|super::admin::DeploymentSource::Local(local)| local);
-    Ok(Json(RegisterDeploymentRequest {
+    Ok(Json(CurrentDeployment {
+        organization_id: spec.organization_id,
+        image_ref: (spec.image_policy == super::admin::ImagePolicy::Custom && bundle.is_some())
+            .then_some(spec.image_ref),
         bundle,
         local_source,
-        contract: None,
         secret_refs: spec.secret_refs,
     }))
 }
@@ -238,6 +279,11 @@ async fn register_deployment(
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
+    let image_policy = if request.image_ref.is_some() {
+        super::admin::ImagePolicy::Custom
+    } else {
+        super::admin::ImagePolicy::Platform
+    };
     let (source, code_snapshot, image_ref, working_directory, actor_entrypoint) =
         match (request.bundle, request.local_source) {
             (Some(bundle), None) => {
@@ -249,12 +295,15 @@ async fn register_deployment(
                 (
                     None,
                     Some(snapshot),
-                    "bundle".into(),
+                    request.image_ref.unwrap_or_else(|| "bundle".into()),
                     "/customer".into(),
                     Some(entrypoint),
                 )
             }
             (None, Some(local)) => {
+                if request.image_ref.is_some() {
+                    return Err(ApiError::bad_request("imageRef requires a hosted bundle"));
+                }
                 let directory = local.working_directory.clone();
                 let entrypoint = local.actor_entrypoint.clone();
                 (
@@ -277,6 +326,8 @@ async fn register_deployment(
         .transpose()
         .map_err(ApiError::bad_request)?;
     let spec = HostLaunchSpec {
+        image_policy,
+        organization_id: request.organization_id,
         sandboxes: Default::default(),
         project_id: project_id(path)?,
         source,
@@ -290,7 +341,13 @@ async fn register_deployment(
         .invocations
         .deploy_source(&state.admin, &spec, contract.as_ref())
         .await
-        .map_err(ApiError::bad_request)?;
+        .map_err(|error| {
+            if error.is::<super::access::AccessDisabled>() {
+                ApiError::access(error)
+            } else {
+                ApiError::bad_request(error)
+            }
+        })?;
     Ok(Json(DeploymentReply { changed }))
 }
 
@@ -300,8 +357,12 @@ async fn find_actor(
     headers: HeaderMap,
     request: Result<Json<FindActorRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let target = resolve_actor_target(&state, &path.into_actor(), &headers, request).await?;
-    Ok(([(header::CACHE_CONTROL, "no-store")], Json(target)).into_response())
+    let target = resolve_actor_target(&state, &path.into_actor(), &headers, request, None).await?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({"homeRegion": target.home_region})),
+    )
+        .into_response())
 }
 
 pub(super) async fn resolve_actor_target(
@@ -309,7 +370,8 @@ pub(super) async fn resolve_actor_target(
     actor: &ActorKey,
     headers: &HeaderMap,
     request: Result<Json<FindActorRequest>, JsonRejection>,
-) -> Result<ActorTargetReply, ApiError> {
+    invocation: Option<&crate::actor::ActorInvocation>,
+) -> Result<super::service::ActorTarget, ApiError> {
     let mut timings = TargetResolutionTimings::new();
     let request_id = headers
         .get("x-request-id")
@@ -332,7 +394,7 @@ pub(super) async fn resolve_actor_target(
         .invocations
         .validate_home_region(request.home_region.as_deref())
         .map_err(ApiError::assignment)?;
-    let result: Result<ActorTargetReply, ApiError> = async {
+    let result: Result<super::service::ActorTarget, ApiError> = async {
         actor.validate().map_err(ApiError::bad_request)?;
         timings.request_validated_at_ms = Some(timings.elapsed_ms());
         timings.client_authenticated_at_ms = Some(timings.elapsed_ms());
@@ -369,25 +431,25 @@ pub(super) async fn resolve_actor_target(
             }
             None => None,
         };
+        let operation = invocation.map(|invocation| crate::sandbox::assignment::InitialOperation {
+            request: crate::sandbox::assignment::InitialRequest::Invoke {
+                invocation: invocation.clone(),
+                grant: grant.clone(),
+            },
+            routing_ms: timings.elapsed_ms(),
+        });
         let target = state
             .invocations
-            .resolve_actor_target_timed(actor, request.home_region.as_deref(), &mut timings, grant)
+            .resolve_actor_target_timed(
+                actor,
+                request.home_region.as_deref(),
+                &mut timings,
+                grant,
+                operation.as_ref(),
+            )
             .await
             .map_err(ApiError::routing)?;
-        Ok(ActorTargetReply {
-            host_state: target.host_state,
-            home_region: target.home_region,
-            backend_route: target.route.clone(),
-            route: state
-                .invocations
-                .gateway
-                .as_ref()
-                .map_or(target.route, |gateway| gateway.origin.clone()),
-            token: target.token,
-            owner_epoch: target.owner_epoch,
-
-            expires_at_ms: target.expires_at_ms,
-        })
+        Ok(target)
     }
     .await;
     let completed_at_ms = timings.elapsed_ms();
@@ -488,8 +550,11 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
+    organization_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bundle: Option<crate::bundle::ActorBundle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -500,29 +565,28 @@ struct RegisterDeploymentRequest {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DeploymentReply {
-    changed: bool,
+struct CurrentDeployment {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_ref: Option<String>,
+    organization_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bundle: Option<crate::bundle::ActorBundle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_source: Option<super::admin::LocalSource>,
+    secret_refs: Vec<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ActorTargetReply {
-    #[serde(skip)]
-    pub host_state: HostState,
-    #[serde(skip)]
-    pub backend_route: String,
-    home_region: String,
-    pub route: String,
-    pub token: String,
-    pub owner_epoch: u64,
-
-    expires_at_ms: i64,
+struct DeploymentReply {
+    changed: bool,
 }
 
 pub(super) struct ApiError {
     status: StatusCode,
     code: String,
     message: String,
+    retry_after_seconds: Option<u64>,
 }
 
 impl ApiError {
@@ -547,10 +611,39 @@ impl ApiError {
     }
 
     pub(super) fn routing(error: anyhow::Error) -> Self {
-        if error.is::<super::service::RegionConflict>() {
+        if error.is::<crate::sandbox::assignment::AssignmentOutcomeUnknown>() {
+            Self::new(
+                StatusCode::BAD_GATEWAY,
+                "outcome_unknown",
+                error.to_string(),
+            )
+        } else if error.is::<super::access::AccessDisabled>() {
+            Self::access(error)
+        } else if let Some(rejected) =
+            error.downcast_ref::<super::organization_limits::AdmissionRejected>()
+        {
+            use super::organization_limits::AdmissionRejected;
+            let (code, retry_after_seconds) = match rejected {
+                AdmissionRejected::Quota { .. } => ("actor_quota_exceeded", None),
+                AdmissionRejected::Rate {
+                    retry_after_seconds,
+                } => ("actor_start_rate_limited", Some(*retry_after_seconds)),
+            };
+            let mut response = Self::new(StatusCode::TOO_MANY_REQUESTS, code, rejected.to_string());
+            response.retry_after_seconds = retry_after_seconds;
+            response
+        } else if error.is::<super::service::RegionConflict>() {
             Self::conflict(error.to_string())
         } else {
             Self::unavailable(format!("actor host is unavailable: {error:#}"))
+        }
+    }
+
+    pub(super) fn access(error: anyhow::Error) -> Self {
+        if error.is::<super::access::AccessDisabled>() {
+            Self::new(StatusCode::FORBIDDEN, "access_disabled", error.to_string())
+        } else {
+            Self::internal(error)
         }
     }
 
@@ -591,13 +684,14 @@ impl ApiError {
             status,
             code: code.into(),
             message: message.into(),
+            retry_after_seconds: None,
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(ErrorDocument {
                 error: ErrorBody {
@@ -606,7 +700,18 @@ impl IntoResponse for ApiError {
                 },
             }),
         )
-            .into_response()
+            .into_response();
+        if self.status == StatusCode::TOO_MANY_REQUESTS {
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        }
+        if let Some(seconds) = self.retry_after_seconds {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, seconds.into());
+        }
+        response
     }
 }
 

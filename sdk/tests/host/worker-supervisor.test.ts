@@ -101,6 +101,44 @@ test("work that overlaps an eviction runs after onSleep on a fresh worker", { ti
     }
 })
 
+test("a hanging onSleep does not hold up the eviction", { timeout: 30000 }, async () => {
+    const root = await createTypeScriptConsumer("HangingWorker")
+    const file = path.join(root, "src/actors.ts")
+    await writeFile(
+        file,
+        `import { Actor, Persisted } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        export class HangingWorker extends Actor {
+            @Persisted sleeps = 0
+            async onSleep(): Promise<void> {
+                await new Promise(() => {})
+                this.sleeps += 1
+            }
+            async read(): Promise<number> {
+                return this.sleeps
+            }
+        }`
+    )
+    const supervisor = new ActorWorkerSupervisor({
+        actorEntrypointUrl: await buildConsumer(root),
+        evictionGraceMs: 50
+    })
+    try {
+        await assign(supervisor, identity("HangingWorker"))
+        const read = () =>
+            handle(supervisor, { type: "invoke", request_id: "read", method: "read", args: [] }, () => {})
+        assert.equal((await read()).type, "invoked")
+        const evicted = await handle(supervisor, { type: "evict", graceful: true }, () => {})
+        assert.equal(evicted.type, "evicted")
+        const after = await read()
+        assert.equal(after.type, "invoked")
+        if (after.type !== "invoked") return
+        assert.equal(after.result, 0)
+    } finally {
+        supervisor.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("worker eviction restores fields and SQL from the host database", { timeout: 30000 }, async context => {
     const root = await createTypeScriptConsumer("SqliteWorker")
     const file = path.join(root, "src/actors.ts")
@@ -267,9 +305,9 @@ test("a generic Bun worker is warm before customer code is assigned", async () =
         )
         try {
             const moduleUrl = await buildConsumer(root)
-            worker.load({ moduleUrl, environment: { TEST_WARM_SECRET: "warm-secret" } }, () => {})
+            worker.load({ moduleUrl, environment: { TEST_WARM_SECRET: "warm-secret" } }, () => {}, noDatabase)
             assert.deepEqual(await worker.ready(), ["WarmCounter"])
-            assert.throws(() => worker.load({ moduleUrl }, () => {}), /already assigned/)
+            assert.throws(() => worker.load({ moduleUrl }, () => {}, noDatabase), /already assigned/)
             const actor = identity("WarmCounter")
             seed(worker, { count: 41 })
             assert.deepEqual(await execute(worker, { type: "hydrate", actor }, () => {}), {
@@ -299,7 +337,7 @@ test("rejects an assigned actor that the entrypoint does not export", async () =
     })
     try {
         await supervisor.ready()
-        assert.throws(() => supervisor.assign(identity("OtherCounter")), /OtherCounter is not loaded/)
+        assert.throws(() => supervisor.assign(identity("OtherCounter"), noDatabase), /OtherCounter is not loaded/)
     } finally {
         supervisor.close()
     }
@@ -610,7 +648,7 @@ async function exerciseActiveActors(entrypoint: string): Promise<void> {
         actorEntrypointUrl: entrypoint
     })
     assert.deepEqual(await runtime.ready(), ["SessionCounter"])
-    runtime.assign(actorIdentity)
+    runtime.assign(actorIdentity, noDatabase)
 
     assertReply(
         await handle(
@@ -731,7 +769,7 @@ async function createTypeScriptConsumer(actorName = "SessionCounter", preamble =
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     await writeFile(
         path.join(source, "actors.ts"),
-        `import { Actor, Atomic, Persisted, Ephemeral } from ${JSON.stringify(path.join(compiledSdkRoot, "index.js"))}
+        `import { Actor, Persisted, Ephemeral } from ${JSON.stringify(path.join(compiledSdkRoot, "index.js"))}
 import { threadId } from "node:worker_threads"
 ${preamble}
 
@@ -752,21 +790,23 @@ export class ${actorName} extends Actor<{ userId: string }, { text: string }> {
         return threadId
     }
 
-    @Atomic
     async explode(): Promise<void> {
-        this.count = 999
-        throw new Error("failed")
+        return this.db.transaction(async () => {
+            this.count = 999
+            throw new Error("failed")
+        })
     }
 
     async onConnect(): Promise<void> {
         this.count += 1
     }
 
-    @Atomic
     async onMessage(socket: { metadata: { userId: string }, send(message: { text: string }): void }, message: { text: string }): Promise<void> {
-        this.count += 1
-        if (message.text === "fail") throw new Error("failed")
-        socket.send({ text: \`${"${socket.metadata.userId}"}:${"${message.text}"}\` })
+        return this.db.transaction(async () => {
+            this.count += 1
+            if (message.text === "fail") throw new Error("failed")
+            socket.send({ text: \`${"${socket.metadata.userId}"}:${"${message.text}"}\` })
+        })
     }
 }
 `
@@ -776,7 +816,11 @@ export class ${actorName} extends Actor<{ userId: string }, { text: string }> {
 
 async function assign(supervisor: ActorWorkerSupervisor, actor = actorIdentity): Promise<void> {
     await supervisor.ready()
-    supervisor.assign(actor)
+    supervisor.assign(actor, noDatabase)
+}
+
+async function noDatabase(): Promise<never> {
+    throw new Error("unexpected activation database call")
 }
 
 function identity(actorName: string) {

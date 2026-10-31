@@ -13,11 +13,8 @@ use crate::{
     actor::ActorKey,
     actor_state::ActorStorageKey,
     host::HostId,
-    host_leases::{ActivationInventory, HostLease},
-    placement::{
-        ActorInstanceOverview, ActorInventory, ActorInventoryReader, ActorInventorySnapshot,
-        ActorResidency, ObjectPlacement, ObjectPlacementStore,
-    },
+    host_leases::HostLease,
+    placement::{ObjectPlacement, ObjectPlacementStore},
     storage::{SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name},
 };
 
@@ -50,7 +47,6 @@ struct Ownership {
     persistence: super::SnapshotStoreConfig,
     #[serde(default)]
     sealed: bool,
-    inventory: ActivationInventory,
     lease: HostLease,
     mutation: String,
     actor: ActorKey,
@@ -68,6 +64,7 @@ pub struct OwnershipHint {
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
     pub state: Option<Bytes>,
+    pub(crate) checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
 }
 
 #[derive(Default)]
@@ -149,7 +146,18 @@ impl RuntimeStorageReader {
         object: &str,
         bytes: Bytes,
     ) -> Result<crate::state_log::SqliteSnapshot> {
-        self.snapshots.restore(object, bytes).await
+        self.read_sqlite_prefetched(object, bytes, None).await
+    }
+
+    pub(crate) async fn read_sqlite_prefetched(
+        &self,
+        object: &str,
+        bytes: Bytes,
+        checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
+    ) -> Result<crate::state_log::SqliteSnapshot> {
+        self.snapshots
+            .restore_prefetched(object, bytes, checkpoint)
+            .await
     }
 
     pub(crate) fn new(
@@ -240,16 +248,6 @@ impl RuntimeStorage {
         self.load_actor(record).await
     }
 
-    pub(crate) async fn verify_actor_ownership(
-        &self,
-        actor: &ActorKey,
-        lease: &HostLease,
-        epoch: u64,
-    ) -> Result<()> {
-        self.owned_actor(actor, lease, epoch).await?;
-        Ok(())
-    }
-
     async fn owned_actor(
         &self,
         actor: &ActorKey,
@@ -308,6 +306,7 @@ impl RuntimeStorage {
         LoadedActor {
             placement,
             state: snapshot.map(|s| s.bytes),
+            checkpoint: None,
         }
     }
 
@@ -414,12 +413,6 @@ impl SnapshotReader for RuntimeStorage {
         self.reader.read_snapshot(region, object).await
     }
 }
-#[async_trait]
-impl ActorInventoryReader for RuntimeStorage {
-    async fn actor_inventory(&self, project: &str) -> Result<ActorInventorySnapshot> {
-        self.reader.actor_inventory(project).await
-    }
-}
 
 fn ownership_key(object: &ActorStorageKey) -> Result<String> {
     crate::storage_paths::owner(object)
@@ -522,71 +515,5 @@ impl RuntimeStorage {
             "actor write authority expired or changed"
         );
         Ok(())
-    }
-}
-
-#[async_trait]
-impl ActorInventoryReader for RuntimeStorageReader {
-    async fn actor_inventory(&self, project_id: &str) -> Result<ActorInventorySnapshot> {
-        let mut actors = std::collections::BTreeMap::new();
-        let prefix = format!("{}owners/", crate::storage_paths::ROOT);
-        for key in self.authority.list(&prefix).await? {
-            if !crate::storage_paths::owner_in_project(&key, project_id) {
-                continue;
-            }
-            let Some(object) = self.authority.get(&key).await? else {
-                continue;
-            };
-            let record: Ownership = serde_json::from_slice(&object.bytes)?;
-            if record.actor.project_id != project_id {
-                continue;
-            }
-            let row = actors
-                .entry(record.actor.actor_name.clone())
-                .or_insert_with(|| ActorInventory {
-                    actor_name: record.actor.actor_name.clone(),
-                    ..Default::default()
-                });
-            let instance = actor_instance_overview(&record, self.clock.now_ms()?);
-            match instance.status {
-                ActorResidency::Live => row.live += 1,
-                ActorResidency::Dormant => row.dormant += 1,
-                ActorResidency::Unknown => row.unknown += 1,
-            }
-            row.instances.push(instance);
-        }
-        Ok(ActorInventorySnapshot {
-            actors: actors
-                .into_values()
-                .map(|mut actor| {
-                    actor
-                        .instances
-                        .sort_by(|left, right| left.actor_id.cmp(&right.actor_id));
-                    actor
-                })
-                .collect(),
-            connections_complete: true,
-        })
-    }
-}
-
-fn actor_instance_overview(record: &Ownership, now: u64) -> ActorInstanceOverview {
-    if record.lease.expires_at_ms <= now {
-        return ActorInstanceOverview {
-            actor_id: record.actor.actor_id.clone(),
-            status: ActorResidency::Dormant,
-            connections: vec![],
-            waiting: Some(vec![]),
-        };
-    }
-    ActorInstanceOverview {
-        actor_id: record.actor.actor_id.clone(),
-        status: match record.inventory.resident {
-            Some(true) => ActorResidency::Live,
-            Some(false) => ActorResidency::Dormant,
-            None => ActorResidency::Unknown,
-        },
-        connections: vec![],
-        waiting: record.inventory.waiting.clone(),
     }
 }

@@ -5,14 +5,23 @@ type SqliteValue = string | number | bigint | Uint8Array | null
 interface ActorDatabase {
     /** Executes one SQL statement with positional bindings and returns its rows. */
     exec<Row extends object = Record<string, SqliteValue>>(sql: string, ...bindings: SqliteValue[]): Row[]
+    /** Runs `operation` in a SQLite transaction: if it throws, its SQL and `@Persisted` writes roll back. Transactions nest. */
+    transaction<T>(operation: () => Promise<T>): Promise<T>
 }
 
-type PersistenceMode = "atomic" | "immediate"
+// Not public: durable-actors/drizzle reads rows by position, which `exec` cannot return for duplicate column names.
+interface RuntimeActorDatabase extends ActorDatabase {
+    query(sql: string, ...bindings: SqliteValue[]): ActorQueryResult
+}
+
+interface ActorQueryResult {
+    readonly columns: string[]
+    readonly rows: SqliteValue[][]
+}
 
 interface ActorInvocationContext {
     readonly actor: object
     active: boolean
-    readonly mode: PersistenceMode
 }
 
 const invocation = new AsyncLocalStorage<ActorInvocationContext>()
@@ -22,13 +31,8 @@ function isActorInvocation(actor: object): boolean {
     return context?.actor === actor && context.active
 }
 
-function actorDatabaseMode(): PersistenceMode | undefined {
-    const context = invocation.getStore()
-    return context?.active ? context.mode : undefined
-}
-
-async function runWithActorDatabase<T>(actor: object, mode: PersistenceMode, operation: () => Promise<T>): Promise<T> {
-    const context: ActorInvocationContext = { actor, active: true, mode }
+async function runWithActorDatabase<T>(actor: object, operation: () => Promise<T>): Promise<T> {
+    const context: ActorInvocationContext = { actor, active: true }
     try {
         return await invocation.run(context, operation)
     } finally {
@@ -36,5 +40,5 @@ async function runWithActorDatabase<T>(actor: object, mode: PersistenceMode, ope
     }
 }
 
-export { actorDatabaseMode, isActorInvocation, runWithActorDatabase }
-export type { ActorDatabase, SqliteValue }
+export { isActorInvocation, runWithActorDatabase }
+export type { ActorDatabase, ActorQueryResult, RuntimeActorDatabase, SqliteValue }

@@ -11,6 +11,8 @@ use axum::{
 };
 use serde::Deserialize;
 
+mod live_traces;
+
 use super::{
     admin::AdminService,
     public_api::{ApiError, ProjectPath, authorized_admin, project_id},
@@ -31,6 +33,10 @@ pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Ro
         .route(
             "/v1/projects/{project_id}/observe/actors",
             get(actor_inventory),
+        )
+        .route(
+            "/v1/projects/{project_id}/observe/residency",
+            get(residency_history),
         )
         .route(
             "/v1/projects/{project_id}/observe/events",
@@ -128,12 +134,13 @@ async fn read_inventory(
         if let Some(actors) = contract.contract["actors"].as_array() {
             for actor in actors {
                 if let Some(name) = actor["actorName"].as_str() {
-                    rows.entry(name.to_owned()).or_insert_with(|| {
+                    let row = rows.entry(name.to_owned()).or_insert_with(|| {
                         crate::placement::ActorInventory {
                             actor_name: name.to_owned(),
                             ..Default::default()
                         }
                     });
+                    row.methods = Some(contract.rpc_methods(name)?);
                 }
             }
         }
@@ -199,6 +206,48 @@ async fn actor_events(
             .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
     )
         .into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResidencyQuery {
+    actor_name: String,
+    from_ms: Option<u64>,
+    to_ms: Option<u64>,
+}
+
+async fn residency_history(
+    State(state): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<ResidencyQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    use crate::clock::{Clock, SystemClock};
+    let project = project_id(path)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    crate::request_traces::history::HistoryQuery {
+        actor_name: Some(query.actor_name.clone()),
+        from_ms: query.from_ms,
+        to_ms: query.to_ms,
+        ..Default::default()
+    }
+    .validate()
+    .map_err(ApiError::bad_request)?;
+    let to = query
+        .to_ms
+        .unwrap_or(SystemClock.now_ms().map_err(ApiError::internal)?);
+    let history = tokio::time::timeout(
+        Duration::from_secs(25),
+        state.inspector.inventory.residency_history(
+            &project,
+            &query.actor_name,
+            query.from_ms.unwrap_or(0),
+            to,
+        ),
+    )
+    .await
+    .map_err(|_| ApiError::unavailable("Residency history timed out"))?
+    .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(history)).into_response())
 }
 
 async fn overview_metrics(
@@ -300,14 +349,20 @@ async fn request_events(
         ..Default::default()
     };
     let store = state.inspector.traces;
-    // Subscribe before reading so a commit between the read and wait is not missed.
-    let changes = store.changes.subscribe();
+    let live = store.live.as_ref().map(|feed| feed.subscribe());
     let page = store
         .replay(&project, &query)
         .await
         .map_err(trace_query_error)?;
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    tokio::spawn(stream_requests(store, project, changes, sender, page));
+    match live {
+        Some(live) => {
+            tokio::spawn(live_traces::stream(store, project, live, sender, page));
+        }
+        None => {
+            tokio::spawn(stream_requests(store, project, sender, page));
+        }
+    }
     Ok((
         [
             (header::CACHE_CONTROL, "no-store"),
@@ -322,7 +377,6 @@ async fn request_events(
 async fn stream_requests(
     store: crate::request_traces::TraceStore,
     project: String,
-    mut changes: tokio::sync::watch::Receiver<()>,
     sender: tokio::sync::mpsc::Sender<Result<axum::response::sse::Event, std::convert::Infallible>>,
     mut page: crate::request_traces::TracePage,
 ) {
@@ -345,8 +399,7 @@ async fn stream_requests(
         if !more {
             tokio::select! {
                 _ = sender.closed() => return,
-                _ = changes.changed() => {},
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
             }
         }
         page = match store.replay(&project, &query).await {

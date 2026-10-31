@@ -33,54 +33,19 @@ class ActorRuntime:
         self.fatal: Document | None = None
         self.definition = describe_actor(actor)
         self.instance: ActorBase[Any, Any, Any, Any] | None = None
-        self.lifecycle = asyncio.Lock()
-        self.pending: set[asyncio.Task[Document]] = set()
-        self.serial = asyncio.Lock()
         self.sequence = 0
         self.last_state: Document = {}
 
     async def handle(self, command: Document) -> Document:
-        async with self.lifecycle:
-            if command["type"] == "evict":
-                return await self.evict(command.get("graceful", True))
-            task = asyncio.create_task(self.run(command))
-            self.pending.add(task)
-        try:
-            return await task
-        except asyncio.CancelledError:
-            caller = asyncio.current_task()
-            if caller is not None and caller.cancelling():
-                raise
-            return failed("actor_evicted", "actor was evicted by the Rust host")
-        finally:
-            self.pending.discard(task)
-
-    async def evict(self, graceful: bool = True) -> Document:
-        tasks = tuple(self.pending)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        try:
-            if graceful:
-                await self.run_hook("on_sleep")
-        finally:
-            self.instance = None
-            self.fatal = None
-        return {"type": "evicted"}
-
-    async def run(self, command: Document) -> Document:
-        await self.serial.acquire()
+        if command["type"] == "evict":
+            return await self.evict(command.get("graceful", True))
         name = command.get("method") or "on_" + command.get("event", {}).get("type", "")
         if name == "onAlarm":
             name = "on_alarm"
-        released = False
 
         def admit() -> None:
-            nonlocal released
             if name in self.definition.reentrant_methods:
                 self.effects.admit()
-                self.serial.release()
-                released = True
 
         try:
             if self.fatal is not None:
@@ -92,9 +57,15 @@ class ActorRuntime:
             if self.definition.reentrant_methods:
                 self.fatal = failure
             return failure
+
+    async def evict(self, graceful: bool = True) -> Document:
+        try:
+            if graceful and self.fatal is None:
+                await self.run_hook("on_sleep")
         finally:
-            if not released:
-                self.serial.release()
+            self.instance = None
+            self.fatal = None
+        return {"type": "evicted"}
 
     async def execute(self, command: Document, admit: Any) -> Document:
         if self.instance is None:
@@ -128,6 +99,8 @@ class ActorRuntime:
         )
         token = scope_context.set(scope)
         try:
+            if not self.definition.reentrant_methods:
+                await self.database.begin()
             if socket_event:
                 args = await socket_arguments(command["event"], scope)
                 admit()
@@ -149,19 +122,24 @@ class ActorRuntime:
             task = asyncio.current_task()
             if task is not None and task.cancelling():
                 raise asyncio.CancelledError
-            effects = await scope.finish()
+            effects = scope.finish()
             async with self.completion:
                 if self.fatal is not None:
                     return self.fatal
                 state = self.snapshot()
                 previous = self.last_state if self.definition.reentrant_methods else before
                 effects.extend(self.state_updates(previous, state, command))
-                await self.database.replace_fields(state)
+                if self.definition.reentrant_methods:
+                    await self.database.begin()
                 try:
+                    await self.database.replace_fields(state)
                     await self.database.commit()
                 except DatabaseCommitError as error:
                     self.fatal = failed("actor_database_failed", str(error))
                     return self.fatal
+                except BaseException:
+                    await self.database.rollback()
+                    raise
                 self.last_state = state
                 reply: Document = {"type": "websocket_handled" if socket_event else "invoked"}
                 if not socket_event:
@@ -186,15 +164,7 @@ class ActorRuntime:
             )
         finally:
             scope.active = False
-            try:
-                output = scope.output
-                if output is not None:
-                    task = asyncio.current_task()
-                    if task is not None and task.cancelling():
-                        output.cancel()
-                    await asyncio.gather(output, return_exceptions=True)
-            finally:
-                scope_context.reset(token)
+            scope_context.reset(token)
 
     def state_updates(self, before: Document, after: Document, command: Document) -> list[Document]:
         fields = self.definition.fields
@@ -243,9 +213,13 @@ class ActorRuntime:
         )
         token = scope_context.set(scope)
         try:
+            if not self.definition.reentrant_methods:
+                await self.database.begin()
             await invoke_handler(scope, method)
             async with self.completion:
                 state = self.snapshot()
+                if self.definition.reentrant_methods:
+                    await self.database.begin()
                 await self.database.replace_fields(state)
                 await self.database.commit()
                 self.last_state = state

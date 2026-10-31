@@ -12,6 +12,7 @@ use tracing::{error, info};
 
 use crate::{
     actor::{ActorExecutorConnection, ActorExecutorListener},
+    bucket::RAPID_OPERATION_TIMEOUT,
     bundle::ActorRuntime,
     clock::SystemClock,
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
@@ -26,10 +27,16 @@ use super::{
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_ACTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the executor waits for its host to attach. Falling back from Rapid can
+/// spend two operation timeouts before Standard starts: the failed open, then
+/// deleting the replicas that did open.
+const EXECUTOR_STARTUP_TIMEOUT: Duration = RAPID_OPERATION_TIMEOUT.saturating_mul(3);
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct HostReadiness {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_reply: Option<serde_json::Value>,
     pub host_id: super::HostId,
     pub session_id: String,
     pub route: String,
@@ -55,15 +62,18 @@ pub(super) async fn serve_assigned_host(
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<()> {
     let readiness = warm.as_mut().and_then(|warm| warm.readiness.take());
+    let operation = warm.as_mut().and_then(|warm| warm.operation.take());
     let host_id = &config.identity.host_id;
     let prepared = match prepare_actor_host(&config, &mut timings, warm).await {
         Ok(prepared) => prepared,
         Err(error) => {
             log_startup(host_id, &timings, "failed", Some(&error));
+            super::assignment::decline(readiness);
             return Err(error);
         }
     };
     let PreparedActorHostResources {
+        control_plane,
         invocation_auth,
         listener,
         route,
@@ -75,6 +85,7 @@ pub(super) async fn serve_assigned_host(
         sockets,
         credentials: _credentials,
         storage,
+        database,
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
     let mut status = host.status();
@@ -84,11 +95,13 @@ pub(super) async fn serve_assigned_host(
         config.identity.session_id.clone(),
         invocation_auth,
         sockets.clone(),
-    )
-    .router();
+    );
+    let mut started = false;
     let initialized = async {
-        let owner_epoch = initialize_executor(&executor_connection, &host, &sockets).await?;
-        let ready = HostReadiness {
+        let owner_epoch =
+            initialize_executor(&executor_connection, &host, &sockets, &database).await?;
+        let mut ready = HostReadiness {
+            initial_reply: None,
             host_id: host_id.clone(),
             session_id: config.identity.session_id.clone(),
             route: route.clone(),
@@ -101,6 +114,18 @@ pub(super) async fn serve_assigned_host(
             tokio::fs::write(&temporary, serde_json::to_vec(&ready)?).await?;
             tokio::fs::rename(temporary, path).await?;
         }
+        ready.initial_reply = match operation {
+            Some(operation) => {
+                started = true;
+                Some(
+                    service
+                        .execute_initial(operation, owner_epoch, timings.elapsed_ms())
+                        .await?,
+                )
+            }
+            None => None,
+        };
+        ready.lease = storage.current_lease()?;
         anyhow::Ok(ready)
     }
     .await;
@@ -110,25 +135,35 @@ pub(super) async fn serve_assigned_host(
             log_startup(host_id, &timings, "failed", Some(&error));
             let _ = lease.unregister().await;
             let _ = renewal.shutdown().await;
+            if !started {
+                super::assignment::decline(readiness);
+            }
             return Err(error);
         }
     };
-    lease.observe(executor_connection.executor(), host.status());
+    let lifecycle = super::lifecycle::HostLifecycle::start(
+        control_plane,
+        ready.owner_epoch,
+        config.resources.clone(),
+        executor_connection.executor(),
+        host.status(),
+    )?;
     if let Some(readiness) = readiness {
-        let _ = readiness.send(ready);
+        let _ = readiness.send(Ok(ready));
     }
     timings.executor_notified_at_ms = Some(timings.elapsed_ms());
     log_startup(host_id, &timings, "ready", None);
-    let stop = CancellationToken::new();
-    let server_stop = stop.clone();
-    let routes = service;
+    let executor_stop = CancellationToken::new();
+    let server_stop = CancellationToken::new();
+    let serving = server_stop.clone();
+    let routes = service.router();
     let mut server = Box::pin(async move {
         axum::serve(listener, routes)
-            .with_graceful_shutdown(async move { server_stop.cancelled().await })
+            .with_graceful_shutdown(async move { serving.cancelled().await })
             .await
             .context("serve actor host endpoints")
     });
-    let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
+    let mut executor_task = Box::pin(executor_connection.run(executor_stop.clone()));
     let shutdown = async {
         tokio::select! { () = shutdown => {}, () = storage.stop.cancelled() => {} }
     };
@@ -147,11 +182,21 @@ pub(super) async fn serve_assigned_host(
     .await;
     let shutdown_started = Instant::now();
     let shutdown_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    stop_host_tasks(&host, &stop, server, executor_task).await;
-    drop(javascript);
-    let unregister_result = storage
-        .finish(shutdown_deadline - Duration::from_secs(2))
-        .await;
+    // Keep answering until the actor is released: calls routed here meanwhile get a refusal they
+    // can retry, rather than a reset whose outcome is unknown.
+    let unregister_result = serve_during(server.as_mut(), async {
+        lifecycle.draining();
+        stop_executor(&host, &executor_stop, executor_task).await;
+        drop(javascript);
+        let result = storage
+            .finish(shutdown_deadline - Duration::from_secs(2))
+            .await;
+        lifecycle.stop().await;
+        result
+    })
+    .await;
+    server_stop.cancel();
+    let _ = tokio::time::timeout(HOST_TASK_SHUTDOWN_TIMEOUT, server).await;
     let renewal_result = renewal.shutdown().await;
     info!(
         event = "host_shutdown",
@@ -172,18 +217,21 @@ async fn initialize_executor(
     connection: &ActorExecutorConnection,
     host: &Arc<ActorHost>,
     sockets: &Arc<super::sockets::HostSockets>,
+    database: &Arc<super::HostDatabase>,
 ) -> Result<u64> {
     connection
         .mark_ready(
             host.actor().clone(),
             Some(sockets.clone()),
             Some(sockets.clone()),
+            Some(database.background(host.actor().clone())),
         )
         .await?;
     Ok(host.activate().await?.owner_epoch)
 }
 
 struct PreparedActorHostResources {
+    control_plane: Arc<ControlPlaneClient>,
     storage: Arc<super::storage::HostStorage>,
     credentials: DropGuard,
     sockets: Arc<super::sockets::HostSockets>,
@@ -195,6 +243,7 @@ struct PreparedActorHostResources {
     host: Arc<ActorHost>,
     lease: Arc<HostLeaseMaintainer>,
     renewal: LeaseRenewalTask,
+    database: Arc<super::HostDatabase>,
 }
 
 async fn prepare_actor_host(
@@ -246,6 +295,9 @@ async fn prepare_actor_host(
         .await?
         .with_activation(assignment.new_actor, assignment.owner_hint.clone()),
     );
+    let persistence = super::persistence::ActorPersistence::new(storage.clone());
+    let database =
+        super::HostDatabase::new(endpoint.clone(), storage.clone(), persistence, replication);
     let started = timings.started_at;
     let storage_ready = async {
         let result = prepare_storage(
@@ -256,6 +308,11 @@ async fn prepare_actor_host(
         )
         .await;
         timings.storage_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+        let (lease, renewal) = result?;
+        let result = prepare_database(&database, lease, renewal).await;
+        if result.is_ok() {
+            timings.database_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+        }
         result
     };
     let executor_ready = async {
@@ -300,15 +357,12 @@ async fn prepare_actor_host(
         storage.clone(),
         control_plane.clone(),
     ));
-    let persistence = super::persistence::ActorPersistence::new(storage.clone());
-    let database =
-        super::HostDatabase::new(endpoint.clone(), storage.clone(), persistence, replication);
     let host = Arc::new(
         ActorHost::new(
             endpoint,
             assignment.actor.clone(),
             executor_connection.executor(),
-            database,
+            database.clone(),
             sockets.clone(),
         )
         .with_traces(crate::request_traces::TraceSender::start(
@@ -318,6 +372,7 @@ async fn prepare_actor_host(
     );
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());
     Ok(PreparedActorHostResources {
+        control_plane,
         storage,
         credentials,
         sockets,
@@ -329,6 +384,7 @@ async fn prepare_actor_host(
         host,
         lease,
         renewal,
+        database,
     })
 }
 
@@ -347,6 +403,19 @@ async fn prepare_storage(
         timing.renew_every,
     )?);
     let renewal = lease.clone().start().await?;
+    Ok((lease, renewal))
+}
+
+async fn prepare_database(
+    database: &super::HostDatabase,
+    lease: Arc<HostLeaseMaintainer>,
+    renewal: LeaseRenewalTask,
+) -> Result<(Arc<HostLeaseMaintainer>, LeaseRenewalTask)> {
+    if let Err(error) = database.activate().await {
+        let _ = lease.unregister().await;
+        let _ = renewal.shutdown().await;
+        return Err(error);
+    }
     Ok((lease, renewal))
 }
 
@@ -387,6 +456,7 @@ pub(super) struct HostStartupTimings {
     authentication_ready_at_ms: Option<f64>,
     control_plane_ready_at_ms: Option<f64>,
     storage_ready_at_ms: Option<f64>,
+    database_ready_at_ms: Option<f64>,
     executor_ready_at_ms: Option<f64>,
     replication_ready_at_ms: Option<f64>,
     javascript_spawned_at_ms: Option<f64>,
@@ -402,6 +472,7 @@ impl HostStartupTimings {
             authentication_ready_at_ms: None,
             control_plane_ready_at_ms: None,
             storage_ready_at_ms: None,
+            database_ready_at_ms: None,
             executor_ready_at_ms: None,
             replication_ready_at_ms: None,
             javascript_spawned_at_ms: None,
@@ -435,6 +506,7 @@ fn log_startup(
         authentication_ready_at_ms = timings.authentication_ready_at_ms,
         control_plane_ready_at_ms = timings.control_plane_ready_at_ms,
         storage_ready_at_ms = timings.storage_ready_at_ms,
+        database_ready_at_ms = timings.database_ready_at_ms,
         executor_ready_at_ms = timings.executor_ready_at_ms,
         replication_ready_at_ms = timings.replication_ready_at_ms,
         javascript_spawned_at_ms = timings.javascript_spawned_at_ms,
@@ -514,20 +586,23 @@ async fn idle_elapsed(idle_since: Option<tokio::time::Instant>, timeout: Duratio
     }
 }
 
-async fn stop_host_tasks(
-    host: &ActorHost,
-    stop: &CancellationToken,
-    server: impl Future,
-    executor: impl Future,
-) {
+async fn serve_during<T>(
+    server: std::pin::Pin<&mut impl Future>,
+    work: impl Future<Output = T>,
+) -> T {
+    tokio::pin!(work);
+    tokio::select! {
+        result = &mut work => result,
+        _ = server => work.await,
+    }
+}
+
+async fn stop_executor(host: &ActorHost, stop: &CancellationToken, executor: impl Future) {
     if let Err(error) = host.drain(HOST_ACTOR_DRAIN_TIMEOUT).await {
         error!(error = %format!("{error:#}"), "actor invocations did not drain cleanly");
     }
     stop.cancel();
-    let _ = tokio::time::timeout(HOST_TASK_SHUTDOWN_TIMEOUT, async {
-        let _ = tokio::join!(server, executor);
-    })
-    .await;
+    let _ = tokio::time::timeout(HOST_TASK_SHUTDOWN_TIMEOUT, executor).await;
 }
 
 pub(super) fn spawn_executor_process(
@@ -535,6 +610,12 @@ pub(super) fn spawn_executor_process(
     socket: &str,
     runtime: ActorRuntime,
 ) -> Result<tokio::process::Child> {
+    executor_command(generic, socket, runtime)
+        .spawn()
+        .context("start actor executor")
+}
+
+fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Command {
     let mut command = if runtime == ActorRuntime::Python {
         let mut command = Command::new(
             std::env::var("DURABLE_ACTORS_PYTHON").unwrap_or_else(|_| "python3".into()),
@@ -558,6 +639,10 @@ pub(super) fn spawn_executor_process(
             if generic { "1" } else { "0" },
         )
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
+        .env(
+            "DURABLE_ACTORS_HOST_STARTUP_MS",
+            EXECUTOR_STARTUP_TIMEOUT.as_millis().to_string(),
+        )
         .env_remove("DURABLE_ACTORS_SPARE_TOKEN")
         .env_remove("DURABLE_ACTORS_RUNTIME_CONFIG")
         .env_remove("DURABLE_ACTORS_HOST_TOKEN")
@@ -565,9 +650,8 @@ pub(super) fn spawn_executor_process(
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .context("start actor executor")
+        .kill_on_drop(true);
+    command
 }
 
 #[cfg(test)]

@@ -67,20 +67,3 @@ test("a non-graceful close skips onSleep", async () => {
     assert.equal(host.fields().asleep, false)
     host.close()
 })
-
-test("a graceful evict waits for a queued call before onSleep runs", async () => {
-    const host = new HostDatabase()
-    const runtime = new ActorRuntime(probeDefinition, () => {}, undefined, undefined, new DatabaseProxy(host.call))
-    try {
-        assertReply(await invoke(runtime, "snapshot"), { type: "invoked", result: { calls: 1, asleep: false } })
-        const slow = invoke(runtime, "slow")
-        const evicted = runtime.handle({ type: "evict", graceful: true, actor: probeIdentity })
-        assertReply(await slow, { type: "invoked", result: 2 })
-        assertReply(await evicted, { type: "evicted" })
-        assert.equal(host.fields().calls, 2)
-        assert.equal(host.fields().asleep, true)
-        assert.equal(Number(host.query("SELECT calls FROM sleeps")[0]?.calls), 2)
-    } finally {
-        host.close()
-    }
-})

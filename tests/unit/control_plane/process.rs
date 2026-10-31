@@ -7,6 +7,54 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
+fn usage_publishing_is_opt_in() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert!(parse(&values)?.usage_topic.is_none());
+    values.insert(
+        "DURABLE_ACTORS_USAGE_TOPIC",
+        "projects/example/topics/actor-usage",
+    );
+    assert_eq!(
+        parse(&values)?.usage_topic.as_deref(),
+        Some("projects/example/topics/actor-usage")
+    );
+    Ok(())
+}
+
+#[test]
+fn analytics_defaults_to_postgres_and_clickhouse_is_opt_in() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert!(matches!(
+        parse(&values)?.storage.analytics,
+        AnalyticsBackend::Postgres
+    ));
+    values.insert("DURABLE_ACTORS_ANALYTICS_BACKEND", "clickhouse");
+    assert!(parse(&values).is_err());
+    values.extend([
+        (
+            "DURABLE_ACTORS_CLICKHOUSE_URL",
+            "https://clickhouse.example:8443",
+        ),
+        ("DURABLE_ACTORS_CLICKHOUSE_DATABASE", "traces"),
+        ("DURABLE_ACTORS_CLICKHOUSE_USER", "writer"),
+        ("DURABLE_ACTORS_CLICKHOUSE_PASSWORD", "test-only"),
+    ]);
+    assert!(matches!(
+        parse(&values)?.storage.analytics,
+        AnalyticsBackend::ClickHouse(_)
+    ));
+    values.insert("DURABLE_ACTORS_ANALYTICS_BACKEND", "unknown");
+    assert!(parse(&values).is_err());
+    Ok(())
+}
+
+#[test]
 fn configures_gateway_connection_limit() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
@@ -51,7 +99,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
     let resources = &config.sandbox_provider.pool.resources;
-    assert_eq!((resources.cpu_millis, resources.memory_mib), (1000, 256));
+    assert_eq!((resources.cpu_millis, resources.memory_mib), (250, 256));
     assert_eq!(resources, &crate::sandbox::ResourceLimits::default());
     assert_eq!(config.sandbox_provider.runtime.host_idle_timeout_ms, 10_000);
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
@@ -70,14 +118,17 @@ fn pool_capacity_is_configurable_and_validated() -> Result<()> {
         (defaults.idle, defaults.fleet_maximum, defaults.max_starting),
         (64, 256, 32)
     );
+    assert_eq!(defaults.refill_interval, Duration::from_secs(1));
     values.extend([
         ("DURABLE_ACTORS_SPARE_IDLE", "128"),
         ("DURABLE_ACTORS_SPARE_FLEET_MAX", "512"),
         ("DURABLE_ACTORS_SPARE_MAX_STARTING", "4"),
+        ("DURABLE_ACTORS_SPARE_REFILL_INTERVAL_MS", "250"),
         ("DURABLE_ACTORS_HOST_CPU_MILLIS", "500"),
     ]);
     let configured = parse(&values)?.sandbox_provider.pool;
     assert_eq!(configured.resources.cpu_millis, 500);
+    assert_eq!(configured.refill_interval, Duration::from_millis(250));
     assert_eq!(
         (
             configured.idle,
@@ -91,6 +142,56 @@ fn pool_capacity_is_configurable_and_validated() -> Result<()> {
     values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "512");
     values.insert("DURABLE_ACTORS_SPARE_MAX_STARTING", "0");
     assert!(parse(&values).is_err());
+    values.insert("DURABLE_ACTORS_SPARE_MAX_STARTING", "4");
+    values.insert("DURABLE_ACTORS_SPARE_REFILL_INTERVAL_MS", "10");
+    assert!(parse(&values).is_err());
+    Ok(())
+}
+
+#[test]
+fn pool_drain_rates_are_configurable_and_validated() -> Result<()> {
+    let mut values = process_environment();
+    values.insert("DURABLE_ACTORS_SANDBOX_PROVIDER", "gke");
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
+    };
+    let defaults = parse(&values)?;
+    assert_eq!(defaults.sandbox_provider.pool.retire_concurrency, 64);
+    assert_eq!(
+        defaults.sandbox_provider.pool.reap_interval,
+        Duration::from_secs(30)
+    );
+    assert_eq!(
+        defaults.sandbox_provider.pool.pod_reap_interval,
+        Duration::from_secs(1)
+    );
+    assert_eq!(gke(&defaults).reap_concurrency, 64);
+    values.extend([
+        ("DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY", "128"),
+        ("DURABLE_ACTORS_SPARE_REAP_INTERVAL_MS", "2000"),
+        ("DURABLE_ACTORS_SPARE_POD_REAP_INTERVAL_MS", "500"),
+        ("DURABLE_ACTORS_GKE_REAP_CONCURRENCY", "16"),
+    ]);
+    let configured = parse(&values)?;
+    assert_eq!(configured.sandbox_provider.pool.retire_concurrency, 128);
+    assert_eq!(
+        configured.sandbox_provider.pool.reap_interval,
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        configured.sandbox_provider.pool.pod_reap_interval,
+        Duration::from_millis(500)
+    );
+    assert_eq!(gke(&configured).reap_concurrency, 16);
+    for (name, value) in [
+        ("DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY", "0"),
+        ("DURABLE_ACTORS_GKE_REAP_CONCURRENCY", "0"),
+        ("DURABLE_ACTORS_SPARE_POD_REAP_INTERVAL_MS", "10"),
+    ] {
+        let mut invalid = values.clone();
+        invalid.insert(name, value);
+        assert!(parse(&invalid).is_err(), "{name}={value}");
+    }
     Ok(())
 }
 
@@ -200,10 +301,7 @@ fn rapid_configuration_uses_two_zones_and_gke() -> Result<()> {
         config.storage.persistence,
         crate::bucket::SnapshotStoreConfig::Rapid { .. }
     ));
-    assert_eq!(
-        config.sandbox_provider.gke.zones["north-america-west"],
-        vec!["us-west4-a"]
-    );
+    assert_eq!(gke(&config).zones["north-america-west"], vec!["us-west4-a"]);
     Ok(())
 }
 
@@ -258,11 +356,6 @@ async fn echo_websocket(upgrade: WebSocketUpgrade) -> Response {
 fn process_environment() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         ("DURABLE_ACTORS_PERSISTENCE", "rapid"),
-        ("DURABLE_ACTORS_GATEWAY_ROUTE", "http://10.0.0.1:7100"),
-        (
-            "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT",
-            "test@project.iam.gserviceaccount.com",
-        ),
         ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
         ("DURABLE_ACTORS_SECRET", "api-key"),
         ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
@@ -294,6 +387,31 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
             "postgresql://localhost/actors",
         ),
     ])
+}
+
+#[test]
+fn postgres_pool_size_is_configurable_and_bounded() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert_eq!(parse(&values)?.storage.postgres_max_connections, 8);
+    for (value, expected) in [("1", 1), ("64", 64), ("1000", 1000)] {
+        values.insert("DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS", value);
+        assert_eq!(parse(&values)?.storage.postgres_max_connections, expected);
+    }
+    for invalid in ["0", "-1", "1.5", "1001", "", "oops", "18446744073709551616"] {
+        values.insert("DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS", invalid);
+        let error = parse(&values)
+            .err()
+            .expect("invalid pool size was accepted");
+        assert!(
+            error
+                .to_string()
+                .contains("DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS")
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -412,6 +530,40 @@ fn persistence_selection_rejects_typos_and_conflicting_rapid_configuration() {
 }
 
 #[test]
+fn rapid_placement_defaults_to_every_zone_and_accepts_nearest() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    let placement = |values: &HashMap<&str, &str>| -> Result<_> {
+        match parse(values)?.storage.persistence {
+            crate::bucket::SnapshotStoreConfig::Rapid { placement, .. } => Ok(placement),
+            crate::bucket::SnapshotStoreConfig::Local => anyhow::bail!("expected Rapid"),
+        }
+    };
+    assert_eq!(placement(&values)?, crate::bucket::RapidPlacement::All);
+    values.insert("DURABLE_ACTORS_RAPID_PLACEMENT", "nearest");
+    assert_eq!(placement(&values)?, crate::bucket::RapidPlacement::Nearest);
+    values.insert("DURABLE_ACTORS_RAPID_PLACEMENT", "closest");
+    assert!(parse(&values).is_err());
+    values.insert("DURABLE_ACTORS_RAPID_PLACEMENT", "nearest");
+    values.insert(
+        "DURABLE_ACTORS_RAPID_BUCKETS",
+        r#"[{"bucket":"rapid-test-a","zone":"us-west4-a"}]"#,
+    );
+    assert!(parse(&values).is_err());
+    for name in [
+        "DURABLE_ACTORS_PERSISTENCE",
+        "DURABLE_ACTORS_ARCHIVE_BUCKET",
+        "DURABLE_ACTORS_RAPID_BUCKETS",
+    ] {
+        values.remove(name);
+    }
+    assert!(parse(&values).is_err());
+    Ok(())
+}
+
+#[test]
 fn single_gke_zone_infers_the_actor_region() -> Result<()> {
     let mut values = process_environment();
     values.remove("DURABLE_ACTORS_GKE_ZONES");
@@ -419,10 +571,7 @@ fn single_gke_zone_infers_the_actor_region() -> Result<()> {
     let config =
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))?;
     assert_eq!(config.region.as_deref(), Some("north-america-east"));
-    assert_eq!(
-        config.sandbox_provider.gke.zones["north-america-east"],
-        ["us-east4-a"]
-    );
+    assert_eq!(gke(&config).zones["north-america-east"], ["us-east4-a"]);
     values.insert(
         "DURABLE_ACTORS_GKE_ZONES",
         r#"{"north-america-west":"us-west4-a"}"#,
@@ -450,5 +599,103 @@ fn compiled_artifacts_select_their_language_image() -> Result<()> {
         values["DURABLE_ACTORS_PYTHON_IMAGE"]
     );
     assert!(images.for_entrypoint("actors.ts").is_err());
+    Ok(())
+}
+
+#[test]
+fn replicas_share_caches_through_redis_when_configured() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert!(parse(&values)?.redis.is_none());
+
+    values.insert("DURABLE_ACTORS_REDIS_URL", "rediss://:secret@10.0.0.5:6378");
+    values.insert(
+        "DURABLE_ACTORS_REDIS_CA_CERT",
+        "-----BEGIN CERTIFICATE-----",
+    );
+    let redis = parse(&values)?.redis.unwrap();
+    assert_eq!(redis.url, "rediss://:secret@10.0.0.5:6378");
+    assert_eq!(
+        redis.ca_cert.as_deref(),
+        Some("-----BEGIN CERTIFICATE-----")
+    );
+
+    values.insert("DURABLE_ACTORS_REDIS_URL", "redis://:secret@10.0.0.5:6379");
+    let error = format!("{:#}", parse(&values).err().unwrap());
+    assert!(
+        error.contains("rediss://") && !error.contains("secret"),
+        "{error}"
+    );
+    values.insert("DURABLE_ACTORS_REDIS_URL", "http://:secret@10.0.0.5");
+    let error = format!("{:#}", parse(&values).err().unwrap());
+    assert!(!error.contains("secret"), "{error}");
+    values.insert("DURABLE_ACTORS_REDIS_URL", " ");
+    assert!(parse(&values).is_err());
+    values.remove("DURABLE_ACTORS_REDIS_CA_CERT");
+    assert!(parse(&values)?.redis.is_none());
+    Ok(())
+}
+
+fn gke(config: &ControlPlaneProcessConfig) -> &GkeConfig {
+    match &config.sandbox_provider.backend {
+        SandboxBackend::Gke(gke) => gke,
+        _ => panic!("expected GKE"),
+    }
+}
+
+#[test]
+fn modal_configuration_does_not_require_kubernetes() -> Result<()> {
+    let mut values = process_environment();
+    values.remove("DURABLE_ACTORS_GKE_ZONES");
+    values.remove("DURABLE_ACTORS_GKE_ZONE");
+    values.extend([
+        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
+        ("DURABLE_ACTORS_MODAL_APP", "modal-test"),
+        (
+            "DURABLE_ACTORS_CONTROL_PLANE_URL",
+            "https://control.example.com",
+        ),
+        (
+            "DURABLE_ACTORS_MODAL_REGIONS",
+            r#"{"north-america-west":"us-west"}"#,
+        ),
+    ]);
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
+    };
+    let config = parse(&values)?;
+    assert_eq!(config.region.as_deref(), Some("north-america-west"));
+    assert_eq!(config.sandbox_provider.pool.regions, ["north-america-west"]);
+    assert_eq!(config.sandbox_provider.secret_namespace, "terse-sandboxes");
+    let SandboxBackend::Modal(modal) = config.sandbox_provider.backend else {
+        panic!("expected Modal")
+    };
+    assert_eq!(modal.app_name, "modal-test");
+    assert_eq!(modal.timeout, Duration::from_secs(3600));
+    values.insert("DURABLE_ACTORS_GKE_NAMESPACE", "project-secrets");
+    assert_eq!(
+        parse(&values)?.sandbox_provider.secret_namespace,
+        "project-secrets"
+    );
+    for (key, value) in [
+        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "unknown"),
+        ("DURABLE_ACTORS_CONTROL_PLANE_URL", "http://localhost:7100"),
+        (
+            "DURABLE_ACTORS_CONTROL_PLANE_URL",
+            "https://control.example.com/path",
+        ),
+        ("DURABLE_ACTORS_MODAL_REGIONS", "{}"),
+        (
+            "DURABLE_ACTORS_MODAL_REGIONS",
+            r#"{"north-america-west":"us-east"}"#,
+        ),
+        ("DURABLE_ACTORS_MODAL_TIMEOUT_SECONDS", "0"),
+    ] {
+        let mut invalid = values.clone();
+        invalid.insert(key, value);
+        assert!(parse(&invalid).is_err(), "accepted {key}={value}");
+    }
     Ok(())
 }

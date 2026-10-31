@@ -6,6 +6,7 @@ Deploy Durable Actors on GKE Sandbox with PostgreSQL and one Standard GCS bucket
 
 - GKE Standard with Workload Identity Federation and enforced NetworkPolicy. Use an ordinary node pool for the controller and a COS Sandbox node pool with the `gvisor` RuntimeClass for actors. The actor pool must have nodes in your chosen `placement.zone`.
 - PostgreSQL reachable from the controller, with a database user allowed to run migrations. Use a TLS connection for a remote database. A private Cloud SQL instance is suitable when your cluster has a supported connection to it.
+- Redis, such as Memorystore, for more than one controller replica. Use TLS and, in production, a replicated tier: sockets close while Redis is unreachable.
 - An HTTPS hostname and certificate. The chart can create an Ingress for an existing controller, or you can route an existing HTTPS gateway to its Service. The endpoint must support WebSockets.
 - Helm, `kubectl`, Google Cloud CLI, and permissions to create the following resources.
 
@@ -47,7 +48,7 @@ kubectl -n actors create secret generic actors-credentials \
   --from-file=jwt-signing-key --from-file=api-key
 ```
 
-Store the generated credentials in your secret manager. Configure your backend with the same API key. Provision your TLS Secret separately in namespace `actors`; its certificate must cover your public hostname.
+For more than one replica, also add `--from-literal=redis-url="$REDIS_URL"` and set `redis.urlSecretKey: redis-url`. For a private CA such as Memorystore's, add `--from-file=redis-ca=server-ca.pem` and set `redis.caSecretKey: redis-ca`. Store the generated credentials in your secret manager. Configure your backend with the same API key. Provision your TLS Secret separately in namespace `actors`; its certificate must cover your public hostname.
 
 ## Install
 
@@ -93,11 +94,11 @@ curl --fail https://actors.example.com/healthz
 
 Use the [deployment registration API](reference/openapi.md) to register compiled actor code and its contract for your project, then generate your application client using the [TypeScript](reference/typescript-guide.md) or [Python](reference/python-guide.md) guide. A healthy controller does not register or deploy an application automatically. Upload immutable compiled artifacts into the configured bucket and register their manifest; artifact format and registration endpoints are described in the [OpenAPI specification](reference/openapi.yaml).
 
-Verify an actor write and read, restart its sandbox, and read the value again. Also verify a WebSocket connection through your chosen ingress. One controller handles HTTP and sockets by default; actors start on demand. Increase `actors.warm` for lower cold-start latency and `replicaCount` for controller redundancy. These settings do not create additional node pools or guarantee capacity.
+Verify an actor write and read, restart its sandbox, and read the value again. Also verify a WebSocket connection through your chosen ingress. One controller handles HTTP and sockets by default; actors start on demand. Increase `actors.warm` for lower cold-start latency and `replicaCount` for controller redundancy; more than one replica requires Redis. These settings do not create additional node pools or guarantee capacity.
 
 ## Speed up writes with GCS Rapid
 
-Rapid stores the hot write log in two zones and keeps permanent history in the Standard bucket. Each acknowledged write has durably flushed to both Rapid copies. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.
+Rapid stores the hot write log in one or two zones and keeps permanent history in the Standard bucket. Each acknowledged write has durably flushed to every configured Rapid copy. A single zone has no second Rapid copy if that zone is lost before archival. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.
 
 Choose a region with Rapid availability and use Google Cloud CLI 553 or newer. Create two distinct buckets once, then grant object access and bucket-metadata access to the controller identity. The following placements are examples; verify current [Rapid availability and requirements](https://docs.cloud.google.com/storage/docs/rapid-bucket).
 
@@ -133,6 +134,8 @@ storage:
       - {bucket: my-unique-actor-rapid-b, zone: us-west4-b}
 ```
 
+When actor hosts can start in either of two regions, put one Rapid bucket in a zone of each and set `placement: nearest`. Each host then opens its log in both zones at assignment, keeps whichever opens first (normally its own region), and writes only there for that session. Each write has one Rapid copy, as with a single zone. Switching between `all` and `nearest` with the same buckets needs no migration.
+
 The Standard bucket remains required. Startup checks Rapid storage class, actual zonal placement, and retention rules. Do not configure automatic deletion of Rapid log objects: the runtime archives them before removing their Rapid copies. If Rapid streams cannot be opened at activation, the runtime can persist immutable Standard snapshots.
 
 Storage mode and bucket identities are bound to existing actor ownership records. Select the mode before creating actors in an installation. Changing an existing installation's mode needs a planned data migration; a Helm values change alone does not migrate actor state.
@@ -152,6 +155,6 @@ kubectl -n actors-actors get events --sort-by=.lastTimestamp
 - Storage permission errors: check bucket roles, the Google service account annotation, and the Workload Identity binding.
 - DNS failures: for host-networked or link-local DNS, add the resolver address to `networkPolicy.dnsCidrs`, such as a `/32` for your cluster's NodeLocal DNS listener.
 - Controller startup failures: check PostgreSQL reachability, migration permissions, and the signing-key format.
-- WebSocket disconnects: check ingress upgrade support and connection timeouts.
+- WebSocket disconnects: check ingress upgrade support and connection timeouts, and look for "socket bus lost its Redis subscription" in controller logs.
 
 See the [chart values](../charts/durable-actors/values.yaml) for resource limits and optional settings.

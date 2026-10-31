@@ -2,10 +2,10 @@ pub(crate) mod access;
 mod file;
 mod gcs;
 mod rapid;
-pub(crate) use rapid::RapidSnapshots;
+pub(crate) use rapid::{RAPID_OPERATION_TIMEOUT, RapidSnapshots};
 pub(crate) mod recovery;
 mod snapshots;
-pub use snapshots::{ArchiveBatchConfig, RapidBucket, SnapshotStoreConfig};
+pub use snapshots::{ArchiveBatchConfig, RapidBucket, RapidPlacement, SnapshotStoreConfig};
 pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};
 mod runtime;
 
@@ -14,7 +14,7 @@ use async_trait::async_trait;
 
 pub use file::FileBucket;
 pub use gcs::GcsBucket;
-pub(crate) use gcs::WarmGcs;
+pub(crate) use gcs::WarmStorage;
 pub(crate) use runtime::ActorStateReader;
 pub use runtime::{LoadedActor, OwnershipHint, RuntimeStorage, RuntimeStorageReader};
 

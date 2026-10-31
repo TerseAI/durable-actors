@@ -7,7 +7,6 @@ import { ActorDefinitionError } from "../errors.js"
 import type { PublicActorContract } from "../wire/public-contract.js"
 
 import { DeclarationCompiler } from "./declarations.js"
-import { readAtomicity, validateAtomicity } from "./features/atomicity.js"
 import { readCompute, validateCompute } from "./features/compute.js"
 import { readInterleave, validateInterleave } from "./features/interleave.js"
 import { validatePersistence } from "./features/persistence.js"
@@ -47,7 +46,7 @@ class ActorCompiler {
     }
 
     compileDeployment(entrypoint: string, options: CompilerOptions = {}) {
-        const { checker, actors, schemas, program } = this.describe(entrypoint, options)
+        const { checker, actors, schemas, program, sdk } = this.describe(entrypoint, options)
         const api = {
             actors: [...schemas]
                 .sort((left, right) =>
@@ -67,7 +66,8 @@ class ActorCompiler {
                     },
                     rpc: rpcContract(
                         checker,
-                        actors.find(actor => actor.name!.text === schema.actorName)!
+                        actors.find(actor => actor.name!.text === schema.actorName)!,
+                        sdk.Unchecked
                     )
                 }))
         }
@@ -88,12 +88,14 @@ class ActorCompiler {
             program,
             checker,
             actors,
+            sdk,
             schemas: schemas.map(schema => ({
                 ...schema,
                 contract: socketContract(
                     checker,
                     actors.find(actor => actor.name!.text === schema.actorName)!,
-                    schema
+                    schema,
+                    sdk.Unchecked
                 )
             }))
         }
@@ -322,8 +324,6 @@ function readDecorator(
             return readPersistence(use, Persistence.Ephemeral)
         case sdk.Emittable:
             return readEmission(use)
-        case sdk.Atomic:
-            return readAtomicity(use)
         case sdk.Interleave:
             return readInterleave(use)
         case sdk.Compute:
@@ -342,8 +342,6 @@ function validateActors(actors: readonly ParsedActor[], discoveryDiagnostics: re
         diagnostics.push(...actor.diagnostics, ...actor.members.flatMap(member => member.diagnostics))
         const persistence = validatePersistence(actor)
         diagnostics.push(...persistence.diagnostics)
-        const atomicity = validateAtomicity(actor)
-        diagnostics.push(...atomicity.diagnostics)
         const interleave = validateInterleave(actor)
         diagnostics.push(...interleave.diagnostics)
         const compute = validateCompute(actor)
@@ -352,7 +350,6 @@ function validateActors(actors: readonly ParsedActor[], discoveryDiagnostics: re
             actorName: actor.name,
             fields: persistence.fields,
             ...(compute.options === undefined ? {} : { sandbox: compute.options }),
-            ...(atomicity.methods.length ? { atomicMethods: atomicity.methods } : {}),
             ...(interleave.methods.length ? { interleaveMethods: interleave.methods } : {})
         })
     }
@@ -367,18 +364,18 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         if (symbol === undefined) throw new ActorDefinitionError(`cannot resolve SDK export ${name}`)
         return canonicalSymbol(checker, symbol)
     }
-    const atomic = exports.find(symbol => symbol.name === "Atomic")
     const interleave = exports.find(symbol => symbol.name === "Interleave")
     const compute = exports.find(symbol => symbol.name === "Compute")
     const resource = exports.find(symbol => symbol.name === "Resource")
     const actorResource = exports.find(symbol => symbol.name === "ActorResource")
+    const unchecked = exports.find(symbol => symbol.name === "Unchecked")
     return {
         Actor: resolve("Actor"),
         Persisted: resolve("Persisted"),
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),
-        ...(atomic === undefined ? {} : { Atomic: canonicalSymbol(checker, atomic) }),
         ...(compute === undefined ? {} : { Compute: canonicalSymbol(checker, compute) }),
+        ...(unchecked === undefined ? {} : { Unchecked: canonicalSymbol(checker, unchecked) }),
         ...(interleave === undefined ? {} : { Interleave: canonicalSymbol(checker, interleave) }),
         ...(resource === undefined ? {} : { Resource: canonicalSymbol(checker, resource) }),
         ...(actorResource === undefined ? {} : { ActorResource: canonicalSymbol(checker, actorResource) })

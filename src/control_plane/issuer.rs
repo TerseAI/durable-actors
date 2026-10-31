@@ -181,16 +181,6 @@ impl ActorJwtIssuer {
         self.socket_verifier()?.verify_at(token, now_ms)
     }
 
-    pub(crate) fn invocation_verifier(&self) -> Result<super::ActorJwtVerifier> {
-        super::ActorJwtVerifier::for_scope(
-            self.verifier_keys_json()?,
-            self.issuer.clone(),
-            self.invocation_audience.clone(),
-            super::ActorTokenPurpose::Invocation,
-            self.max_lifetime,
-        )
-    }
-
     pub(crate) fn socket_audience(&self) -> String {
         format!("{}:websocket", self.authority_audience)
     }
@@ -211,6 +201,7 @@ impl ActorJwtIssuer {
 
     pub(crate) fn issue_host(
         &self,
+        organization_id: &str,
         host_id: &HostId,
         session_id: &str,
         host_config_key: &str,
@@ -222,6 +213,7 @@ impl ActorJwtIssuer {
         let expires_at_ms =
             now_ms.saturating_add(duration_millis(self.max_lifetime.min(HOST_TOKEN_TTL))?);
         self.issue(ActorJwtClaims {
+            organization_id: Some(organization_id.to_owned()),
             iss: self.issuer.clone(),
             aud: vec![
                 self.authority_audience.clone(),
@@ -265,6 +257,7 @@ impl ActorJwtIssuer {
             .min(grant.as_ref().map_or(i64::MAX, |grant| grant.expires_at));
         ensure!(expires_at > now, "invocation credential expires too soon");
         self.issue(ActorJwtClaims {
+            organization_id: None,
             iss: self.issuer.clone(),
             aud: vec![self.invocation_audience.clone()],
             sub: host_id.as_str().to_owned(),
@@ -317,6 +310,8 @@ impl ActorJwtIssuer {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorJwtClaims {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    organization_id: Option<String>,
     actor: ActorKey,
     iss: String,
     aud: Vec<String>,

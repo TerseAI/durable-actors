@@ -26,7 +26,6 @@ use session::DatabaseSession;
 #[async_trait]
 pub(crate) trait ActorStorage: Send + Sync {
     async fn acquire_actor(&self) -> Result<ActorActivation>;
-    async fn verify_actor_ownership(&self, epoch: u64) -> Result<()>;
     async fn load_actor_state(&self, epoch: u64) -> Result<(u64, bytes::Bytes)>;
     async fn read_sqlite(&self, bytes: &[u8]) -> Result<SqliteSnapshot>;
     async fn get_alarm(&self) -> Result<Option<i64>>;
@@ -104,6 +103,29 @@ impl HostDatabase {
         self: &Arc<Self>,
         invocation: ActorInvocation,
         owner_epoch: u64,
+        origin: CommitOrigin,
+    ) -> Arc<DatabaseInvocation> {
+        self.scope(invocation, Some(owner_epoch), origin)
+    }
+
+    /// A scope for the whole activation: it never closes and follows the current owner epoch.
+    pub(crate) fn background(
+        self: &Arc<Self>,
+        actor: crate::actor::ActorKey,
+    ) -> Arc<dyn ActorDatabase> {
+        let invocation = ActorInvocation {
+            actor,
+            request_id: "background".into(),
+            method: "background".into(),
+            args: vec![],
+        };
+        self.scope(invocation, None, CommitOrigin::default())
+    }
+
+    fn scope(
+        self: &Arc<Self>,
+        invocation: ActorInvocation,
+        owner_epoch: Option<u64>,
         origin: CommitOrigin,
     ) -> Arc<DatabaseInvocation> {
         Arc::new(DatabaseInvocation {
@@ -241,7 +263,7 @@ impl ActorDatabase for DatabaseInvocation {
 
 struct InvocationScope {
     invocation: ActorInvocation,
-    owner_epoch: u64,
+    owner_epoch: Option<u64>,
     origin: CommitOrigin,
     committed: AtomicU64,
     active: AtomicBool,

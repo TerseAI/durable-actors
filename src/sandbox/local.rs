@@ -370,6 +370,7 @@ impl LocalHost {
 
 fn handle(lease: crate::host_leases::HostLease, region: &str, owner_epoch: u64) -> ActorHostHandle {
     ActorHostHandle {
+        initial_reply: None,
         lease: Some(lease.clone()),
         owner_epoch,
         host_id: lease.id,
@@ -398,6 +399,10 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
     }
     for (key, value) in [
         ("DURABLE_ACTORS_PROCESS_ROLE", "host".to_owned()),
+        (
+            "DURABLE_ACTORS_HOST_RESOURCES",
+            serde_json::to_string(&request.resources).expect("resources serializable"),
+        ),
         ("DURABLE_ACTORS_LOG_MODE", "development".into()),
         ("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1".into()),
         ("DURABLE_ACTORS_HOST_BIND", "127.0.0.1:0".into()),

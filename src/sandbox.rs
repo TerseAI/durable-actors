@@ -1,28 +1,60 @@
+use std::ops::RangeInclusive;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::host::HostId;
 
+pub(crate) mod assignment;
+pub(crate) mod connections;
 pub(crate) mod gke;
+mod kube_retry;
 mod local;
 mod local_store;
+pub(crate) mod modal;
 pub(crate) mod pool;
+mod remote;
+pub(crate) mod secrets;
 
 pub(crate) use local::LocalSandboxProvider;
 
+/// Kubernetes-style resources: `cpu_millis` and `memory_mib` are requests; an unset limit
+/// leaves that resource uncapped.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceLimits {
     pub cpu_millis: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_limit_millis: Option<u32>,
     pub memory_mib: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit_mib: Option<u32>,
 }
 
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            cpu_millis: 1000,
+            cpu_millis: 250,
+            cpu_limit_millis: None,
             memory_mib: 256,
+            memory_limit_mib: Some(256),
+        }
+    }
+}
+
+/// Values a deployment may request through `@Compute`. Operator defaults are not held to them.
+#[derive(Clone, Debug)]
+pub struct ResourceBounds {
+    pub cpu_millis: RangeInclusive<u32>,
+    pub memory_mib: RangeInclusive<u32>,
+}
+
+impl Default for ResourceBounds {
+    fn default() -> Self {
+        Self {
+            cpu_millis: 125..=4000,
+            memory_mib: 256..=4096,
         }
     }
 }
@@ -66,9 +98,11 @@ pub struct CreateSpareRequest {
     pub resources: ResourceLimits,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) initial_operation: Option<assignment::InitialOperation>,
     pub actor_is_new: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_hint: Option<String>,
@@ -97,6 +131,8 @@ pub struct EnsureHostRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorHostHandle {
+    #[serde(default)]
+    pub(crate) initial_reply: Option<serde_json::Value>,
     pub lease: Option<crate::host_leases::HostLease>,
     #[serde(default)]
     pub owner_epoch: u64,
@@ -157,6 +193,8 @@ impl std::error::Error for HostNotReady {}
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    async fn prewarm_spares(&self, _spares: &[SpareHandle]) {}
+
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }
@@ -168,6 +206,10 @@ pub trait SandboxProvider: Send + Sync {
         anyhow::bail!("provider does not support generic spares")
     }
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
+    /// Deletes finished sandboxes; providers whose sandboxes disappear on exit need nothing.
+    async fn reap_finished(&self) -> Result<()> {
+        Ok(())
+    }
 
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle>;
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination>;

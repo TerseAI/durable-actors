@@ -11,6 +11,7 @@ use crate::{
 };
 
 mod cleanup;
+mod prewarming;
 mod replenishment;
 
 #[derive(Clone)]
@@ -21,6 +22,10 @@ pub(crate) struct PoolConfig {
     pub fleet_maximum: u32,
     pub max_starting: u32,
     pub idle_ttl_seconds: u32,
+    pub refill_interval: Duration,
+    pub retire_concurrency: usize,
+    pub reap_interval: Duration,
+    pub pod_reap_interval: Duration,
     pub regions: Vec<String>,
     pub resources: ResourceLimits,
 }
@@ -29,18 +34,32 @@ pub(crate) struct SparePool {
     store: PoolStore,
     provider: Arc<dyn SandboxProvider>,
     pub config: PoolConfig,
+    runtime_images: Option<crate::control_plane::RuntimeImages>,
+    heartbeat: std::sync::atomic::AtomicU64,
 }
 
 impl SparePool {
+    #[cfg(test)]
     pub fn new(
         database: PostgresDatabase,
         provider: Arc<dyn SandboxProvider>,
         config: PoolConfig,
     ) -> Arc<Self> {
+        Self::with_runtime_images(database, provider, config, None)
+    }
+
+    pub fn with_runtime_images(
+        database: PostgresDatabase,
+        provider: Arc<dyn SandboxProvider>,
+        config: PoolConfig,
+        runtime_images: Option<crate::control_plane::RuntimeImages>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store: PoolStore(database, config.kind),
             provider,
             config,
+            runtime_images,
+            heartbeat: now_ms().into(),
         })
     }
 
@@ -57,7 +76,7 @@ impl SparePool {
         let result = self
             .store
             .claim(
-                &self.key(&spec.image_ref, region),
+                &self.key(self.image(spec)?, region),
                 host,
                 &spec.host_config_key(),
             )
@@ -123,21 +142,31 @@ impl SparePool {
                 ids.push(serde_json::from_str::<SpareHandle>(&handle)?.resource_id);
             }
         }
-        self.cleanup().await?;
         Ok(ids)
     }
 
-    pub fn start(self: &Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
-        tokio::spawn(self.clone().run(registry, stop));
+    /// Whether the housekeeping loop finished a pass within `stale_after`; a hung loop fails this.
+    pub fn housekeeping_alive(&self, stale_after: Duration) -> bool {
+        let last = self.heartbeat.load(std::sync::atomic::Ordering::Relaxed);
+        now_ms().saturating_sub(last) <= stale_after.as_millis() as u64
     }
 
-    async fn run(self: Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
+    /// Keeps this replica's connections to ready spares warm; every serving replica needs this.
+    pub fn start(self: &Arc<Self>, stop: CancellationToken) {
+        tokio::spawn(self.clone().prewarm(stop));
+    }
+
+    /// Fills, trims and cleans up the pool. Only the single pool manager runs this.
+    pub async fn run(self: Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
         let mut jobs = tokio::task::JoinSet::new();
         let mut cleaning = false;
         let mut reaping = false;
-        let mut reap_interval = tokio::time::interval(Duration::from_secs(30));
+        let mut reaping_pods = false;
+        let mut reap_interval = tokio::time::interval(self.config.reap_interval);
         reap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut pod_reap_interval = tokio::time::interval(self.config.pod_reap_interval);
+        pod_reap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut interval = tokio::time::interval(self.config.refill_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
@@ -152,6 +181,10 @@ impl SparePool {
                             reaping = false;
                             report(result);
                         }
+                        Ok(Background::PodReap(result)) => {
+                            reaping_pods = false;
+                            report(result);
+                        }
                         Ok(Background::Cleanup(result)) => {
                             cleaning = false;
                             report(result);
@@ -164,6 +197,12 @@ impl SparePool {
                     reaping = true;
                     let pool = self.clone();
                     jobs.spawn(async move { Background::Reap(pool.forget_stopped().await) });
+                    continue;
+                }
+                _ = pod_reap_interval.tick(), if !reaping_pods => {
+                    reaping_pods = true;
+                    let pool = self.clone();
+                    jobs.spawn(async move { Background::PodReap(pool.provider.reap_finished().await) });
                     continue;
                 }
                 _ = interval.tick() => {},
@@ -191,6 +230,8 @@ impl SparePool {
                 let pool = self.clone();
                 jobs.spawn(async move { Background::Cleanup(pool.cleanup().await) });
             }
+            self.heartbeat
+                .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -199,8 +240,8 @@ impl SparePool {
         let images: std::collections::BTreeSet<_> = deployments
             .iter()
             .filter(|spec| spec.code_snapshot.is_some())
-            .map(|spec| spec.image_ref.as_str())
-            .collect();
+            .map(|spec| self.image(spec))
+            .collect::<Result<_>>()?;
         let keys: Vec<String> = images
             .iter()
             .flat_map(|image| {
@@ -236,6 +277,13 @@ impl SparePool {
             }
         }
         Ok(builds)
+    }
+
+    fn image<'a>(&'a self, spec: &'a HostLaunchSpec) -> Result<&'a str> {
+        match &self.runtime_images {
+            Some(images) => images.for_deployment(spec),
+            None => Ok(&spec.image_ref),
+        }
     }
 
     async fn build(&self, key: &str, image: &str, region: &str, name: String) -> Result<()> {
@@ -286,6 +334,9 @@ impl SparePool {
                 && !handle.control_token.is_empty(),
             "provider returned an invalid spare"
         );
+        self.provider
+            .prewarm_spares(std::slice::from_ref(&handle))
+            .await;
         Ok(handle)
     }
 
@@ -293,7 +344,7 @@ impl SparePool {
         use futures_util::StreamExt;
         let results = futures_util::stream::iter(self.store.retiring().await?)
             .map(|handle| self.retire(handle))
-            .buffer_unordered(8)
+            .buffer_unordered(self.config.retire_concurrency)
             .collect::<Vec<_>>()
             .await;
         for result in results {
@@ -331,8 +382,15 @@ struct Build {
 
 enum Background {
     Reap(Result<()>),
+    PodReap(Result<()>),
     Build(Result<()>),
     Cleanup(Result<()>),
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 fn report(result: Result<()>) {
@@ -359,7 +417,7 @@ impl PoolStore {
     async fn claim(&self, key: &str, host: &str, config_key: &str) -> Result<Option<SpareHandle>> {
         self.0.query_opt(
             "UPDATE durable_actors_spares SET status = 'claimed', host_id = $2, host_config_key = $3, expires_at = clock_timestamp() + interval '120 seconds' \
-             WHERE name = (SELECT name FROM durable_actors_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > clock_timestamp() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING handle",
+             WHERE name = (SELECT name FROM durable_actors_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > statement_timestamp() AND expires_at > clock_timestamp() ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING handle",
             &[&key, &host, &config_key],
         ).await?.map(|row| serde_json::from_str(row.get::<_, &str>(0)).context("decode spare handle")).transpose()
     }

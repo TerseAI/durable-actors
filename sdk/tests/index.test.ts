@@ -27,13 +27,13 @@ test("the package root exposes the complete minimal actor API", () => {
     assert.deepEqual(Object.keys(api).sort(), [
         "Actor",
         "ActorInvocationError",
-        "Atomic",
         "Compute",
         "Emittable",
         "Ephemeral",
         "Interleave",
         "Persisted",
-        "Resource"
+        "Resource",
+        "unchecked"
     ])
 })
 
@@ -64,7 +64,7 @@ test("actor calls read environment settings lazily without a setup function", ()
             await assert.rejects(counter.broadcast("hello"), error => error instanceof ActorInvocationError && error.code === "unauthenticated");
             assert.deepEqual(requests, [
                 "https://control.example.com/v1/projects/default/actors/Counter/one/invoke",
-                "https://control.example.com/v1/projects/default/actors/Counter/one/find-actor"
+                "https://control.example.com/v1/projects/default/actors/Counter/one/socket-effects"
             ]);
         `
         ])

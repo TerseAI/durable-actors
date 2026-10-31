@@ -1331,6 +1331,66 @@ async fn activation_services_immediate_writes_during_hydration() -> Result<()> {
 }
 
 #[tokio::test]
+async fn activation_tolerates_immediate_writes_that_leave_sqlite_unchanged() -> Result<()> {
+    struct UpsertingExecutor;
+
+    #[async_trait]
+    impl ActorExecutor for UpsertingExecutor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+
+        async fn hydrate(&self, _: String, database: Arc<dyn ActorDatabase>) -> Result<()> {
+            let upsert = |value: &str| DatabaseCall::Exec {
+                sql: "INSERT INTO kv (key, value) VALUES ('sandbox', ?) \
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                    .into(),
+                bindings: vec![SqlValue::Text(value.into())],
+                immediate: true,
+            };
+            database
+                .call(DatabaseCall::Exec {
+                    sql: "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)".into(),
+                    bindings: vec![],
+                    immediate: true,
+                })
+                .await?;
+            database.call(upsert("sb-1")).await?;
+            database.call(upsert("sb-1")).await?;
+            database.call(upsert("sb-2")).await?;
+            Ok(())
+        }
+
+        async fn invoke(
+            &self,
+            _: ActorMethodInvocation,
+            _: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            unreachable!("the test only activates")
+        }
+    }
+
+    let state = Arc::new(FakeStateTransport::default());
+    let host = create_host(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host".into(),
+        },
+        Arc::new(UpsertingExecutor),
+        Arc::new(FakeAuthority::default()),
+        state.clone(),
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    );
+
+    let activation = tokio::time::timeout(Duration::from_secs(1), host.activate()).await??;
+    assert_eq!(activation.state_version, 3);
+    assert_eq!(state.writes.lock().unwrap().len(), 3);
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_write_ticket()
 -> Result<()> {
     let snapshot = StateSnapshot::new(
@@ -1383,12 +1443,72 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
     Ok(())
 }
 
+#[tokio::test]
+async fn early_database_preparation_restores_once_without_hydrating_customer_code() -> Result<()> {
+    struct Executor(AtomicUsize);
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        async fn hydrate(&self, _: String, database: Arc<dyn ActorDatabase>) -> Result<()> {
+            assert_eq!(fields(&*database).await?, json!({"count": 41}));
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn invoke(
+            &self,
+            _: ActorMethodInvocation,
+            _: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            unreachable!()
+        }
+    }
+    let sqlite = crate::test_sqlite::snapshot(json!({"count": 41}))?;
+    let snapshot = StateSnapshot::new(3, 6, "previous".into(), sqlite, json!(41))?.encode()?;
+    let authority = Arc::new(FakeAuthority {
+        activation_state: Some(snapshot),
+        ..Default::default()
+    });
+    let endpoint = HostEndpoint {
+        id: super::super::HostId::new("prepared-host"),
+        route: "http://host".into(),
+    };
+    let database = HostDatabase::new(
+        endpoint.clone(),
+        authority.clone(),
+        Arc::new(FakeStateTransport::default()),
+        replication().await,
+    );
+    let executor = Arc::new(Executor(AtomicUsize::new(0)));
+    for _ in 0..2 {
+        assert!(matches!(
+            database.activate().await?,
+            PreparedActivation::Hydrate { .. }
+        ));
+    }
+    assert_eq!(executor.0.load(Ordering::SeqCst), 0);
+    let host = ActorHost::new(
+        endpoint,
+        counter(),
+        executor.clone(),
+        database,
+        Arc::new(EmptySocketPublisher),
+    );
+    assert_eq!(host.activate().await?.state_version, 3);
+    host.activate().await?;
+    assert_eq!(executor.0.load(Ordering::SeqCst), 1);
+    assert_eq!(authority.sqlite_reads.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
 #[derive(Default)]
 struct FakeAuthority {
     persisted: Option<Arc<FakeStateTransport>>,
     history: std::collections::HashMap<String, bytes::Bytes>,
     fenced: std::sync::atomic::AtomicBool,
     loads: AtomicUsize,
+    sqlite_reads: AtomicUsize,
     initial_state: Option<(u64, bytes::Bytes)>,
     activation_state: Option<bytes::Bytes>,
     preparations: Mutex<Vec<u64>>,
@@ -1421,11 +1541,6 @@ impl ActorStorage for FakeAuthority {
         anyhow::ensure!(!self.fenced.load(Ordering::SeqCst), "host lease expired");
         Ok(())
     }
-    async fn verify_actor_ownership(&self, epoch: u64) -> Result<()> {
-        self.ensure_authority()?;
-        anyhow::ensure!(epoch == 7, "actor ownership changed");
-        Ok(())
-    }
     async fn load_actor_state(&self, _: u64) -> Result<(u64, bytes::Bytes)> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         if let Some(bytes) = self
@@ -1438,6 +1553,7 @@ impl ActorStorage for FakeAuthority {
         Ok(self.initial_state.clone().unwrap_or_default())
     }
     async fn read_sqlite(&self, bytes: &[u8]) -> Result<crate::state_log::SqliteSnapshot> {
+        self.sqlite_reads.fetch_add(1, Ordering::SeqCst);
         let snapshot = StateSnapshot::decode(bytes)?;
         let object = crate::storage::snapshot_object_name(
             &counter(),
@@ -1448,6 +1564,7 @@ impl ActorStorage for FakeAuthority {
             &mut FakeHistory(&self.history),
             &object,
             bytes::Bytes::copy_from_slice(bytes),
+            None,
         )
         .await?
         .sqlite)
@@ -1826,7 +1943,7 @@ async fn invalid_socket_effects_do_not_commit_actor_state() -> Result<()> {
 }
 
 #[tokio::test]
-async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers() -> Result<()> {
+async fn publishes_automatic_state_after_commit() -> Result<()> {
     struct Emitter;
     #[async_trait]
     impl ActorExecutor for Emitter {
@@ -1850,7 +1967,7 @@ async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers(
     }
     struct Publisher {
         state: Arc<FakeStateTransport>,
-        values: Mutex<Vec<Value>>,
+        values: tokio::sync::mpsc::UnboundedSender<Value>,
     }
     #[async_trait]
     impl crate::actor::ActorSocketPublisher for Publisher {
@@ -1864,15 +1981,16 @@ async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers(
             .state_version;
             let value = serde_json::to_value(effects)?;
             assert_eq!(value[0]["version"], version);
-            self.values.lock().unwrap().push(value);
+            self.values.send(value)?;
             Ok(())
         }
     }
     let authority = Arc::new(FakeAuthority::default());
     let state = Arc::new(FakeStateTransport::default());
+    let (values, mut published) = tokio::sync::mpsc::unbounded_channel();
     let publisher = Arc::new(Publisher {
         state: state.clone(),
-        values: Mutex::new(vec![]),
+        values,
     });
     let host = create_host(
         HostEndpoint {
@@ -1887,18 +2005,19 @@ async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers(
     );
     assert_eq!(invoke(&host, "one").await?, completed(1));
     assert_eq!(invoke(&host, "two").await?, completed(2));
-    {
-        let values = publisher.values.lock().unwrap();
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[0][0]["changes"]["count"], 1);
-        assert_eq!(values[1][0]["changes"]["count"], 2);
+    let mut counts = Vec::new();
+    for _ in 0..2 {
+        let value = tokio::time::timeout(Duration::from_secs(1), published.recv()).await?;
+        counts.push(value.unwrap()[0]["changes"]["count"].as_u64());
     }
+    counts.sort();
+    assert_eq!(counts, [Some(1), Some(2)]);
     state.failures.store(1, Ordering::SeqCst);
     assert!(matches!(
         invoke(&host, "failed").await?,
         ActorExecutionResult::Failed { .. }
     ));
-    assert_eq!(publisher.values.lock().unwrap().len(), 2);
+    assert!(published.try_recv().is_err());
     Ok(())
 }
 
@@ -2097,6 +2216,77 @@ async fn immediate_writes_wait_for_durability_and_share_atomic_versions() -> Res
     Ok(())
 }
 
+struct TransactionWriter {
+    admission: watch::Sender<()>,
+}
+#[async_trait]
+impl ActorExecutor for TransactionWriter {
+    fn supports(&self, _: &str) -> bool {
+        true
+    }
+    fn invocation_admission(&self) -> Option<watch::Receiver<()>> {
+        Some(self.admission.subscribe())
+    }
+    async fn invoke(
+        &self,
+        invocation: ActorMethodInvocation,
+        database: Arc<dyn ActorDatabase>,
+    ) -> Result<ActorMethodOutcome> {
+        let count = fields(&*database).await?["count"].as_u64().unwrap_or(0);
+        if invocation.request_id == "savepoints" {
+            exec(&*database, "BEGIN").await?;
+            persist_fields(&*database, json!({ "count": count + 1 }), true).await?;
+            persist_fields(&*database, json!({ "count": count + 2 }), true).await?;
+            database
+                .call(DatabaseCall::Exec {
+                    sql: "COMMIT".into(),
+                    bindings: vec![],
+                    immediate: true,
+                })
+                .await?;
+            exec(&*database, "BEGIN").await?;
+            persist_fields(&*database, json!({ "count": count + 100 }), true).await?;
+            exec(&*database, "ROLLBACK").await?;
+        }
+        Ok(ActorMethodOutcome::Completed {
+            result: json!(fields(&*database).await?["count"].as_u64().unwrap_or(0)),
+            effects: vec![],
+        })
+    }
+}
+
+#[tokio::test]
+async fn sql_transactions_publish_once_on_commit_and_never_on_rollback() -> Result<()> {
+    let writes = Arc::new(FakeStateTransport::default());
+    let host = create_host(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid/".into(),
+        },
+        Arc::new(TransactionWriter {
+            admission: watch::channel(()).0,
+        }),
+        Arc::new(FakeAuthority::default()),
+        writes.clone(),
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    );
+    assert_eq!(invoke(&host, "savepoints").await?, completed(2));
+    let immediate = writes
+        .writes
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|bytes| StateSnapshot::decode(bytes))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|snapshot| snapshot.completion.is_none())
+        .count();
+    assert_eq!(immediate, 1, "only the committed transaction publishes");
+    assert_eq!(invoke(&host, "read").await?, completed(2));
+    Ok(())
+}
+
 #[tokio::test]
 async fn failed_immediate_write_stops_the_actor_without_acknowledging_the_write() -> Result<()> {
     let (written, mut writes_seen) = mpsc::unbounded_channel();
@@ -2246,6 +2436,114 @@ async fn database_handles_expire_with_their_invocation() -> Result<()> {
     let retained = executor.0.lock().unwrap().clone().unwrap();
     let error = retained.call(DatabaseCall::Fields).await.unwrap_err();
     assert!(error.to_string().contains("no active invocation"));
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_database_writes_outlive_invocations() -> Result<()> {
+    let endpoint = HostEndpoint {
+        id: super::super::HostId::new("host-1"),
+        route: "http://host.invalid/".into(),
+    };
+    let writes = Arc::new(FakeStateTransport::default());
+    let database = HostDatabase::new(
+        endpoint.clone(),
+        Arc::new(FakeAuthority::default()),
+        writes.clone(),
+        replication().await,
+    );
+    let background = database.background(counter());
+    let host = ActorHost::new(
+        endpoint,
+        counter(),
+        Arc::new(IncrementingExecutor {
+            invocations: AtomicU64::new(0),
+        }),
+        database,
+        Arc::new(EmptySocketPublisher),
+    );
+    assert_eq!(invoke(&host, "request-1").await?, completed(1));
+    persist_fields(&*background, json!({"count": 5}), true).await?;
+    assert_eq!(invoke(&host, "request-2").await?, completed(6));
+    let background_writes = writes
+        .writes
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|bytes| StateSnapshot::decode(bytes))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|snapshot| snapshot.request_id == "background")
+        .count();
+    assert_eq!(background_writes, 1);
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_database_follows_the_owner_epoch_across_activations() -> Result<()> {
+    struct Executor;
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            database: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            if invocation.method == "reset" {
+                return Ok(ActorMethodOutcome::Failed(
+                    crate::actor::ActorInvocationFailure {
+                        code: "actor_worker_failed".into(),
+                        message: "reset".into(),
+                    },
+                ));
+            }
+            increment(&*database).await
+        }
+    }
+    let endpoint = HostEndpoint {
+        id: super::super::HostId::new("host-1"),
+        route: "http://host.invalid/".into(),
+    };
+    let database = HostDatabase::new(
+        endpoint.clone(),
+        Arc::new(FakeAuthority::default()),
+        Arc::new(FakeStateTransport::default()),
+        replication().await,
+    );
+    let background = database.background(counter());
+    let host = ActorHost::new(
+        endpoint,
+        counter(),
+        Arc::new(Executor),
+        database,
+        Arc::new(EmptySocketPublisher),
+    );
+    let call = |method: &'static str, owner_epoch: u64| {
+        host.invoke_actor(
+            ActorInvocation {
+                request_id: method.into(),
+                actor: counter(),
+                method: method.into(),
+                args: Vec::new(),
+            },
+            owner_epoch,
+            HostState::Warm,
+            0.0,
+        )
+    };
+    assert_eq!(call("first", 1).await.0?, completed(1));
+    assert!(matches!(
+        call("reset", 1).await.0?,
+        ActorExecutionResult::Failed { .. }
+    ));
+    assert_eq!(call("second", 2).await.0?, completed(1));
+    persist_fields(&*background, json!({"count": 5}), true).await?;
+    assert_eq!(call("third", 2).await.0?, completed(6));
     host.drain(Duration::from_secs(1)).await?;
     Ok(())
 }

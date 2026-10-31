@@ -529,6 +529,8 @@ impl Stack {
             actor_id: "counter-1".into(),
         };
         let spec = HostLaunchSpec {
+            image_policy: Default::default(),
+            organization_id: "org-test".into(),
             sandboxes: Default::default(),
             source: None,
             code_snapshot: None,
@@ -562,32 +564,26 @@ impl Stack {
         );
         let gateway_listener = TcpListener::bind("127.0.0.1:0").await?;
         let gateway = format!("http://{}", gateway_listener.local_addr()?);
-        let directory_service =
-            Arc::new(super::super::socket_directory::MemorySocketDirectory::default());
+        let hub = super::super::socket_bus::MemorySocketHub::default();
         let sockets = super::super::socket_gateway::SocketGateway::start(
-            gateway.clone(),
-            directory_service.clone(),
-            32768,
+            hub.join(32768),
             true,
             tokio_util::sync::CancellationToken::new(),
-        )
-        .await?;
+            crate::sandbox::connections::HostConnections::new()?.client,
+        )?;
         service.gateway = Some(super::super::gateway::Gateway::new(
             &issuer,
             gateway.clone(),
             sockets.clone(),
         )?);
-        sockets.owner(&actor).await?;
         let second_listener = TcpListener::bind("127.0.0.1:0").await?;
         let second_origin = format!("http://{}", second_listener.local_addr()?);
         let second_sockets = super::super::socket_gateway::SocketGateway::start(
-            second_origin.clone(),
-            directory_service,
-            32768,
+            hub.join(32768),
             true,
             tokio_util::sync::CancellationToken::new(),
-        )
-        .await?;
+            crate::sandbox::connections::HostConnections::new()?.client,
+        )?;
         let mut second_service = service.clone();
         second_service.gateway = Some(super::super::gateway::Gateway::new(
             &issuer,
@@ -617,6 +613,7 @@ impl Stack {
         });
         let token = issuer
             .issue_host(
+                "org-test",
                 &host_id,
                 "00000000-0000-4000-8000-000000000001",
                 &revision,
@@ -633,7 +630,7 @@ impl Stack {
                         directory: runtime.directory.path().into(),
                     },
                     region: "us-east".into(),
-                    token: None,
+                    tokens: None,
                 },
                 host_id.clone(),
                 "00000000-0000-4000-8000-000000000001".into(),
@@ -646,15 +643,12 @@ impl Stack {
             .with_activation(true, None),
         );
         storage
-            .register(
-                &HostLeaseRequest {
-                    id: host_id.clone(),
-                    session_id: "00000000-0000-4000-8000-000000000001".into(),
-                    route: host_route.clone(),
-                    duration_ms: 60_000,
-                },
-                Default::default(),
-            )
+            .register(&HostLeaseRequest {
+                id: host_id.clone(),
+                session_id: "00000000-0000-4000-8000-000000000001".into(),
+                route: host_route.clone(),
+                duration_ms: 60_000,
+            })
             .await?;
 
         let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(
@@ -678,7 +672,7 @@ impl Stack {
             endpoint,
             actor.clone(),
             connection.executor(),
-            database,
+            database.clone(),
             local_sockets.clone(),
         ));
         connection
@@ -686,6 +680,7 @@ impl Stack {
                 host.actor().clone(),
                 Some(local_sockets.clone()),
                 Some(source.unwrap_or_else(|| local_sockets.clone())),
+                Some(database.background(host.actor().clone())),
             )
             .await?;
         host.activate().await?;
@@ -801,7 +796,7 @@ async fn start_worker(
         &entrypoint,
         format!(
             r#"
-import {{ Actor, Atomic, Persisted, Emittable, type ActorSocket }} from {};
+import {{ Actor, Persisted, Emittable, type ActorSocket }} from {};
 import {{ existsSync }} from 'node:fs';
 import {{ setTimeout }} from 'node:timers/promises';
 export class Counter extends Actor<{{name?:string; notified?:boolean; user?:string}}, {{type:"start"; padding?:string}}, {{delta:string}} | {{text:string}}> {{
@@ -812,8 +807,12 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     async readHistory() {{ return this.history; }}
     async appendHistory() {{ this.history += 'saved'; return this.history; }}
     async change() {{ this.count++; this.count++; this.secret = 'changed'; }}
-    @Atomic
-    async fail() {{ this.count++; throw new Error('failed'); }}
+    async fail() {{
+        return this.db.transaction(async () => {{
+            this.count++;
+            throw new Error('failed');
+        }});
+    }}
     async onConnect(socket: ActorSocket<{{name?:string; notified?:boolean; user?:string}}, {{delta:string}} | {{text:string}}, "member">) {{
         socket.metadata = {{ name: 'member' }};
         socket.setTags('member');
@@ -910,10 +909,6 @@ struct SocketTestProvisioner;
 
 #[async_trait]
 impl HostProvisioner for SocketTestProvisioner {
-    fn host_idle_timeout_ms(&self) -> u64 {
-        10_000
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -933,7 +928,8 @@ impl HostProvisioner for SocketTestProvisioner {
         _actor: &ActorKey,
         _new_actor: bool,
         _owner_hint: Option<&crate::bucket::OwnershipHint>,
-    ) -> Result<(HostLease, u64)> {
+        _: Option<&crate::sandbox::assignment::InitialOperation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
         anyhow::bail!("fixture host must be active")
     }
     async fn terminate_hosts(
@@ -978,8 +974,19 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
         .await?;
     let route = &stack.host_route;
     let gateway = &stack.gateway;
-    let token = target["token"].as_str().context("token missing")?;
-    let epoch = target["ownerEpoch"].as_u64().context("epoch missing")?;
+    assert_eq!(target, serde_json::json!({"homeRegion":"us-east"}));
+    let epoch = 1;
+    let ticket = stack.issuer.issue_invocation_target(
+        &stack.actor,
+        &stack.host_id,
+        "00000000-0000-4000-8000-000000000001",
+        "revision",
+        "us-east",
+        epoch,
+        None,
+        route,
+    )?;
+    let token = &ticket.token;
     let url = format!("{route}/v1/projects/default/actors/Counter/counter-1");
     let invocation = serde_json::json!({"requestId":"http-change", "ownerEpoch":epoch, "routingMs":0.0, "method":"change", "args":[]});
     assert_eq!(
@@ -1002,12 +1009,12 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
     assert_completed_invocation(reply, serde_json::Value::Null);
     let update = receive(&mut socket).await?;
     assert_eq!(update["changes"]["count"], 2);
-    let command = serde_json::json!({"ownerEpoch":epoch, "effects":[{"type":"broadcast", "message":{"type":"text", "data":"{\"notice\":\"hello\"}"}, "except_connection_ids":[], "tags":[]}]});
+    let command = serde_json::json!({"effects":[{"type":"broadcast", "message":{"type":"text", "data":"{\"notice\":\"hello\"}"}, "except_connection_ids":[], "tags":[]}]});
     assert_eq!(
         http.post(format!(
             "{gateway}/v1/projects/default/actors/Counter/counter-1/socket-effects"
         ))
-        .bearer_auth(token)
+        .bearer_auth("test-api-key")
         .json(&command)
         .send()
         .await?
@@ -1082,7 +1089,8 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
         "{}/v1/projects/default/actors/Counter/counter-1",
         stack.host_route
     );
-    let epoch = target["ownerEpoch"].as_u64().unwrap();
+    assert_eq!(target, serde_json::json!({"homeRegion":"us-east"}));
+    let epoch = 1;
     let expiry = crate::control_plane::auth::unix_seconds()? + 60;
     let ticket = stack
         .issuer
@@ -1150,11 +1158,11 @@ async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() 
     let warm: serde_json::Value = reqwest::Client::new()
         .post(format!(
             "{}/v1/projects/default/actors/Counter/counter-1/invoke",
-            reply["target"]["route"].as_str().unwrap()
+            stack.gateway
         ))
-        .bearer_auth(reply["target"]["token"].as_str().unwrap())
+        .bearer_auth("test-api-key")
         .json(&serde_json::json!({
-            "requestId":"warm-call", "ownerEpoch":reply["target"]["ownerEpoch"],
+            "requestId":"warm-call",
             "method":"readHistory", "args":[]
         }))
         .send()
@@ -1162,7 +1170,7 @@ async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() 
         .error_for_status()?
         .json()
         .await?;
-    assert_completed_invocation(warm, serde_json::json!("saved"));
+    assert_completed_invocation(warm["outcome"].clone(), serde_json::json!("saved"));
     stack.child.kill().await?;
     Ok(())
 }

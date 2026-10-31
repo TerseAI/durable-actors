@@ -6,6 +6,128 @@ use crate::{
 };
 use std::sync::Mutex;
 
+#[path = "access.rs"]
+mod access_tests;
+
+#[tokio::test]
+async fn persisted_deployments_cold_start_on_the_current_runtime_without_redeployment() -> Result<()>
+{
+    use crate::control_plane::admin::{AdminRegistry, ImagePolicy, PostgresAdminRegistry};
+    crate::postgres::testing::with_postgres(async |fixture| {
+        let registry = PostgresAdminRegistry::from_database(
+            crate::postgres::PostgresDatabase::connect(&fixture.url).await?,
+        );
+        let mut deployed = source();
+        deployed.image_ref = format!("runtime/platform@sha256:{}", "a".repeat(64));
+        registry.register_test_deployment(&deployed).await?;
+        let client = fixture.pool.get().await?;
+        client
+            .batch_execute("ALTER TABLE durable_actors_deployment DROP COLUMN image_policy")
+            .await?;
+        client
+            .batch_execute(include_str!(
+                "../../../migrations/V22__deployment_image_policy.sql"
+            ))
+            .await?;
+        let identity = deployed.host_config_key();
+        let current = format!("runtime/platform@sha256:{}", "b".repeat(64));
+        let provisioner = SandboxHostProvisioner::new(
+            Arc::new(Provider::default()),
+            HostSandboxRuntimeConfig {
+                control_plane_url: "http://control".into(),
+                jwt_issuer: "issuer".into(),
+                invocation_jwt_audience: "invocation".into(),
+                host_idle_timeout_ms: 10_000,
+            },
+            super::tests::test_issuer()?,
+            Some(super::super::process::RuntimeImages {
+                typescript: current.clone(),
+                python: "unused".into(),
+            }),
+        );
+        let actor = ActorKey {
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        };
+        let saved = registry.launch_spec("default").await?.unwrap();
+        let request = provisioner.request(&saved, "north-america-west", &actor)?;
+        assert_eq!(request.image_ref, current);
+        assert_eq!(request.code_snapshot, deployed.code_snapshot);
+        assert_eq!(request.host_config_key, identity);
+        assert_eq!(
+            registry.launch_spec("default").await?,
+            Some(deployed.clone())
+        );
+        deployed.image_policy = ImagePolicy::Custom;
+        registry.register_test_deployment(&deployed).await?;
+        let custom = registry.launch_spec("default").await?.unwrap();
+        assert_eq!(
+            provisioner
+                .request(&custom, "north-america-west", &actor)?
+                .image_ref,
+            deployed.image_ref
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn custom_image_registration_round_trips_without_adopting_the_platform_image() -> Result<()> {
+    let (service, admin, _) = fixture()?;
+    let routes = super::super::public_api::router(service, admin.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!(
+        "http://{}/v1/projects/default/deployment",
+        listener.local_addr()?
+    );
+    let server = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async {
+        axum::serve(listener, routes).await
+    }));
+    let client = reqwest::Client::new();
+    let image = format!("customer/runtime@sha256:{}", "a".repeat(64));
+    let bundle = crate::bundle::ActorBundle::decode(source().code_snapshot.as_ref().unwrap())?;
+    let body = serde_json::json!({"organizationId":"org-test", "imageRef":image, "bundle":bundle, "contract":contract()});
+    client
+        .put(&url)
+        .bearer_auth("api-key")
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    let saved = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(saved.image_policy, super::super::admin::ImagePolicy::Custom);
+    assert_eq!(saved.image_ref, image);
+    let mut current: serde_json::Value = client
+        .get(&url)
+        .bearer_auth("api-key")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(current["imageRef"], image);
+    current["secretRefs"] = serde_json::json!(["rotated"]);
+    client
+        .put(&url)
+        .bearer_auth("api-key")
+        .json(&current)
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(
+        admin
+            .current_deployment("default")
+            .await?
+            .unwrap()
+            .image_ref,
+        image
+    );
+    drop(server);
+    Ok(())
+}
+
 #[tokio::test]
 async fn openapi_is_available_without_credentials_or_a_deployment() -> Result<()> {
     let (service, admin, _) = fixture()?;
@@ -44,12 +166,13 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
     client
         .put(&url)
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"bundle":bundle,"contract":document}))
+        .json(&serde_json::json!({"organizationId":"org-test","bundle":bundle,"contract":document}))
         .send()
         .await?
         .error_for_status()?;
     let active = admin.current_deployment("default").await?.unwrap();
     assert_eq!(active.image_ref, "im-runtime");
+    assert_eq!(active.organization_id, "org-test");
     assert_eq!(active.actor_entrypoint.as_deref(), Some("actors.mjs"));
     assert_eq!(active.code_snapshot, Some(bundle.encode()?));
     assert!(active.sandboxes.contains_key("ChatRoom"));
@@ -72,6 +195,7 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
         .error_for_status()?;
     let rotated = admin.current_deployment("default").await?.unwrap();
     assert_eq!(rotated.code_snapshot, active.code_snapshot);
+    assert_eq!(rotated.organization_id, active.organization_id);
     assert_eq!(rotated.sandboxes, active.sandboxes);
     assert_ne!(rotated.host_config_key(), active.host_config_key());
     assert_eq!(
@@ -179,6 +303,35 @@ async fn bundle_registration_validates_immutable_artifacts_before_retiring_hosts
 }
 
 #[tokio::test]
+async fn registration_requires_an_organization() -> Result<()> {
+    let (service, admin, _) = fixture()?;
+    let routes = super::super::public_api::router(service, admin.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!(
+        "http://{}/v1/projects/default/deployment",
+        listener.local_addr()?
+    );
+    let server = tokio::spawn(async { axum::serve(listener, routes).await });
+    let bundle = crate::bundle::ActorBundle::decode(&crate::sandbox::testing::code_artifact(1))?;
+    for organization in [None, Some("")] {
+        let mut body = serde_json::json!({"bundle": bundle, "contract": contract()});
+        if let Some(organization) = organization {
+            body["organizationId"] = organization.into();
+        }
+        let response = reqwest::Client::new()
+            .put(&url)
+            .bearer_auth("api-key")
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+    assert!(admin.current_deployment("default").await?.is_none());
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn bundle_contracts_are_scoped_to_the_project() -> Result<()> {
     let (service, admin, _) = fixture()?;
     let first = source();
@@ -194,81 +347,6 @@ async fn bundle_contracts_are_scoped_to_the_project() -> Result<()> {
         .await?;
     service.delete_deployment(&admin, "default").await?;
     assert!(admin.current_deployment("team-b").await?.is_some());
-    Ok(())
-}
-
-#[tokio::test]
-async fn resolved_targets_expire_within_host_idle_lease_and_authorization_limits() -> Result<()> {
-    use crate::clock::{Clock, SystemClock};
-
-    for (default_idle_ms, override_idle_ms, lease_ms, grant_ms) in [
-        (10_000, None, 30_000, None),
-        (25_000, None, 30_000, Some(60_000)),
-        (1, None, 30_000, Some(60_000)),
-        (120_000, None, 8_000, Some(60_000)),
-        (120_000, None, 60_000, Some(120_000)),
-        (30_000, None, 30_000, Some(7_000)),
-        (10_000, Some(60_000), 120_000, None),
-        (60_000, Some(1_000), 120_000, None),
-    ] {
-        let (mut service, admin, _) = fixture_with_idle_timeout(default_idle_ms)?;
-        let mut spec = source();
-        let idle_ms = override_idle_ms.unwrap_or(default_idle_ms);
-        if let Some(timeout) = override_idle_ms {
-            spec.sandboxes.insert(
-                "Counter".into(),
-                serde_json::from_value(serde_json::json!({"idleTimeoutMs":timeout}))?,
-            );
-        }
-        admin.register_deployment(&spec, None).await?;
-        let actor = ActorKey {
-            project_id: "default".into(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-        };
-        let before = SystemClock.now_ms()?;
-        let lease = HostLease {
-            id: HostId::new(format!("host.v3.{}.one", spec.host_config_key())),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            route: "https://host.example.com".into(),
-            expires_at_ms: before + lease_ms,
-        };
-        let placements = Arc::new(LocalObjectPlacementStore::default());
-        placements.set_owner(&actor.storage_key(), lease.clone(), "north-america-west")?;
-        service.placements = placements;
-        let grant = grant_ms.map(|grant_ms| super::super::session::InvocationGrant {
-            subject: "subject".into(),
-            grant_id: "grant".into(),
-            expires_at: ((before + grant_ms) / 1_000) as i64,
-            methods: vec!["increment".into()],
-        });
-        let target = service
-            .resolve_actor_route(&actor, None, None, grant.clone())
-            .await?;
-        let after = SystemClock.now_ms()?;
-        let expiry = u64::try_from(target.expires_at_ms)?;
-        let authorization_expiry = grant.map_or(u64::MAX, |grant| grant.expires_at as u64 * 1_000);
-        assert!(
-            expiry <= after + idle_ms,
-            "target outlives host idle timeout: {idle_ms}ms"
-        );
-        assert!(expiry <= lease.expires_at_ms, "target outlives host lease");
-        assert!(
-            expiry <= authorization_expiry,
-            "target outlives authorization"
-        );
-        assert!(
-            expiry <= (after / 1_000 + 60) * 1_000,
-            "target outlives credential"
-        );
-        assert!(
-            expiry
-                >= (before + idle_ms)
-                    .min(lease.expires_at_ms)
-                    .min(authorization_expiry)
-                    .min((before / 1_000 + 60) * 1_000)
-        );
-    }
     Ok(())
 }
 
@@ -325,6 +403,8 @@ fn fixture_with_idle_timeout(
 
 fn source() -> HostLaunchSpec {
     HostLaunchSpec {
+        image_policy: super::super::admin::ImagePolicy::Platform,
+        organization_id: "org-test".into(),
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
@@ -343,6 +423,7 @@ fn contract() -> serde_json::Value {
 #[derive(Default)]
 struct Provider {
     retired: Mutex<Vec<String>>,
+    fail_termination: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
@@ -358,6 +439,12 @@ impl SandboxProvider for Provider {
             .lock()
             .unwrap()
             .push(request.host_config_key.clone());
+        if self
+            .fail_termination
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            anyhow::bail!("temporary shutdown failure");
+        }
         Ok(HostTermination {
             provider: "test".into(),
             resource_ids: vec![],

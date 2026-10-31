@@ -23,6 +23,7 @@ pub(super) struct DatabaseSession {
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
     replication: Arc<dyn Replicator>,
     cached_state: Option<ResidentDatabase>,
+    prepared_activation: Option<ActorActivation>,
     activation: Option<ActorActivation>,
 }
 
@@ -39,6 +40,7 @@ impl DatabaseSession {
             state,
             replication,
             cached_state: None,
+            prepared_activation: None,
             activation: None,
         }
     }
@@ -52,10 +54,11 @@ impl DatabaseSession {
     pub(super) async fn prepare_invocation(
         &mut self,
         invocation: &ActorInvocation,
-        owner_epoch: u64,
+        owner_epoch: Option<u64>,
         replay: bool,
         timings: &mut DatabaseTimings,
     ) -> Result<PreparedInvocation> {
+        let owner_epoch = owner_epoch.context("activation scopes cannot run invocations")?;
         if self.storage.ensure_authority().is_err() {
             return Ok(PreparedInvocation::Completed(
                 ActorExecutionResult::HostUnavailable,
@@ -95,7 +98,7 @@ impl DatabaseSession {
     pub(super) async fn database_call(
         &mut self,
         invocation: &ActorInvocation,
-        owner_epoch: u64,
+        owner_epoch: Option<u64>,
         origin: CommitOrigin,
         call: DatabaseCall,
     ) -> Result<DatabaseReply> {
@@ -114,15 +117,16 @@ impl DatabaseSession {
     async fn execute_database_call(
         &self,
         invocation: &ActorInvocation,
-        owner_epoch: u64,
+        owner_epoch: Option<u64>,
         origin: CommitOrigin,
         cached: &mut ResidentDatabase,
         call: DatabaseCall,
     ) -> Result<DatabaseReply> {
         ensure!(
-            cached.owner_epoch == owner_epoch,
+            owner_epoch.is_none_or(|owner_epoch| cached.owner_epoch == owner_epoch),
             "database call ownership changed"
         );
+        let owner_epoch = cached.owner_epoch;
         match &call {
             DatabaseCall::Alarm => {
                 let timestamp_ms = self.storage.get_alarm().await?;
@@ -154,15 +158,20 @@ impl DatabaseSession {
             Err(error) => return Ok(DatabaseReply::Rejected(error)),
         };
         if executed.committed {
+            let previous = cached.synced;
             cached.synced = self.replication.sync(&cached.sqlite.path()).await?;
+            // SQLite counts a row rewritten with identical bytes as a change but appends no WAL frames.
+            if immediate && cached.synced > previous {
+                self.publish_immediate(invocation, owner_epoch, cached, origin)
+                    .await?;
+            }
         }
-        if immediate && executed.committed {
-            self.publish_immediate(invocation, owner_epoch, cached, origin)
-                .await?;
-        }
-        Ok(DatabaseReply::Executed {
-            result: executed.result,
-            committed: commit.then_some(cached.synced),
+        Ok(match executed.result {
+            Ok(result) => DatabaseReply::Executed {
+                result,
+                committed: commit.then_some(cached.synced),
+            },
+            Err(error) => DatabaseReply::Rejected(error),
         })
     }
 
@@ -185,9 +194,14 @@ impl DatabaseSession {
     }
 
     pub(super) async fn prepare_activation(&mut self) -> Result<PreparedActivation> {
+        let prepared = self.prepared_activation.take();
         self.storage.ensure_authority()?;
         if let Some(activation) = &self.activation {
             return Ok(PreparedActivation::Completed(activation.clone()));
+        }
+        if let Some(activation) = prepared {
+            self.prepared_activation = Some(activation.clone());
+            return Ok(PreparedActivation::Hydrate { activation });
         }
         let mut activation = self.storage.acquire_actor().await?;
         if self.cached_state.is_none() {
@@ -207,6 +221,8 @@ impl DatabaseSession {
             };
             self.cached_state = Some(cached);
         }
+        self.storage.ensure_authority()?;
+        self.prepared_activation = Some(activation.clone());
         Ok(PreparedActivation::Hydrate { activation })
     }
 
@@ -215,6 +231,7 @@ impl DatabaseSession {
         mut activation: ActorActivation,
         result: Result<()>,
     ) -> Result<ActorActivation> {
+        self.prepared_activation = None;
         result?;
         self.storage.ensure_authority()?;
         let cached = self
@@ -233,11 +250,12 @@ impl DatabaseSession {
     pub(super) async fn complete(
         &mut self,
         invocation: &ActorInvocation,
-        owner_epoch: u64,
+        owner_epoch: Option<u64>,
         result: Value,
         committed: Option<u64>,
         origin: CommitOrigin,
     ) -> Result<u64> {
+        let owner_epoch = owner_epoch.context("activation scopes cannot complete invocations")?;
         let mut cached = self
             .cached_state
             .take()
@@ -269,6 +287,7 @@ impl DatabaseSession {
 
     pub(super) fn reset(&mut self) {
         self.cached_state = None;
+        self.prepared_activation = None;
         self.activation = None;
     }
     async fn take_or_load_state(

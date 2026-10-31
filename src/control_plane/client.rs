@@ -29,6 +29,15 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn report_lifecycle(
+        &self,
+        report: crate::actor_lifecycle::LifecycleReport,
+    ) -> Result<()> {
+        self.execute(ControlPlaneCommand::Lifecycle { report })
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn socket_operation(
         &self,
         actor: &ActorKey,
@@ -54,13 +63,6 @@ impl ControlPlaneClient {
         self.execute(ControlPlaneCommand::RequestTraces { traces, dropped })
             .await?;
         Ok(())
-    }
-
-    pub(crate) async fn notify_inventory_changed(&self) -> Result<()> {
-        match self.execute(ControlPlaneCommand::InventoryChanged).await? {
-            ControlPlaneCommandReply::Unit => Ok(()),
-            _ => anyhow::bail!("unexpected inventory notification response"),
-        }
     }
 
     pub(crate) async fn get_alarm(&self) -> Result<Option<i64>> {
@@ -102,17 +104,17 @@ impl ControlPlaneClient {
 
     pub(crate) async fn refresh_storage_access(
         &self,
-    ) -> Result<Option<crate::bucket::access::StorageToken>> {
+    ) -> Result<Option<crate::bucket::access::StorageTokens>> {
         match self
             .execute(ControlPlaneCommand::RefreshStorageAccess)
             .await?
         {
             ControlPlaneCommandReply::StorageAccess {
-                token,
+                tokens,
                 replacement_token,
             } => {
                 self.replace_token(&replacement_token)?;
-                Ok(token)
+                Ok(tokens)
             }
             _ => anyhow::bail!("unexpected storage credentials response"),
         }

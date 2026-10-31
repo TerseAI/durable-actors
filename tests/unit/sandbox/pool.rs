@@ -24,17 +24,94 @@ fn pool(database: PostgresDatabase) -> Arc<SparePool> {
 }
 
 #[tokio::test]
+async fn platform_spares_follow_current_images_while_custom_spares_remain_pinned() -> Result<()> {
+    use crate::control_plane::{
+        RuntimeImages,
+        admin::{ImagePolicy, LocalAdminRegistry},
+    };
+    with_postgres(async |fixture| {
+        let pool = SparePool::with_runtime_images(
+            PostgresDatabase::connect(&fixture.url).await?,
+            Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
+            config(1),
+            Some(RuntimeImages {
+                typescript: "im-b".into(),
+                python: "im-python".into(),
+            }),
+        );
+        let registry = LocalAdminRegistry::default();
+        let platform: HostLaunchSpec = serde_json::from_value(serde_json::json!({
+            "projectId":"platform", "organizationId":"org-test", "imagePolicy":"platform", "imageRef":"im-a",
+            "codeSnapshot":crate::sandbox::testing::code_artifact(1),
+            "workingDirectory":"/customer", "actorEntrypoint":"actors.mjs", "secretRefs":[]
+        }))?;
+        let mut custom = platform.clone();
+        custom.project_id = "custom".into();
+        custom.image_policy = ImagePolicy::Custom;
+        custom.image_ref = "im-custom".into();
+        registry.register_test_deployment(&platform).await?;
+        registry.register_test_deployment(&custom).await?;
+        let old_key = pool.key("im-a", "region");
+        let old_name = reserve(&pool.store, &old_key, 1).await?.unwrap();
+        let handle = SpareHandle {
+            name: old_name,
+            resource_id: "sb-old".into(),
+            route: "https://host.test".into(),
+            canonical_region: "region".into(),
+            control_route: String::new(),
+            control_token: String::new(),
+        };
+        pool.store.publish(&old_key, &handle, 600).await?;
+        let builds = pool.reconcile(&registry).await?;
+        let images: std::collections::BTreeSet<_> =
+            builds.iter().map(|build| build.image.as_str()).collect();
+        assert_eq!(images, ["im-b", "im-custom"].into_iter().collect());
+        assert_eq!(pool.store.retiring().await?, [handle.clone()]);
+        for build in builds {
+            pool.store
+                .publish(
+                    &build.key,
+                    &SpareHandle {
+                        name: build.name,
+                        resource_id: build.image,
+                        ..handle.clone()
+                    },
+                    600,
+                )
+                .await?;
+        }
+        assert_eq!(
+            pool.claim(&platform, "region", "platform-host", &pool.config.resources)
+                .await?
+                .unwrap()
+                .resource_id,
+            "im-b"
+        );
+        assert_eq!(
+            pool.claim(&custom, "region", "custom-host", &pool.config.resources)
+                .await?
+                .unwrap()
+                .resource_id,
+            "im-custom"
+        );
+        assert_eq!(registry.launch_spec("platform").await?, Some(platform));
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
 async fn custom_resources_cannot_claim_default_sized_spares() -> Result<()> {
     with_postgres(async |fixture| {
         let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
         let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
-            "projectId":"default","imageRef":"im-runtime","codeSnapshot":crate::sandbox::testing::code_artifact(1),"workingDirectory":"/customer","secretRefs":[]
+            "projectId":"default","organizationId":"org-test","imageRef":"im-runtime","codeSnapshot":crate::sandbox::testing::code_artifact(1),"workingDirectory":"/customer","secretRefs":[]
         }))?;
         let key = pool.key("im-runtime", "canada");
         let name = reserve(&pool.store, &key, 1).await?.unwrap();
         let spare = SpareHandle {name, resource_id:"sb-test".into(), route:"https://host.test".into(), canonical_region:"canada".into(), control_route:String::new(), control_token:String::new()};
         pool.store.publish(&key, &spare, 600).await?;
-        let larger = ResourceLimits {cpu_millis:2000, memory_mib:4096};
+        let larger = ResourceLimits {cpu_millis:2000, cpu_limit_millis:None, memory_mib:4096, memory_limit_mib:Some(4096)};
         assert!(pool.claim(&spec, "canada", "custom", &larger).await?.is_none());
         assert!(pool.claim(&spec, "canada", "default", &pool.config.resources).await?.is_some());
         Ok(())
@@ -186,6 +263,8 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
         for (project, image) in [("team-a", "im-a"), ("team-b", "im-b")] {
             registry
                 .register_test_deployment(&HostLaunchSpec {
+                    image_policy: Default::default(),
+                    organization_id: "org-test".into(),
                     sandboxes: Default::default(),
                     project_id: project.into(),
                     source: None,
@@ -240,6 +319,10 @@ fn config(idle: u32) -> PoolConfig {
         fleet_maximum: 64,
         max_starting: 8,
         idle_ttl_seconds: 600,
+        refill_interval: Duration::from_secs(1),
+        retire_concurrency: 8,
+        reap_interval: Duration::from_secs(30),
+        pod_reap_interval: Duration::from_secs(1),
         regions: vec!["region".into()],
         resources: ResourceLimits::default(),
     }
@@ -255,3 +338,17 @@ pub(super) async fn reserve(store: &PoolStore, key: &str, target: u32) -> Result
 
 #[path = "pool_replenishment.rs"]
 mod replenishment;
+
+#[test]
+fn housekeeping_health_follows_the_loop_heartbeat() -> Result<()> {
+    let pool = SparePool::new(
+        PostgresDatabase::lazy("postgres://localhost/unused")?,
+        Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
+        config(0),
+    );
+    assert!(pool.housekeeping_alive(Duration::from_secs(60)));
+    pool.heartbeat
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    assert!(!pool.housekeeping_alive(Duration::from_secs(60)));
+    Ok(())
+}

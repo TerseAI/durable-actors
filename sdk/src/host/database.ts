@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks"
+import { isDeepStrictEqual } from "node:util"
+
 import type { ActorAlarmState, ActorAlarmStorage } from "../actor/alarm.js"
-import { actorDatabaseMode } from "../actor/database.js"
-import type { ActorDatabase, SqliteValue } from "../actor/database.js"
+import type { ActorQueryResult, RuntimeActorDatabase, SqliteValue } from "../actor/database.js"
 import { errorMessage } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
@@ -34,15 +36,53 @@ type DatabaseTransport = (call: DatabaseCall) => DatabaseResult
 
 class DatabaseCommitError extends Error {}
 
-class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
+type FieldRestore = (value: JsonValue | undefined) => void
+
+class DatabaseProxy implements RuntimeActorDatabase, ActorAlarmStorage {
+    private readonly transactionDepth = new AsyncLocalStorage<number>()
+    private depth = 0
+    private transactionsUnavailable: string | undefined
+    private readonly fieldRestores = new Map<string, FieldRestore>()
+
     constructor(private readonly transport: DatabaseTransport) {}
 
     exec<Row extends object>(sql: string, ...bindings: SqliteValue[]): Row[] {
-        const result = this.transport({ op: "exec", sql, bindings: bindings.map(encode), immediate: immediate() })
+        const { columns, rows } = this.query(sql, ...bindings)
+        return rows.map(row => Object.fromEntries(row.map((value, index) => [columns[index], value])) as Row)
+    }
+
+    query(sql: string, ...bindings: SqliteValue[]): ActorQueryResult {
+        this.assertAccess()
+        const result = this.transport({ op: "exec", sql, bindings: bindings.map(encode), immediate: true })
         if (result.type !== "rows") throw unexpected(result)
-        return result.rows.map(
-            row => Object.fromEntries(row.map((value, index) => [result.columns[index], decode(value)])) as Row
-        )
+        return { columns: result.columns, rows: result.rows.map(row => row.map(decode)) }
+    }
+
+    async transaction<T>(operation: () => Promise<T>): Promise<T> {
+        if (this.transactionsUnavailable !== undefined) throw new Error(this.transactionsUnavailable)
+        this.assertAccess()
+        const depth = this.depth + 1
+        this.control(depth === 1 ? "BEGIN" : `SAVEPOINT ${savepoint(depth)}`)
+        this.depth = depth
+        try {
+            const result = await this.transactionDepth.run(depth, operation)
+            if (this.depth !== depth) throw new Error("await nested db.transaction calls before their parent returns")
+            this.control(depth === 1 ? "COMMIT" : `RELEASE ${savepoint(depth)}`)
+            return result
+        } catch (error) {
+            if (this.depth >= depth) this.rollbackTo(depth)
+            throw error
+        } finally {
+            this.depth = Math.min(this.depth, depth - 1)
+        }
+    }
+
+    rejectTransactions(reason: string): void {
+        this.transactionsUnavailable = reason
+    }
+
+    onFieldRestore(name: string, restore: FieldRestore): void {
+        this.fieldRestores.set(name, restore)
     }
 
     fields(): JsonObject {
@@ -58,11 +98,11 @@ class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
     }
 
     setAlarm(timestampMs: number): void {
-        this.transport({ op: "set_alarm", timestamp_ms: timestampMs, immediate: immediate() })
+        this.transport({ op: "set_alarm", timestamp_ms: timestampMs, immediate: true })
     }
 
     deleteAlarm(): void {
-        this.transport({ op: "delete_alarm", immediate: immediate() })
+        this.transport({ op: "delete_alarm", immediate: true })
     }
 
     initializeFields(fields: JsonObject): void {
@@ -70,14 +110,16 @@ class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
     }
 
     persistField(name: string, value: JsonValue | undefined): void {
+        this.assertAccess()
         this.transport(
             value === undefined
-                ? { op: "delete_field", name, immediate: immediate() }
-                : { op: "persist_field", name, value, immediate: immediate() }
+                ? { op: "delete_field", name, immediate: true }
+                : { op: "persist_field", name, value, immediate: true }
         )
     }
 
     commit(): void {
+        if (this.depth > 0) throw new Error("await every db.transaction before the actor method returns")
         try {
             this.transport({ op: "commit" })
         } catch (cause) {
@@ -87,11 +129,47 @@ class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
 
     rollback(): void {
         this.transport({ op: "rollback" })
+        this.depth = 0
+    }
+
+    // Work outside the open transaction, such as un-awaited or background calls, would otherwise join it.
+    private assertAccess(): void {
+        if ((this.transactionDepth.getStore() ?? 0) !== this.depth)
+            throw new Error(
+                "actor database is in use by a db.transaction; await it before using the database elsewhere"
+            )
+    }
+
+    private rollbackTo(depth: number): void {
+        const written = this.fields()
+        try {
+            if (depth === 1) this.transport({ op: "rollback" })
+            else {
+                this.control(`ROLLBACK TO ${savepoint(depth)}`)
+                this.control(`RELEASE ${savepoint(depth)}`)
+            }
+        } catch {
+            // SQLite already rolled back the whole transaction, for example after INSERT OR ROLLBACK.
+            this.rollback()
+            return this.restoreFields()
+        }
+        this.restoreFields(written)
+    }
+
+    private control(sql: string): void {
+        this.transport({ op: "exec", sql, bindings: [], immediate: true })
+    }
+
+    // Only fields the rollback changed are restored, so unsaved in-memory edits to other fields survive.
+    private restoreFields(written?: JsonObject): void {
+        const fields = this.fields()
+        for (const [name, restore] of this.fieldRestores)
+            if (written === undefined || !isDeepStrictEqual(written[name], fields[name])) restore(fields[name])
     }
 }
 
-function immediate(): boolean {
-    return actorDatabaseMode() === "immediate"
+function savepoint(depth: number): string {
+    return `actor_transaction_${depth}`
 }
 
 function encode(value: SqliteValue): DatabaseValue {

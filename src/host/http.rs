@@ -13,7 +13,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::{
-    actor::{ActorExecutionResult, ActorInvocation, ActorKey},
+    actor::{ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketPublisher},
     control_plane::{ActorJwtVerifier, ActorPrincipal},
     host::{ActorHost, HostId, sockets::HostSockets},
 };
@@ -52,6 +52,84 @@ impl ActorHostHttpService {
             )
             .layer(DefaultBodyLimit::disable())
             .with_state(Arc::new(self))
+    }
+
+    pub(super) async fn execute_initial(
+        &self,
+        operation: crate::sandbox::assignment::InitialOperation,
+        owner_epoch: u64,
+        startup_ms: f64,
+    ) -> anyhow::Result<Value> {
+        use crate::sandbox::assignment::InitialRequest;
+        let routing_ms = operation.routing_ms + startup_ms;
+        match operation.request {
+            InitialRequest::Invoke { invocation, grant } => {
+                anyhow::ensure!(
+                    invocation.actor == *self.host.actor(),
+                    "assignment operation actor mismatch"
+                );
+                invocation.validate()?;
+                let now =
+                    i64::try_from(crate::clock::Clock::now_ms(&crate::clock::SystemClock)? / 1000)?;
+                if authorize_grant(grant.as_ref(), Some(&invocation.method)).is_err()
+                    || grant.as_ref().is_some_and(|grant| grant.expires_at <= now)
+                {
+                    return Ok(serde_json::to_value(
+                        InvocationReply::failed(
+                            "forbidden",
+                            "operation is outside the actor grant",
+                        )
+                        .with_metadata(None),
+                    )?);
+                }
+                Ok(serde_json::to_value(
+                    self.execute(invocation, owner_epoch, HostState::Cold, routing_ms)
+                        .await,
+                )?)
+            }
+            InitialRequest::Socket { invocation } => {
+                anyhow::ensure!(
+                    invocation.actor == *self.host.actor(),
+                    "assignment operation actor mismatch"
+                );
+                Ok(serde_json::to_value(
+                    self.execute_socket(invocation, owner_epoch, HostState::Cold, routing_ms)
+                        .await,
+                )?)
+            }
+        }
+    }
+
+    async fn execute_socket(
+        &self,
+        invocation: crate::actor::ActorSocketInvocation,
+        owner_epoch: u64,
+        host_state: HostState,
+        routing_ms: f64,
+    ) -> crate::control_plane::socket_gateway::SocketEventReply {
+        use crate::control_plane::socket_gateway::SocketEventReply;
+        match self
+            .host
+            .handle_socket_event_since(
+                invocation,
+                owner_epoch,
+                std::time::Instant::now(),
+                host_state,
+                routing_ms,
+            )
+            .await
+        {
+            Ok(ActorExecutionResult::Completed { effects, .. }) => {
+                SocketEventReply::Completed { effects }
+            }
+            Ok(ActorExecutionResult::HostUnavailable) => SocketEventReply::NotExecuted,
+            Ok(ActorExecutionResult::Failed { failure }) => SocketEventReply::Failed {
+                message: failure.message,
+            },
+            Err(error) => SocketEventReply::Failed {
+                message: format!("{error:#}"),
+            },
+        }
     }
 
     fn authenticate(&self, headers: &HeaderMap) -> Result<ActorPrincipal, HttpError> {
@@ -107,7 +185,7 @@ impl ActorHostHttpService {
         let outcome = match result {
             Ok(ActorExecutionResult::Completed { result, effects }) => {
                 if !effects.is_empty()
-                    && let Err(error) = self.sockets.publish_authorized(owner_epoch, effects).await
+                    && let Err(error) = self.sockets.publish(effects).await
                 {
                     warn!(request_id, error = %format!("{error:#}"), "actor completed but socket delivery failed");
                     return InvocationReply::failed(
@@ -143,7 +221,6 @@ async fn socket_event(
     headers: HeaderMap,
     Json(request): Json<crate::control_plane::socket_gateway::SocketEventRequest>,
 ) -> Result<Json<crate::control_plane::socket_gateway::SocketEventReply>, HttpError> {
-    use crate::control_plane::socket_gateway::SocketEventReply;
     let principal = service.authenticate(&headers)?;
     service.authorize(&principal, &actor, request.owner_epoch)?;
     authorize_grant(
@@ -159,28 +236,14 @@ async fn socket_event(
             "socket event actor mismatch".into(),
         ));
     }
-    let result = service
-        .host
-        .handle_socket_event_since(
+    let reply = service
+        .execute_socket(
             request.invocation,
             request.owner_epoch,
-            std::time::Instant::now(),
             request.host_state,
             request.routing_ms,
         )
         .await;
-    let reply = match result {
-        Ok(ActorExecutionResult::Completed { effects, .. }) => {
-            SocketEventReply::Completed { effects }
-        }
-        Ok(ActorExecutionResult::HostUnavailable) => SocketEventReply::NotExecuted,
-        Ok(ActorExecutionResult::Failed { failure }) => SocketEventReply::Failed {
-            message: failure.message,
-        },
-        Err(error) => SocketEventReply::Failed {
-            message: format!("{error:#}"),
-        },
-    };
     Ok(Json(reply))
 }
 

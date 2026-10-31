@@ -8,6 +8,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[path = "delegated_access.rs"]
 mod delegated_access;
+#[path = "lifecycle.rs"]
+mod lifecycle;
 
 struct FakeSocketEventSink {
     delivered: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
@@ -34,10 +36,6 @@ struct UnavailableProvisioner;
 
 #[async_trait]
 impl HostProvisioner for UnavailableProvisioner {
-    fn host_idle_timeout_ms(&self) -> u64 {
-        10_000
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -57,7 +55,8 @@ impl HostProvisioner for UnavailableProvisioner {
         _actor: &ActorKey,
         _new_actor: bool,
         _owner_hint: Option<&crate::bucket::OwnershipHint>,
-    ) -> Result<(HostLease, u64)> {
+        _: Option<&crate::sandbox::assignment::InitialOperation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
         anyhow::bail!("host creation is outside this test")
     }
 
@@ -77,10 +76,6 @@ struct FakeRetiringProvisioner {
 
 #[async_trait]
 impl HostProvisioner for FakeRetiringProvisioner {
-    fn host_idle_timeout_ms(&self) -> u64 {
-        10_000
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -100,7 +95,8 @@ impl HostProvisioner for FakeRetiringProvisioner {
         _actor: &ActorKey,
         _new_actor: bool,
         _owner_hint: Option<&crate::bucket::OwnershipHint>,
-    ) -> Result<(HostLease, u64)> {
+        _: Option<&crate::sandbox::assignment::InitialOperation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
         anyhow::bail!("host creation is outside this test")
     }
 
@@ -127,10 +123,6 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     struct Provisioner(HostLease);
     #[async_trait]
     impl HostProvisioner for Provisioner {
-        fn host_idle_timeout_ms(&self) -> u64 {
-            10_000
-        }
-
         async fn prepare_deployment(
             &self,
             source: &HostLaunchSpec,
@@ -150,8 +142,9 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
             _actor: &ActorKey,
             _new_actor: bool,
             _owner_hint: Option<&crate::bucket::OwnershipHint>,
-        ) -> Result<(HostLease, u64)> {
-            Ok((self.0.clone(), 42))
+            _: Option<&crate::sandbox::assignment::InitialOperation>,
+        ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+            Ok((self.0.clone(), 42, None))
         }
         async fn terminate_hosts(
             &self,
@@ -179,6 +172,8 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            image_policy: Default::default(),
+            organization_id: "org-test".into(),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -205,7 +200,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
             id: HostId::new("host.v3.revision.host"),
             session_id: uuid::Uuid::new_v4().to_string(),
             route: route.clone(),
-            expires_at_ms: u64::MAX,
+            expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
         })),
     );
     let actor = ActorKey {
@@ -214,14 +209,22 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
         actor_id: "one".into(),
     };
     let target = service
-        .resolve_actor_route(&actor, None, None, None)
+        .resolve_actor_route(&actor, None, None, None, None)
         .await?;
     assert_eq!(target.route, route);
     assert_eq!(target.owner_epoch, 42);
     assert!(placements.get(&actor.storage_key()).await?.is_none());
-    service
-        .resolve_actor_route(&actor, None, None, None)
+    let ownership_reads = placements.reads();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let warm = service
+        .resolve_actor_route(&actor, None, None, None, None)
         .await?;
+    assert_eq!(warm.host_state, crate::request_tracking::HostState::Warm);
+    assert_eq!(
+        placements.reads(),
+        ownership_reads,
+        "warm routing must not read ownership"
+    );
     assert_eq!(
         requests.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -260,6 +263,8 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
         provisioner.clone(),
     );
     let first = HostLaunchSpec {
+        image_policy: Default::default(),
+        organization_id: "org-test".into(),
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
@@ -523,7 +528,7 @@ async fn sandbox_regions_constrain_new_and_existing_actors() -> Result<()> {
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
-            "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
+            "projectId":"default", "organizationId":"org-test", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
             "sandboxes":{"Counter":{"regions":["canada","north-america-east"]}}
         }))?;
         registry.register_test_deployment(&spec).await?;
@@ -548,7 +553,7 @@ async fn sandbox_regions_constrain_new_and_existing_actors() -> Result<()> {
             ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
         service.region = Some("north-america-east".into());
         let result = service
-            .route_actor(&actor, "north-america-east", assigned, None)
+            .route_actor(&actor, "north-america-east", assigned, None, None)
             .await;
         assert_eq!(
             result.is_ok(),
@@ -586,7 +591,7 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
         None,
     );
     let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
-        "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
+        "projectId":"default", "organizationId":"org-test", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
         "sandboxes":{"Counter":{"cpu":2.5,"idleTimeoutMs":60000},"Room":{"memoryMiB":4096}}
     }))?;
     let pool = crate::sandbox::pool::SparePool::new(
@@ -599,10 +604,16 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
             fleet_maximum: 64,
             max_starting: 8,
             idle_ttl_seconds: 600,
+            refill_interval: Duration::from_secs(1),
+            retire_concurrency: 8,
+            reap_interval: Duration::from_secs(30),
+            pod_reap_interval: Duration::from_secs(1),
             regions: vec!["north-america-east".into()],
             resources: crate::sandbox::ResourceLimits {
                 cpu_millis: 4000,
+                cpu_limit_millis: None,
                 memory_mib: 8192,
+                memory_limit_mib: Some(8192),
             },
         },
     );
@@ -622,7 +633,9 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
             request.resources,
             crate::sandbox::ResourceLimits {
                 cpu_millis,
-                memory_mib
+                cpu_limit_millis: None,
+                memory_mib,
+                memory_limit_mib: Some(8192),
             }
         );
         assert_eq!(
@@ -645,10 +658,6 @@ struct LosingActivation {
 
 #[async_trait]
 impl HostProvisioner for LosingActivation {
-    fn host_idle_timeout_ms(&self) -> u64 {
-        10_000
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -668,7 +677,8 @@ impl HostProvisioner for LosingActivation {
         _actor: &ActorKey,
         _new_actor: bool,
         _owner_hint: Option<&crate::bucket::OwnershipHint>,
-    ) -> Result<(HostLease, u64)> {
+        _: Option<&crate::sandbox::assignment::InitialOperation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
         let host = HostId::new(format!("host.v3.{}.winner", spec.host_config_key()));
         let mut lease = test_lease(&host);
         lease.route = "https://winner.example.com".into();
@@ -698,6 +708,8 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            image_policy: Default::default(),
+            organization_id: "org-test".into(),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -721,9 +733,9 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
     });
     let service = ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
     let target = service
-        .route_actor(&actor, "north-america-east", None, None)
+        .route_actor(&actor, "north-america-east", None, None, None)
         .await?;
-    assert_eq!(target.lease.route, "https://winner.example.com");
+    assert_eq!(target.placement.lease.route, "https://winner.example.com");
     assert!(provisioner.waited.load(std::sync::atomic::Ordering::SeqCst));
     Ok(())
 }
@@ -735,10 +747,6 @@ struct FakeRoutingProvisioner {
 
 #[async_trait]
 impl HostProvisioner for FakeRoutingProvisioner {
-    fn host_idle_timeout_ms(&self) -> u64 {
-        10_000
-    }
-
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -758,7 +766,8 @@ impl HostProvisioner for FakeRoutingProvisioner {
         _actor: &ActorKey,
         _new_actor: bool,
         _owner_hint: Option<&crate::bucket::OwnershipHint>,
-    ) -> Result<(HostLease, u64)> {
+        _: Option<&crate::sandbox::assignment::InitialOperation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
         self.calls.lock().unwrap().push(region.to_owned());
         ensure!(
             !self.failed_regions.contains(&region),
@@ -772,6 +781,7 @@ impl HostProvisioner for FakeRoutingProvisioner {
                 expires_at_ms: u64::MAX,
             },
             1,
+            None,
         ))
     }
 
@@ -826,6 +836,8 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                image_policy: Default::default(),
+                organization_id: "org-test".into(),
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
@@ -873,6 +885,7 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
                 before.as_ref(),
                 &select_target_region(before.as_ref(), reported)?,
                 None,
+                None,
             )
             .await;
         assert_eq!(*provisioner.calls.lock().unwrap(), expected_calls);
@@ -905,6 +918,8 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            image_policy: Default::default(),
+            organization_id: "org-test".into(),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -1011,6 +1026,8 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     let host_id = HostId::new(format!(
         "host.v3.{}.fixture",
         HostLaunchSpec {
+            image_policy: Default::default(),
+            organization_id: "org-test".into(),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -1052,6 +1069,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         serde_json::json!({"metadata":{"userId":"trusted"},"homeRegion":"north-america-east"});
     let host_token = issuer
         .issue_host(
+            "org-test",
             &fixture_host("fixture"),
             &uuid::Uuid::new_v4().to_string(),
             "v1",
@@ -1074,7 +1092,9 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     client
         .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"localSource": local_document("a")}))
+        .json(
+            &serde_json::json!({"organizationId": "org-test", "localSource": local_document("a")}),
+        )
         .send()
         .await?
         .error_for_status()?;
@@ -1145,6 +1165,8 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
         let host = HostId::new(format!(
             "host.v3.{}.fixture",
             HostLaunchSpec {
+                image_policy: Default::default(),
+                organization_id: "org-test".into(),
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
@@ -1182,7 +1204,8 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let deployment = serde_json::json!({"localSource": local_document("a")});
+    let deployment =
+        serde_json::json!({"organizationId": "org-test", "localSource": local_document("a")});
     let registered = client
         .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
@@ -1216,14 +1239,9 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
         .error_for_status()?;
     assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
     let target: serde_json::Value = response.json().await?;
-    assert_eq!(target["homeRegion"], "north-america-east");
-    assert_eq!(target["route"], "https://host.example.com");
-    assert!(target["ownerEpoch"].is_u64());
-    assert!(target["expiresAtMs"].is_i64());
-    assert!(
-        target["token"]
-            .as_str()
-            .is_some_and(|token| !token.is_empty())
+    assert_eq!(
+        target,
+        serde_json::json!({"homeRegion":"north-america-east"})
     );
     for (suffix, body) in [
         ("find-actor", serde_json::json!({"metadata":{}})),
@@ -1248,7 +1266,6 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
             "invalid_request"
         );
     }
-    assert_ne!(target["token"], "api-key");
     server.abort();
     Ok(())
 }
@@ -1267,6 +1284,8 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
     admin
         .register_test_deployment(&HostLaunchSpec {
+            image_policy: Default::default(),
+            organization_id: "org-test".into(),
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: Some(super::super::admin::DeploymentSource::Local(
@@ -1315,6 +1334,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
         .json()
         .await?;
     assert_eq!(deployment["localSource"], local_document("a"));
+    assert_eq!(deployment["organizationId"], "org-test");
     assert_eq!(deployment["secretRefs"], serde_json::json!([]));
     for changed in [true, false] {
         let reply: serde_json::Value = client
@@ -1354,6 +1374,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
     let host_token = issuer
         .issue_host(
+            "org-test",
             &HostId::new("host.v3.r1.one"),
             &uuid::Uuid::new_v4().to_string(),
             "r1",
@@ -1407,8 +1428,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
     let document: serde_json::Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
-    let mut deployment =
-        serde_json::json!({"localSource": local_document("a"), "contract":document});
+    let mut deployment = serde_json::json!({"organizationId": "org-test", "localSource": local_document("a"), "contract":document});
     for scope in ["/v1/projects/default"] {
         for changed in [true, true] {
             let reply: serde_json::Value = client
@@ -1524,14 +1544,14 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
     ))?;
     for project in ["team-a", "team-b"] {
         client.put(format!("{origin}/v1/projects/{project}/deployment")).bearer_auth("api-key")
-            .json(&serde_json::json!({"localSource": local_document(if project == "team-a" { "a" } else { "b" }), "contract":document}))
+            .json(&serde_json::json!({"organizationId": "org-test", "localSource": local_document(if project == "team-a" { "a" } else { "b" }), "contract":document}))
             .send().await?.error_for_status()?;
     }
     assert!(retired_rx.try_recv().is_err());
     client
         .put(format!("{origin}/v1/projects/team-a/deployment"))
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"localSource": local_document("c"), "contract":document}))
+        .json(&serde_json::json!({"organizationId": "org-test", "localSource": local_document("c"), "contract":document}))
         .send()
         .await?
         .error_for_status()?;
@@ -1577,6 +1597,8 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
 
 fn fixture_host(suffix: &str) -> HostId {
     let spec = HostLaunchSpec {
+        image_policy: Default::default(),
+        organization_id: "org-test".into(),
         sandboxes: Default::default(),
         source: None,
         code_snapshot: None,
@@ -1606,6 +1628,8 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                 let registry = Arc::new(LocalAdminRegistry::default());
                 registry
                     .register_test_deployment(&HostLaunchSpec {
+                        image_policy: Default::default(),
+                        organization_id: "org-test".into(),
                         sandboxes: Default::default(),
                         project_id: project.into(),
                         source: None,
@@ -1735,8 +1759,8 @@ fn local_document(digest: &str) -> serde_json::Value {
     serde_json::json!({"workingDirectory": format!("/project/{digest}"), "actorEntrypoint":"src/actors.ts"})
 }
 
-#[tokio::test]
-async fn socket_authorization_accepts_a_host_renewing_its_lease() -> Result<()> {
+#[test]
+fn socket_authorization_uses_actor_scope_without_reading_ownership() -> Result<()> {
     struct RenewingPlacement(std::sync::atomic::AtomicU64, ObjectPlacement);
     #[async_trait]
     impl ObjectPlacementStore for RenewingPlacement {
@@ -1762,6 +1786,7 @@ async fn socket_authorization_accepts_a_host_renewing_its_lease() -> Result<()> 
     let mut lease = test_lease(&host);
     lease.expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 60_000;
     let principal = ActorPrincipal {
+        organization_id: Some("org-test".into()),
         actor: actor.clone(),
         host_id: host.clone(),
         session_id: lease.session_id.clone(),
@@ -1787,30 +1812,33 @@ async fn socket_authorization_accepts_a_host_renewing_its_lease() -> Result<()> 
         ActorTokenPurpose::ControlPlane,
         Duration::from_secs(60),
     )?;
+    let placement = Arc::new(RenewingPlacement(Default::default(), placement));
     let service = ControlPlaneService::new(
-        Arc::new(RenewingPlacement(Default::default(), placement)),
+        placement.clone(),
         auth,
         Arc::new(LocalAdminRegistry::default()),
         issuer,
         Arc::new(UnavailableProvisioner),
     );
-    service.authorize_socket_host(&principal, &actor).await?;
+    service.authorize_socket_host(&principal, &actor)?;
     let mut stale = principal.clone();
     stale.session_id = "other-session".into();
-    assert!(service.authorize_socket_host(&stale, &actor).await.is_err());
+    service.authorize_socket_host(&stale, &actor)?;
+    assert_eq!(placement.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+    stale.actor.actor_id = "another-actor".into();
+    assert!(service.authorize_socket_host(&stale, &actor).is_err());
     Ok(())
 }
 
 async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<ControlPlaneService> {
     let origin = "https://gateway.example.com".to_owned();
     let sockets = super::super::socket_gateway::SocketGateway::start(
-        origin.clone(),
-        Arc::new(super::super::socket_directory::MemorySocketDirectory::default()),
-        crate::sockets::DEFAULT_MAX_CONNECTIONS,
+        super::super::socket_bus::MemorySocketHub::default()
+            .join(crate::sockets::DEFAULT_MAX_CONNECTIONS),
         true,
         tokio_util::sync::CancellationToken::new(),
-    )
-    .await?;
+        crate::sandbox::connections::HostConnections::new()?.client,
+    )?;
     service.gateway = Some(super::super::gateway::Gateway::new(
         &service.host_token_issuer,
         origin,

@@ -11,7 +11,9 @@ pub(crate) enum ControlPlaneCommand {
         operation: super::socket_gateway::SocketOperation,
     },
     RefreshStorageAccess,
-    InventoryChanged,
+    Lifecycle {
+        report: crate::actor_lifecycle::LifecycleReport,
+    },
     GetAlarm,
     UpdateAlarm {
         timestamp_ms: Option<i64>,
@@ -29,7 +31,7 @@ pub(crate) enum ControlPlaneCommandReply {
         reply: super::socket_gateway::SocketOperationReply,
     },
     StorageAccess {
-        token: Option<crate::bucket::access::StorageToken>,
+        tokens: Option<crate::bucket::access::StorageTokens>,
         replacement_token: String,
     },
     Alarm {

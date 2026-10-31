@@ -97,6 +97,39 @@ impl SocketRegistry {
         }
     }
 
+    pub(crate) async fn project_ids(&self) -> HashSet<String> {
+        self.entries
+            .read()
+            .await
+            .keys()
+            .map(|actor| actor.project_id.clone())
+            .collect()
+    }
+
+    pub(crate) async fn close_project(&self, project: &str, code: u16, reason: &str) {
+        for (actor, sockets) in self.entries.read().await.iter() {
+            if actor.project_id == project {
+                for entry in sockets.values() {
+                    let _ = entry.outbound.send(OutboundMessage::Close {
+                        code,
+                        reason: reason.into(),
+                    });
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn close_all(&self, code: u16, reason: &str) {
+        for sockets in self.entries.read().await.values() {
+            for entry in sockets.values() {
+                let _ = entry.outbound.send(OutboundMessage::Close {
+                    code,
+                    reason: reason.into(),
+                });
+            }
+        }
+    }
+
     pub(crate) async fn inventory(
         &self,
         project: &str,
@@ -272,12 +305,20 @@ impl SocketRegistry {
     async fn apply_one(&self, actor: &ActorKey, effect: ActorSocketEffect) {
         match effect {
             ActorSocketEffect::SetAutoResponse { request, response } => {
-                self.entries
-                    .write()
-                    .await
-                    .entry(actor.clone())
-                    .or_default()
-                    .auto_response = request.zip(response);
+                let mut entries = self.entries.write().await;
+                match request.zip(response) {
+                    Some(pair) => {
+                        entries.entry(actor.clone()).or_default().auto_response = Some(pair)
+                    }
+                    None => {
+                        if let Some(room) = entries.get_mut(actor) {
+                            room.auto_response = None;
+                            if room.is_empty() {
+                                entries.remove(actor);
+                            }
+                        }
+                    }
+                }
             }
             ActorSocketEffect::StateSnapshot {
                 connection_id,

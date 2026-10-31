@@ -23,6 +23,7 @@ tags:
     - name: Observability
     - name: WebSockets
     - name: Sessions
+    - name: Access
 paths:
     /openapi.yaml:
         get:
@@ -48,6 +49,23 @@ paths:
                     content:
                         text/plain:
                             schema: { type: string, const: ok }
+    /v1/organizations/{organization_id}/access:
+        parameters:
+            - name: organization_id
+              in: path
+              required: true
+              schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,64}$" }
+        put:
+            operationId: setOrganizationAccess
+            tags: [Access]
+            summary: Suspend or restore organization access
+            description: Persists organization holds independently for admin and billing sources; source defaults to admin. Setting enabled to false adds that source's hold; true clears only that source's hold. Access is enabled only when neither source has a hold. Suspended organizations reject new work with access_disabled across all projects with this stored organizationId. A worker polls every five seconds to close sockets and terminate hosts, retrying failures after restarts. In-flight work may continue until termination. Saved state and pending alarms remain. An alarm claimed before suspension may wait for its five-minute claim to expire after restoration. Unknown organization IDs are accepted.
+            requestBody: { $ref: "#/components/requestBodies/Access" }
+            responses:
+                "202": { $ref: "#/components/responses/AccessAccepted" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
     /v1/projects/{project_id}/deployment:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -64,6 +82,7 @@ paths:
                         examples:
                             compiled:
                                 value:
+                                    organizationId: org-example
                                     bundle:
                                         bucket: actor-code
                                         files:
@@ -74,11 +93,13 @@ paths:
                                     contract: { version: 1, actors: [], typescript: { declarations: "export interface ActorTypes {}", dependencies: {} } }
                             local:
                                 value:
+                                    organizationId: local
                                     localSource: { workingDirectory: /project, actorEntrypoint: src/actors.ts }
             responses:
                 "200": { $ref: "#/components/responses/Changed" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
+                "403": { $ref: "#/components/responses/AccessDisabled" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
         get:
             operationId: getDeployment
@@ -160,6 +181,7 @@ paths:
                                     expiresAtMs: { type: integer, format: int64 }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
+                "403": { $ref: "#/components/responses/AccessDisabled" }
                 "404": { $ref: "#/components/responses/NotFound" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -179,9 +201,14 @@ paths:
                 "200": { $ref: "#/components/responses/ActorTarget" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
-                "403": { description: Actor has no published RPC methods. }
+                "403":
+                    description: Actor has no published RPC methods, or organization access is disabled (access_disabled).
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/Error" }
                 "404": { $ref: "#/components/responses/NotFound" }
                 "409": { $ref: "#/components/responses/Conflict" }
+                "429": { $ref: "#/components/responses/ActorLimit" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
@@ -252,9 +279,14 @@ paths:
                                 notExecuted: { value: { type: not_executed, reason: host_unavailable } }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { description: "API key, project session or host ticket rejected before dispatch." }
-                "403": { description: "Host ticket belongs to another actor, host session or ownership epoch." }
+                "403":
+                    description: Host ticket belongs to another actor, host session or ownership epoch, or organization access is disabled (access_disabled).
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/Error" }
                 "404": { $ref: "#/components/responses/NotFound" }
                 "409": { $ref: "#/components/responses/Conflict" }
+                "429": { $ref: "#/components/responses/ActorLimit" }
                 "502": { description: The invocation outcome is unknown. Do not replay automatically. }
                 "503": { $ref: "#/components/responses/Unavailable" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
@@ -297,6 +329,7 @@ paths:
                 "204": { description: Effects delivered. }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { description: Ticket rejected. }
+                "403": { $ref: "#/components/responses/AccessDisabled" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "415": { description: Expected application/json. }
                 "422": { description: Invalid effects document. }
@@ -316,6 +349,7 @@ paths:
                 "200": { $ref: "#/components/responses/WebSocketGrant" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
+                "403": { $ref: "#/components/responses/AccessDisabled" }
                 "409": { $ref: "#/components/responses/Conflict" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -335,6 +369,33 @@ paths:
                     content:
                         application/json:
                             schema: { $ref: "#/components/schemas/Inventory" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/observe/residency:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: listActorResidency
+            tags: [Observability]
+            summary: Get instance residency over time
+            description: Lifecycle periods clipped to the selected range. Missing reports become unknown after 35 seconds. Stops remain dormant until reactivation. Reads at most the latest 10000 reports, including the last report before the range for each instance. Time before retained evidence is omitted.
+            parameters:
+                - name: actorName
+                  in: query
+                  required: true
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Residency periods and whether the report limit was reached.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/ResidencyHistory" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
@@ -557,7 +618,10 @@ paths:
             summary: Stream request history
             description: |
                 SSE requests events contain TracePage JSON. Resume with resumeCursor;
-                when reset=true, replace previous records. Error events contain text and close the stream.
+                when reset=true or snapshot=true, replace previous records. ClickHouse sends
+                an initial snapshot followed by committed batches, with reconciliation every
+                30 seconds and after live-delivery interruptions. Deduplicate records by eventId.
+                Error events contain text and close the stream.
             parameters:
                 - name: after
                   in: query
@@ -577,7 +641,7 @@ paths:
             operationId: openWebSocket
             tags: [WebSockets]
             summary: Open a WebSocket
-            description: Pass websocketUrl from the find-websocket response directly to new WebSocket() before connectByMs. Authorization is checked on connection; accepted sockets remain authorized until they close, including while the actor hibernates. Reconnects require a valid ticket.
+            description: Pass websocketUrl from the find-websocket response directly to new WebSocket() before connectByMs. Authorization is checked on connection; accepted sockets remain authorized until they close, including while the actor hibernates. Organization suspensions reject new connections and stop further actor events on existing sockets. Reconnects require a valid ticket.
             servers:
                 - url: https://{actorHost}
                   variables:
@@ -588,6 +652,7 @@ paths:
                 "101": { description: WebSocket upgrade accepted. }
                 "400": { $ref: "#/components/responses/UpgradeError" }
                 "401": { description: Socket authorization rejected. Request a fresh URL. No response body. }
+                "403": { description: Organization access is disabled. No response body. }
                 "426":
                     description: Connection cannot be upgraded to a WebSocket.
                     content:
@@ -666,6 +731,16 @@ components:
             required: true
             schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
     requestBodies:
+        Access:
+            required: true
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Access" }
+                    examples:
+                        suspend: { value: { enabled: false } }
+                        restore: { value: { enabled: true } }
+                        billingSuspend: { value: { enabled: false, source: billing } }
+                        billingRestore: { value: { enabled: true, source: billing } }
         FindActor:
             required: true
             content:
@@ -682,6 +757,16 @@ components:
                     examples:
                         socket: { value: { metadata: { userId: alice } } }
     responses:
+        AccessAccepted:
+            description: The echoed enabled setting is persisted for the returned source; it is not the aggregate organization access state. Host shutdown proceeds asynchronously while either source has a hold.
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Access" }
+        AccessDisabled:
+            description: Organization access is disabled (access_disabled).
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
         Changed:
             description: Whether the deployment changed.
             content:
@@ -732,6 +817,16 @@ components:
             content:
                 application/json:
                     schema: { $ref: "#/components/schemas/Error" }
+        ActorLimit:
+            description: Actor activation rejected before provisioning or execution. The code is actor_quota_exceeded for concurrent activation capacity or actor_start_rate_limited for temporary throttling. Existing running hosts remain usable. SDKs surface these errors without automatic retries.
+            headers:
+                Cache-Control: { $ref: "#/components/headers/NoStore" }
+                Retry-After:
+                    description: Seconds until a start token is available. Present only for actor_start_rate_limited; concurrent requests may consume that token first.
+                    schema: { type: integer, minimum: 1 }
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
         PayloadTooLarge:
             description: Request rejected by an upstream transport limit (payload_too_large).
             content:
@@ -753,6 +848,13 @@ components:
                 text/plain:
                     schema: { type: string }
     schemas:
+        Access:
+            type: object
+            additionalProperties: false
+            required: [enabled]
+            properties:
+                enabled: { type: boolean }
+                source: { type: string, enum: [admin, billing], default: admin }
         OverviewMetrics:
             type: object
             required: [total, classes]
@@ -832,10 +934,15 @@ components:
         Deployment:
             type: object
             additionalProperties: false
+            required: [organizationId]
             oneOf:
                 - required: [bundle]
                 - required: [localSource]
             properties:
+                organizationId:
+                    type: string
+                    pattern: "^[A-Za-z0-9._-]{1,64}$"
+                    description: Owning organization supplied by the upstream deployment service for billing attribution and actor admission limits.
                 bundle: { $ref: "#/components/schemas/ActorBundle" }
                 localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs:
@@ -853,11 +960,15 @@ components:
         CurrentDeployment:
             type: object
             additionalProperties: false
-            required: [secretRefs]
+            required: [organizationId, secretRefs]
             oneOf:
                 - required: [bundle]
                 - required: [localSource]
             properties:
+                organizationId:
+                    type: string
+                    pattern: "^[A-Za-z0-9._-]{1,64}$"
+                    description: Owning organization; also scopes actor admission limits.
                 bundle: { $ref: "#/components/schemas/ActorBundle" }
                 localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs: { $ref: "#/components/schemas/Deployment/properties/secretRefs" }
@@ -907,8 +1018,10 @@ components:
             additionalProperties: false
             description: Optional actor sandbox overrides compiled from the class decorator. Omitted fields inherit deployment defaults.
             properties:
-                cpu: { type: number, minimum: 0.1, maximum: 64, multipleOf: 0.001 }
-                memoryMiB: { type: integer, minimum: 128, maximum: 262144 }
+                cpu: { type: number, minimum: 0.1, maximum: 64, multipleOf: 0.001, description: CPU request in cores. The server may allow a narrower range. }
+                cpuLimit: { type: number, minimum: 0.1, maximum: 64, multipleOf: 0.001, description: CPU cap in cores; at least cpu. Omitted inherits the server default, which may be uncapped. }
+                memoryMiB: { type: integer, minimum: 128, maximum: 262144, description: Memory request in MiB. The server may allow a narrower range. }
+                memoryLimitMiB: { type: integer, minimum: 128, maximum: 262144, description: Memory cap in MiB; at least memoryMiB. Omitted inherits the server default, raised to memoryMiB. }
                 idleTimeoutMs: { type: integer, minimum: 1, maximum: 86400000 }
                 regions:
                     type: array
@@ -1114,6 +1227,10 @@ components:
                         required: [actorName, live, dormant, unknown, instances]
                         properties:
                             actorName: { type: string }
+                            methods:
+                                type: array
+                                items: { type: string }
+                                description: Published RPC method names, including methods with no calls. Omitted when no deployment contract is available.
                             live: { type: integer, minimum: 0 }
                             dormant: { type: integer, minimum: 0 }
                             unknown: { type: integer, minimum: 0 }
@@ -1125,6 +1242,10 @@ components:
                                     properties:
                                         actorId: { type: string }
                                         status: { type: string, enum: [live, dormant, unknown] }
+                                        lastActiveAtMs:
+                                            type: [integer, "null"]
+                                            minimum: 0
+                                            description: Most recent request admission or completion in Unix milliseconds. Null when unavailable; lifecycle heartbeats do not update it.
                                         connections:
                                             type: array
                                             items:
@@ -1141,6 +1262,21 @@ components:
                                                 properties:
                                                     id: { type: string }
                                                     operation: { type: string }
+        ResidencyHistory:
+            type: object
+            required: [periods, truncated]
+            properties:
+                truncated: { type: boolean }
+                periods:
+                    type: array
+                    items:
+                        type: object
+                        required: [actorId, status, fromMs, toMs]
+                        properties:
+                            actorId: { type: string }
+                            status: { type: string, enum: [live, dormant, unknown] }
+                            fromMs: { type: integer, minimum: 0 }
+                            toMs: { type: integer, minimum: 0 }
         TracePage:
             type: object
             required: [epoch, cursor, capacity, evicted, dropped, persistenceFailed, records, nextCursor, resumeCursor, reset]
@@ -1155,6 +1291,7 @@ components:
                 nextCursor: { type: [string, "null"] }
                 resumeCursor: { type: string }
                 reset: { type: boolean }
+                snapshot: { type: boolean, description: "Replace the live list with this page. Used for ClickHouse initial history and reconciliation." }
         StateAttribution:
             type: [object, "null"]
             required: [operation, connectionId, committedAtMs, interleaved]

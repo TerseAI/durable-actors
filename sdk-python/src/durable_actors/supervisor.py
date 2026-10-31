@@ -50,6 +50,8 @@ class Supervisor(Channel):
         self.evicting: int | None = None
         self.eviction_done = False
         self.deferred: list[Document] = []
+        # True while deferred commands replay, so new ones queue behind them.
+        self.replaying = False
         self.eviction_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self, entrypoint: str | None, generic: bool) -> None:
@@ -57,7 +59,7 @@ class Supervisor(Channel):
 
         try:
             if generic:
-                await self.send({"type": "warm", "protocol": 28})
+                await self.send({"type": "warm", "protocol": 30})
                 load = await self.read()
                 if load.get("type") != "load":
                     raise ValueError("expected actor code assignment")
@@ -70,7 +72,7 @@ class Supervisor(Channel):
             self.entrypoint = entrypoint
             self.worker = await self.create_worker(entrypoint, self.environment)
             self.actor_names = self.worker.actor_names
-            await self.send({"type": "attach", "protocol": 28, "actor_names": self.actor_names})
+            await self.send({"type": "attach", "protocol": 30, "actor_names": self.actor_names})
             self.attached = await self.read()
             attached_actor(self.attached, self.actor_names)
             await self.start_pump()
@@ -91,7 +93,7 @@ class Supervisor(Channel):
         from .host import validate_command
 
         validate_command(message)
-        if self.evicting is not None:
+        if self.evicting is not None or self.replaying:
             # Commands that arrive while on_sleep runs wait for a fresh worker.
             self.deferred.append(message)
             return
@@ -116,8 +118,8 @@ class Supervisor(Channel):
                 await self.fail_pending("actor_evicted", "actor was evicted by the Rust host")
                 await self.reply(identifier, {"type": "evicted"})
         else:
-            if len(self.pending) >= 512 or identifier in self.pending:
-                raise ValueError("executor command queue is full or message ID is duplicated")
+            if identifier in self.pending:
+                raise ValueError("executor message ID is duplicated")
             if self.worker is None:
                 self.worker = await self.create_worker(self.entrypoint, self.environment)
                 if self.worker.actor_names != self.actor_names:
@@ -128,7 +130,9 @@ class Supervisor(Channel):
             await self.worker.send(message)
 
     async def acknowledge(self, message: Document) -> None:
-        kind, identifier = message["type"], message["message_id"]
+        from .host import reply_id
+
+        kind, identifier = message["type"], reply_id(message)
         pending = self.pending.get(identifier)
         if pending is None or kind not in pending.exchanges:
             raise ValueError("unexpected executor acknowledgment")
@@ -161,13 +165,11 @@ class Supervisor(Channel):
                     pending.reply = reply
                     await self.complete(identifier)
                 else:
-                    if kind == "socket_effects":
-                        pending.exchanges.add("socket_effects_published")
-                    elif kind == "database_call":
+                    if kind == "database_call":
                         pending.exchanges.add("database_result")
                     elif kind == "get_connections":
                         pending.exchanges.add("socket_connections")
-                    elif kind != "ready_for_invocation":
+                    elif kind not in {"ready_for_invocation", "socket_effects"}:
                         raise ValueError("unexpected worker message")
                     await self.send(message)
         except (EOFError, ConnectionError, ValueError, KeyError) as error:
@@ -210,8 +212,12 @@ class Supervisor(Channel):
         await self.fail_pending("actor_evicted", "actor was evicted by the Rust host")
         await self.reply(identifier, {"type": "evicted"})
         self.evicting = None
-        while self.deferred and self.evicting is None:
-            await self.dispatch(self.deferred.pop(0))
+        self.replaying = True
+        try:
+            while self.deferred and self.evicting is None:
+                await self.dispatch(self.deferred.pop(0))
+        finally:
+            self.replaying = False
 
     async def reply(self, identifier: int, value: Document) -> None:
         await self.send({"type": "reply", "message_id": identifier, "reply": value})
@@ -261,7 +267,7 @@ class Worker(Channel):
             worker = cls(reader, writer, process)
             async with asyncio.timeout(60):
                 attach = await worker.read()
-            if attach.get("type") != "attach" or attach.get("protocol") != 28:
+            if attach.get("type") != "attach" or attach.get("protocol") != 30:
                 raise ValueError("worker did not attach")
             worker.actor_names = attach["actor_names"]
             return worker

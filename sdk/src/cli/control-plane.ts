@@ -12,7 +12,8 @@ interface ControlPlaneConnection {
 class ControlPlaneClient {
     constructor(
         readonly connection: ControlPlaneConnection,
-        private readonly request: typeof fetch
+        private readonly request: typeof fetch,
+        private readonly projectsPath = "/v1/projects"
     ) {}
 
     async checkConnection(): Promise<void> {
@@ -29,6 +30,10 @@ class ControlPlaneClient {
 
     listActors(): Promise<unknown> {
         return this.requestJson("GET", `${this.projectPath()}/observe/actors`)
+    }
+
+    listResidency(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
+        return this.requestJson("GET", `${this.projectPath()}/observe/residency?${query}`, undefined, 30_000, signal)
     }
 
     async openActorStream(signal: AbortSignal): Promise<Response> {
@@ -108,7 +113,7 @@ class ControlPlaneClient {
     }
 
     private projectPath(): string {
-        return `/v1/projects/${encodeURIComponent(validateProjectId(this.connection.projectId))}`
+        return `${this.projectsPath}/${encodeURIComponent(validateProjectId(this.connection.projectId))}`
     }
 
     private async requestJson(
