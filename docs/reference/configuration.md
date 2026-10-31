@@ -28,6 +28,7 @@ Configuration uses environment variables. Precedence is to use exported variable
 | `DURABLE_ACTORS_PORT`       | `7100`                             | Listening port; `0` selects a free port. `--port` overrides it for one run.                                           |
 | `DURABLE_ACTORS_DATA_DIR`   | `<project>/.durable-actors`        | Persistent local state directory.                                                                                     |
 | `DURABLE_ACTORS_STORAGE`    | `local`                            | `local` for file storage or `gcs` for a GCS bucket. GCS also requires `DURABLE_ACTORS_BUCKET` and Google credentials. |
+| `DURABLE_ACTORS_ALLOW_BROWSER` | Disabled | Set to `1` when running `generate` to bundle the full TypeScript client for browsers. It sends `DURABLE_ACTORS_SECRET`, so use it for local testing and demos only. |
 
 ## WebSockets
 
