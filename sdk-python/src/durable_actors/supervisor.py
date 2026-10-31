@@ -17,6 +17,8 @@ from .executor_wire import Channel
 from .runtime import failed
 
 Environment = dict[str, str]
+# A graceful eviction gives on_sleep this long before the worker is stopped anyway.
+EVICTION_GRACE_SECONDS = 30.0
 environment_adapter: TypeAdapter[Environment] = TypeAdapter(Environment)
 
 
@@ -44,6 +46,13 @@ class Supervisor(Channel):
         self.actor_names: list[str] = []
         self.sequence = 0
         self.offset = 0
+        # Message ID of a graceful eviction the worker is running on_sleep for.
+        self.evicting: int | None = None
+        self.eviction_done = False
+        self.deferred: list[Document] = []
+        # True while deferred commands replay, so new ones queue behind them.
+        self.replaying = False
+        self.eviction_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self, entrypoint: str | None, generic: bool) -> None:
         from .host import attached_actor
@@ -70,6 +79,8 @@ class Supervisor(Channel):
             while True:
                 await self.accept(await self.read())
         finally:
+            for task in tuple(self.eviction_tasks):
+                task.cancel()
             await self.stop_worker()
             self.writer.close()
             with suppress(ConnectionError):
@@ -82,11 +93,30 @@ class Supervisor(Channel):
         from .host import validate_command
 
         validate_command(message)
+        if self.evicting is not None or self.replaying:
+            # Commands that arrive while on_sleep runs wait for a fresh worker.
+            self.deferred.append(message)
+            return
+        await self.dispatch(message)
+
+    async def dispatch(self, message: Document) -> None:
         command, identifier = message["command"], message["message_id"]
         if command["type"] == "evict":
-            await self.stop_worker()
-            await self.fail_pending("actor_evicted", "actor was evicted by the Rust host")
-            await self.reply(identifier, {"type": "evicted"})
+            if self.worker is not None and command.get("graceful", True) and not self.pending:
+                if identifier in self.pending:
+                    raise ValueError("executor message ID is duplicated")
+                # An idle graceful eviction goes to the worker so it runs on_sleep before it
+                # stops. Busy evictions stop the worker at once: a blocked sync handler cannot
+                # be cancelled, and on_sleep must not run beside it.
+                self.pending[identifier] = Pending()
+                self.evicting = identifier
+                self.eviction_done = False
+                await self.worker.send(message)
+                self.spawn(self.expire_eviction(identifier))
+            else:
+                await self.stop_worker()
+                await self.fail_pending("actor_evicted", "actor was evicted by the Rust host")
+                await self.reply(identifier, {"type": "evicted"})
         else:
             if identifier in self.pending:
                 raise ValueError("executor message ID is duplicated")
@@ -158,7 +188,36 @@ class Supervisor(Channel):
         pending = self.pending[identifier]
         if pending.reply is not None and not pending.exchanges:
             del self.pending[identifier]
-            await self.reply(identifier, pending.reply)
+            if identifier == self.evicting:
+                # This can run inside the pump, which finish_eviction cancels.
+                self.spawn(self.finish_eviction(identifier))
+            else:
+                await self.reply(identifier, pending.reply)
+
+    def spawn(self, coroutine: Awaitable[None]) -> None:
+        task = asyncio.ensure_future(coroutine)
+        self.eviction_tasks.add(task)
+        task.add_done_callback(self.eviction_tasks.discard)
+
+    async def expire_eviction(self, identifier: int) -> None:
+        await asyncio.sleep(EVICTION_GRACE_SECONDS)
+        await self.finish_eviction(identifier)
+
+    async def finish_eviction(self, identifier: int) -> None:
+        if self.evicting != identifier or self.eviction_done:
+            return
+        self.eviction_done = True
+        self.pending.pop(identifier, None)
+        await self.stop_worker()
+        await self.fail_pending("actor_evicted", "actor was evicted by the Rust host")
+        await self.reply(identifier, {"type": "evicted"})
+        self.evicting = None
+        self.replaying = True
+        try:
+            while self.deferred and self.evicting is None:
+                await self.dispatch(self.deferred.pop(0))
+        finally:
+            self.replaying = False
 
     async def reply(self, identifier: int, value: Document) -> None:
         await self.send({"type": "reply", "message_id": identifier, "reply": value})

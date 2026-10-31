@@ -10,6 +10,7 @@ from fixtures.executor import ExecutorHost, build, warm_executor
 from fixtures.host_database import HostDatabase
 
 from durable_actors.build import build_actor
+from durable_actors.supervisor import Supervisor
 
 
 async def test_warm_executor_keeps_its_assigned_environment_across_worker_restarts(tmp_path):
@@ -144,6 +145,129 @@ class Counter(Actor):
                 await process.communicate()
                 server.close()
                 await server.wait_closed()
+
+
+async def test_graceful_eviction_runs_on_sleep_in_the_worker(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "sleep_actors.py").write_text("""from durable_actors import Actor, persisted
+class Sleeper(Actor):
+    calls: int = persisted(0)
+    sleeps: int = persisted(0)
+    def on_sleep(self) -> None:
+        self.sleeps += 1
+    def read(self) -> list[int]:
+        self.calls += 1
+        return [self.calls, self.sleeps]
+""")
+    build_actor(project, "sleep_actors.py", tmp_path / "build")
+    connected = asyncio.get_running_loop().create_future()
+
+    async def accepted(reader, writer):
+        connected.set_result((reader, writer))
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as short:
+        socket = str(Path(short) / "executor.sock")
+        server = await asyncio.start_unix_server(accepted, socket)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "durable_actors.host",
+            env={
+                **os.environ,
+                "DURABLE_ACTORS_EXECUTOR_SOCKET": socket,
+                "DURABLE_ACTORS_ENTRYPOINT": str(tmp_path / "build/actors.pyz"),
+            },
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            async with asyncio.timeout(10):
+                reader, writer = await connected
+                host = ExecutorHost(reader, writer, HostDatabase())
+                receive, send = host.receive, host.send
+                assert (await receive())["type"] == "attach"
+                actor = {"project_id": "local", "actor_name": "Sleeper", "actor_id": "one"}
+                send({"type": "attached", "protocol": 30, "actor": actor})
+                read = {"type": "invoke", "request_id": "r", "method": "read", "args": []}
+                send({"type": "command", "message_id": 0, "command": read})
+                assert (await receive())["reply"]["result"] == [1, 0]
+                send(
+                    {
+                        "type": "command",
+                        "message_id": 1,
+                        "command": {"type": "evict", "graceful": True},
+                    }
+                )
+                # A command sent during the eviction runs afterwards on a fresh worker.
+                send({"type": "command", "message_id": 2, "command": read})
+                evicted = await receive()
+                assert evicted["message_id"] == 1
+                assert evicted["reply"] == {"type": "evicted"}
+                restored = await receive()
+                assert restored["message_id"] == 2
+                assert restored["reply"]["result"] == [2, 1]
+        finally:
+            if process.returncode is None:
+                process.terminate()
+            await asyncio.wait_for(process.communicate(), 5)
+            server.close()
+            if connected.done():
+                _, writer = connected.result()
+                writer.transport.abort()
+                await asyncio.wait_for(writer.wait_closed(), 1)
+            await server.wait_closed()
+
+
+class StubWorker:
+    actor_names: list[str] = []
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, message):
+        self.sent.append(message)
+
+    async def read(self):
+        await asyncio.Event().wait()
+
+    async def close(self):
+        pass
+
+
+class StubWriter:
+    def write(self, data):
+        pass
+
+    async def drain(self):
+        pass
+
+
+async def test_commands_during_deferred_replay_share_one_fresh_worker():
+    workers = []
+    release = asyncio.Event()
+
+    async def create_worker(entrypoint, environment):
+        worker = StubWorker()
+        workers.append(worker)
+        await release.wait()
+        return worker
+
+    supervisor = Supervisor(asyncio.StreamReader(), StubWriter(), create_worker)
+    read = {"type": "invoke", "request_id": "r", "method": "read", "args": []}
+    supervisor.evicting = 1
+    supervisor.deferred.append({"type": "command", "message_id": 2, "command": read})
+
+    replay = asyncio.create_task(supervisor.finish_eviction(1))
+    while not workers:
+        await asyncio.sleep(0)
+    await supervisor.accept({"type": "command", "message_id": 3, "command": read})
+    release.set()
+    await replay
+
+    assert len(workers) == 1
+    assert [message.get("message_id") for message in workers[0].sent][1:] == [2, 3]
+    await supervisor.stop_worker()
 
 
 @pytest.mark.parametrize("action", ["evict", "kill_host"])

@@ -23,6 +23,7 @@ type ActorWorkerSupervisorFactory = (
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
     readonly createWorker?: ActorWorkerFactory
+    readonly evictionGraceMs?: number
 }
 
 interface ResidentActorWorkerOptions {

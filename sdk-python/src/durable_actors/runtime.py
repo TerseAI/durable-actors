@@ -8,7 +8,9 @@ from collections.abc import Callable
 from functools import partial
 from typing import Any
 
+from .actor import Actor
 from .actor_base import ActorBase
+from .async_actor import AsyncActor
 from .contract import Document, Method, decode, describe_actor, encode
 from .database import RuntimeActorContext, actor_database_invocation
 from .socket import Effects, SocketScope, scope_context
@@ -36,7 +38,7 @@ class ActorRuntime:
 
     async def handle(self, command: Document) -> Document:
         if command["type"] == "evict":
-            return self.evict()
+            return await self.evict(command.get("graceful", True))
         name = command.get("method") or "on_" + command.get("event", {}).get("type", "")
         if name == "onAlarm":
             name = "on_alarm"
@@ -56,9 +58,13 @@ class ActorRuntime:
                 self.fatal = failure
             return failure
 
-    def evict(self) -> Document:
-        self.instance = None
-        self.fatal = None
+    async def evict(self, graceful: bool = True) -> Document:
+        try:
+            if graceful and self.fatal is None:
+                await self.run_hook("on_sleep")
+        finally:
+            self.instance = None
+            self.fatal = None
         return {"type": "evicted"}
 
     async def execute(self, command: Document, admit: Any) -> Document:
@@ -190,6 +196,40 @@ class ActorRuntime:
                 )
         return effects
 
+    async def run_hook(self, name: str) -> None:
+        instance = self.instance
+        if instance is None or not hook_overridden(instance, name):
+            return
+        identity = self.identity
+        assert identity is not None
+        method = getattr(instance, name)
+        scope = SocketScope(
+            instance,
+            identity["actor_id"],
+            self.definition.socket_types,
+            self.effects,
+            None,
+            False,
+        )
+        token = scope_context.set(scope)
+        try:
+            if not self.definition.reentrant_methods:
+                await self.database.begin()
+            await invoke_handler(scope, method)
+            async with self.completion:
+                state = self.snapshot()
+                if self.definition.reentrant_methods:
+                    await self.database.begin()
+                await self.database.replace_fields(state)
+                await self.database.commit()
+                self.last_state = state
+        except Exception:
+            await self.database.rollback()
+            raise
+        finally:
+            scope.active = False
+            scope_context.reset(token)
+
     def restore(self, state: Any) -> None:
         instance = self.definition.actor(RuntimeActorContext(self.database))
         if state is not None:
@@ -224,6 +264,13 @@ async def invoke_handler(
                 scope.cancel()
                 raise
         return await run_in_thread(partial(handler, *args, **kwargs), scope.cancel)
+
+
+def hook_overridden(instance: object, name: str) -> bool:
+    for cls in type(instance).__mro__:
+        if name in vars(cls) and cls not in {Actor, AsyncActor, ActorBase}:
+            return True
+    return False
 
 
 def bind_arguments(method: Method, values: list[Any]) -> inspect.BoundArguments:
