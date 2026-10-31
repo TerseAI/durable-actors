@@ -380,9 +380,37 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
             ),
             false
         )
+        assert.deepEqual(await browserField(directory, "package.json"), {
+            "./runtime/index.js": "./runtime/index.browser.js"
+        })
+        assert.deepEqual(await browserField(directory, "runtime/package.json"), { "./index.js": "./index.browser.js" })
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
+})
+
+test("allowBrowser bundles the server client for browsers", async t => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "actor-browser-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
+    await generateClient({ version: 1, actors: [], typescript: declarations({}) }, directory, { allowBrowser: true })
+    assert.equal(await browserField(directory, "package.json"), undefined)
+    assert.equal(await browserField(directory, "runtime/package.json"), undefined)
+    const bundle = await build({
+        entryPoints: [path.join(directory, "index.js")],
+        bundle: true,
+        platform: "browser",
+        format: "esm",
+        write: false,
+        metafile: true,
+        logLevel: "silent"
+    })
+    const inputs = Object.keys(bundle.metafile.inputs)
+    assert.ok(inputs.some(file => file.endsWith("runtime/index.js")))
+    assert.equal(
+        inputs.some(file => file.endsWith("runtime/index.browser.js")),
+        false
+    )
 })
 
 test("each actor module exposes complete unprefixed contract types", async t => {
@@ -552,6 +580,10 @@ function checkTypes(consumer: string): void {
             .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
         []
     )
+}
+
+async function browserField(directory: string, file: string): Promise<unknown> {
+    return JSON.parse(await readFile(path.join(directory, file), "utf8")).browser
 }
 
 test("regeneration replaces managed runtime files and preserves application files", async t => {
