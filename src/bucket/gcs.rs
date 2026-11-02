@@ -1,3 +1,8 @@
+mod access;
+pub(crate) mod bundle;
+pub(crate) mod host;
+pub(crate) mod rapid;
+
 use std::{
     sync::{Arc, OnceLock},
     time::Duration,
@@ -5,12 +10,20 @@ use std::{
 
 use anyhow::Result;
 use async_trait::async_trait;
+use bytes::Bytes;
 use google_cloud_auth::credentials::{
     CacheableResource, Credentials, CredentialsProvider, EntityTag,
 };
 use google_cloud_storage::client::{Storage, StorageControl};
 
-use super::{Bucket, BucketObject};
+pub(crate) use access::{GcsAccess, StorageTokens};
+pub(crate) use bundle::GcsBundle;
+
+use super::{Bucket, BucketObject, StorageRevision};
+
+pub(crate) fn is_credential_variable(name: &str) -> bool {
+    name == "GOOGLE_APPLICATION_CREDENTIALS"
+}
 
 pub struct GcsBucket {
     bucket: String,
@@ -22,7 +35,7 @@ pub(crate) struct WarmGcs {
     credentials: PendingCredentials,
 }
 
-/// A spare's clients for the two halves of [`super::access::StorageTokens`].
+/// A spare's clients for the two halves of [`StorageTokens`].
 pub(crate) struct WarmStorage {
     pub ownership: WarmGcs,
     pub state: WarmGcs,
@@ -189,16 +202,22 @@ impl Bucket for GcsBucket {
     async fn compare_and_swap(
         &self,
         key: &str,
-        generation: Option<i64>,
+        revision: Option<StorageRevision>,
         bytes: bytes::Bytes,
     ) -> Result<bool> {
         let _transfer = self.clients.transfer(bytes.len() as u64).await?;
-        let source = crate::payload::Upload::new(bytes);
+        let source = Upload::new(bytes);
         match self
             .clients
             .storage
             .write_object(&self.bucket, key, source)
-            .set_if_generation_match(generation.unwrap_or(0))
+            .set_if_generation_match(
+                revision
+                    .as_ref()
+                    .map(StorageRevision::require_generation)
+                    .transpose()?
+                    .unwrap_or(0),
+            )
             .send_unbuffered()
             .await
         {
@@ -243,6 +262,44 @@ fn bucket_name(bucket: &str) -> Result<String> {
         "invalid storage bucket"
     );
     Ok(format!("projects/_/buckets/{bucket}"))
+}
+
+struct Upload {
+    bytes: Bytes,
+    offset: usize,
+}
+impl Upload {
+    fn new(bytes: Bytes) -> Self {
+        Self { bytes, offset: 0 }
+    }
+}
+impl google_cloud_storage::streaming_source::StreamingSource for Upload {
+    type Error = std::io::Error;
+    async fn next(&mut self) -> Option<std::io::Result<Bytes>> {
+        if self.offset == self.bytes.len() {
+            return None;
+        }
+        let end = self
+            .bytes
+            .len()
+            .min(self.offset + crate::payload::IO_BUFFER_BYTES);
+        let bytes = self.bytes.slice(self.offset..end);
+        self.offset = end;
+        Some(Ok(bytes))
+    }
+    async fn size_hint(&self) -> std::io::Result<google_cloud_storage::streaming_source::SizeHint> {
+        Ok(google_cloud_storage::streaming_source::SizeHint::with_exact(self.bytes.len() as u64))
+    }
+}
+impl google_cloud_storage::streaming_source::Seek for Upload {
+    type Error = std::io::Error;
+    async fn seek(&mut self, offset: u64) -> std::io::Result<()> {
+        self.offset = usize::try_from(offset).map_err(std::io::Error::other)?;
+        if self.offset > self.bytes.len() {
+            return Err(std::io::Error::other("upload seek exceeds object"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -302,12 +359,12 @@ impl GcsBucket {
         };
         let length = range.map_or(response.object().size as u64, |(_, length)| length);
         let _transfer = self.clients.transfer(length).await?;
-        let generation = response.object().generation;
+        let revision = StorageRevision::Generation(response.object().generation);
         let mut download = crate::payload::Download::new();
         while let Some(chunk) = response.next().await {
             download = download.append(chunk?).await?;
         }
         let bytes = download.finish().await?;
-        Ok(Some(BucketObject { generation, bytes }))
+        Ok(Some(BucketObject { revision, bytes }))
     }
 }

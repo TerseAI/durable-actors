@@ -10,9 +10,16 @@ impl SandboxCluster for Cluster {
     async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
-    async fn create_spare(&self, _: &CreateSpareRequest) -> Result<SpareHandle> {
+    async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         self.creates.fetch_add(1, Ordering::SeqCst);
-        anyhow::bail!("unexpected pod creation")
+        Ok(SpareHandle {
+            name: request.name.clone(),
+            resource_id: "sandboxes/cold/uid".into(),
+            route: "http://10.0.0.2:7101".into(),
+            canonical_region: request.canonical_region.clone(),
+            control_route: "http://10.0.0.2:7102".into(),
+            control_token: "cold-token".into(),
+        })
     }
     async fn retire_spare(&self, _: &SpareHandle) -> Result<()> {
         self.retires.fetch_add(1, Ordering::SeqCst);
@@ -73,7 +80,7 @@ async fn prewarmed_assignment_uses_ready_host_without_creating_a_pod() -> Result
         retires: AtomicUsize::new(0),
     });
     let provider = RemoteSandboxProvider {
-        name: "gke",
+        name: "kubernetes",
         cluster: cluster.clone(),
         secrets: Arc::new(Secrets),
         assignment: Arc::new(Assign),
@@ -87,9 +94,9 @@ async fn prewarmed_assignment_uses_ready_host_without_creating_a_pod() -> Result
 }
 
 fn request() -> Result<EnsureHostRequest> {
-    let manifest = crate::bundle::ActorBundle {
+    let manifest = crate::bucket::gcs::GcsBundle {
         bucket: "code-bucket".into(),
-        files: vec![crate::bundle::BundleFile {
+        files: vec![crate::bucket::gcs::bundle::GcsBundleFile {
             path: "actors.mjs".into(),
             object: "code/actors.mjs".into(),
             generation: 1,
@@ -138,7 +145,8 @@ fn python_assignment_uses_its_manifest_entrypoint() -> Result<()> {
     let mut request = request()?;
     request.resources.cpu_millis = 500;
     request.resources.memory_mib = 512;
-    let mut manifest = crate::bundle::ActorBundle::decode(request.code_snapshot.as_ref().unwrap())?;
+    let mut manifest =
+        crate::bucket::gcs::GcsBundle::decode(request.code_snapshot.as_ref().unwrap())?;
     manifest.files[0].path = "actors.pyz".into();
     request.code_snapshot = Some(manifest.encode()?);
     request.actor_entrypoint = Some("actors.pyz".into());
@@ -175,7 +183,7 @@ impl HostAssignment for ExpiredAssignment {
 #[tokio::test]
 async fn assignment_rejects_a_host_whose_lease_expired_before_its_reply() -> Result<()> {
     let provider = RemoteSandboxProvider {
-        name: "gke",
+        name: "kubernetes",
         secrets: Arc::new(Secrets),
         cluster: Arc::new(Cluster {
             creates: AtomicUsize::new(0),

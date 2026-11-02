@@ -11,6 +11,9 @@ pub(crate) enum ControlPlaneCommand {
         operation: super::socket_gateway::SocketOperation,
     },
     RefreshStorageAccess,
+    ExpressLog {
+        request: crate::bucket::s3::ExpressLogRequest,
+    },
     Lifecycle {
         report: crate::actor_lifecycle::LifecycleReport,
     },
@@ -31,8 +34,13 @@ pub(crate) enum ControlPlaneCommandReply {
         reply: super::socket_gateway::SocketOperationReply,
     },
     StorageAccess {
-        tokens: Option<crate::bucket::access::StorageTokens>,
+        // Flattened so the reply keeps the `tokens` field that already-running hosts read.
+        #[serde(flatten)]
+        access: Option<crate::bucket::access::StorageAccess>,
         replacement_token: String,
+    },
+    ExpressLog {
+        reply: crate::bucket::s3::ExpressLogReply,
     },
     Alarm {
         timestamp_ms: Option<i64>,

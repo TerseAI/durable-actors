@@ -551,6 +551,16 @@ impl ControlPlaneService {
                 self.alarms.update(&principal.actor, timestamp_ms).await?;
                 Ok(ControlPlaneCommandReply::Unit)
             }
+            // Segments are fenced in storage, so a host need not hold the lease yet to prepare one.
+            ControlPlaneCommand::ExpressLog { request } => {
+                let reply = self
+                    .runtime_access
+                    .as_ref()
+                    .context("direct storage is not configured")?
+                    .express_log(&principal.actor, request)
+                    .await?;
+                Ok(ControlPlaneCommandReply::ExpressLog { reply })
+            }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
                 let spec = self
@@ -562,7 +572,7 @@ impl ControlPlaneService {
                     principal.host_config_key.as_deref() == Some(spec.host_config_key().as_str()),
                     "host deployment changed"
                 );
-                let tokens = self
+                let access = self
                     .runtime_access
                     .as_ref()
                     .context("direct storage is not configured")?
@@ -583,7 +593,7 @@ impl ControlPlaneService {
                     )?
                     .token;
                 Ok(ControlPlaneCommandReply::StorageAccess {
-                    tokens,
+                    access,
                     replacement_token,
                 })
             }
@@ -1066,7 +1076,7 @@ impl HostProvisioner for SandboxHostProvisioner {
             .code_snapshot
             .as_deref()
             .context("hosted deployments require a compiled bundle")?;
-        let manifest = crate::bundle::ActorBundle::decode(snapshot)?;
+        let manifest = crate::bundle::ArtifactBundle::decode(snapshot)?;
         self.runtime_access
             .as_ref()
             .context("hosted deployments require artifact storage access")?
@@ -1080,7 +1090,7 @@ impl HostProvisioner for SandboxHostProvisioner {
                 .for_entrypoint(manifest.entrypoint()?)?
                 .into();
         } else {
-            crate::sandbox::gke::validate_image(&source.image_ref)?;
+            crate::sandbox::validate_image(&source.image_ref)?;
         }
         prepared.validate()?;
         Ok((prepared, None))
@@ -1121,7 +1131,7 @@ impl HostProvisioner for SandboxHostProvisioner {
     ) -> Result<HostTermination> {
         if let Some(pool) = &self.pool {
             return Ok(HostTermination {
-                provider: "gke".into(),
+                provider: "kubernetes".into(),
                 resource_ids: pool.retire_config(&spec.host_config_key()).await?,
             });
         }

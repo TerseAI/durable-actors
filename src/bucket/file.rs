@@ -1,4 +1,8 @@
-use super::{Bucket, BucketObject};
+use super::{
+    Bucket, BucketObject, BucketSnapshots, SnapshotStoreConfig, StorageRevision,
+    access::{AccessIssuer, BucketLocation, HostBuckets, StorageAccess},
+};
+use crate::bundle::ArtifactBundle;
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use atomic_write_file::AtomicWriteFile;
@@ -6,7 +10,49 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
+
+/// Local development storage: hosts share the control plane's directory and need no credentials.
+pub(crate) struct FileAccess(pub PathBuf);
+
+#[async_trait]
+impl AccessIssuer for FileAccess {
+    fn location(&self) -> BucketLocation {
+        BucketLocation::File {
+            directory: self.0.clone(),
+        }
+    }
+
+    fn validate_code(&self, _: &ArtifactBundle) -> Result<()> {
+        anyhow::bail!("compiled bundles require object storage")
+    }
+
+    async fn issue(
+        &self,
+        _: &crate::actor::ActorKey,
+        _: &SnapshotStoreConfig,
+        _: Option<ArtifactBundle>,
+    ) -> Result<Option<StorageAccess>> {
+        Ok(None)
+    }
+}
+
+pub(crate) fn open_host(
+    directory: PathBuf,
+    persistence: &SnapshotStoreConfig,
+) -> Result<HostBuckets> {
+    ensure!(
+        persistence.rapid_settings().is_none(),
+        "Rapid persistence requires object storage"
+    );
+    let authority = Arc::new(FileBucket::new(directory)?);
+    Ok(HostBuckets {
+        snapshots: Arc::new(BucketSnapshots(authority.clone())),
+        authority,
+        artifacts: None,
+    })
+}
 
 pub struct FileBucket {
     directory: PathBuf,
@@ -44,13 +90,13 @@ impl Bucket for FileBucket {
             let Some(mut file) = open(&object_path(directory, &key)?)? else {
                 return Ok(None);
             };
-            let generation = read_generation(&mut file)?;
+            let revision = StorageRevision::Generation(read_generation(&mut file)?);
             file.seek(SeekFrom::Start(
                 start.checked_add(8).context("range overflow")?,
             ))?;
             let bytes = crate::payload::copy(file.take(length))?;
             ensure!(bytes.len() as u64 == length, "incomplete object range");
-            Ok(Some(BucketObject { generation, bytes }))
+            Ok(Some(BucketObject { revision, bytes }))
         })
         .await
     }
@@ -58,7 +104,7 @@ impl Bucket for FileBucket {
     async fn compare_and_swap(
         &self,
         key: &str,
-        expected: Option<i64>,
+        revision: Option<StorageRevision>,
         bytes: bytes::Bytes,
     ) -> Result<bool> {
         let key = key.to_owned();
@@ -67,6 +113,10 @@ impl Bucket for FileBucket {
             let _lock = lock_object(&path)?;
             let generation = open(&path)?
                 .map(|mut file| read_generation(&mut file))
+                .transpose()?;
+            let expected = revision
+                .as_ref()
+                .map(StorageRevision::require_generation)
                 .transpose()?;
             if generation != expected {
                 return Ok(false);
@@ -111,9 +161,9 @@ fn read(path: &Path) -> Result<Option<BucketObject>> {
     let Some(mut file) = open(path)? else {
         return Ok(None);
     };
-    let generation = read_generation(&mut file)?;
+    let revision = StorageRevision::Generation(read_generation(&mut file)?);
     let bytes = crate::payload::copy(file)?;
-    Ok(Some(BucketObject { generation, bytes }))
+    Ok(Some(BucketObject { revision, bytes }))
 }
 
 fn open(path: &Path) -> Result<Option<File>> {

@@ -287,8 +287,20 @@ async fn gcs_adapter_preserves_generation_conditions_and_pagination() -> Result<
     let bucket = test_bucket(&endpoint).await?;
     let key = "runtime/lease.json";
     let object = bucket.get(key).await.context("read object")?.unwrap();
-    assert_eq!(object.generation, 42);
+    assert_eq!(
+        object.revision,
+        crate::bucket::StorageRevision::Generation(42)
+    );
     assert_eq!(object.bytes.as_ref(), b"lease");
+    let error = bucket
+        .compare_and_swap(
+            key,
+            Some(crate::bucket::StorageRevision::ETag("\"opaque\"".into())),
+            bytes::Bytes::from_static(b"replacement"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "numeric storage generation required");
     assert!(bucket.get("missing").await?.is_none());
     assert!(bucket.get("forbidden").await.is_err());
     assert!(
@@ -301,7 +313,7 @@ async fn gcs_adapter_preserves_generation_conditions_and_pagination() -> Result<
         bucket
             .compare_and_swap(
                 key,
-                Some(object.generation),
+                Some(object.revision.clone()),
                 bytes::Bytes::from_static(b"lease")
             )
             .await
@@ -309,12 +321,20 @@ async fn gcs_adapter_preserves_generation_conditions_and_pagination() -> Result<
     );
     assert!(
         !bucket
-            .compare_and_swap(key, Some(41), bytes::Bytes::from_static(b"lease"))
+            .compare_and_swap(
+                key,
+                Some(crate::bucket::StorageRevision::Generation(41)),
+                bytes::Bytes::from_static(b"lease")
+            )
             .await?
     );
     assert!(
         bucket
-            .compare_and_swap(key, Some(43), bytes::Bytes::from_static(b"lease"))
+            .compare_and_swap(
+                key,
+                Some(crate::bucket::StorageRevision::Generation(43)),
+                bytes::Bytes::from_static(b"lease")
+            )
             .await
             .is_err()
     );
@@ -471,4 +491,22 @@ struct ListResponse {
 struct ListedObject {
     #[prost(string, tag = "1")]
     name: String,
+}
+
+#[tokio::test]
+async fn uploads_have_bounded_chunks_and_replay_the_requested_offset() -> Result<()> {
+    use google_cloud_storage::streaming_source::{Seek, StreamingSource};
+    let bytes = bytes::Bytes::from(vec![17; 1024 * 1024 + 7]);
+    let mut upload = super::Upload::new(bytes.clone());
+    let mut received = Vec::new();
+    while let Some(chunk) = upload.next().await {
+        let chunk = chunk?;
+        assert!(chunk.len() <= 256 * 1024);
+        received.extend_from_slice(&chunk);
+    }
+    assert_eq!(received.as_slice(), bytes.as_ref());
+    upload.seek(1024 * 1024).await?;
+    assert_eq!(upload.next().await.unwrap()?.as_ref(), &[17; 7]);
+    assert!(upload.next().await.is_none());
+    Ok(())
 }
