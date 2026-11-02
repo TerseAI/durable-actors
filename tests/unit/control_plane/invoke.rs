@@ -363,7 +363,7 @@ async fn backend_socket_effects_reach_clients_connected_to_another_replica() -> 
 //         actor_id: "one".into(),
 //     }
 //     .storage_key();
-//     tokio::time::timeout(Duration::from_secs(3), async { // 
+//     tokio::time::timeout(Duration::from_secs(3), async { //
 //         while fixture.placements.get_owner(&key).await?.is_none() {
 //             tokio::time::sleep(Duration::from_millis(10)).await;
 //         }
@@ -380,13 +380,23 @@ async fn hint_host_warm_wakes_a_sleeping_actor() -> Result<()> {
     let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
     let key = chat_room_key();
     assert_eq!(
-        fixture.placements.get_owner(&key).await?.map(|p| p.owner_epoch),
+        fixture
+            .placements
+            .get_owner(&key)
+            .await?
+            .map(|p| p.owner_epoch),
         Some(1)
     );
     let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     tokio::time::timeout(Duration::from_secs(3), async {
-        while fixture.placements.get_owner(&key).await?.map(|p| p.owner_epoch) != Some(2) {
+        while fixture
+            .placements
+            .get_owner(&key)
+            .await?
+            .map(|p| p.owner_epoch)
+            != Some(2)
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok::<_, anyhow::Error>(())
@@ -464,7 +474,11 @@ async fn hint_host_warm_does_not_report_a_failed_start() -> Result<()> {
     fixture.service.warmups.close();
     fixture.service.warmups.wait().await;
     assert_eq!(
-        fixture.placements.get_owner(&chat_room_key()).await?.map(|p| p.owner_epoch),
+        fixture
+            .placements
+            .get_owner(&chat_room_key())
+            .await?
+            .map(|p| p.owner_epoch),
         Some(1)
     );
     Ok(())
