@@ -407,18 +407,18 @@ async fn hint_host_warm_wakes_a_sleeping_actor() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test] // TODO: Test 2 No placement record: hint returns 404, writes no placement, launches no host
-async fn hint_host_warm_never_activates_a_new_actor() -> Result<()> {
+#[tokio::test] // TODO: Test 2 Do not reject unknown IDs. Activate host when given a valid ID.
+async fn hint_host_warm_activates_a_new_actor() -> Result<()> {
     let fixture = Fixture::start(vec![]).await?;
     let key = chat_room_key();
+    assert!(fixture.placements.get_owner(&key).await?.is_none());
     let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let reply: Value = response.json().await?;
-    assert_eq!(reply["error"]["code"], "not_found");
+    assert_eq!(response.status(), StatusCode::ACCEPTED); // return 202
     fixture.service.warmups.close();
     fixture.service.warmups.wait().await;
-    assert!(fixture.placements.get_owner(&key).await?.is_none());
-    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    assert!(fixture.placements.get_owner(&key).await?.is_some()); // we expect that the actor now exists
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1); // check that exactly one host started
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0); // 0 means that the hint started the actor without running any of its code
     Ok(())
 }
 
