@@ -352,25 +352,154 @@ async fn backend_socket_effects_reach_clients_connected_to_another_replica() -> 
     Ok(())
 }
 
-#[tokio::test]
-async fn hint_host_warm_provisions_a_host_without_invoking() -> Result<()> {
-    let fixture = Fixture::start(vec![]).await?;
+// #[tokio::test]
+// async fn hint_host_warm_provisions_a_host_without_invoking() -> Result<()> {
+//     let fixture = Fixture::start(vec![]).await?;
+//     let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+//     assert_eq!(response.status(), StatusCode::ACCEPTED); // hint is accepted returns 202
+//     let key = ActorKey {
+//         project_id: "default".into(),
+//         actor_name: "ChatRoom".into(),
+//         actor_id: "one".into(),
+//     }
+//     .storage_key();
+//     tokio::time::timeout(Duration::from_secs(3), async { // 
+//         while fixture.placements.get_owner(&key).await?.is_none() {
+//             tokio::time::sleep(Duration::from_millis(10)).await;
+//         }
+//         Ok::<_, anyhow::Error>(())
+//     })
+//     .await??;
+//     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+//     Ok(())
+// }
+
+#[tokio::test] // TODO: Test 1 Sleeping actor wakes up and returns 202
+
+async fn hint_host_warm_wakes_a_sleeping_actor() -> Result<()> {
+    let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
+    let key = chat_room_key();
+    assert_eq!(
+        fixture.placements.get_owner(&key).await?.map(|p| p.owner_epoch),
+        Some(1)
+    );
     let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let key = ActorKey {
-        project_id: "default".into(),
-        actor_name: "ChatRoom".into(),
-        actor_id: "one".into(),
-    }
-    .storage_key();
     tokio::time::timeout(Duration::from_secs(3), async {
-        while fixture.placements.get_owner(&key).await?.is_none() {
+        while fixture.placements.get_owner(&key).await?.map(|p| p.owner_epoch) != Some(2) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok::<_, anyhow::Error>(())
     })
     .await??;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 2 No placement record: hint returns 404, writes no placement, launches no host
+async fn hint_host_warm_never_activates_a_new_actor() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let key = chat_room_key();
+    let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let reply: Value = response.json().await?;
+    assert_eq!(reply["error"]["code"], "not_found");
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert!(fixture.placements.get_owner(&key).await?.is_none());
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 4 Bad key, malformed name, unknown actor type, or disabled organization: rejected, launches no host
+async fn hint_host_warm_rejects_bad_requests_without_launching() -> Result<()> {
+    let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
+    let response = fixture.post("hint-host-warm", "invalid", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    for (actor, status) in [
+        ("ChatRoom/bad!id", StatusCode::BAD_REQUEST),
+        ("Unknown/one", StatusCode::NOT_FOUND),
+    ] {
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/projects/default/actors/{actor}/hint-host-warm",
+                fixture.origin
+            ))
+            .bearer_auth("api-key")
+            .json(&json!({}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), status);
+    }
+    fixture
+        .admin
+        .set_organization_access("org-test", AccessSource::Admin, false)
+        .await?;
+    let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 3 Awake actor: hint returns 202, launches no host
+async fn hint_host_warm_leaves_an_awake_actor_alone() -> Result<()> {
+    let fixture = Fixture::start_with_existing_host(vec![], true).await?;
+    let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 5 Sleeping actor, host fails to start: hint returns 202, placement unchanged
+async fn hint_host_warm_does_not_report_a_failed_start() -> Result<()> {
+    let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
+    fixture.host.fail_launch.store(true, Ordering::SeqCst);
+    let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(
+        fixture.placements.get_owner(&chat_room_key()).await?.map(|p| p.owner_epoch),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 6 Two hints at once for a sleeping actor: both return 202, launches one host
+async fn concurrent_hint_host_warms_launch_one_host() -> Result<()> {
+    let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
+    let (first, second) = tokio::join!(
+        fixture.post("hint-host-warm", "api-key", json!({})),
+        fixture.post("hint-host-warm", "api-key", json!({})),
+    );
+    assert_eq!(first?.status(), StatusCode::ACCEPTED);
+    assert_eq!(second?.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 7 Hint during a real call to a sleeping actor: launches one host, call runs once
+async fn hint_host_warm_during_a_call_launches_one_host() -> Result<()> {
+    let reply = json!({"type":"completed", "result":null});
+    let fixture = Fixture::start_with_sleeping_actor(vec![(StatusCode::OK, reply)]).await?;
+    let call = json!({"requestId":"call", "method":"clear", "args":[]});
+    let (hint, call) = tokio::join!(
+        fixture.post("hint-host-warm", "api-key", json!({})),
+        fixture.call("api-key", call),
+    );
+    assert_eq!(hint?.status(), StatusCode::ACCEPTED);
+    call?.error_for_status()?;
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
