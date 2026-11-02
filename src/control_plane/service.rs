@@ -54,6 +54,7 @@ pub struct ControlPlaneService {
     alarms: Arc<dyn super::alarms::AlarmStore>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
+    pub(super) warmups: tokio_util::task::TaskTracker,
 }
 
 impl ControlPlaneService {
@@ -96,6 +97,7 @@ impl ControlPlaneService {
             alarms: Arc::new(super::alarms::MemoryAlarmStore::default()),
             socket_events: None,
             local_builds: None,
+            warmups: tokio_util::task::TaskTracker::new(),
         }
     }
 

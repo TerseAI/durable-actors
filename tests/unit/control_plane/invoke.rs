@@ -710,6 +710,45 @@ impl Fixture {
         Self::start_with_routes(replies, existing, None).await
     }
 
+    async fn start_with_sleeping_actor(replies: Vec<(StatusCode, Value)>) -> Result<Self> {
+        let fixture = Self::start(replies).await?;
+        fixture.place_chat_room(0).await?;
+        Ok(fixture)
+    }
+
+    async fn start_with_draining_actor(replies: Vec<(StatusCode, Value)>) -> Result<Self> {
+        let fixture = Self::start(replies).await?;
+        let expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 300;
+        let placement = fixture.place_chat_room(expires_at_ms).await?;
+        fixture
+            .service
+            .routes
+            .put(
+                &chat_room(),
+                crate::control_plane::routes::RouteEntry::Draining(
+                    crate::control_plane::routes::RouteIdentity::of(&placement),
+                ),
+            )
+            .await;
+        Ok(fixture)
+    }
+
+    async fn place_chat_room(&self, expires_at_ms: u64) -> Result<ObjectPlacement> {
+        let spec = self.service.registry.launch_spec("default").await?.unwrap();
+        self.placements.set_owner(
+            &chat_room_key(),
+            HostLease {
+                expires_at_ms,
+                ..test_lease(&HostId::new(format!(
+                    "host.v3.{}.fixture",
+                    spec.host_config_key()
+                )))
+            },
+            "north-america-east",
+        )?;
+        Ok(self.placements.get_owner(&chat_room_key()).await?.unwrap())
+    }
+
     async fn start_with_routes(
         replies: Vec<(StatusCode, Value)>,
         existing: bool,
@@ -723,6 +762,9 @@ impl Fixture {
             replies: Mutex::new(replies.into()),
             calls: AtomicUsize::new(0),
             requests: Mutex::new(vec![]),
+            launches: AtomicUsize::new(0),
+            fail_launch: false.into(),
+            launch_gate: tokio::sync::watch::channel(true).0,
         });
         let host_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let host_origin = format!("http://{}", host_listener.local_addr()?);
@@ -927,6 +969,18 @@ fn broadcast() -> Value {
     json!({ "effects":[{"type":"broadcast", "message":{"type":"text", "data":"hello"}, "except_connection_ids":[], "tags":[]}]})
 }
 
+fn chat_room() -> ActorKey {
+    ActorKey {
+        project_id: "default".into(),
+        actor_name: "ChatRoom".into(),
+        actor_id: "one".into(),
+    }
+}
+
+fn chat_room_key() -> ActorStorageKey {
+    chat_room().storage_key()
+}
+
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn next_message(socket: &mut Socket) -> Result<Message> {
@@ -942,6 +996,9 @@ struct HostFixture {
     replies: Mutex<VecDeque<(StatusCode, Value)>>,
     calls: AtomicUsize,
     requests: Mutex<Vec<(String, Value)>>,
+    launches: AtomicUsize,
+    fail_launch: std::sync::atomic::AtomicBool,
+    launch_gate: tokio::sync::watch::Sender<bool>,
 }
 
 async fn host_invoke(
@@ -1013,7 +1070,16 @@ impl HostProvisioner for InvocationProvisioner {
         _: Option<&crate::bucket::OwnershipHint>,
         operation: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+        self.host.launches.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(25)).await;
+        self.host
+            .launch_gate
+            .subscribe()
+            .wait_for(|open| *open)
+            .await?;
+        if self.host.fail_launch.load(Ordering::SeqCst) {
+            anyhow::bail!("fixture launch failed");
+        }
         let lease = HostLease {
             route: self.route.clone(),
             session_id: uuid::Uuid::new_v4().to_string(),
