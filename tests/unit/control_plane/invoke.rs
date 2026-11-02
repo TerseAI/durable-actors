@@ -389,19 +389,18 @@ async fn hint_host_warm_wakes_a_sleeping_actor() -> Result<()> {
     );
     let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while fixture
+    let reply: Value = response.json().await?;
+    assert_eq!(reply, json!({"status":"accepted"}));
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(
+        fixture
             .placements
             .get_owner(&key)
             .await?
-            .map(|p| p.owner_epoch)
-            != Some(2)
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    })
-    .await??;
+            .map(|p| p.owner_epoch),
+        Some(2)
+    );
     assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
     Ok(())
