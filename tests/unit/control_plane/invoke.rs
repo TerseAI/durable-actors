@@ -441,6 +441,10 @@ async fn hint_host_warm_rejects_bad_requests_without_launching() -> Result<()> {
             .await?;
         assert_eq!(response.status(), status);
     }
+    let response = fixture
+        .post("hint-host-warm", "api-key", json!({"homeRegion":"Mars!"}))
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     fixture
         .admin
         .set_organization_access("org-test", AccessSource::Admin, false)
@@ -461,6 +465,7 @@ async fn hint_host_warm_leaves_an_awake_actor_alone() -> Result<()> {
     fixture.service.warmups.close();
     fixture.service.warmups.wait().await;
     assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -515,6 +520,128 @@ async fn hint_host_warm_during_a_call_launches_one_host() -> Result<()> {
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
+
+
+#[tokio::test] // TODO: Test 8 Hint during a failed host start: returns 202, placement unchanged. Do not create an actor whose start fails.
+async fn hint_host_warm_does_not_create_an_actor_whose_start_fails() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    fixture.host.fail_launch.store(true, Ordering::SeqCst);
+    let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert!(fixture.placements.get_owner(&chat_room_key()).await?.is_none());
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 9 two hints at once for a new actor: both return 202, launches one host
+async fn concurrent_hint_host_warms_create_one_actor() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let (first, second) = tokio::join!(
+        fixture.post("hint-host-warm", "api-key", json!({})),
+        fixture.post("hint-host-warm", "api-key", json!({})),
+    );
+    assert_eq!(first?.status(), StatusCode::ACCEPTED);
+    assert_eq!(second?.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 10 accept sesion token 
+async fn hint_host_warm_accepts_a_session_token() -> Result<()> {
+    let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
+    let expiry = (super::super::super::auth::unix_seconds()? + 30) * 1000;
+    let session = fixture
+        .admin
+        .issue_session("default".into(), "subject".into(), expiry)?;
+    let response = fixture.post("hint-host-warm", &session.token, json!({})).await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 11 accept a warm request that has no body; actor wakes in its saved home region.
+async fn hint_host_warm_wakes_a_sleeping_actor_without_a_request_body() -> Result<()> {
+    let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/v1/projects/default/actors/ChatRoom/one/hint-host-warm",
+            fixture.origin
+        ))
+        .bearer_auth("api-key")
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 12 place a new actor in the requested region.
+async fn hint_host_warm_places_a_new_actor_in_the_requested_region() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let response = fixture
+        .post("hint-host-warm", "api-key", json!({"homeRegion":"north-america-east"}))
+        .await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(
+        fixture.placements.get_owner(&chat_room_key()).await?.map(|p| p.home_region),
+        Some("north-america-east".into())
+    );
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 13 a hint while the host is shutting down: returns 202, placement unchanged
+async fn hint_host_warm_waits_out_a_shutting_down_host() -> Result<()> {
+    let fixture = Fixture::start_with_draining_actor(vec![]).await?;
+    let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(
+        fixture.placements.get_owner(&chat_room_key()).await?.map(|p| p.owner_epoch),
+        Some(2)
+    );
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 14 place a new actor in the default region when no homeRegion is given (because the region body is optional)
+async fn hint_host_warm_places_a_new_actor_in_the_default_region() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let response = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(
+        fixture.placements.get_owner(&chat_room_key()).await?.map(|p| p.home_region),
+        Some("north-america-central".into())
+    );
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 15 homeRegion conflicts with the actor's saved home: returns 409. call does launch host
+async fn hint_host_warm_rejects_a_home_region_that_conflicts_with_the_actor() -> Result<()> {
+    let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
+    let response = fixture
+        .post("hint-host-warm", "api-key", json!({"homeRegion":"north-america-central"}))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+
+
 
 struct Fixture {
     service: ControlPlaneService,
