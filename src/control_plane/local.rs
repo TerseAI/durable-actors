@@ -377,6 +377,9 @@ async fn local_routes(
         Arc::new(provisioner),
     )
     .with_runtime_access(storage.access.clone())
+    .with_alarm_store(Arc::new(
+        super::alarms::SqliteAlarmStore::open(directory.join("alarms.sqlite3")).await?,
+    ))
     .with_local_builds(Arc::new(super::local_build::LocalBuilds::new(
         project.to_owned(),
         directory.canonicalize()?.join("code"),
@@ -390,9 +393,10 @@ async fn local_routes(
     }
     service.gateway = Some(gateway);
     service.start_access_reconciliation(stop.clone());
-    service.start_alarm_scheduler(super::alarms::DEFAULT_POLL_INTERVAL, stop);
     let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
     service.deploy_source(&admin, &spec, None).await?;
+    // Restored alarms would exhaust their retries and be dropped before the code is deployed.
+    service.start_alarm_scheduler(super::alarms::DEFAULT_POLL_INTERVAL, stop);
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
         Arc::new(service.lifecycle.clone()),
         service.gateway.as_ref().unwrap().connections.clone(),
