@@ -1,9 +1,8 @@
 import { ActiveActorsCard } from "./activeActorsCard.js"
 import { RequestRateCard } from "./requestRateCard.js"
 import { SocketsCard } from "./socketsCard.js"
-import type { OverviewMetrics } from "../../types/Overview.js"
 
-export function Overview({ metrics }: { metrics: OverviewMetrics }) {
+export function Overview() {
     return (
         <section aria-labelledby="overview-heading" className="flex flex-col gap-5">
             <header className="flex flex-wrap items-baseline justify-between gap-2">
@@ -14,7 +13,7 @@ export function Overview({ metrics }: { metrics: OverviewMetrics }) {
             <div className="grid gap-4 lg:grid-cols-3">
                 <ActiveActorsCard />
                 <RequestRateCard />
-                <SocketsCard {...metrics.sockets} axis={metrics.axis} />
+                <SocketsCard />
             </div>
         </section>
     )

@@ -1,15 +1,11 @@
 import { useData } from "../../client/DatatContext.js"
 import { formatClock, formatDecimal } from "../../format.js"
-import { requestWindowMs } from "../../hooks/useRequests.js"
+import { bucketCount, bucketMs, emptySeries, trendAxis, trendWindowMs } from "../../lib/trendWindow.js"
 import type { RequestTrace } from "../../types/Requests.js"
 import type { RequestRateMetrics } from "../../types/Overview.js"
 import { Skeleton } from "../ui/skeleton.js"
 
 import { TrendCard, TrendStat } from "./trendCard.js"
-
-const bucketCount = 30
-const bucketMs = requestWindowMs / bucketCount
-const emptySeries = Array<number>(bucketCount).fill(0)
 
 export function RequestRateCard() {
     const { requests, isRequestsError } = useData()
@@ -25,7 +21,7 @@ export function RequestRateCard() {
             unit="req/s"
             busy={loading}
             series={metrics?.series ?? emptySeries}
-            axis={getAxis(now)}
+            axis={trendAxis(now)}
             color="var(--chart-1)"
             chartLabel={metrics ? `Requests per second over the last hour, peaking at ${formatDecimal(metrics.peak)}` : "Requests per second over the last hour"}
         >
@@ -41,13 +37,13 @@ function getMetrics(requests: RequestTrace[], now: number): RequestRateMetrics {
         current: series.at(-1) ?? 0,
         average: series.reduce((sum, rate) => sum + rate, 0) / bucketCount,
         peak,
-        peakAt: formatClock(now - requestWindowMs + (series.indexOf(peak) + 1) * bucketMs),
+        peakAt: formatClock(now - trendWindowMs + (series.indexOf(peak) + 1) * bucketMs),
         series
     }
 }
 
 function bucketRates(requests: RequestTrace[], now: number): number[] {
-    const start = now - requestWindowMs
+    const start = now - trendWindowMs
     const counts = Array<number>(bucketCount).fill(0)
     // Rerouted attempts are retried under the same request, so counting them would double-count.
     for (const { startedAtMs, outcome } of requests) {
@@ -55,10 +51,6 @@ function bucketRates(requests: RequestTrace[], now: number): number[] {
         if (outcome !== "rerouted" && index >= 0) counts[Math.min(index, bucketCount - 1)]! += 1
     }
     return counts.map(count => count / (bucketMs / 1000))
-}
-
-function getAxis(now: number): string[] {
-    return [formatClock(now - requestWindowMs), formatClock(now - requestWindowMs / 2), "Now"]
 }
 
 function RateStats({ average, peak, peakAt }: RequestRateMetrics) {

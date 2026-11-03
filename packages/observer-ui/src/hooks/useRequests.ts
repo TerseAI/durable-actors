@@ -3,13 +3,12 @@ import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscriptio
 import type { RequestTrace } from "../types/Requests.js"
 import { HttpObserverClient } from "../client/observerClient.js"
 import { subscribeToRequests } from "../client/requestStream.js"
-
-export const requestWindowMs = 60 * 60 * 1000
+import { trendWindowMs } from "../lib/trendWindow.js"
 
 export function useRequests() {
     const { data, error, isLoading } = useSWR<RequestTrace[]>(
         "requests",
-        async () => (await new HttpObserverClient().listRequests(Date.now() - requestWindowMs)).records,
+        async () => (await new HttpObserverClient().listRequests(Date.now() - trendWindowMs)).records,
     )
     const { data: live } = useSWRSubscription(
         "requests/events",
@@ -27,7 +26,7 @@ export function useRequests() {
 
 // The stream sends incremental pages rather than full snapshots, so records accumulate until they leave the window.
 function mergeTraces(traces: RequestTrace[], incoming: RequestTrace[]): RequestTrace[] {
-    const since = Date.now() - requestWindowMs
+    const since = Date.now() - trendWindowMs
     const byEvent = new Map([...traces, ...incoming].map(trace => [trace.eventId, trace]))
     return [...byEvent.values()].filter(trace => trace.startedAtMs >= since)
 }

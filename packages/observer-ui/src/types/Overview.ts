@@ -1,10 +1,3 @@
-export interface OverviewMetrics {
-    axis: string[]
-    actors: ActorResidencyMetrics
-    requests: RequestRateMetrics
-    sockets: SocketMetrics
-}
-
 export interface ActorResidencyMetrics {
     live: number
     dormant: number
