@@ -43,3 +43,26 @@ test("only explicit pre-execution rejection retries with the same request ID", a
     assert.equal(requests.length, 2)
     assert.deepEqual(requests[0], requests[1])
 })
+
+test("warm sends one hint with the configured credential and resolves on 202", async () => {
+    const requests: { url: string; authorization: string | null; body: unknown }[] = []
+    const client = new RemoteActorClient(options, {
+        requestId: () => "request-1",
+        fetch: async (url, init) => {
+            requests.push({
+                url: String(url),
+                authorization: new Headers(init?.headers).get("authorization"),
+                body: JSON.parse(String(init?.body))
+            })
+            return Response.json({ status: "accepted" }, { status: 202 })
+        }
+    })
+    assert.deepEqual(await client.warm("Counter", "one"), { status: "accepted" })
+    assert.deepEqual(requests, [
+        {
+            url: "https://gateway.example/v1/projects/project/actors/Counter/one/hint-host-warm",
+            authorization: "Bearer backend-key",
+            body: {}
+        }
+    ])
+})

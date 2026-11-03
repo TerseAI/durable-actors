@@ -32,6 +32,12 @@ export function createActorTransport(options: DurableActorsClientOptions): Actor
                 ({ RemoteActorClient }) => new RemoteActorClient(options)
             )
             return (await client).invoke(...args)
+        },
+        async warm(...args) {
+            client ??= import("./client/remoteClient.js").then(
+                ({ RemoteActorClient }) => new RemoteActorClient(options)
+            )
+            return (await client).warm!(...args)
         }
     }
 }

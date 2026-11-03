@@ -33,6 +33,9 @@ ${methodTypes(actor.actorName, actor.rpc.methods, stubName, methodsName)}
             actor.actorName,
             `get(actorId: string, transport?: import("./runtime/index.js").ActorRpcTransport): ${stub} {
         return $createActorStub<${stub}>(${JSON.stringify(actor.actorName)}, actorId, ${JSON.stringify(descriptors)}, transport)
+    },
+    warm(actorId: string, transport?: import("./runtime/index.js").ActorRpcTransport): Promise<import("./runtime/index.js").ActorWarmReply> {
+        return $warmActor(${JSON.stringify(actor.actorName)}, actorId, transport)
     }`
         )
     }

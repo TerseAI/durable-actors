@@ -16,7 +16,7 @@ async function generateClientArtifacts(input: PublicActorContract): Promise<Read
     const declarations = contracts.map(contract => actorDeclarations(contract))
     const exampleActor = contracts[0]?.actorName
     const source = `${usageComment("Use this file to call actors and prepare WebSocket access from your backend.", 'import { actors, ActorProxy, type ActorAuthorization } from "./generated/index.js"')}
-import { createActorStub as $createActorStub, SocketProxy as $SocketProxy } from "./runtime/index.js"
+import { createActorStub as $createActorStub, warmActor as $warmActor, SocketProxy as $SocketProxy } from "./runtime/index.js"
 import type { ActorTypes as $ActorTypes } from "./types.js"
 export { createActorTransport, createActorSessionTransport, ActorSessionRejectedError, ActorInvocationError } from "./runtime/index.js"
 export type { ActorSession, ActorSessionTransportOptions, ActorSessionTransport } from "./runtime/index.js"
