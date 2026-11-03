@@ -1,7 +1,7 @@
 import { ActorSerializationError } from "./errors.js"
 
 type JsonPrimitive = string | number | boolean | null
-type JsonObject = { readonly [key: string]: JsonValue }
+export type JsonObject = { readonly [key: string]: JsonValue }
 type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[]
 
 function cloneJson(value: unknown, label: string): JsonValue {

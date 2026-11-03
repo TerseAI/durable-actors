@@ -343,6 +343,8 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
         assert.match(await readFile(path.join(directory, "types.d.ts"), "utf8"), /amount: number/)
         assert.doesNotMatch(source, /node:|\/host|actor-compiler/)
         assert.deepEqual((await readdir(directory)).sort(), [
+            "browser.d.ts",
+            "browser.js",
             "index.d.ts",
             "index.js",
             "package.json",
