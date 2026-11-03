@@ -1,4 +1,5 @@
 import { HttpActorClient } from "./client.js"
+import type { ActorWarmReply } from "./client.js"
 import { ActorSessionRejectedError } from "./errors.js"
 import { validateActorComponent, validateOrigin } from "./settings.js"
 import type { DurableActorsClientOptions } from "./settings.js"
@@ -57,6 +58,15 @@ export class ActorSessionTransport implements ActorRpcTransport {
         const transport =
             this.transport && this.expiresAtMs > this.now() + 5_000 ? this.transport : await this.refresh()
         return transport.invoke(actorName, actorId, method, args)
+    }
+
+    async warm(actorName: string, actorId: string): Promise<ActorWarmReply> {
+        if (this.closed) throw new Error("Actor session transport is disposed")
+        this.lastUsedAt = this.now()
+        const transport =
+            this.transport && this.expiresAtMs > this.now() + 5_000 ? this.transport : await this.refresh()
+        if (!transport.warm) throw new Error("this actor transport does not support warm")
+        return transport.warm(actorName, actorId)
     }
 
     dispose(): void {

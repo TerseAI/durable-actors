@@ -55,6 +55,39 @@ export class HttpActorClient {
         }
     }
 
+    async warm(actorName: string, actorId: string): Promise<ActorWarmReply> {
+        const requestId = validateActorComponent("request ID", this.requestId())
+        const path = projectActorPath(
+            this.settings.projectId,
+            validateActorComponent("actor name", actorName),
+            validateActorComponent("actor ID", actorId)
+        )
+        let response: Response
+        try {
+            response = await this.fetchRequest(`${this.settings.controlPlaneUrl}${path}/hint-host-warm`, {
+                method: "POST",
+                redirect: "manual",
+                headers: {
+                    accept: "application/json",
+                    ...authorizationHeaders(this.settings.credential),
+                    "x-request-id": requestId,
+                    "content-type": "application/json"
+                },
+                body: JSON.stringify({ homeRegion: this.settings.homeRegion })
+            })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            throw new ActorInvocationError(
+                "unavailable",
+                requestId,
+                `could not connect to ${this.settings.controlPlaneUrl}: ${message}`
+            )
+        }
+        const document = await responseDocument(response)
+        if (!response.ok) this.throwResponseFailure(response, document, requestId)
+        return { status: "accepted" }
+    }
+
     private async invokeAttempt(
         invocation: ActorInvocation,
         retryAvailable: boolean,
@@ -179,5 +212,8 @@ export interface HttpActorClientDependencies {
     readonly requestId?: () => string
     readonly monotonicNow?: () => number
     readonly telemetry?: TelemetrySink
+}
+export interface ActorWarmReply {
+    readonly status: "accepted"
 }
 export type { DurableActorsClientOptions }

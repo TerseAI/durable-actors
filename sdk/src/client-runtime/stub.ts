@@ -1,10 +1,12 @@
 import { HttpActorClient } from "./client.js"
+import type { ActorWarmReply } from "./client.js"
 import { ActorDefinitionError, ActorSerializationError } from "./errors.js"
 import type { DurableActorsClientOptions } from "./settings.js"
 import { validateActorComponent } from "./settings.js"
 
 interface ActorRpcTransport {
     invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
+    warm?(actorName: string, actorId: string): Promise<ActorWarmReply>
 }
 
 interface ActorRpcMethod {
@@ -53,8 +55,17 @@ function createActorStub<Stub extends object>(
     return stub as Stub
 }
 
-export { createActorStub }
-export type { ActorRpcMethod, ActorRpcTransport }
+/** Asks the control plane to start the actor's host before calls arrive. */
+async function warmActor(actorName: string, actorId: string, transport?: ActorRpcTransport): Promise<ActorWarmReply> {
+    validateActorComponent("actor name", actorName)
+    validateActorComponent("actor ID", actorId)
+    const client = transport ?? defaultTransport()
+    if (!client.warm) throw new Error("this actor transport does not support warm")
+    return client.warm(actorName, actorId)
+}
+
+export { createActorStub, warmActor }
+export type { ActorRpcMethod, ActorRpcTransport, ActorWarmReply }
 
 let shared: ActorRpcTransport | undefined
 export function createActorTransport(options: DurableActorsClientOptions): ActorRpcTransport {

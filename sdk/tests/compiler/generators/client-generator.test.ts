@@ -363,7 +363,8 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
             // @ts-expect-error private field is absent
             state.secret
             // @ts-expect-error the contract declares no RPC methods
-            actors.Room.get("lobby").missingMethod()`
+            actors.Room.get("lobby").missingMethod()
+            const warmed: Promise<{ readonly status: "accepted" }> = actors.Room.warm("lobby")`
         )
         checkTypes(consumer)
         const bundle = await build({
