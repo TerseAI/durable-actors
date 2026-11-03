@@ -1,48 +1,21 @@
-import { useId } from "react"
-
 import { useData } from "../../client/DatatContext.js"
-import { formatCount, formatPercent } from "../../format.js"
-import type { ActorInventory } from "../../types/Actors.js"
+import { formatCount, formatPercent, formatPlural } from "../../format.js"
+import { type ActorTypeSummary, summarizeActorType } from "../../lib/actorTypes.js"
+import type { ObserverLink } from "../../types/Navigation.js"
 import { ResidencyBar } from "../ui/residencyBar.js"
+import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
 
-type ActorTypeRow = {
-    actorName: string
-    total: number
-    live: number
-    dormant: number
-}
-
-export function ActorTypesCard() {
+export function ActorTypesCard({ Link }: { Link: ObserverLink }) {
     const { actorTypes, isError } = useData()
-    const titleId = useId()
-    const rows = actorTypes && toRows(actorTypes)
+    const rows = actorTypes && actorTypes.actors.map(summarizeActorType).sort((a, b) => b.total - a.total)
     return (
-        <section aria-labelledby={titleId} aria-busy={(!rows && !isError) || undefined} className="rounded-xl border bg-card px-5.5 pt-5 pb-2.5 text-card-foreground shadow-(--shadow-control)">
-            <header className="mb-1.5 flex flex-wrap items-center justify-between gap-3">
-                <h2 id={titleId} className="text-base font-bold tracking-tight">
-                    Actor Types
-                </h2>
-                <ResidencyKey />
-            </header>
-            <ActorTypeLanes rows={rows} failed={isError} />
-        </section>
+        <SectionCard title="Actor Types" aside={<ResidencyKey />} busy={!rows && !isError} className="pb-2.5">
+            <div className="mt-1.5">
+                <ActorTypeLanes rows={rows} failed={isError} Link={Link} />
+            </div>
+        </SectionCard>
     )
-}
-
-function toRows(inventory: ActorInventory): ActorTypeRow[] {
-    return inventory.actors
-        .map(({ actorName, instances }) => ({
-            actorName,
-            total: instances.length,
-            live: instances.filter(instance => instance.status === "live").length,
-            dormant: instances.filter(instance => instance.status === "dormant").length
-        }))
-        .sort((a, b) => b.total - a.total)
-}
-
-function plural(count: number, noun: string): string {
-    return `${formatCount(count)} ${count === 1 ? noun : `${noun}s`}`
 }
 
 function ResidencyKey() {
@@ -60,7 +33,7 @@ function ResidencyKey() {
     )
 }
 
-function ActorTypeLanes({ rows, failed }: { rows: ActorTypeRow[] | null; failed: boolean }) {
+function ActorTypeLanes({ rows, failed, Link }: { rows: ActorTypeSummary[] | null; failed: boolean; Link: ObserverLink }) {
     if (failed) return <p className="py-4 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
     if (!rows) return <LaneSkeletons />
     if (!rows.length) return <p className="py-4 text-[13px] text-muted-foreground">No actor types deployed yet.</p>
@@ -68,40 +41,46 @@ function ActorTypeLanes({ rows, failed }: { rows: ActorTypeRow[] | null; failed:
     return (
         <ul>
             {rows.map(row => (
-                <ActorTypeLane key={row.actorName} row={row} largest={largest} />
+                <ActorTypeLane key={row.actorName} row={row} largest={largest} Link={Link} />
             ))}
         </ul>
     )
 }
 
-const laneClass = "grid items-center gap-x-7 gap-y-3 border-t border-border/60 py-4 first:border-t-0 md:grid-cols-[190px_1fr_168px]"
+const laneGrid = "grid items-center gap-x-7 gap-y-3 py-4 md:grid-cols-[190px_1fr_168px]"
+const laneDivider = "border-t border-border/60 first:border-t-0"
 
-function ActorTypeLane({ row, largest }: { row: ActorTypeRow; largest: number }) {
+function ActorTypeLane({ row, largest, Link }: { row: ActorTypeSummary; largest: number; Link: ObserverLink }) {
     const liveShare = row.total ? row.live / row.total : 0
     return (
-        <li className={`${laneClass} tabular-nums`}>
-            <div className="min-w-0">
-                <b translate="no" className="block truncate font-mono text-sm font-medium">
-                    {row.actorName}
-                </b>
-                <span className="mt-0.75 block text-xs text-muted-foreground">{plural(row.total, "instance")}</span>
-            </div>
-            <ResidencyTrack row={row} liveShare={liveShare} width={row.total / largest} />
-            <div className="grid grid-cols-2 gap-5 text-right">
-                <div>
-                    <b className="block text-lg leading-tight font-bold tracking-tight">{formatCount(row.live)}</b>
-                    <span className="mt-0.75 block text-xs text-success">live · {formatPercent(liveShare)}</span>
+        <li className={laneDivider}>
+            <Link
+                to={{ page: "actorType", actorName: row.actorName }}
+                className={`${laneGrid} -mx-3 rounded-lg px-3 tabular-nums transition-colors outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring`}
+            >
+                <div className="min-w-0">
+                    <b translate="no" className="block truncate font-mono text-sm font-medium">
+                        {row.actorName}
+                    </b>
+                    <span className="mt-0.75 block text-xs text-muted-foreground">{formatPlural(row.total, "instance")}</span>
                 </div>
-                <div>
-                    <b className="block text-lg leading-tight font-medium tracking-tight text-foreground/85">{formatCount(row.dormant)}</b>
-                    <span className="mt-0.75 block text-xs text-muted-foreground">dormant</span>
+                <ResidencyTrack row={row} liveShare={liveShare} width={row.total / largest} />
+                <div className="grid grid-cols-2 gap-5 text-right">
+                    <div>
+                        <b className="block text-lg leading-tight font-bold tracking-tight">{formatCount(row.live)}</b>
+                        <span className="mt-0.75 block text-xs text-success">live · {formatPercent(liveShare)}</span>
+                    </div>
+                    <div>
+                        <b className="block text-lg leading-tight font-medium tracking-tight text-foreground/85">{formatCount(row.dormant)}</b>
+                        <span className="mt-0.75 block text-xs text-muted-foreground">dormant</span>
+                    </div>
                 </div>
-            </div>
+            </Link>
         </li>
     )
 }
 
-function ResidencyTrack({ row, liveShare, width }: { row: ActorTypeRow; liveShare: number; width: number }) {
+function ResidencyTrack({ row, liveShare, width }: { row: ActorTypeSummary; liveShare: number; width: number }) {
     return (
         <div className="relative flex h-5.5 items-center before:absolute before:inset-x-0 before:top-1/2 before:h-px before:bg-border/60">
             <ResidencyBar
@@ -118,7 +97,7 @@ function LaneSkeletons() {
     return (
         <ul>
             {[100, 60, 20].map(width => (
-                <li key={width} className={laneClass}>
+                <li key={width} className={`${laneGrid} ${laneDivider}`}>
                     <div>
                         <Skeleton className="h-4 w-28" />
                         <Skeleton className="mt-1.5 h-3 w-20" />

@@ -50,6 +50,16 @@ function TrendSkeleton({ ticks }: { ticks: number }) {
     )
 }
 
+export function TrendStatsSkeleton({ failed }: { failed: boolean }) {
+    if (failed) return <span>Couldn't reach the observer API.</span>
+    return (
+        <>
+            <Skeleton className="h-3.5 w-20" />
+            <Skeleton className="h-3.5 w-28" />
+        </>
+    )
+}
+
 export function TrendStat({ label, value, suffix }: { label: string; value: string; suffix?: string }) {
     return (
         <span>

@@ -1,9 +1,9 @@
 import { useData } from "../../client/DatatContext.js"
-import { formatCount, formatPercent, formatSignedCount } from "../../format.js"
+import { formatCount, formatSignedCount } from "../../format.js"
 import type { ActorInventory } from "../../types/Actors.js"
 import type { ActorResidencyMetrics } from "../../types/Overview.js"
 import { Delta } from "../ui/delta.js"
-import { ResidencyBar } from "../ui/residencyBar.js"
+import { ResidencyBar, ResidencyBarSkeleton, ResidencyLegend } from "../ui/residencyBar.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { StatCard } from "../ui/statCard.js"
 
@@ -49,10 +49,7 @@ function Residency({ live, dormant, liveDelta }: ActorResidencyMetrics) {
                 since 1&nbsp;h ago · {formatCount(total)} {total === 1 ? "actor" : "actors"} total
             </p>
             <ResidencyBar liveShare={liveShare} label={`${formatCount(live)} live actors, ${formatCount(dormant)} dormant actors`} pulse className="mt-auto h-10 rounded-sm" />
-            <div className="mt-3 flex justify-between gap-4 text-[13px] tabular-nums">
-                <LegendItem swatch="bg-success" label="Live" count={live} share={liveShare} />
-                <LegendItem swatch="bg-border" label="Dormant" count={dormant} share={total ? 1 - liveShare : 0} />
-            </div>
+            <ResidencyLegend live={live} dormant={dormant} showCounts />
         </>
     )
 }
@@ -62,20 +59,7 @@ function ResidencySkeleton({ failed }: { failed: boolean }) {
     return (
         <>
             <Skeleton className="mt-2.5 h-3.5 w-52 max-w-full" />
-            <Skeleton className="mt-auto h-10 w-full rounded-sm" />
-            <div className="mt-3 flex justify-between gap-4">
-                <Skeleton className="h-3.5 w-28" />
-                <Skeleton className="h-3.5 w-28" />
-            </div>
+            <ResidencyBarSkeleton />
         </>
-    )
-}
-
-function LegendItem({ swatch, label, count, share }: { swatch: string; label: string; count: number; share: number }) {
-    return (
-        <span className="flex items-center gap-1.75 text-muted-foreground">
-            <span className={`size-2 rounded-xs ${swatch}`} />
-            {label} <b className="font-bold text-foreground">{formatCount(count)}</b> · {formatPercent(share)}
-        </span>
     )
 }

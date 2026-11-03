@@ -1,11 +1,10 @@
 import { useData } from "../../client/DatatContext.js"
 import { formatClock, formatDecimal } from "../../format.js"
 import { bucketCount, bucketMs, emptySeries, trendAxis, trendWindowMs } from "../../lib/trendWindow.js"
-import type { RequestTrace } from "../../types/Requests.js"
 import type { RequestRateMetrics } from "../../types/Overview.js"
+import type { RequestTrace } from "../../types/Requests.js"
 import { Skeleton } from "../ui/skeleton.js"
-
-import { TrendCard, TrendStat } from "./trendCard.js"
+import { TrendCard, TrendStat, TrendStatsSkeleton } from "../ui/trendCard.js"
 
 export function RequestRateCard() {
     const { requests, isRequestsError } = useData()
@@ -25,7 +24,7 @@ export function RequestRateCard() {
             color="var(--chart-1)"
             chartLabel={metrics ? `Requests per second over the last hour, peaking at ${formatDecimal(metrics.peak)}` : "Requests per second over the last hour"}
         >
-            {metrics ? <RateStats {...metrics} /> : <RateStatsSkeleton failed={isRequestsError} />}
+            {metrics ? <RateStats {...metrics} /> : <TrendStatsSkeleton failed={isRequestsError} />}
         </TrendCard>
     )
 }
@@ -58,16 +57,6 @@ function RateStats({ average, peak, peakAt }: RequestRateMetrics) {
         <>
             <TrendStat label="Avg" value={formatDecimal(average)} />
             <TrendStat label="Peak" value={formatDecimal(peak)} suffix={`at ${peakAt}`} />
-        </>
-    )
-}
-
-function RateStatsSkeleton({ failed }: { failed: boolean }) {
-    if (failed) return <span>Couldn't reach the observer API.</span>
-    return (
-        <>
-            <Skeleton className="h-3.5 w-16" />
-            <Skeleton className="h-3.5 w-28" />
         </>
     )
 }
