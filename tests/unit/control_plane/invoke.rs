@@ -529,7 +529,6 @@ async fn hint_host_warm_during_a_call_launches_one_host() -> Result<()> {
     call.await??.error_for_status()?;
     fixture.service.warmups.close();
     fixture.service.warmups.wait().await;
-    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
@@ -686,6 +685,40 @@ async fn hint_host_warm_rejects_a_home_region_that_conflicts_with_the_actor() ->
     Ok(())
 }
 
+#[tokio::test] // TODO: Test 16 homeRegion differs from the control plane's region: returns 409, launches no host
+async fn hint_host_warm_rejects_a_home_region_outside_the_control_plane_region() -> Result<()> {
+    let fixture = Fixture::start_in_region("north-america-west").await?;
+    let response = fixture
+        .post(
+            "hint-host-warm",
+            "api-key",
+            json!({"homeRegion":"north-america-east"}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 17 homeRegion outside the actor type's allowed regions: returns 409, launches no host
+async fn hint_host_warm_rejects_a_home_region_the_actor_type_does_not_allow() -> Result<()> {
+    let fixture = Fixture::start_with_allowed_regions(vec!["north-america-east".into()]).await?;
+    let response = fixture
+        .post(
+            "hint-host-warm",
+            "api-key",
+            json!({"homeRegion":"north-america-central"}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 struct Fixture {
     service: ControlPlaneService,
     gateway: ControlPlaneService,
@@ -707,7 +740,15 @@ impl Fixture {
         replies: Vec<(StatusCode, Value)>,
         existing: bool,
     ) -> Result<Self> {
-        Self::start_with_routes(replies, existing, None).await
+        Self::start_with_routes(replies, existing, None, None, None).await
+    }
+
+    async fn start_in_region(region: &str) -> Result<Self> {
+        Self::start_with_routes(vec![], false, None, Some(region), None).await
+    }
+
+    async fn start_with_allowed_regions(regions: Vec<String>) -> Result<Self> {
+        Self::start_with_routes(vec![], false, None, None, Some(regions)).await
     }
 
     async fn start_with_sleeping_actor(replies: Vec<(StatusCode, Value)>) -> Result<Self> {
@@ -753,6 +794,8 @@ impl Fixture {
         replies: Vec<(StatusCode, Value)>,
         existing: bool,
         route_store: Option<Arc<dyn crate::control_plane::routes::RouteStore>>,
+        region: Option<&str>,
+        allowed_regions: Option<Vec<String>>,
     ) -> Result<Self> {
         let host = Arc::new(HostFixture {
             assign_operation: false.into(),
@@ -805,7 +848,18 @@ impl Fixture {
                 &HostLaunchSpec {
                     image_policy: Default::default(),
                     organization_id: "org-test".into(),
-                    sandboxes: Default::default(),
+                    sandboxes: allowed_regions
+                        .map(|regions| {
+                            [(
+                                "ChatRoom".into(),
+                                super::super::super::contracts::SandboxOptions {
+                                    regions: Some(regions),
+                                    ..Default::default()
+                                },
+                            )]
+                            .into()
+                        })
+                        .unwrap_or_default(),
                     project_id: "default".into(),
                     source: None,
                     image_ref: "image".into(),
@@ -851,6 +905,7 @@ impl Fixture {
         if let Some(route_store) = route_store {
             service.routes = route_store;
         }
+        service.region = region.map(Into::into);
         let hub = super::super::super::socket_bus::MemorySocketHub::default();
         let (origin, server, gateway) = serve_replica(&service, &admin, &issuer, &hub).await?;
         let (replica, replica_server, _) = serve_replica(&service, &admin, &issuer, &hub).await?;

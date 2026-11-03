@@ -73,6 +73,10 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket",
             post(find_websocket),
         )
+        .route(
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/hint-host-warm",
+            post(hint_host_warm),
+        )
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
         .with_state(PublicApiState {
             invocations,
@@ -363,6 +367,76 @@ async fn find_actor(
         Json(serde_json::json!({"homeRegion": target.home_region})),
     )
         .into_response())
+}
+
+async fn hint_host_warm(
+    State(state): State<PublicApiState>,
+    Path(path): Path<ActorPath>,
+    headers: HeaderMap,
+    request: Result<Option<Json<FindActorRequest>>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let actor = path.into_actor();
+    state
+        .admin
+        .authorize_discovery(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or(""),
+            &actor.project_id,
+        )
+        .map_err(|_| ApiError::unauthorized("actor discovery credential was rejected"))?;
+    let request = request
+        .map_err(ApiError::json)?
+        .map(|Json(request)| request)
+        .unwrap_or_default();
+    actor.validate().map_err(ApiError::bad_request)?;
+    state
+        .invocations
+        .validate_home_region(request.home_region.as_deref())
+        .map_err(ApiError::assignment)?;
+    state
+        .invocations
+        .ensure_project_access(&actor.project_id)
+        .await
+        .map_err(ApiError::access)?;
+    state
+        .admin
+        .deployment_contract(&actor.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "actor contract not found",
+            )
+        })?
+        .rpc_methods(&actor.actor_name)
+        .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "not_found", "actor not found"))?;
+    if state
+        .invocations
+        .home_region_conflicts(&actor, request.home_region.as_deref())
+        .await
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::conflict(
+            super::service::RegionConflict.to_string(),
+        ));
+    }
+    let invocations = state.invocations.clone();
+    state.invocations.warmups.spawn(async move {
+        if let Err(error) = invocations
+            .warm_actor(&actor, request.home_region.as_deref())
+            .await
+        {
+            warn!(error = %format!("{error:#}"), "actor host warm hint failed");
+        }
+    });
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({"status": "accepted"})),
+    ))
 }
 
 pub(super) async fn resolve_actor_target(

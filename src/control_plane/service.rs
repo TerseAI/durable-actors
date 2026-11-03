@@ -55,6 +55,15 @@ pub struct ControlPlaneService {
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
     pub(super) warmups: tokio_util::task::TaskTracker,
+    // One actor never has two hint-started warms in progress in one control-plane process.
+    starts: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                crate::actor_state::ActorStorageKey,
+                Arc<tokio::sync::Mutex<()>>,
+            >,
+        >,
+    >,
 }
 
 impl ControlPlaneService {
@@ -98,6 +107,7 @@ impl ControlPlaneService {
             socket_events: None,
             local_builds: None,
             warmups: tokio_util::task::TaskTracker::new(),
+            starts: Default::default(),
         }
     }
 
@@ -290,6 +300,71 @@ impl ControlPlaneService {
             crate::placement::validate_region(assignment)?;
         }
         Ok(())
+    }
+
+    pub(super) async fn home_region_conflicts(
+        &self,
+        actor: &ActorKey,
+        home_region: Option<&str>,
+    ) -> Result<bool> {
+        let Some(home_region) = home_region else {
+            return Ok(false);
+        };
+        let spec = self
+            .registry
+            .launch_spec(&actor.project_id)
+            .await?
+            .context("project has no registered actor code")?;
+        let allowed = spec
+            .sandboxes
+            .get(&actor.actor_name)
+            .and_then(|options| options.regions.as_ref());
+        let outside_service_region = match allowed {
+            Some(allowed) => !allowed.iter().any(|region| region == home_region),
+            None => self
+                .region
+                .as_deref()
+                .is_some_and(|region| region != home_region),
+        };
+        Ok(outside_service_region
+            || self
+                .placements
+                .get_owner(&actor.storage_key())
+                .await?
+                .is_some_and(|placement| placement.home_region != home_region))
+    }
+
+    pub(super) async fn warm_actor(
+        &self,
+        actor: &ActorKey,
+        home_region: Option<&str>,
+    ) -> Result<()> {
+        let lock = self.start_lock(actor);
+        let result = match lock.try_lock() {
+            Ok(_start) => self
+                .route_actor_when_ready(actor, self.default_region(), home_region, None, None)
+                .await
+                .map(drop),
+            Err(_) => Ok(()),
+        };
+        self.forget_start(actor, &lock);
+        result
+    }
+
+    fn start_lock(&self, actor: &ActorKey) -> Arc<tokio::sync::Mutex<()>> {
+        self.starts
+            .lock()
+            .unwrap()
+            .entry(actor.storage_key())
+            .or_default()
+            .clone()
+    }
+
+    fn forget_start(&self, actor: &ActorKey, lock: &Arc<tokio::sync::Mutex<()>>) {
+        let mut starts = self.starts.lock().unwrap();
+        if Arc::strong_count(lock) == 2 {
+            starts.remove(&actor.storage_key());
+        }
     }
 
     pub(super) fn deliver_socket_message_event(

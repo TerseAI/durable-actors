@@ -24,7 +24,7 @@ async fn redis_shutdown_reports_reach_another_control_plane() -> Result<()> {
 }
 
 async fn handoff(routes: Option<Arc<dyn RouteStore>>) -> Result<()> {
-    let fixture = Fixture::start_with_routes(vec![], true, routes).await?;
+    let fixture = Fixture::start_with_routes(vec![], true, routes, None, None).await?;
     let target = fixture.find_actor().await?;
     let token = target["token"].as_str().unwrap();
     let principal = fixture
