@@ -2,7 +2,7 @@ import useSWR from "swr"
 import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
 import type { RequestTrace } from "../types/Requests.js"
 import { HttpObserverClient } from "../client/observerClient.js"
-import { subscribeToRequests } from "../client/requestStream.js"
+import { subscribeToRequests } from "../client/streams/requestStream.js"
 import { trendWindowMs } from "../lib/trendWindow.js"
 
 export function useRequests() {

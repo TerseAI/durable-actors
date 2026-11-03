@@ -3,7 +3,7 @@ import { formatCount, formatPercent, formatSignedCount } from "../../format.js"
 import type { ActorInventory } from "../../types/Actors.js"
 import type { ActorResidencyMetrics } from "../../types/Overview.js"
 import { Delta } from "../ui/delta.js"
-import { dormantTicks, liveTicks } from "../ui/residencyTicks.js"
+import { ResidencyBar } from "../ui/residencyBar.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { StatCard } from "../ui/statCard.js"
 
@@ -48,7 +48,7 @@ function Residency({ live, dormant, liveDelta }: ActorResidencyMetrics) {
                 <Delta value={liveDelta}>{formatSignedCount(liveDelta)}</Delta>
                 since 1&nbsp;h ago · {formatCount(total)} {total === 1 ? "actor" : "actors"} total
             </p>
-            <ResidencyBar live={live} dormant={dormant} liveShare={liveShare} />
+            <ResidencyBar liveShare={liveShare} label={`${formatCount(live)} live actors, ${formatCount(dormant)} dormant actors`} pulse className="mt-auto h-10 rounded-sm" />
             <div className="mt-3 flex justify-between gap-4 text-[13px] tabular-nums">
                 <LegendItem swatch="bg-success" label="Live" count={live} share={liveShare} />
                 <LegendItem swatch="bg-border" label="Dormant" count={dormant} share={total ? 1 - liveShare : 0} />
@@ -68,17 +68,6 @@ function ResidencySkeleton({ failed }: { failed: boolean }) {
                 <Skeleton className="h-3.5 w-28" />
             </div>
         </>
-    )
-}
-
-function ResidencyBar({ live, dormant, liveShare }: { live: number; dormant: number; liveShare: number }) {
-    return (
-        <div role="img" aria-label={`${formatCount(live)} live actors, ${formatCount(dormant)} dormant actors`} className="mt-auto flex h-10 overflow-hidden rounded-sm">
-            <div className={`relative ${liveTicks}`} style={{ width: `${liveShare * 100}%` }}>
-                <span className="absolute inset-y-0 right-0.75 w-0.75 animate-pulse bg-success motion-reduce:animate-none" />
-            </div>
-            <div className={`flex-1 ${dormantTicks}`} />
-        </div>
     )
 }
 

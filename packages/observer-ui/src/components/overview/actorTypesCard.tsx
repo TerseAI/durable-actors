@@ -3,7 +3,7 @@ import { useId } from "react"
 import { useData } from "../../client/DatatContext.js"
 import { formatCount, formatPercent } from "../../format.js"
 import type { ActorInventory } from "../../types/Actors.js"
-import { dormantTicks, liveTicks } from "../ui/residencyTicks.js"
+import { ResidencyBar } from "../ui/residencyBar.js"
 import { Skeleton } from "../ui/skeleton.js"
 
 type ActorTypeRow = {
@@ -104,15 +104,12 @@ function ActorTypeLane({ row, largest }: { row: ActorTypeRow; largest: number })
 function ResidencyTrack({ row, liveShare, width }: { row: ActorTypeRow; liveShare: number; width: number }) {
     return (
         <div className="relative flex h-5.5 items-center before:absolute before:inset-x-0 before:top-1/2 before:h-px before:bg-border/60">
-            <div
-                role="img"
-                aria-label={`${formatCount(row.live)} of ${formatCount(row.total)} live, ${formatPercent(liveShare)}`}
-                className="relative flex h-5.5 min-w-2.5 overflow-hidden rounded-[3px]"
+            <ResidencyBar
+                liveShare={liveShare}
+                label={`${formatCount(row.live)} of ${formatCount(row.total)} live, ${formatPercent(liveShare)}`}
+                className="h-5.5 min-w-2.5 rounded-[3px]"
                 style={{ width: `${width * 100}%` }}
-            >
-                <div className={liveTicks} style={{ width: `${liveShare * 100}%` }} />
-                <div className={`flex-1 ${dormantTicks}`} />
-            </div>
+            />
         </div>
     )
 }

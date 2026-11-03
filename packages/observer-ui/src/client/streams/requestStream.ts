@@ -1,4 +1,4 @@
-import type { RequestTracePage } from "../types/Requests.js"
+import type { RequestTracePage } from "../../types/Requests.js"
 
 export function subscribeToRequests(onPage: (page: RequestTracePage) => void): () => void {
     const source = new EventSource("/api/observe/requests/events")

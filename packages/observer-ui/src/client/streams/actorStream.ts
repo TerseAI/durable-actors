@@ -1,4 +1,4 @@
-import type { ActorInventory } from "../types/Actors.js"
+import type { ActorInventory } from "../../types/Actors.js"
 
 export function subscribeToActors(onInventory: (inventory: ActorInventory) => void): () => void {
     const source = new EventSource("/api/observe/events")

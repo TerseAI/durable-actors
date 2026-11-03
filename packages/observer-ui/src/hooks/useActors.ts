@@ -2,7 +2,7 @@ import useSWR from "swr"
 import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
 import type { ActorInventory } from "../types/Actors.js"
 import { HttpObserverClient } from "../client/observerClient.js"
-import { subscribeToActors } from "../client/actorStream.js"
+import { subscribeToActors } from "../client/streams/actorStream.js"
 
 export function useActors() {
     const { data, error, isLoading } = useSWR<ActorInventory>(
