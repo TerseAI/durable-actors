@@ -48,7 +48,7 @@ Durations include queue wait, actor processing, and persistence. Gaps are calcul
 
 ## Actor instances and residency
 
-Actor pages list every known instance, ordered by its latest request activity, including dormant instances. The Last active column shows a relative time with the exact timestamp on hover; unavailable timestamps sort last. Activity timestamps include request admission and completion, and do not advance on lifecycle heartbeats.
+Actor pages list every known instance, ordered by its latest request activity, including dormant instances. The list and residency timeline share pages of 100 instances; search and state filters cover the full inventory and return to the first page when changed. Live updates preserve the current page while it remains available. The Last active column shows a relative time with the exact timestamp on hover; unavailable timestamps sort last. Activity timestamps include request admission and completion, and do not advance on lifecycle heartbeats.
 
 Residency and WebSocket timelines share the same axis, row labels, bars, and time scale. The residency timeline shows one lane per instance in the same order as the list. Green segments mean in memory, purple means dormant, and hatching means unknown. Search and state filters apply to both views. Hover or focus a segment for its timestamps and duration; select a segment or instance to inspect it. The shared time range controls the timeline, while the inventory continues to list all known instances.
 

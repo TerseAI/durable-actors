@@ -23,6 +23,8 @@ import { activityLabel, recentInstances } from "./residency.js"
 import { defaultTimeRange, rangePhrase, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
+const instancePageSize = 100
+
 interface ActorObserverProps {
     client: ObserverClient
     className?: string
@@ -366,10 +368,16 @@ function ActorInstances({
 }) {
     const [query, setQuery] = useState("")
     const [status, setStatus] = useState("all")
+    const [page, setPage] = useState(0)
     const now = Date.now()
     const resolved = resolveRange(range, now)
     const history = usePolledQuery(client, { actorName, ...resolved }, client.listResidency, 5_000)
     const filtered = recentInstances(instances.filter(instance => matches(instance.actorId, query) && (status === "all" || instance.status === status)))
+    const lastPage = Math.max(0, Math.ceil(filtered.length / instancePageSize) - 1)
+    const currentPage = Math.min(page, lastPage)
+    if (page !== currentPage) setPage(currentPage)
+    const offset = currentPage * instancePageSize
+    const visible = filtered.slice(offset, offset + instancePageSize)
     const end = resolved.toMs ?? now
     const start = resolved.fromMs ?? history.value?.periods.reduce((first, period) => Math.min(first, period.fromMs), end) ?? end
     const selectedInstance = instances.find(instance => instance.actorId === selectedInstanceId)
@@ -394,20 +402,54 @@ function ActorInstances({
                     <h2 id={`${id}-heading`}>
                         {actorName} instances <Badge aria-hidden="true">{instances.length.toLocaleString()}</Badge>
                     </h2>
-                    <p>All instances, most recently active first. Select one to inspect state, requests, and connections.</p>
+                    <p>
+                        All instances, most recently active first, in pages of {instancePageSize}. Search and state filters include every instance. Select one to inspect state, requests, and
+                        connections.
+                    </p>
                 </div>
             </div>
             {instances.length ? (
                 <>
                     <div className="la-observer-filters">
-                        <SearchField label="Search instances" placeholder="Search instance IDs…" value={query} onChange={setQuery} />
-                        <NativeSelect className="la-observer-select" aria-label="Instance state" value={status} onChange={event => setStatus(event.target.value)}>
+                        <SearchField
+                            label="Search instances"
+                            placeholder="Search instance IDs…"
+                            value={query}
+                            onChange={value => {
+                                setQuery(value)
+                                setPage(0)
+                            }}
+                        />
+                        <NativeSelect
+                            className="la-observer-select"
+                            aria-label="Instance state"
+                            value={status}
+                            onChange={event => {
+                                setStatus(event.target.value)
+                                setPage(0)
+                            }}
+                        >
                             <NativeSelectOption value="all">All states</NativeSelectOption>
                             <NativeSelectOption value="live">Live</NativeSelectOption>
                             <NativeSelectOption value="dormant">Dormant</NativeSelectOption>
                             <NativeSelectOption value="unknown">Unknown</NativeSelectOption>
                         </NativeSelect>
                     </div>
+                    {filtered.length > instancePageSize && (
+                        <nav aria-label="Instance pages" className="la:my-3 la:flex la:items-center la:justify-between la:gap-3">
+                            <span role="status">
+                                Showing {(offset + 1).toLocaleString()}–{(offset + visible.length).toLocaleString()} of {filtered.length.toLocaleString()} instances
+                            </span>
+                            <div className="la:flex la:gap-2">
+                                <Button variant="outline" size="sm" aria-label="Previous instances" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>
+                                    Previous
+                                </Button>
+                                <Button variant="outline" size="sm" aria-label="Next instances" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}>
+                                    Next
+                                </Button>
+                            </div>
+                        </nav>
+                    )}
                     {history.supported && history.loading && !history.value && <p role="status">Loading residency history…</p>}
                     {history.supported && history.failed && (
                         <div role="alert" className="la-observer-notice">
@@ -419,7 +461,7 @@ function ActorInstances({
                     )}
                     {history.value && filtered.length > 0 && (
                         <ResidencyTimeline
-                            instances={filtered}
+                            instances={visible}
                             periods={history.value.periods}
                             start={start < end ? start : end - 3_600_000}
                             end={end}
@@ -450,7 +492,7 @@ function ActorInstances({
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {filtered.map(instance => (
+                                    {visible.map(instance => (
                                         <TableRow key={instance.actorId} className="la-clickable-row" onClick={() => onSelectInstance(instance.actorId)}>
                                             <TableCell className="la-observer-instance-id">
                                                 <Button variant="ghost" type="button" className="la-observer-actor-button">
