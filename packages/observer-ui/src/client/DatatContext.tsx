@@ -1,19 +1,19 @@
 import type { ActorInventory } from "../types/Actors.js";
-import { createContext, useContext } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { useActors } from "../hooks/useActors.js";
 
 
 type DataContextType = {
-    actorTypes: ActorInventory,
+    actorTypes: ActorInventory | null,
+    isError: boolean,
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined)
 
-export const DataProvider = ({ children }: { children: React.ReactNode }) => {
-    const { actorTypes } = useActors()
+export const DataProvider = ({ children }: { children: ReactNode }) => {
+    const { actorTypes, isError } = useActors()
 
-
-    return <DataContext.Provider value={{ actorTypes }}>{children}</DataContext.Provider>
+    return <DataContext.Provider value={{ actorTypes, isError }}>{children}</DataContext.Provider>
 }
 
 

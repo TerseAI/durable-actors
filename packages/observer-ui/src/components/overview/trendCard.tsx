@@ -17,10 +17,10 @@ export type TrendCardProps = {
 
 export function TrendCard({ label, window, value, unit, series, axis, color, chartLabel, children }: TrendCardProps) {
     return (
-        <StatCard label={label} aside={<span className="shrink-0 font-mono text-[11px]">{window}</span>} value={value} unit={unit}>
+        <StatCard label={label} aside={<span className="shrink-0 text-xs font-normal tabular-nums">{window}</span>} value={value} unit={unit}>
             <div className="mt-2 flex flex-wrap items-center gap-x-4.5 gap-y-1 text-[13px] text-muted-foreground tabular-nums">{children}</div>
             <Sparkline values={series} color={color} label={chartLabel} />
-            <div className="mt-1.5 flex justify-between font-mono text-[11px] text-muted-foreground tabular-nums">
+            <div className="mt-1.5 flex justify-between text-xs text-muted-foreground tabular-nums">
                 {axis.map(tick => (
                     <span key={tick}>{tick}</span>
                 ))}
