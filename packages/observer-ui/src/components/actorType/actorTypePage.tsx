@@ -57,7 +57,7 @@ export function ActorTypePage() {
                         />
                     </div>
                     <InstancesCard actor={actor} requests={typeRequests} failed={isError} now={timeWindow.toMs} />
-                    <ResidencyCard actor={actor} history={residency} failed={isError || isResidencyError} timeWindow={timeWindow} />
+                    <ResidencyCard actor={actor} history={residency} requests={typeRequests} failed={isError || isResidencyError} timeWindow={timeWindow} />
                 </div>
             )}
         </section>

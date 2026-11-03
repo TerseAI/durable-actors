@@ -1,14 +1,16 @@
 import { useState } from "react"
 
-import { formatClock, formatCount, formatDuration } from "../../format.js"
+import { formatClock, formatCount, formatDuration, formatPlural, formatPreciseTimeSpan } from "../../format.js"
 import { byLastActive } from "../../lib/actorTypes.js"
 import { describeWindow, windowTicks } from "../../lib/timeRange.js"
 import { cn } from "../../lib/utils.js"
 import type { ActorInstance, ActorType } from "../../types/Actors.js"
+import type { RequestTrace } from "../../types/Requests.js"
 import type { ResidencyHistory, ResidencyPeriod } from "../../types/Residency.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
 import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.js"
 
 import { InstanceStatus } from "./instanceStatus.js"
 
@@ -16,16 +18,17 @@ const previewRows = 10
 const tickCount = 6
 const rowGrid = "grid grid-cols-[minmax(0,210px)_1fr_minmax(0,128px)] items-center gap-6"
 
-type Segment = { left: number; width: number; now: boolean }
+type Segment = { fromMs: number; toMs: number; left: number; width: number; now: boolean }
 
 export type ResidencyCardProps = {
     actor: ActorType | null
     history: ResidencyHistory | null
+    requests: RequestTrace[] | null
     failed: boolean
     timeWindow: TimeWindow
 }
 
-export function ResidencyCard({ actor, history, failed, timeWindow }: ResidencyCardProps) {
+export function ResidencyCard({ actor, history, requests, failed, timeWindow }: ResidencyCardProps) {
     const [expanded, setExpanded] = useState(false)
     const instances = actor && byLastActive(actor.instances)
     const livePeriods = history && groupLivePeriods(history)
@@ -39,7 +42,15 @@ export function ResidencyCard({ actor, history, failed, timeWindow }: ResidencyC
                     <div className="mt-3.5">
                         <TimeAxis timeWindow={timeWindow} />
                         {shown && livePeriods ? (
-                            shown.map(instance => <ResidencyRow key={instance.actorId} instance={instance} periods={livePeriods.get(instance.actorId) ?? []} timeWindow={timeWindow} />)
+                            shown.map(instance => (
+                                <ResidencyRow
+                                    key={instance.actorId}
+                                    instance={instance}
+                                    periods={livePeriods.get(instance.actorId) ?? []}
+                                    requests={requests && requests.filter(trace => trace.actorId === instance.actorId && trace.outcome !== "rerouted")}
+                                    timeWindow={timeWindow}
+                                />
+                            ))
                         ) : (
                             <RowSkeletons />
                         )}
@@ -94,7 +105,9 @@ function TimeAxis({ timeWindow }: { timeWindow: TimeWindow }) {
     )
 }
 
-function ResidencyRow({ instance, periods, timeWindow }: { instance: ActorInstance; periods: ResidencyPeriod[]; timeWindow: TimeWindow }) {
+type ResidencyRowProps = { instance: ActorInstance; periods: ResidencyPeriod[]; requests: RequestTrace[] | null; timeWindow: TimeWindow }
+
+function ResidencyRow({ instance, periods, requests, timeWindow }: ResidencyRowProps) {
     const live = instance.status === "live"
     const segments = toSegments(periods, timeWindow, live && timeWindow.live)
     const liveMs = segments.reduce((sum, segment) => sum + segment.width, 0) * (timeWindow.toMs - timeWindow.fromMs)
@@ -108,7 +121,7 @@ function ResidencyRow({ instance, periods, timeWindow }: { instance: ActorInstan
                     {live ? "Live now" : sleptLabel(periods, instance)}
                 </InstanceStatus>
             </div>
-            <ResidencyTrack segments={segments} label={`${instance.actorId}: ${liveMs ? `live ${formatDuration(liveMs)}` : "dormant"}, ${describeWindow(timeWindow)}`} />
+            <ResidencyTrack segments={segments} requests={requests} label={`${instance.actorId}: ${liveMs ? `live ${formatDuration(liveMs)}` : "dormant"}, ${describeWindow(timeWindow)}`} />
             <span className={cn("text-right text-[13px] tabular-nums", liveMs ? "text-foreground/85" : "text-muted-foreground")}>{formatDuration(liveMs)}</span>
         </div>
     )
@@ -121,7 +134,7 @@ function toSegments(periods: ResidencyPeriod[], { fromMs: start, toMs: end }: Ti
     return periods
         .map((period, index) => ({ fromMs: Math.max(period.fromMs, start), toMs: isOngoing(index) ? end : Math.min(period.toMs, end), now: isOngoing(index) }))
         .filter(period => period.toMs > period.fromMs)
-        .map(period => ({ left: (period.fromMs - start) / spanMs, width: (period.toMs - period.fromMs) / spanMs, now: period.now }))
+        .map(period => ({ ...period, left: (period.fromMs - start) / spanMs, width: (period.toMs - period.fromMs) / spanMs }))
 }
 
 function sleptLabel(periods: ResidencyPeriod[], instance: ActorInstance): string {
@@ -131,20 +144,36 @@ function sleptLabel(periods: ResidencyPeriod[], instance: ActorInstance): string
 
 const trackGrid = "bg-[linear-gradient(90deg,color-mix(in_oklab,var(--border)_55%,transparent)_1px,transparent_1px)] bg-size-[calc(100%/6)_100%] shadow-[inset_-1px_0_0_var(--border)]"
 
-function ResidencyTrack({ segments, label }: { segments: Segment[]; label: string }) {
+function ResidencyTrack({ segments, requests, label }: { segments: Segment[]; requests: RequestTrace[] | null; label: string }) {
     return (
         <div role="img" aria-label={label} className={`relative h-full ${trackGrid} before:absolute before:inset-x-0 before:top-1/2 before:border-t before:border-dashed before:border-border`}>
             {segments.map(segment => (
+                <LiveSegment key={segment.left} segment={segment} requests={requests} />
+            ))}
+        </div>
+    )
+}
+
+function LiveSegment({ segment, requests }: { segment: Segment; requests: RequestTrace[] | null }) {
+    const handled = requests?.filter(trace => trace.startedAtMs <= segment.toMs && trace.startedAtMs + trace.durationMs >= segment.fromMs)
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
                 <span
-                    key={segment.left}
                     className={cn(
-                        "absolute top-1/2 h-2.5 -translate-y-1/2 rounded-full bg-success shadow-[0_0_12px_color-mix(in_oklab,var(--success)_20%,transparent)]",
+                        "absolute top-1/2 h-2.5 -translate-y-1/2 rounded-full bg-success shadow-[0_0_12px_color-mix(in_oklab,var(--success)_20%,transparent)] before:absolute before:-inset-x-1.5 before:-inset-y-2",
                         segment.now && "rounded-r-[1px] after:absolute after:top-0.75 after:right-1 after:size-1 after:rounded-full after:bg-background"
                     )}
                     style={{ left: `${segment.left * 100}%`, width: `${segment.width * 100}%` }}
                 />
-            ))}
-        </div>
+            </TooltipTrigger>
+            <TooltipContent className="tabular-nums">
+                <div className="font-medium">{formatPreciseTimeSpan(segment.fromMs, segment.toMs)}</div>
+                <div className="mt-1 opacity-80">
+                    Active {formatDuration(segment.toMs - segment.fromMs)} · {handled ? formatPlural(handled.length, "request") : "requests unavailable"}
+                </div>
+            </TooltipContent>
+        </Tooltip>
     )
 }
 
