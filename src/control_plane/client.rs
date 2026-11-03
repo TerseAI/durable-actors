@@ -82,6 +82,24 @@ impl ControlPlaneClient {
         }
     }
 
+    pub(crate) async fn invoke_actor(
+        &self,
+        invocation: crate::actor::ActorInvocation,
+        timeout: Duration,
+    ) -> Result<serde_json::Value> {
+        let timeout_ms = u64::try_from(timeout.as_millis())?;
+        match self
+            .execute(ControlPlaneCommand::InvokeActor {
+                invocation,
+                timeout_ms,
+            })
+            .await?
+        {
+            ControlPlaneCommandReply::Invocation { outcome } => Ok(outcome),
+            _ => anyhow::bail!("unexpected actor invocation reply"),
+        }
+    }
+
     pub(crate) fn token_expires_at_ms(&self) -> Result<u64> {
         use base64::Engine;
         let authorization = self
