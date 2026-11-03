@@ -5,6 +5,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import { useActors } from "../hooks/useActors.js";
 import { useRequests } from "../hooks/useRequests.js";
 import { useWebSockets } from "../hooks/useWebSockets.js";
+import { useTimeWindow } from "./TimeRangeContext.js";
 
 
 type DataContextType = {
@@ -20,7 +21,7 @@ const DataContext = createContext<DataContextType | undefined>(undefined)
 
 export const DataProvider = ({ children }: { children: ReactNode }) => {
     const { actorTypes, isError } = useActors()
-    const { requests, isError: isRequestsError } = useRequests()
+    const { requests, isError: isRequestsError } = useRequests(useTimeWindow())
     const { sessions, isError: isSocketsError } = useWebSockets()
 
     return (

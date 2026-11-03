@@ -1,6 +1,7 @@
 import type { ActorInventory } from "../types/Actors.js";
 import type { RequestTracePage } from "../types/Requests.js";
 import type { SocketSession } from "../types/Sockets.js";
+import type { TimeBounds } from "../types/TimeRange.js";
 
 const baseUrl = "/api/observe";
 
@@ -8,7 +9,7 @@ type totalActorInstancesPayload = Map<string, ActorInventory>
 
 export interface ObserverClient {
     listActorTypes(): Promise<ActorInventory>
-    listRequests(fromMs: number): Promise<RequestTracePage>
+    listRequests(bounds: TimeBounds): Promise<RequestTracePage>
     listWebSockets(): Promise<SocketSession[]>
 }
 
@@ -17,8 +18,10 @@ export class HttpObserverClient implements ObserverClient {
         return await this.get<ActorInventory>("actors");
     }
 
-    async listRequests(fromMs: number): Promise<RequestTracePage> {
-        return await this.get<RequestTracePage>(`requests?fromMs=${fromMs}&limit=500`);
+    async listRequests({ fromMs, toMs }: TimeBounds): Promise<RequestTracePage> {
+        const query = new URLSearchParams({ fromMs: String(fromMs), limit: "500" })
+        if (toMs !== undefined) query.set("toMs", String(toMs))
+        return await this.get<RequestTracePage>(`requests?${query}`);
     }
 
     async listWebSockets(): Promise<SocketSession[]> {

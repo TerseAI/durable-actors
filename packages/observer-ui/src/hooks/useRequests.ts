@@ -1,32 +1,33 @@
 import useSWR from "swr"
 import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
-import type { RequestTrace } from "../types/Requests.js"
+
 import { HttpObserverClient } from "../client/observerClient.js"
 import { subscribeToRequests } from "../client/streams/requestStream.js"
-import { trendWindowMs } from "../lib/trendWindow.js"
+import type { RequestTrace } from "../types/Requests.js"
+import type { TimeWindow } from "../types/TimeRange.js"
 
-export function useRequests() {
+// Live keys use the duration rather than the moving bounds so the clock tick doesn't refetch; the stream keeps live data current.
+export function useRequests({ fromMs, toMs, live }: TimeWindow) {
+    const durationMs = toMs - fromMs
     const { data, error, isLoading } = useSWR<RequestTrace[]>(
-        "requests",
-        async () => (await new HttpObserverClient().listRequests(Date.now() - trendWindowMs)).records,
+        live ? ["requests", "live", durationMs] : ["requests", fromMs, toMs],
+        async () => (await new HttpObserverClient().listRequests(live ? { fromMs: Date.now() - durationMs } : { fromMs, toMs })).records
     )
-    const { data: live } = useSWRSubscription(
-        "requests/events",
-        (_key: string, { next }: SWRSubscriptionOptions<RequestTrace[]>) =>
-            subscribeToRequests(page => next(null, traces => mergeTraces(traces ?? [], page.records))),
+    const { data: streamed } = useSWRSubscription(live ? ["requests/events", durationMs] : null, (_key, { next }: SWRSubscriptionOptions<RequestTrace[]>) =>
+        subscribeToRequests(page => next(null, traces => mergeTraces(traces ?? [], page.records, durationMs)))
     )
 
     return {
-        requests: live ?? data ?? null,
+        requests: streamed ?? data ?? null,
         isLoading,
-        isError: !live && Boolean(error),
-        error,
+        isError: !streamed && Boolean(error),
+        error
     }
 }
 
 // The stream sends incremental pages rather than full snapshots, so records accumulate until they leave the window.
-function mergeTraces(traces: RequestTrace[], incoming: RequestTrace[]): RequestTrace[] {
-    const since = Date.now() - trendWindowMs
+function mergeTraces(traces: RequestTrace[], incoming: RequestTrace[], durationMs: number): RequestTrace[] {
+    const since = Date.now() - durationMs
     const byEvent = new Map([...traces, ...incoming].map(trace => [trace.eventId, trace]))
     return [...byEvent.values()].filter(trace => trace.startedAtMs >= since)
 }
