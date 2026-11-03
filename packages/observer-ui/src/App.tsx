@@ -3,7 +3,6 @@ import { mockOverview } from "./mocks/overview.js"
 import { DataProvider } from "./client/DatatContext.js";
 
 export function App() {
-
     return (
         <AppContent />
     )
