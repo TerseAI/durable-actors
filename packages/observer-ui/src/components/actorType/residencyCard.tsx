@@ -1,24 +1,24 @@
 import { useState } from "react"
+import { Link } from "react-router"
 
-import { formatClock, formatCount, formatDuration, formatPlural, formatPreciseTimeSpan } from "../../format.js"
-import { byLastActive } from "../../lib/actorTypes.js"
-import { describeWindow, windowTicks } from "../../lib/timeRange.js"
+import { formatClock, formatDuration, formatPlural, formatPreciseTimeSpan } from "../../format.js"
+import { byLastActive, instancePath } from "../../lib/actorTypes.js"
+import { describeWindow } from "../../lib/timeRange.js"
 import { cn } from "../../lib/utils.js"
 import type { ActorInstance, ActorType } from "../../types/Actors.js"
 import type { RequestTrace } from "../../types/Requests.js"
 import type { ResidencyHistory, ResidencyPeriod } from "../../types/Residency.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
+import { ExpandFooter } from "../ui/expandFooter.js"
 import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
+import { TimelineAxis, type TimelineSegment, TimelineTrack, timelineSegments } from "../ui/timeline.js"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.js"
 
 import { InstanceStatus } from "./instanceStatus.js"
 
 const previewRows = 10
-const tickCount = 6
 const rowGrid = "grid grid-cols-[minmax(0,210px)_1fr_minmax(0,128px)] items-center gap-6"
-
-type Segment = { fromMs: number; toMs: number; left: number; width: number; now: boolean }
 
 export type ResidencyCardProps = {
     actor: ActorType | null
@@ -40,7 +40,7 @@ export function ResidencyCard({ actor, history, requests, failed, timeWindow }: 
             ) : (
                 <>
                     <div className="mt-3.5">
-                        <TimeAxis timeWindow={timeWindow} />
+                        <TimelineAxis timeWindow={timeWindow} grid={rowGrid} label="Instance" trailing="Time live" />
                         {shown && livePeriods ? (
                             shown.map(instance => (
                                 <ResidencyRow
@@ -55,14 +55,23 @@ export function ResidencyCard({ actor, history, requests, failed, timeWindow }: 
                             <RowSkeletons />
                         )}
                     </div>
-                    {instances && <ResidencyFooter shown={shown?.length ?? 0} total={instances.length} expanded={expanded} onToggle={() => setExpanded(!expanded)} />}
+                    {instances && (
+                        <ExpandFooter
+                            shown={shown?.length ?? 0}
+                            total={instances.length}
+                            noun="instance"
+                            expandLabel="Show All Instances"
+                            expanded={expanded}
+                            onToggle={() => setExpanded(!expanded)}
+                        />
+                    )}
                 </>
             )}
         </SectionCard>
     )
 }
 
-function groupLivePeriods({ periods }: ResidencyHistory): Map<string, ResidencyPeriod[]> {
+export function groupLivePeriods({ periods }: ResidencyHistory): Map<string, ResidencyPeriod[]> {
     const grouped = new Map<string, ResidencyPeriod[]>()
     for (const period of periods) {
         if (period.status === "live") grouped.set(period.actorId, [...(grouped.get(period.actorId) ?? []), period])
@@ -85,36 +94,19 @@ function ResidencyKeys() {
     )
 }
 
-function TimeAxis({ timeWindow }: { timeWindow: TimeWindow }) {
-    return (
-        <div aria-hidden className={`${rowGrid} h-6 border-b`}>
-            <span className="text-xs text-muted-foreground">Instance</span>
-            <div className="relative h-full font-mono text-[11px] text-muted-foreground tabular-nums">
-                {windowTicks(timeWindow, tickCount).map((tick, index) => (
-                    <span
-                        key={index}
-                        className={cn("absolute top-1", index === 0 ? "" : index === tickCount ? "-translate-x-full text-foreground" : "-translate-x-1/2")}
-                        style={{ left: `${(index / tickCount) * 100}%` }}
-                    >
-                        {tick}
-                    </span>
-                ))}
-            </div>
-            <span className="text-right text-xs text-muted-foreground">Time live</span>
-        </div>
-    )
-}
-
 type ResidencyRowProps = { instance: ActorInstance; periods: ResidencyPeriod[]; requests: RequestTrace[] | null; timeWindow: TimeWindow }
 
 function ResidencyRow({ instance, periods, requests, timeWindow }: ResidencyRowProps) {
     const live = instance.status === "live"
-    const segments = toSegments(periods, timeWindow, live && timeWindow.live)
-    const liveMs = segments.reduce((sum, segment) => sum + segment.width, 0) * (timeWindow.toMs - timeWindow.fromMs)
+    const segments = timelineSegments(periods, timeWindow, live && timeWindow.live)
+    const liveMs = liveDuration(segments)
     return (
-        <div className={`${rowGrid} h-11.5 border-b border-border/50 last:border-b-0`}>
+        <Link
+            to={instancePath(instance.actorId)}
+            className={`${rowGrid} h-11.5 border-b border-border/50 transition-colors outline-none last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring`}
+        >
             <div className="min-w-0">
-                <b translate="no" className="block truncate font-mono text-[13px] font-medium">
+                <b translate="no" className="block truncate text-[13px] font-medium">
                     {instance.actorId}
                 </b>
                 <InstanceStatus live={live} className="mt-0.5 text-[11px]">
@@ -123,18 +115,12 @@ function ResidencyRow({ instance, periods, requests, timeWindow }: ResidencyRowP
             </div>
             <ResidencyTrack segments={segments} requests={requests} label={`${instance.actorId}: ${liveMs ? `live ${formatDuration(liveMs)}` : "dormant"}, ${describeWindow(timeWindow)}`} />
             <span className={cn("text-right text-[13px] tabular-nums", liveMs ? "text-foreground/85" : "text-muted-foreground")}>{formatDuration(liveMs)}</span>
-        </div>
+        </Link>
     )
 }
 
-// Open periods end at fetch time, which trails the live clock between polls, so a live instance's latest period runs to the window's end.
-function toSegments(periods: ResidencyPeriod[], { fromMs: start, toMs: end }: TimeWindow, ongoing: boolean): Segment[] {
-    const spanMs = end - start
-    const isOngoing = (index: number) => ongoing && index === periods.length - 1
-    return periods
-        .map((period, index) => ({ fromMs: Math.max(period.fromMs, start), toMs: isOngoing(index) ? end : Math.min(period.toMs, end), now: isOngoing(index) }))
-        .filter(period => period.toMs > period.fromMs)
-        .map(period => ({ ...period, left: (period.fromMs - start) / spanMs, width: (period.toMs - period.fromMs) / spanMs }))
+export function liveDuration(segments: TimelineSegment[]): number {
+    return segments.reduce((sum, segment) => sum + segment.toMs - segment.fromMs, 0)
 }
 
 function sleptLabel(periods: ResidencyPeriod[], instance: ActorInstance): string {
@@ -142,19 +128,17 @@ function sleptLabel(periods: ResidencyPeriod[], instance: ActorInstance): string
     return lastLive ? `Slept ${formatClock(lastLive)}` : "Dormant"
 }
 
-const trackGrid = "bg-[linear-gradient(90deg,color-mix(in_oklab,var(--border)_55%,transparent)_1px,transparent_1px)] bg-size-[calc(100%/6)_100%] shadow-[inset_-1px_0_0_var(--border)]"
-
-function ResidencyTrack({ segments, requests, label }: { segments: Segment[]; requests: RequestTrace[] | null; label: string }) {
+export function ResidencyTrack({ segments, requests, label }: { segments: TimelineSegment[]; requests: RequestTrace[] | null; label: string }) {
     return (
-        <div role="img" aria-label={label} className={`relative h-full ${trackGrid} before:absolute before:inset-x-0 before:top-1/2 before:border-t before:border-dashed before:border-border`}>
+        <TimelineTrack label={label}>
             {segments.map(segment => (
                 <LiveSegment key={segment.left} segment={segment} requests={requests} />
             ))}
-        </div>
+        </TimelineTrack>
     )
 }
 
-function LiveSegment({ segment, requests }: { segment: Segment; requests: RequestTrace[] | null }) {
+function LiveSegment({ segment, requests }: { segment: TimelineSegment; requests: RequestTrace[] | null }) {
     const handled = requests?.filter(trace => trace.startedAtMs <= segment.toMs && trace.startedAtMs + trace.durationMs >= segment.fromMs)
     return (
         <Tooltip>
@@ -174,21 +158,6 @@ function LiveSegment({ segment, requests }: { segment: Segment; requests: Reques
                 </div>
             </TooltipContent>
         </Tooltip>
-    )
-}
-
-function ResidencyFooter({ shown, total, expanded, onToggle }: { shown: number; total: number; expanded: boolean; onToggle: () => void }) {
-    return (
-        <div className="flex justify-between border-t pt-3 text-xs text-muted-foreground tabular-nums">
-            <span>
-                Showing {formatCount(shown)} of {formatCount(total)} instances
-            </span>
-            {total > previewRows && (
-                <button type="button" onClick={onToggle} className="font-medium text-primary hover:underline">
-                    {expanded ? "Show Fewer" : "Show All Instances"}
-                </button>
-            )}
-        </div>
     )
 }
 

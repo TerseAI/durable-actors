@@ -25,7 +25,7 @@ export function SegmentedControl<T extends string>({ label, options, value, onCh
                     className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-muted aria-pressed:text-foreground aria-pressed:shadow-[inset_0_0_0_1px_var(--border)]"
                 >
                     {option.label}
-                    {option.badge !== undefined && <span className="font-mono text-[11px] tabular-nums opacity-75">{option.badge}</span>}
+                    {option.badge !== undefined && <span className="text-[11px] tabular-nums opacity-75">{option.badge}</span>}
                 </button>
             ))}
         </div>

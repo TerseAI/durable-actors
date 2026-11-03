@@ -60,7 +60,7 @@ function ActorTypeLane({ row, largest }: { row: ActorTypeSummary; largest: numbe
                 className={`${laneGrid} -mx-3 rounded-lg px-3 tabular-nums transition-colors outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring`}
             >
                 <div className="min-w-0">
-                    <b translate="no" className="block truncate font-mono text-sm font-medium">
+                    <b translate="no" className="block truncate text-sm font-medium">
                         {row.actorName}
                     </b>
                     <span className="mt-0.75 block text-xs text-muted-foreground">{formatPlural(row.total, "instance")}</span>

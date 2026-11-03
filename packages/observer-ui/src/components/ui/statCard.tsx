@@ -19,7 +19,7 @@ export function StatCard({ label, aside, value, unit, busy, children }: StatCard
             aria-busy={busy || undefined}
             className="flex min-h-59 min-w-0 flex-col rounded-xl border bg-card px-5.5 pt-5 pb-4.5 text-card-foreground shadow-(--shadow-control)"
         >
-            <div className="flex items-center justify-between gap-3 text-[13px] font-medium text-muted-foreground">
+            <div className="flex items-center justify-between gap-2 text-[13px] font-medium text-muted-foreground">
                 <span id={labelId} className="truncate">
                     {label}
                 </span>

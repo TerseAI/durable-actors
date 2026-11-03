@@ -1,7 +1,8 @@
 import { useId, useState } from "react"
+import { Link } from "react-router"
 
 import { formatAgo, formatCount, formatMs, formatPlural } from "../../format.js"
-import { byLastActive, summarizeActorType } from "../../lib/actorTypes.js"
+import { byLastActive, instancePath, summarizeActorType } from "../../lib/actorTypes.js"
 import { averageOf, queueTime, serviceTime } from "../../lib/requestStats.js"
 import { cn } from "../../lib/utils.js"
 import type { ActorInstance, ActorType } from "../../types/Actors.js"
@@ -90,7 +91,7 @@ function InstanceGrid({ actor, instances, requests, now }: { actor: ActorType; i
 
 function ColumnRuler() {
     return (
-        <div aria-hidden className="mt-4.5 grid grid-cols-24 gap-1.5 font-mono text-[11px] text-muted-foreground tabular-nums">
+        <div aria-hidden className="mt-4.5 grid grid-cols-24 gap-1.5 text-[11px] text-muted-foreground tabular-nums">
             <span>001</span>
             <span className="col-start-12">012</span>
             <span className="col-start-24 text-right">024</span>
@@ -113,8 +114,8 @@ function InstanceCell({ instance, active, alignRight, onActive, requests, now }:
     const sockets = instance.connections.length
     return (
         <li className="relative">
-            <button
-                type="button"
+            <Link
+                to={instancePath(instance.actorId)}
                 aria-label={`${instance.actorId}, ${instance.status}, ${formatPlural(sockets, "open socket")}`}
                 aria-describedby={active ? tooltipId : undefined}
                 onMouseEnter={() => onActive(instance.actorId)}
@@ -122,13 +123,13 @@ function InstanceCell({ instance, active, alignRight, onActive, requests, now }:
                 onFocus={() => onActive(instance.actorId)}
                 onBlur={() => onActive(null)}
                 className={cn(
-                    "grid h-6.5 w-full place-items-center rounded-[5px] font-mono text-[10px] font-medium outline-none",
+                    "grid h-6.5 w-full place-items-center rounded-[5px] text-[10px] font-medium outline-none",
                     live ? "bg-success text-background" : "bg-muted shadow-[inset_0_0_0_1px_var(--border)]",
                     active && "outline-2 outline-offset-2 outline-foreground"
                 )}
             >
                 {sockets > 0 ? formatCount(sockets) : !live && <span className="size-1 rounded-full bg-muted-foreground/40" />}
-            </button>
+            </Link>
             {active && <InstanceTooltip id={tooltipId} instance={instance} requests={requests} now={now} alignRight={alignRight} />}
         </li>
     )
@@ -146,7 +147,7 @@ function InstanceTooltip({ id, instance, requests, now, alignRight }: { id: stri
             className={cn("absolute top-full z-10 mt-2 w-64 rounded-lg border bg-popover px-3.5 py-3 text-xs text-popover-foreground shadow-(--shadow-popover)", alignRight ? "right-0" : "left-0")}
         >
             <div className="flex items-center justify-between gap-3">
-                <span translate="no" className="truncate font-mono">
+                <span translate="no" className="truncate">
                     {instance.actorId}
                 </span>
                 <InstanceStatus live={live} className="text-[11px] font-medium">

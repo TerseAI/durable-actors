@@ -13,6 +13,7 @@ const timeSpan = (day: Intl.DateTimeFormat, time: Intl.DateTimeFormat) => (fromM
     `${day.format(fromMs)} – ${new Date(fromMs).toDateString() === new Date(toMs).toDateString() ? time.format(toMs) : day.format(toMs)}`
 
 export const formatClock = (ms: number) => clock.format(ms)
+export const formatPreciseClock = (ms: number) => preciseClock.format(ms)
 export const formatTick = (ms: number, spanMs: number) => (spanMs < 86_400_000 ? clock : dateTime).format(ms)
 export const formatTimeSpan = timeSpan(dateTime, clock)
 export const formatPreciseTimeSpan = timeSpan(preciseDateTime, preciseClock)
@@ -22,6 +23,7 @@ export const formatSignedCount = (value: number) => signedCount.format(value)
 export const formatPercent = (ratio: number) => percent.format(ratio)
 export const formatSignedPercent = (ratio: number) => signedPercent.format(ratio)
 export const formatMs = (ms: number) => `${count.format(Math.round(ms))}\u00a0ms`
+export const formatMegabytes = (bytes: number) => decimal.format(bytes / 1_000_000)
 export const formatPlural = (value: number, noun: string) => `${count.format(value)} ${value === 1 ? noun : `${noun}s`}`
 
 export function formatDuration(ms: number): string {

@@ -27,6 +27,24 @@ export function timingStats(requests: RequestTrace[], timeWindow: TimeWindow, pi
     }
 }
 
+export function requestRates(requests: RequestTrace[], timeWindow: TimeWindow): number[] {
+    return requestCounts(requests, timeWindow).map(count => count / (timeWindow.stepMs / 1000))
+}
+
+export function requestCounts(requests: RequestTrace[], timeWindow: TimeWindow): number[] {
+    const counts = Array<number>(bucketCount(timeWindow)).fill(0)
+    for (const trace of countable(requests)) {
+        const index = bucketIndex(timeWindow, trace.startedAtMs)
+        if (index !== null) counts[index]! += 1
+    }
+    return counts
+}
+
+// Rerouted attempts are retried under the same request, so counting them would double-count.
+export function countable(requests: RequestTrace[]): RequestTrace[] {
+    return requests.filter(trace => trace.outcome !== "rerouted")
+}
+
 export function averageOf(requests: RequestTrace[], pick: TimingPick): number | null {
     const values = picked(requests, pick)
     return values.length ? average(values) : null

@@ -1,5 +1,6 @@
 import { useData } from "../../client/DatatContext.js"
 import { formatCount, formatDecimal, formatSignedPercent } from "../../format.js"
+import { sessionSpan } from "../../lib/sockets.js"
 import { bucketCount, emptySeries, trendAxis, trendWindowMs } from "../../lib/trendWindow.js"
 import type { ActorInventory } from "../../types/Actors.js"
 import type { SocketMetrics } from "../../types/Overview.js"
@@ -56,13 +57,9 @@ function openSeries(sessions: SocketSession[], live: Set<string>, now: number): 
     return Array.from({ length: bucketCount }, (_, index) => sessions.filter(session => isOpenAt(session, live, start + index * step)).length)
 }
 
-// Sessions with no disconnect that the inventory no longer reports are treated as closed at their last activity.
 function isOpenAt(session: SocketSession, live: Set<string>, at: number): boolean {
-    const opened = session.openedAtMs ?? session.lastSeenMs
-    if (opened === null || opened > at) return false
-    const isLive = live.has(connectionKey(session.actorName, session.actorId, session.connectionId))
-    const closed = session.closedAtMs ?? (isLive ? Infinity : (session.lastSeenMs ?? opened))
-    return at < closed
+    const span = sessionSpan(session, live.has(connectionKey(session.actorName, session.actorId, session.connectionId)))
+    return span !== null && span.fromMs <= at && at < span.toMs
 }
 
 function connectionKey(actorName: string, actorId: string, connectionId: string): string {
