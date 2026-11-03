@@ -3,11 +3,9 @@ import { formatCount, formatPercent, formatSignedCount } from "../../format.js"
 import type { ActorInventory } from "../../types/Actors.js"
 import type { ActorResidencyMetrics } from "../../types/Overview.js"
 import { Delta } from "../ui/delta.js"
+import { dormantTicks, liveTicks } from "../ui/residencyTicks.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { StatCard } from "../ui/statCard.js"
-
-const liveTicks = "bg-[repeating-linear-gradient(90deg,var(--success)_0_3px,transparent_3px_6px)]"
-const dormantTicks = "bg-[repeating-linear-gradient(90deg,var(--border)_0_3px,transparent_3px_6px)]"
 
 export function ActiveActorsCard() {
     const { actorTypes, isError } = useData()
@@ -23,9 +21,9 @@ export function ActiveActorsCard() {
 }
 
 function getMetrics(actorTypes: ActorInventory): ActorResidencyMetrics {
-    const actorInstances = actorTypes.actors.flatMap((actor) => actor.instances)
-    const live = actorInstances.filter((instance) => instance.status === "live").length
-    const dormant = actorInstances.filter((instance) => instance.status === "dormant").length
+    const actorInstances = actorTypes.actors.flatMap(actor => actor.instances)
+    const live = actorInstances.filter(instance => instance.status === "live").length
+    const dormant = actorInstances.filter(instance => instance.status === "dormant").length
     return {
         live: live,
         dormant: dormant,

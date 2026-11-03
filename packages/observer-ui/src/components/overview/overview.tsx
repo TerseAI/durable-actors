@@ -1,4 +1,5 @@
 import { ActiveActorsCard } from "./activeActorsCard.js"
+import { ActorTypesCard } from "./actorTypesCard.js"
 import { RequestRateCard } from "./requestRateCard.js"
 import { SocketsCard } from "./socketsCard.js"
 
@@ -10,10 +11,13 @@ export function Overview() {
                     Overview
                 </h1>
             </header>
-            <div className="grid gap-4 lg:grid-cols-3">
-                <ActiveActorsCard />
-                <RequestRateCard />
-                <SocketsCard />
+            <div className="flex flex-col gap-4">
+                <div className="grid gap-4 lg:grid-cols-3">
+                    <ActiveActorsCard />
+                    <RequestRateCard />
+                    <SocketsCard />
+                </div>
+                <ActorTypesCard />
             </div>
         </section>
     )
