@@ -799,11 +799,17 @@ async fn start_worker(
 import {{ Actor, Persisted, Emittable, type ActorSocket }} from {};
 import {{ existsSync }} from 'node:fs';
 import {{ setTimeout }} from 'node:timers/promises';
+const release = {};
+
 export class Counter extends Actor<{{name?:string; notified?:boolean; user?:string}}, {{type:"start"; padding?:string}}, {{delta:string}} | {{text:string}}> {{
     @Persisted history = '';
     @Persisted @Emittable count = 0;
     @Persisted private secret = 'private';
     @Persisted protected internal = 'internal';
+    async stall() {{
+        while (!existsSync(release)) await setTimeout(10);
+        return 'resumed';
+    }}
     async readHistory() {{ return this.history; }}
     async appendHistory() {{ this.history += 'saved'; return this.history; }}
     async change() {{ this.count++; this.count++; this.secret = 'changed'; }}
@@ -840,7 +846,7 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
         if (process.env.TEST_ACTOR_SECRET !== 'injected') throw new Error('actor secret missing');
         this.history += 'first';
         this.broadcast({{ delta: 'first' }});
-        while (!existsSync({})) await setTimeout(10);
+        while (!existsSync(release)) await setTimeout(10);
         this.history += 'last';
         this.broadcast({{ delta: 'last' }});
     }}
@@ -1218,4 +1224,122 @@ fn assert_completed_invocation(mut reply: serde_json::Value, result: serde_json:
     assert!(queue_wait.is_finite() && queue_wait >= 0.0 && queue_wait <= duration);
     assert_eq!(metadata["hostState"], "warm");
     assert!(metadata["routingMs"].as_f64().unwrap() >= 0.0);
+}
+
+#[tokio::test]
+#[ignore = "requires bun run --bun --cwd sdk build"]
+async fn stalled_bun_actor_rejects_overload_and_drains_real_executor_requests() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let mut calls = JoinSet::new();
+    let host = stack.host.clone();
+    let actor = stack.actor.clone();
+    calls.spawn(async move {
+        host.invoke_actor(
+            crate::actor::ActorInvocation {
+                request_id: "stall".into(),
+                actor,
+                method: "stall".into(),
+                args: vec![],
+            },
+            1,
+            HostState::Warm,
+            0.0,
+        )
+        .await
+        .0
+    });
+    let mut status = stack.host.status();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        status.wait_for(|s| s.idle_since.is_none()),
+    )
+    .await??;
+    for index in 1..128 {
+        let host = stack.host.clone();
+        let actor = stack.actor.clone();
+        calls.spawn(async move {
+            host.invoke_actor(
+                crate::actor::ActorInvocation {
+                    request_id: format!("native-{index}"),
+                    actor,
+                    method: "readHistory".into(),
+                    args: vec![],
+                },
+                1,
+                HostState::Warm,
+                0.0,
+            )
+            .await
+            .0
+        });
+    }
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        status.wait_for(|s| s.waiting.len() == 127),
+    )
+    .await??;
+    let before_rss = (
+        rss_kib(std::process::id()),
+        stack.child.id().and_then(rss_kib),
+    );
+    for _ in 0..1024 {
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            stack.host.invoke_actor(
+                crate::actor::ActorInvocation {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    actor: stack.actor.clone(),
+                    method: "change".into(),
+                    args: vec![],
+                },
+                1,
+                HostState::Warm,
+                0.0,
+            ),
+        )
+        .await?
+        .0?;
+        assert!(
+            matches!(result, crate::actor::ActorExecutionResult::Failed { failure } if failure.code == "actor_overloaded")
+        );
+    }
+    let overloaded_rss = (
+        rss_kib(std::process::id()),
+        stack.child.id().and_then(rss_kib),
+    );
+    assert_eq!(status.borrow().waiting.len(), 127);
+    std::fs::write(stack.directory.path().join("release"), "")?;
+    let mut completed = 0;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while let Some(result) = calls.join_next().await {
+            assert!(matches!(
+                result??,
+                crate::actor::ActorExecutionResult::Completed { .. }
+            ));
+            completed += 1;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
+    assert_eq!(completed, 128);
+    assert!(status.borrow().waiting.is_empty());
+    assert_eq!(stack.invoke("readHistory", vec![]).await?, "");
+    stack.host.drain(Duration::from_secs(5)).await?;
+    let drained_rss = (
+        rss_kib(std::process::id()),
+        stack.child.id().and_then(rss_kib),
+    );
+    stack.child.kill().await?;
+    println!(
+        "native_bun_burst attempted=1152 admitted=128 rejected=1024 max_inventory=127 completed={completed} drained_inventory=0 rss_rust_bun_kib_before={before_rss:?} overloaded={overloaded_rss:?} drained={drained_rss:?}"
+    );
+    Ok(())
+}
+
+fn rss_kib(pid: u32) -> Option<usize> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
 }
