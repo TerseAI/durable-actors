@@ -7,6 +7,7 @@ Each example includes an app and a local actor runtime:
 | [AI chat](ai-chat/README.md) | Streaming AI replies and saved conversations | `bunx durable-actors init my-ai-chat --template ai-chat` |
 | [Chatroom](chat/README.md) | Shared chat over WebSockets | `bunx durable-actors init my-chat --template chat` |
 | [Collaborative documents](documents/README.md) | Shared document editing | `bunx durable-actors init my-documents --template documents` |
+| [LangGraph agent](langgraph-agent/README.md) | Multi-agent workflow, checkpointing, and human-in-the-loop | `cd examples/langgraph-agent && uv run main.py` |
 
 Follow the example's README to install dependencies, copy `.env.example` to `.env`, and start its two processes. AI chat also requires an OpenAI API key.
 

@@ -1,5 +1,7 @@
 """Define sync or async durable actors and use typed clients and subscriptions."""
 
+from typing import TYPE_CHECKING, Any
+
 from .actor import Actor as Actor
 from .actor import interleave as interleave
 from .async_actor import AsyncActor as AsyncActor
@@ -34,3 +36,34 @@ from .session import ActorSessionTransport as ActorSessionTransport
 from .socket import ActorSocket as ActorSocket
 from .subscription import AsyncSubscription as AsyncSubscription
 from .subscription import Subscription as Subscription
+
+if TYPE_CHECKING:
+    from .langchain import ChatMessageActor as ChatMessageActor
+    from .langchain import (
+        DurableActorChatMessageHistory as DurableActorChatMessageHistory,
+    )
+    from .langgraph import DurableActorSaver as DurableActorSaver
+    from .langgraph import LangGraphCheckpointActor as LangGraphCheckpointActor
+    from .testing import InMemoryActorTransport as InMemoryActorTransport
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"DurableActorSaver", "LangGraphCheckpointActor"}:
+        from .langgraph import DurableActorSaver, LangGraphCheckpointActor
+
+        return {
+            "DurableActorSaver": DurableActorSaver,
+            "LangGraphCheckpointActor": LangGraphCheckpointActor,
+        }[name]
+    if name in {"DurableActorChatMessageHistory", "ChatMessageActor"}:
+        from .langchain import ChatMessageActor, DurableActorChatMessageHistory
+
+        return {
+            "DurableActorChatMessageHistory": DurableActorChatMessageHistory,
+            "ChatMessageActor": ChatMessageActor,
+        }[name]
+    if name == "InMemoryActorTransport":
+        from .testing import InMemoryActorTransport
+
+        return InMemoryActorTransport
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
