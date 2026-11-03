@@ -5,8 +5,11 @@ const percent = new Intl.NumberFormat("en-US", { style: "percent", minimumFracti
 const signedPercent = new Intl.NumberFormat("en-US", { style: "percent", signDisplay: "exceptZero", minimumFractionDigits: 1, maximumFractionDigits: 1 })
 
 const clock = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+const dateTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
 
 export const formatClock = (ms: number) => clock.format(ms)
+export const formatTimeSpan = (fromMs: number, toMs: number) =>
+    `${dateTime.format(fromMs)} – ${new Date(fromMs).toDateString() === new Date(toMs).toDateString() ? clock.format(toMs) : dateTime.format(toMs)}`
 export const formatCount = (value: number) => count.format(value)
 export const formatDecimal = (value: number) => decimal.format(value)
 export const formatSignedCount = (value: number) => signedCount.format(value)

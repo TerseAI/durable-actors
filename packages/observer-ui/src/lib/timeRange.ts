@@ -8,9 +8,30 @@ const niceSteps = [10 * second, 30 * second, minute, 2 * minute, 5 * minute, 15 
 
 export const lastHour: TimeRange = { mode: "live", durationMs: hour }
 
+export const timePresets = [
+    { label: "Last 15 minutes", durationMs: 15 * minute },
+    { label: "Last 1 hour", durationMs: hour },
+    { label: "Last 6 hours", durationMs: 6 * hour },
+    { label: "Last 24 hours", durationMs: 24 * hour },
+    { label: "Last 7 days", durationMs: 7 * 24 * hour }
+]
+
+export function liveLabel(durationMs: number): string {
+    return timePresets.find(preset => preset.durationMs === durationMs)?.label ?? `Last ${Math.round(durationMs / minute)} minutes`
+}
+
 export function resolveWindow(range: TimeRange, now: number): TimeWindow {
     const [fromMs, toMs] = range.mode === "live" ? [now - range.durationMs, now] : [range.fromMs, range.toMs]
     return { fromMs, toMs, stepMs: pickStep(toMs - fromMs), live: range.mode === "live" }
+}
+
+export function atTime(day: Date, time: string): number {
+    const [hours = 0, minutes = 0] = time.split(":").map(Number)
+    return new Date(day.getFullYear(), day.getMonth(), day.getDate(), hours, minutes).getTime()
+}
+
+export function toggleLive({ fromMs, toMs, live }: TimeWindow): TimeRange {
+    return live ? { mode: "static", fromMs, toMs } : { mode: "live", durationMs: toMs - fromMs }
 }
 
 function pickStep(durationMs: number): number {

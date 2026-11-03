@@ -8,6 +8,7 @@ import { summarizeActorType } from "../../lib/actorTypes.js"
 import { queueTime, serviceTime } from "../../lib/requestStats.js"
 import { mockResidencyHistory } from "../../mocks/residency.js"
 import type { ActorType } from "../../types/Actors.js"
+import { TimeRangeControl } from "../timeRange/timeRangeControl.js"
 import { Skeleton } from "../ui/skeleton.js"
 
 import { InstancesCard } from "./instancesCard.js"
@@ -64,17 +65,20 @@ export function ActorTypePage() {
 
 function ActorTypeHeader({ actorName, actor, loading }: { actorName: string; actor: ActorType | null; loading: boolean }) {
     return (
-        <header>
-            <Link to=".." className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground hover:text-foreground">
-                <ArrowLeft className="size-3.5" aria-hidden />
-                Overview
-            </Link>
-            <h1 id="actor-type-heading" translate="no" className="mt-2.5 font-mono text-[26px] font-medium tracking-tight">
-                {actorName}
-            </h1>
-            <div className="mt-1 text-[13px] text-muted-foreground tabular-nums">
-                {actor ? `Actor type · ${formatPlural(actor.instances.length, "instance")}` : loading ? <Skeleton className="h-3.5 w-40" /> : "Actor type"}
+        <header className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+                <Link to=".." className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground hover:text-foreground">
+                    <ArrowLeft className="size-3.5" aria-hidden />
+                    Overview
+                </Link>
+                <h1 id="actor-type-heading" translate="no" className="mt-2.5 font-mono text-[26px] font-medium tracking-tight">
+                    {actorName}
+                </h1>
+                <div className="mt-1 text-[13px] text-muted-foreground tabular-nums">
+                    {actor ? `Actor type · ${formatPlural(actor.instances.length, "instance")}` : loading ? <Skeleton className="h-3.5 w-40" /> : "Actor type"}
+                </div>
             </div>
+            <TimeRangeControl />
         </header>
     )
 }

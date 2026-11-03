@@ -1,21 +1,31 @@
-import { type ReactNode, createContext, useContext, useEffect, useMemo, useState } from "react"
+import { type ReactNode, createContext, useContext, useEffect, useState } from "react"
 
 import { lastHour, resolveWindow } from "../lib/timeRange.js"
 import type { TimeRange, TimeWindow } from "../types/TimeRange.js"
 
 const liveTickMs = 5_000
 
-const TimeWindowContext = createContext<TimeWindow | undefined>(undefined)
+type TimeRangeContextType = { timeWindow: TimeWindow; setRange: (range: TimeRange) => void }
 
-export function TimeRangeProvider({ range = lastHour, children }: { range?: TimeRange; children: ReactNode }) {
+const TimeRangeContext = createContext<TimeRangeContextType | undefined>(undefined)
+
+export function TimeRangeProvider({ initialRange = lastHour, children }: { initialRange?: TimeRange; children: ReactNode }) {
+    const [range, setRange] = useState(initialRange)
     const now = useNow(range.mode === "live")
-    const timeWindow = useMemo(() => resolveWindow(range, now), [range, now])
-    return <TimeWindowContext.Provider value={timeWindow}>{children}</TimeWindowContext.Provider>
+    return <TimeRangeContext.Provider value={{ timeWindow: resolveWindow(range, now), setRange }}>{children}</TimeRangeContext.Provider>
 }
 
 export function useTimeWindow(): TimeWindow {
-    const context = useContext(TimeWindowContext)
-    if (!context) throw new Error("useTimeWindow must be used within a TimeRangeProvider")
+    return useTimeRange().timeWindow
+}
+
+export function useSetTimeRange(): (range: TimeRange) => void {
+    return useTimeRange().setRange
+}
+
+function useTimeRange(): TimeRangeContextType {
+    const context = useContext(TimeRangeContext)
+    if (!context) throw new Error("Time range hooks must be used within a TimeRangeProvider")
     return context
 }
 
