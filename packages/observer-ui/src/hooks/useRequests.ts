@@ -1,4 +1,3 @@
-import useSWR from "swr"
 import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
 
 import { HttpObserverClient } from "../client/observerClient.js"
@@ -6,13 +5,13 @@ import { subscribeToRequests } from "../client/streams/requestStream.js"
 import type { RequestTrace } from "../types/Requests.js"
 import type { TimeWindow } from "../types/TimeRange.js"
 
-// Live keys use the duration rather than the moving bounds so the clock tick doesn't refetch; the stream keeps live data current.
-export function useRequests({ fromMs, toMs, live }: TimeWindow) {
+import { useWindowedSWR } from "./useWindowedSWR.js"
+
+export function useRequests(timeWindow: TimeWindow) {
+    const { live, fromMs, toMs } = timeWindow
     const durationMs = toMs - fromMs
-    const { data, error, isLoading } = useSWR<RequestTrace[]>(
-        live ? ["requests", "live", durationMs] : ["requests", fromMs, toMs],
-        async () => (await new HttpObserverClient().listRequests(live ? { fromMs: Date.now() - durationMs } : { fromMs, toMs })).records
-    )
+    const { data, error, isLoading } = useWindowedSWR(["requests"], timeWindow, async bounds => (await new HttpObserverClient().listRequests(bounds)).records)
+    
     const { data: streamed } = useSWRSubscription(live ? ["requests/events", durationMs] : null, (_key, { next }: SWRSubscriptionOptions<RequestTrace[]>) =>
         subscribeToRequests(page => next(null, traces => mergeTraces(traces ?? [], page.records, durationMs)))
     )

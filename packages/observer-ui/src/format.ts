@@ -8,6 +8,7 @@ const clock = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-dig
 const dateTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
 
 export const formatClock = (ms: number) => clock.format(ms)
+export const formatTick = (ms: number, spanMs: number) => (spanMs < 86_400_000 ? clock : dateTime).format(ms)
 export const formatTimeSpan = (fromMs: number, toMs: number) =>
     `${dateTime.format(fromMs)} – ${new Date(fromMs).toDateString() === new Date(toMs).toDateString() ? clock.format(toMs) : dateTime.format(toMs)}`
 export const formatCount = (value: number) => count.format(value)
@@ -17,6 +18,13 @@ export const formatPercent = (ratio: number) => percent.format(ratio)
 export const formatSignedPercent = (ratio: number) => signedPercent.format(ratio)
 export const formatMs = (ms: number) => `${count.format(Math.round(ms))}\u00a0ms`
 export const formatPlural = (value: number, noun: string) => `${count.format(value)} ${value === 1 ? noun : `${noun}s`}`
+
+export function formatDuration(ms: number): string {
+    const minutes = Math.round(ms / 60_000)
+    if (minutes < 60) return `${minutes}\u00a0min`
+    if (minutes < 2880) return `${decimal.format(minutes / 60)}\u00a0h`
+    return `${decimal.format(minutes / 1440)}\u00a0d`
+}
 
 export function formatAgo(ms: number, now: number): string {
     const seconds = Math.max(0, Math.round((now - ms) / 1000))

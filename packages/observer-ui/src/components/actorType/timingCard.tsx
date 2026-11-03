@@ -1,7 +1,8 @@
 import { formatCount, formatMs } from "../../format.js"
 import { type TimingPick, timingStats } from "../../lib/requestStats.js"
-import { emptySeries, trendAxis } from "../../lib/trendWindow.js"
+import { bucketCount, windowTicks } from "../../lib/timeRange.js"
 import type { RequestTrace } from "../../types/Requests.js"
+import type { TimeWindow } from "../../types/TimeRange.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { TrendCard, TrendStat, TrendStatsSkeleton } from "../ui/trendCard.js"
 
@@ -13,15 +14,16 @@ export type TimingCardProps = {
     chartLabel: string
     requests: RequestTrace[] | null
     failed: boolean
-    now: number
+    timeWindow: TimeWindow
 }
 
-export function TimingCard({ label, window, pick, color, chartLabel, requests, failed, now }: TimingCardProps) {
-    const stats = requests && timingStats(requests, now, pick)
+export function TimingCard({ label, window, pick, color, chartLabel, requests, failed, timeWindow }: TimingCardProps) {
+    const stats = requests && timingStats(requests, timeWindow, pick)
     const loading = !stats && !failed
     const value = stats ? formatCount(Math.round(stats.average)) : loading ? <Skeleton className="h-11 w-20" /> : "—"
+    const series = stats?.series ?? Array<number>(bucketCount(timeWindow)).fill(0)
     return (
-        <TrendCard label={label} window={window} value={value} unit="ms" busy={loading} series={stats?.series ?? emptySeries} axis={trendAxis(now)} color={color} chartLabel={chartLabel}>
+        <TrendCard label={label} window={window} value={value} unit="ms" busy={loading} series={series} axis={windowTicks(timeWindow, 2)} color={color} chartLabel={chartLabel}>
             {stats ? (
                 <>
                     <TrendStat label="p95" value={formatMs(stats.p95)} />

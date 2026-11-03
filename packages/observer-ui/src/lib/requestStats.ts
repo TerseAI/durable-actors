@@ -1,6 +1,7 @@
 import type { RequestTrace } from "../types/Requests.js"
+import type { TimeWindow } from "../types/TimeRange.js"
 
-import { bucketCount, bucketMs, trendWindowMs } from "./trendWindow.js"
+import { bucketCount, bucketIndex } from "./timeRange.js"
 
 export type TimingStats = {
     average: number
@@ -16,13 +17,13 @@ export const queueTime: TimingPick = trace => trace.queueWaitMs
 // durationMs includes the queue wait, so latency excluding the queue subtracts it.
 export const serviceTime: TimingPick = trace => trace.durationMs - (trace.queueWaitMs ?? 0)
 
-export function timingStats(requests: RequestTrace[], now: number, pick: TimingPick): TimingStats {
+export function timingStats(requests: RequestTrace[], timeWindow: TimeWindow, pick: TimingPick): TimingStats {
     const values = picked(requests, pick)
     return {
         average: average(values),
         p95: percentile(values, 0.95),
         max: values.length ? Math.max(...values) : 0,
-        series: bucketAverages(requests, now, pick)
+        series: bucketAverages(requests, timeWindow, pick)
     }
 }
 
@@ -45,13 +46,12 @@ function picked(requests: RequestTrace[], pick: TimingPick): number[] {
     return requests.map(pick).filter((value): value is number => value !== null)
 }
 
-function bucketAverages(requests: RequestTrace[], now: number, pick: TimingPick): number[] {
-    const start = now - trendWindowMs
-    const buckets = Array.from({ length: bucketCount }, () => [] as number[])
+function bucketAverages(requests: RequestTrace[], timeWindow: TimeWindow, pick: TimingPick): number[] {
+    const buckets = Array.from({ length: bucketCount(timeWindow) }, () => [] as number[])
     for (const trace of requests) {
-        const index = Math.floor((trace.startedAtMs - start) / bucketMs)
+        const index = bucketIndex(timeWindow, trace.startedAtMs)
         const value = pick(trace)
-        if (index >= 0 && value !== null) buckets[Math.min(index, bucketCount - 1)]!.push(value)
+        if (index !== null && value !== null) buckets[index]!.push(value)
     }
     return buckets.map(average)
 }

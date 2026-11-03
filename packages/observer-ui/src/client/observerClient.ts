@@ -1,5 +1,6 @@
 import type { ActorInventory } from "../types/Actors.js";
 import type { RequestTracePage } from "../types/Requests.js";
+import type { ResidencyHistory } from "../types/Residency.js";
 import type { SocketSession } from "../types/Sockets.js";
 import type { TimeBounds } from "../types/TimeRange.js";
 
@@ -10,6 +11,7 @@ type totalActorInstancesPayload = Map<string, ActorInventory>
 export interface ObserverClient {
     listActorTypes(): Promise<ActorInventory>
     listRequests(bounds: TimeBounds): Promise<RequestTracePage>
+    listResidency(actorName: string, bounds: TimeBounds): Promise<ResidencyHistory>
     listWebSockets(): Promise<SocketSession[]>
 }
 
@@ -22,6 +24,12 @@ export class HttpObserverClient implements ObserverClient {
         const query = new URLSearchParams({ fromMs: String(fromMs), limit: "500" })
         if (toMs !== undefined) query.set("toMs", String(toMs))
         return await this.get<RequestTracePage>(`requests?${query}`);
+    }
+
+    async listResidency(actorName: string, { fromMs, toMs }: TimeBounds): Promise<ResidencyHistory> {
+        const query = new URLSearchParams({ actorName, fromMs: String(fromMs) })
+        if (toMs !== undefined) query.set("toMs", String(toMs))
+        return await this.get<ResidencyHistory>(`residency?${query}`);
     }
 
     async listWebSockets(): Promise<SocketSession[]> {

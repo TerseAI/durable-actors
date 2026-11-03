@@ -1,3 +1,4 @@
+import { formatDuration, formatTick, formatTimeSpan } from "../format.js"
 import type { TimeRange, TimeWindow } from "../types/TimeRange.js"
 
 const second = 1000
@@ -32,6 +33,24 @@ export function atTime(day: Date, time: string): number {
 
 export function toggleLive({ fromMs, toMs, live }: TimeWindow): TimeRange {
     return live ? { mode: "static", fromMs, toMs } : { mode: "live", durationMs: toMs - fromMs }
+}
+
+export function describeWindow({ fromMs, toMs, live }: TimeWindow): string {
+    return live ? `last ${formatDuration(toMs - fromMs)}` : formatTimeSpan(fromMs, toMs)
+}
+
+export function windowTicks({ fromMs, toMs, live }: TimeWindow, intervals: number): string[] {
+    const spanMs = toMs - fromMs
+    return Array.from({ length: intervals + 1 }, (_, index) => (live && index === intervals ? "Now" : formatTick(fromMs + (index / intervals) * spanMs, spanMs)))
+}
+
+export function bucketCount({ fromMs, toMs, stepMs }: TimeWindow): number {
+    return Math.max(1, Math.ceil((toMs - fromMs) / stepMs))
+}
+
+export function bucketIndex(timeWindow: TimeWindow, atMs: number): number | null {
+    if (atMs < timeWindow.fromMs || atMs > timeWindow.toMs) return null
+    return Math.min(Math.floor((atMs - timeWindow.fromMs) / timeWindow.stepMs), bucketCount(timeWindow) - 1)
 }
 
 function pickStep(durationMs: number): number {

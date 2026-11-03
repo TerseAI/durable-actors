@@ -1,11 +1,12 @@
 import { useState } from "react"
 
-import { formatClock, formatCount } from "../../format.js"
+import { formatClock, formatCount, formatDuration } from "../../format.js"
 import { byLastActive } from "../../lib/actorTypes.js"
-import { trendWindowMs } from "../../lib/trendWindow.js"
+import { describeWindow, windowTicks } from "../../lib/timeRange.js"
 import { cn } from "../../lib/utils.js"
 import type { ActorInstance, ActorType } from "../../types/Actors.js"
 import type { ResidencyHistory, ResidencyPeriod } from "../../types/Residency.js"
+import type { TimeWindow } from "../../types/TimeRange.js"
 import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
 
@@ -21,10 +22,10 @@ export type ResidencyCardProps = {
     actor: ActorType | null
     history: ResidencyHistory | null
     failed: boolean
-    now: number
+    timeWindow: TimeWindow
 }
 
-export function ResidencyCard({ actor, history, failed, now }: ResidencyCardProps) {
+export function ResidencyCard({ actor, history, failed, timeWindow }: ResidencyCardProps) {
     const [expanded, setExpanded] = useState(false)
     const instances = actor && byLastActive(actor.instances)
     const livePeriods = history && groupLivePeriods(history)
@@ -36,9 +37,9 @@ export function ResidencyCard({ actor, history, failed, now }: ResidencyCardProp
             ) : (
                 <>
                     <div className="mt-3.5">
-                        <TimeAxis now={now} />
+                        <TimeAxis timeWindow={timeWindow} />
                         {shown && livePeriods ? (
-                            shown.map(instance => <ResidencyRow key={instance.actorId} instance={instance} periods={livePeriods.get(instance.actorId) ?? []} now={now} />)
+                            shown.map(instance => <ResidencyRow key={instance.actorId} instance={instance} periods={livePeriods.get(instance.actorId) ?? []} timeWindow={timeWindow} />)
                         ) : (
                             <RowSkeletons />
                         )}
@@ -73,19 +74,18 @@ function ResidencyKeys() {
     )
 }
 
-function TimeAxis({ now }: { now: number }) {
-    const start = now - trendWindowMs
+function TimeAxis({ timeWindow }: { timeWindow: TimeWindow }) {
     return (
         <div aria-hidden className={`${rowGrid} h-6 border-b`}>
             <span className="text-xs text-muted-foreground">Instance</span>
             <div className="relative h-full font-mono text-[11px] text-muted-foreground tabular-nums">
-                {Array.from({ length: tickCount + 1 }, (_, index) => (
+                {windowTicks(timeWindow, tickCount).map((tick, index) => (
                     <span
                         key={index}
                         className={cn("absolute top-1", index === 0 ? "" : index === tickCount ? "-translate-x-full text-foreground" : "-translate-x-1/2")}
                         style={{ left: `${(index / tickCount) * 100}%` }}
                     >
-                        {index === tickCount ? "Now" : formatClock(start + (index / tickCount) * trendWindowMs)}
+                        {tick}
                     </span>
                 ))}
             </div>
@@ -94,10 +94,10 @@ function TimeAxis({ now }: { now: number }) {
     )
 }
 
-function ResidencyRow({ instance, periods, now }: { instance: ActorInstance; periods: ResidencyPeriod[]; now: number }) {
-    const segments = toSegments(periods, now)
-    const minutes = Math.round(segments.reduce((sum, segment) => sum + segment.width, 0) * (trendWindowMs / 60_000))
+function ResidencyRow({ instance, periods, timeWindow }: { instance: ActorInstance; periods: ResidencyPeriod[]; timeWindow: TimeWindow }) {
     const live = instance.status === "live"
+    const segments = toSegments(periods, timeWindow, live && timeWindow.live)
+    const liveMs = segments.reduce((sum, segment) => sum + segment.width, 0) * (timeWindow.toMs - timeWindow.fromMs)
     return (
         <div className={`${rowGrid} h-11.5 border-b border-border/50 last:border-b-0`}>
             <div className="min-w-0">
@@ -108,18 +108,20 @@ function ResidencyRow({ instance, periods, now }: { instance: ActorInstance; per
                     {live ? "Live now" : sleptLabel(periods, instance)}
                 </InstanceStatus>
             </div>
-            <ResidencyTrack segments={segments} label={`${instance.actorId}: ${minutes ? `${formatCount(minutes)} minutes live` : "dormant all hour"} in the last hour`} />
-            <span className={cn("text-right text-[13px] tabular-nums", minutes ? "text-foreground/85" : "text-muted-foreground")}>{formatCount(minutes)}&nbsp;min</span>
+            <ResidencyTrack segments={segments} label={`${instance.actorId}: ${liveMs ? `live ${formatDuration(liveMs)}` : "dormant"}, ${describeWindow(timeWindow)}`} />
+            <span className={cn("text-right text-[13px] tabular-nums", liveMs ? "text-foreground/85" : "text-muted-foreground")}>{formatDuration(liveMs)}</span>
         </div>
     )
 }
 
-function toSegments(periods: ResidencyPeriod[], now: number): Segment[] {
-    const start = now - trendWindowMs
+// Open periods end at fetch time, which trails the live clock between polls, so a live instance's latest period runs to the window's end.
+function toSegments(periods: ResidencyPeriod[], { fromMs: start, toMs: end }: TimeWindow, ongoing: boolean): Segment[] {
+    const spanMs = end - start
+    const isOngoing = (index: number) => ongoing && index === periods.length - 1
     return periods
-        .map(period => ({ fromMs: Math.max(period.fromMs, start), toMs: Math.min(period.toMs, now) }))
+        .map((period, index) => ({ fromMs: Math.max(period.fromMs, start), toMs: isOngoing(index) ? end : Math.min(period.toMs, end), now: isOngoing(index) }))
         .filter(period => period.toMs > period.fromMs)
-        .map(period => ({ left: (period.fromMs - start) / trendWindowMs, width: (period.toMs - period.fromMs) / trendWindowMs, now: now - period.toMs < 1000 }))
+        .map(period => ({ left: (period.fromMs - start) / spanMs, width: (period.toMs - period.fromMs) / spanMs, now: period.now }))
 }
 
 function sleptLabel(periods: ResidencyPeriod[], instance: ActorInstance): string {
