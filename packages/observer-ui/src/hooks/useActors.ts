@@ -1,18 +1,23 @@
 import useSWR from "swr"
+import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
 import type { ActorInventory } from "../types/Actors.js"
 import { HttpObserverClient } from "../client/observerClient.js"
+import { subscribeToActors } from "../client/actorStream.js"
 
 export function useActors() {
-    const { data, error, isLoading, mutate } = useSWR<ActorInventory>(
+    const { data, error, isLoading } = useSWR<ActorInventory>(
         "actors",
         () => new HttpObserverClient().listActorTypes(),
     )
+    const { data: live } = useSWRSubscription(
+        "actors/events",
+        (_key: string, { next }: SWRSubscriptionOptions<ActorInventory>) => subscribeToActors(inventory => next(null, inventory)),
+    )
 
     return {
-        actorTypes: data ?? null,
+        actorTypes: live ?? data ?? null,
         isLoading,
-        isError: Boolean(error),
+        isError: !live && Boolean(error),
         error,
-        mutate
     }
 }
