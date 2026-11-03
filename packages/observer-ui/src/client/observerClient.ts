@@ -1,4 +1,5 @@
 import type { ActorInventory } from "../types/Actors.js";
+import type { RequestTracePage } from "../types/Requests.js";
 
 const baseUrl = "/api/observe";
 
@@ -6,7 +7,7 @@ type totalActorInstancesPayload = Map<string, ActorInventory>
 
 export interface ObserverClient {
     listActorTypes(): Promise<ActorInventory>
-    listTotalActorsInstances(): Promise<totalActorInstancesPayload>
+    listRequests(fromMs: number): Promise<RequestTracePage>
 }
 
 export class HttpObserverClient implements ObserverClient {
@@ -14,8 +15,8 @@ export class HttpObserverClient implements ObserverClient {
         return await this.get<ActorInventory>("actors");
     }
 
-    async listTotalActorsInstances(): Promise<totalActorInstancesPayload> {
-        return await this.get<totalActorInstancesPayload>("actors/total");
+    async listRequests(fromMs: number): Promise<RequestTracePage> {
+        return await this.get<RequestTracePage>(`requests?fromMs=${fromMs}&limit=500`);
     }
 
     private async get<T>(path: string): Promise<T> {

@@ -1,5 +1,4 @@
 export interface OverviewMetrics {
-    updatedLabel: string
     axis: string[]
     actors: ActorResidencyMetrics
     requests: RequestRateMetrics

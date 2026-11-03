@@ -6,8 +6,9 @@ import { StatCard } from "../ui/statCard.js"
 export type TrendCardProps = {
     label: string
     window: string
-    value: string
-    unit: string
+    value: ReactNode
+    unit: ReactNode
+    busy?: boolean
     series: number[]
     axis: string[]
     color: string
@@ -15,9 +16,9 @@ export type TrendCardProps = {
     children: ReactNode
 }
 
-export function TrendCard({ label, window, value, unit, series, axis, color, chartLabel, children }: TrendCardProps) {
+export function TrendCard({ label, window, value, unit, busy, series, axis, color, chartLabel, children }: TrendCardProps) {
     return (
-        <StatCard label={label} aside={<span className="shrink-0 text-xs font-normal tabular-nums">{window}</span>} value={value} unit={unit}>
+        <StatCard label={label} aside={<span className="shrink-0 text-xs font-normal tabular-nums">{window}</span>} value={value} unit={unit} busy={busy}>
             <div className="mt-2 flex flex-wrap items-center gap-x-4.5 gap-y-1 text-[13px] text-muted-foreground tabular-nums">{children}</div>
             <Sparkline values={series} color={color} label={chartLabel} />
             <div className="mt-1.5 flex justify-between text-xs text-muted-foreground tabular-nums">

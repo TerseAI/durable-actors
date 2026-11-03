@@ -1,7 +1,6 @@
 import type { OverviewMetrics } from "../types/Overview.js"
 
 export const mockOverview: OverviewMetrics = {
-    updatedLabel: "Updated 2\u00a0s ago · us-east, eu-west, ap-south",
     axis: ["05:31", "06:01", "Now"],
     actors: { live: 2418, dormant: 7442, liveDelta: 312 },
     requests: {

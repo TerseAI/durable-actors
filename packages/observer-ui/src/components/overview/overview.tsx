@@ -10,11 +10,10 @@ export function Overview({ metrics }: { metrics: OverviewMetrics }) {
                 <h1 id="overview-heading" className="text-2xl font-bold tracking-tight">
                     Overview
                 </h1>
-                <span className="text-xs text-muted-foreground tabular-nums">{metrics.updatedLabel}</span>
             </header>
-            <div className="grid gap-4 lg:grid-cols-[1.45fr_1fr_1fr]">
+            <div className="grid gap-4 lg:grid-cols-3">
                 <ActiveActorsCard />
-                <RequestRateCard {...metrics.requests} axis={metrics.axis} />
+                <RequestRateCard />
                 <SocketsCard {...metrics.sockets} axis={metrics.axis} />
             </div>
         </section>
