@@ -2,13 +2,20 @@ import type { ActorInventory } from "../types/Actors.js";
 
 const baseUrl = "/api/observe";
 
-interface ObserverClient {
+type totalActorInstancesPayload = Map<string, ActorInventory>
+
+export interface ObserverClient {
     listActorTypes(): Promise<ActorInventory>
+    listTotalActorsInstances(): Promise<totalActorInstancesPayload>
 }
 
 export class HttpObserverClient implements ObserverClient {
     async listActorTypes(): Promise<ActorInventory> {
         return await this.get<ActorInventory>("actors");
+    }
+
+    async listTotalActorsInstances(): Promise<totalActorInstancesPayload> {
+        return await this.get<totalActorInstancesPayload>("actors/total");
     }
 
     private async get<T>(path: string): Promise<T> {

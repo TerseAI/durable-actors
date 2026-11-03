@@ -1,15 +1,28 @@
+import { type ReactNode, useId } from "react"
+
 export type StatCardProps = {
     label: string
-    value: string | number
-    detail?: string
+    aside?: ReactNode
+    value: string
+    unit: string
+    children?: ReactNode
 }
 
-export function StatCard({ label, value, detail }: StatCardProps) {
+export function StatCard({ label, aside, value, unit, children }: StatCardProps) {
+    const labelId = useId()
     return (
-        <div className="flex min-w-0 flex-col rounded-xl border bg-card px-4 py-3 text-card-foreground">
-            <dt className="truncate text-xs font-medium text-muted-foreground">{label}</dt>
-            <dd className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">{value}</dd>
-            {detail && <dd className="mt-0.5 truncate text-xs text-muted-foreground">{detail}</dd>}
-        </div>
+        <article aria-labelledby={labelId} className="flex min-h-59 min-w-0 flex-col rounded-xl border bg-card px-5.5 pt-5 pb-4.5 text-card-foreground shadow-(--shadow-control)">
+            <div className="flex items-center justify-between gap-3 text-[13px] font-medium text-muted-foreground">
+                <span id={labelId} className="truncate">
+                    {label}
+                </span>
+                {aside}
+            </div>
+            <p className="mt-3.5 flex items-baseline gap-2 text-[44px] leading-none font-bold tracking-[-0.035em] tabular-nums">
+                {value}
+                <small className="text-[15px] font-medium tracking-normal text-muted-foreground">{unit}</small>
+            </p>
+            {children}
+        </article>
     )
 }

@@ -1,0 +1,23 @@
+import type { OverviewMetrics } from "../types/Overview.js"
+
+export const mockOverview: OverviewMetrics = {
+    updatedLabel: "Updated 2\u00a0s ago · us-east, eu-west, ap-south",
+    axis: ["05:31", "06:01", "Now"],
+    actors: { live: 2418, dormant: 7442, liveDelta: 312 },
+    requests: {
+        current: 1847,
+        average: 1512,
+        peak: 2604,
+        peakAt: "05:58",
+        series: [1120, 1180, 1090, 1240, 1330, 1270, 1420, 1360, 1480, 1390, 1510, 1600, 1540, 1660, 1780, 2604, 1900, 1720, 1630, 1690, 1570, 1660, 1750, 1690, 1810, 1720, 1780, 1840, 1750, 1847]
+    },
+    sockets: {
+        open: 12904,
+        change: 0.042,
+        perLiveActor: 5.3,
+        series: [
+            12474, 12492, 12510, 12510, 12546, 12528, 12564, 12582, 12582, 12618, 12600, 12636, 12654, 12654, 12690, 12708, 12690, 12726, 12744, 12762, 12744, 12780, 12798, 12798, 12834, 12816, 12852,
+            12870, 12886, 12904
+        ]
+    }
+}

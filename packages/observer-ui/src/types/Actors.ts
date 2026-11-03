@@ -8,7 +8,6 @@ export interface ActorType {
 }
 
 export interface ActorInventory {
-    connectionsComplete: boolean
     actors: ActorType[]
 }
 
