@@ -7,6 +7,8 @@ export type ActorTypeSummary = {
     dormant: number
 }
 
+// Relative so the routes work both standalone and nested under a host app's route.
+export const actorTypePath = (actorName: string) => `actors/${encodeURIComponent(actorName)}`
 export function summarizeActorType({ actorName, instances }: ActorType): ActorTypeSummary {
     return {
         actorName,

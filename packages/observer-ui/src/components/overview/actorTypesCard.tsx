@@ -1,18 +1,19 @@
+import { Link } from "react-router"
+
 import { useData } from "../../client/DatatContext.js"
 import { formatCount, formatPercent, formatPlural } from "../../format.js"
-import { type ActorTypeSummary, summarizeActorType } from "../../lib/actorTypes.js"
-import type { ObserverLink } from "../../types/Navigation.js"
+import { type ActorTypeSummary, actorTypePath, summarizeActorType } from "../../lib/actorTypes.js"
 import { ResidencyBar } from "../ui/residencyBar.js"
 import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
 
-export function ActorTypesCard({ Link }: { Link: ObserverLink }) {
+export function ActorTypesCard() {
     const { actorTypes, isError } = useData()
     const rows = actorTypes && actorTypes.actors.map(summarizeActorType).sort((a, b) => b.total - a.total)
     return (
         <SectionCard title="Actor Types" aside={<ResidencyKey />} busy={!rows && !isError} className="pb-2.5">
             <div className="mt-1.5">
-                <ActorTypeLanes rows={rows} failed={isError} Link={Link} />
+                <ActorTypeLanes rows={rows} failed={isError} />
             </div>
         </SectionCard>
     )
@@ -33,7 +34,7 @@ function ResidencyKey() {
     )
 }
 
-function ActorTypeLanes({ rows, failed, Link }: { rows: ActorTypeSummary[] | null; failed: boolean; Link: ObserverLink }) {
+function ActorTypeLanes({ rows, failed }: { rows: ActorTypeSummary[] | null; failed: boolean }) {
     if (failed) return <p className="py-4 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
     if (!rows) return <LaneSkeletons />
     if (!rows.length) return <p className="py-4 text-[13px] text-muted-foreground">No actor types deployed yet.</p>
@@ -41,7 +42,7 @@ function ActorTypeLanes({ rows, failed, Link }: { rows: ActorTypeSummary[] | nul
     return (
         <ul>
             {rows.map(row => (
-                <ActorTypeLane key={row.actorName} row={row} largest={largest} Link={Link} />
+                <ActorTypeLane key={row.actorName} row={row} largest={largest} />
             ))}
         </ul>
     )
@@ -50,12 +51,12 @@ function ActorTypeLanes({ rows, failed, Link }: { rows: ActorTypeSummary[] | nul
 const laneGrid = "grid items-center gap-x-7 gap-y-3 py-4 md:grid-cols-[190px_1fr_168px]"
 const laneDivider = "border-t border-border/60 first:border-t-0"
 
-function ActorTypeLane({ row, largest, Link }: { row: ActorTypeSummary; largest: number; Link: ObserverLink }) {
+function ActorTypeLane({ row, largest }: { row: ActorTypeSummary; largest: number }) {
     const liveShare = row.total ? row.live / row.total : 0
     return (
         <li className={laneDivider}>
             <Link
-                to={{ page: "actorType", actorName: row.actorName }}
+                to={actorTypePath(row.actorName)}
                 className={`${laneGrid} -mx-3 rounded-lg px-3 tabular-nums transition-colors outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring`}
             >
                 <div className="min-w-0">

@@ -1,11 +1,9 @@
-import type { ObserverLink } from "../../types/Navigation.js"
-
 import { ActiveActorsCard } from "./activeActorsCard.js"
 import { ActorTypesCard } from "./actorTypesCard.js"
 import { RequestRateCard } from "./requestRateCard.js"
 import { SocketsCard } from "./socketsCard.js"
 
-export function Overview({ Link }: { Link: ObserverLink }) {
+export function Overview() {
     return (
         <section aria-labelledby="overview-heading" className="flex flex-col gap-5">
             <header className="flex flex-wrap items-baseline justify-between gap-2">
@@ -19,7 +17,7 @@ export function Overview({ Link }: { Link: ObserverLink }) {
                     <RequestRateCard />
                     <SocketsCard />
                 </div>
-                <ActorTypesCard Link={Link} />
+                <ActorTypesCard />
             </div>
         </section>
     )

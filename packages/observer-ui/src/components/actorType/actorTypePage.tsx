@@ -1,6 +1,5 @@
-import { useEffect } from "react"
-
 import { ArrowLeft } from "lucide-react"
+import { Link, useParams } from "react-router"
 
 import { useData } from "../../client/DatatContext.js"
 import { formatPlural } from "../../format.js"
@@ -8,7 +7,6 @@ import { summarizeActorType } from "../../lib/actorTypes.js"
 import { queueTime, serviceTime } from "../../lib/requestStats.js"
 import { mockResidencyHistory } from "../../mocks/residency.js"
 import type { ActorType } from "../../types/Actors.js"
-import type { ObserverLink } from "../../types/Navigation.js"
 import { Skeleton } from "../ui/skeleton.js"
 
 import { InstancesCard } from "./instancesCard.js"
@@ -16,18 +14,18 @@ import { LiveDormantCard } from "./liveDormantCard.js"
 import { ResidencyCard } from "./residencyCard.js"
 import { TimingCard } from "./timingCard.js"
 
-export function ActorTypePage({ actorName, Link }: { actorName: string; Link: ObserverLink }) {
+export function ActorTypePage() {
+    const { actorName = "" } = useParams()
     const { actorTypes, isError, requests, isRequestsError } = useData()
     const now = Date.now()
     const actor = actorTypes?.actors.find(type => type.actorName === actorName) ?? null
     const typeRequests = requests?.filter(trace => trace.actorName === actorName) ?? null
     // observerClient doesn't serve residency yet; swap this mock for the residency endpoint once it does.
     const residency = actor && mockResidencyHistory(actor.instances, now)
-    useEffect(() => window.scrollTo(0, 0), [actorName])
 
     return (
         <section aria-labelledby="actor-type-heading" className="flex flex-col gap-5">
-            <ActorTypeHeader actorName={actorName} actor={actor} loading={!actorTypes && !isError} Link={Link} />
+            <ActorTypeHeader actorName={actorName} actor={actor} loading={!actorTypes && !isError} />
             {actorTypes && !actor ? (
                 <p className="text-[13px] text-muted-foreground">No actor type named {actorName} is deployed.</p>
             ) : (
@@ -63,10 +61,10 @@ export function ActorTypePage({ actorName, Link }: { actorName: string; Link: Ob
     )
 }
 
-function ActorTypeHeader({ actorName, actor, loading, Link }: { actorName: string; actor: ActorType | null; loading: boolean; Link: ObserverLink }) {
+function ActorTypeHeader({ actorName, actor, loading }: { actorName: string; actor: ActorType | null; loading: boolean }) {
     return (
         <header>
-            <Link to={{ page: "overview" }} className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground hover:text-foreground">
+            <Link to=".." className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground hover:text-foreground">
                 <ArrowLeft className="size-3.5" aria-hidden />
                 Overview
             </Link>
