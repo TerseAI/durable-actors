@@ -21,14 +21,12 @@ export class HttpObserverClient implements ObserverClient {
     }
 
     async listRequests({ fromMs, toMs }: TimeBounds): Promise<RequestTracePage> {
-        const query = new URLSearchParams({ fromMs: String(fromMs), limit: "500" })
-        if (toMs !== undefined) query.set("toMs", String(toMs))
+        const query = new URLSearchParams({ fromMs: String(fromMs), toMs: String(toMs), limit: "500" })
         return await this.get<RequestTracePage>(`requests?${query}`);
     }
 
     async listResidency(actorName: string, { fromMs, toMs }: TimeBounds): Promise<ResidencyHistory> {
-        const query = new URLSearchParams({ actorName, fromMs: String(fromMs) })
-        if (toMs !== undefined) query.set("toMs", String(toMs))
+        const query = new URLSearchParams({ actorName, fromMs: String(fromMs), toMs: String(toMs) })
         return await this.get<ResidencyHistory>(`residency?${query}`);
     }
 
