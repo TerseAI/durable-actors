@@ -2,6 +2,7 @@ import { ArrowLeft } from "lucide-react"
 import { Link, useParams } from "react-router"
 
 import { useData } from "../../client/DatatContext.js"
+import { useTimeWindow } from "../../client/TimeRangeContext.js"
 import { formatPlural } from "../../format.js"
 import { summarizeActorType } from "../../lib/actorTypes.js"
 import { queueTime, serviceTime } from "../../lib/requestStats.js"
@@ -17,7 +18,7 @@ import { TimingCard } from "./timingCard.js"
 export function ActorTypePage() {
     const { actorName = "" } = useParams()
     const { actorTypes, isError, requests, isRequestsError } = useData()
-    const now = Date.now()
+    const { toMs: now } = useTimeWindow()
     const actor = actorTypes?.actors.find(type => type.actorName === actorName) ?? null
     const typeRequests = requests?.filter(trace => trace.actorName === actorName) ?? null
     // observerClient doesn't serve residency yet; swap this mock for the residency endpoint once it does.
