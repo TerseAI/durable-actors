@@ -2,7 +2,7 @@ import { useData } from "../../client/DatatContext.js"
 import { useTimeWindow } from "../../client/TimeRangeContext.js"
 import { formatClock, formatDecimal } from "../../format.js"
 import { average, requestRates } from "../../lib/requestStats.js"
-import { bucketCount, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
+import { bucketCount, bucketEnd, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import type { RequestRateMetrics } from "../../types/Overview.js"
 import type { RequestTrace } from "../../types/Requests.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
@@ -52,7 +52,7 @@ function getMetrics(requests: RequestTrace[], timeWindow: TimeWindow): RequestRa
         current: series.at(-1) ?? 0,
         average: average(series),
         peak,
-        peakAt: formatClock(timeWindow.fromMs + (series.indexOf(peak) + 1) * timeWindow.stepMs),
+        peakAt: formatClock(bucketEnd(timeWindow, series.indexOf(peak))),
         series
     }
 }

@@ -1,8 +1,7 @@
 import { useData } from "../../client/DatatContext.js"
-import { formatCount, formatSignedCount } from "../../format.js"
+import { formatCount } from "../../format.js"
 import type { ActorInventory } from "../../types/Actors.js"
 import type { ActorResidencyMetrics } from "../../types/Overview.js"
-import { Delta } from "../ui/delta.js"
 import { ResidencyBar, ResidencyBarSkeleton, ResidencyLegend } from "../ui/residencyBar.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { StatCard } from "../ui/statCard.js"
@@ -14,7 +13,7 @@ export function ActiveActorsCard() {
     const value = metrics ? formatCount(metrics.live) : loading ? <Skeleton className="h-11 w-28" /> : "—"
     const unit = loading ? <Skeleton className="h-3.5 w-7" /> : "live"
     return (
-        <StatCard label="Active Actors" aside={<ViewAllLink />} value={value} unit={unit} busy={loading}>
+        <StatCard label="Active Actors" value={value} unit={unit} busy={loading}>
             {metrics ? <Residency {...metrics} /> : <ResidencySkeleton failed={isError} />}
         </StatCard>
     )
@@ -24,29 +23,16 @@ function getMetrics(actorTypes: ActorInventory): ActorResidencyMetrics {
     const actorInstances = actorTypes.actors.flatMap(actor => actor.instances)
     const live = actorInstances.filter(instance => instance.status === "live").length
     const dormant = actorInstances.filter(instance => instance.status === "dormant").length
-    return {
-        live: live,
-        dormant: dormant,
-        liveDelta: live - dormant
-    }
+    return { live, dormant }
 }
 
-function ViewAllLink() {
-    return (
-        <a href="#actors" className="shrink-0 text-xs font-medium text-primary hover:underline">
-            View All
-        </a>
-    )
-}
-
-function Residency({ live, dormant, liveDelta }: ActorResidencyMetrics) {
+function Residency({ live, dormant }: ActorResidencyMetrics) {
     const total = live + dormant
     const liveShare = total ? live / total : 0
     return (
         <>
-            <p className="mt-2 flex items-center gap-2 text-[13px] text-muted-foreground tabular-nums">
-                <Delta value={liveDelta}>{formatSignedCount(liveDelta)}</Delta>
-                since 1&nbsp;h ago · {formatCount(total)} {total === 1 ? "actor" : "actors"} total
+            <p className="mt-2 text-[13px] text-muted-foreground tabular-nums">
+                {formatCount(total)} {total === 1 ? "actor" : "actors"} total
             </p>
             <ResidencyBar liveShare={liveShare} label={`${formatCount(live)} live actors, ${formatCount(dormant)} dormant actors`} pulse className="mt-auto h-10 rounded-sm" />
             <ResidencyLegend live={live} dormant={dormant} showCounts />

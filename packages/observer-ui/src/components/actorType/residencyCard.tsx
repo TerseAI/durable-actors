@@ -108,7 +108,7 @@ function ResidencyRow({ instance, periods, requests, timeWindow }: ResidencyRowP
                     <b translate="no" className="block truncate text-[13px] font-medium">
                         {instance.actorId}
                     </b>
-                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground tabular-nums">{statusLabel(live, periods, instance)}</span>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground tabular-nums">{statusLabel(live, periods, instance, timeWindow.fromMs)}</span>
                 </div>
             </div>
             <ResidencyTrack segments={segments} requests={requests} label={`${instance.actorId}: ${liveMs ? `live ${formatDuration(liveMs)}` : "dormant"}, ${describeWindow(timeWindow)}`} />
@@ -121,10 +121,10 @@ export function liveDuration(segments: TimelineSegment[]): number {
     return segments.reduce((sum, segment) => sum + segment.toMs - segment.fromMs, 0)
 }
 
-function statusLabel(live: boolean, periods: ResidencyPeriod[], instance: ActorInstance): string {
+function statusLabel(live: boolean, periods: ResidencyPeriod[], instance: ActorInstance, windowStartMs: number): string {
     if (live) {
         const woke = periods.at(-1)?.fromMs
-        return woke ? `Woke ${formatClock(woke)}` : "Live"
+        return woke && woke > windowStartMs ? `Woke ${formatClock(woke)}` : "Live"
     }
     const lastLive = periods.at(-1)?.toMs ?? instance.lastActiveAtMs
     return lastLive ? `Slept ${formatClock(lastLive)}` : "Dormant"

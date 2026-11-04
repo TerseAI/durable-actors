@@ -1,7 +1,6 @@
 export interface ActorResidencyMetrics {
     live: number
     dormant: number
-    liveDelta: number
 }
 
 export interface RequestRateMetrics {
