@@ -14,6 +14,7 @@ import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { TimelineAxis, type TimelineSegment, TimelineTrack, timelineSegments } from "../ui/timeline.js"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.js"
+
 const previewRows = 10
 const rowGrid = "grid grid-cols-[minmax(0,210px)_1fr_minmax(0,128px)] items-center gap-6"
 

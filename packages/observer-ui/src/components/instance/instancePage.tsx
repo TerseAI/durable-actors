@@ -22,6 +22,7 @@ import { Skeleton } from "../ui/skeleton.js"
 import { ConnectionsCard } from "./connectionsCard.js"
 // import { MemoryCard } from "./memoryCard.js"
 import { RequestsCard } from "./requestsCard.js"
+
 // import { StorageCard } from "./storageCard.js"
 
 export function InstancePage() {

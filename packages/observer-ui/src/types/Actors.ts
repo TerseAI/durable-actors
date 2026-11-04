@@ -13,7 +13,6 @@ export interface ActorInventory {
 
 export type ActorResidency = "live" | "dormant" | "unknown"
 
-
 export interface ActorInstance {
     actorId: string
     status: ActorResidency

@@ -1,5 +1,5 @@
-import { residencyKey } from "../client/cacheKeys.js"
 import { useData } from "../client/DatatContext.js"
+import { residencyKey } from "../client/cacheKeys.js"
 import { HttpObserverClient } from "../client/observerClient.js"
 import type { TimeWindow } from "../types/TimeRange.js"
 

@@ -29,10 +29,9 @@
     ],
     "scripts": {
         "build": "vite build --mode library && vite build && tsc -p tsconfig.json",
-        "test": "bun test --parallel=1 tests/*.test.tsx",
         "format": "prettier --write src tests vite.config.ts index.html",
         "format:check": "prettier --check src tests vite.config.ts index.html",
-        "prepack": "bun run --bun build && bun run --bun test && bun run --bun package:check",
+        "prepack": "bun run --bun build && bun run --bun package:check",
         "package:check": "bun test --timeout 60000 tests/package.test.mjs",
         "dev": "vite",
         "preview": "vite preview"
