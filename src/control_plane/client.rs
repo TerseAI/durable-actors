@@ -21,6 +21,9 @@ use super::{
 };
 
 const CONTROL_PLANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+// Leaves the control plane time to answer before the request times out.
+const ACTOR_CALL_TIMEOUT: Duration =
+    CONTROL_PLANE_REQUEST_TIMEOUT.saturating_sub(Duration::from_secs(5));
 
 #[derive(Clone)]
 pub struct ControlPlaneClient {
@@ -82,12 +85,8 @@ impl ControlPlaneClient {
         }
     }
 
-    pub(crate) async fn invoke_actor(
-        &self,
-        call: crate::actor::ActorCall,
-        timeout: Duration,
-    ) -> Result<serde_json::Value> {
-        let timeout_ms = u64::try_from(timeout.as_millis())?;
+    async fn invoke_actor(&self, call: crate::actor::ActorCall) -> Result<serde_json::Value> {
+        let timeout_ms = u64::try_from(ACTOR_CALL_TIMEOUT.as_millis())?;
         match self
             .execute(ControlPlaneCommand::InvokeActor { call, timeout_ms })
             .await?
@@ -268,6 +267,15 @@ mod lease_fence_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/client_refresh_tests.rs"]
 mod refresh_tests;
+
+#[async_trait::async_trait]
+impl crate::actor::ActorCaller for ControlPlaneClient {
+    async fn call(&self, call: crate::actor::ActorCall) -> serde_json::Value {
+        self.invoke_actor(call).await.unwrap_or_else(|error| {
+            serde_json::json!({"type": "failed", "code": "outcome_unknown", "message": format!("{error:#}")})
+        })
+    }
+}
 
 #[async_trait::async_trait]
 impl crate::sockets::operations::SocketOperations for ControlPlaneClient {
