@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 
 import { Skeleton } from "./skeleton.js"
-import { Sparkline } from "./sparkline.js"
+import { type PointDescription, Sparkline } from "./sparkline.js"
 import { StatCard } from "./statCard.js"
 
 export type TrendCardProps = {
@@ -14,10 +14,11 @@ export type TrendCardProps = {
     axis: string[]
     color: string
     chartLabel: string
+    describePoint: (index: number) => PointDescription
     children: ReactNode
 }
 
-export function TrendCard({ label, window, value, unit, busy, series, axis, color, chartLabel, children }: TrendCardProps) {
+export function TrendCard({ label, window, value, unit, busy, series, axis, color, chartLabel, describePoint, children }: TrendCardProps) {
     return (
         <StatCard label={label} aside={<span className="shrink-0 text-xs font-normal tabular-nums">{window}</span>} value={value} unit={busy ? <Skeleton className="h-3.5 w-9" /> : unit} busy={busy}>
             <div className="mt-2 flex flex-wrap items-center gap-x-4.5 gap-y-1 text-[13px] text-muted-foreground tabular-nums">{children}</div>
@@ -25,7 +26,7 @@ export function TrendCard({ label, window, value, unit, busy, series, axis, colo
                 <TrendSkeleton ticks={axis.length} />
             ) : (
                 <>
-                    <Sparkline values={series} color={color} label={chartLabel} />
+                    <Sparkline values={series} color={color} label={chartLabel} describePoint={describePoint} />
                     <div className="mt-1.5 flex justify-between text-xs text-muted-foreground tabular-nums">
                         {axis.map(tick => (
                             <span key={tick}>{tick}</span>

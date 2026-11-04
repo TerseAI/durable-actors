@@ -2,7 +2,7 @@ import { useData } from "../../client/DatatContext.js"
 import { useTimeWindow } from "../../client/TimeRangeContext.js"
 import { formatClock, formatDecimal } from "../../format.js"
 import { average, requestRates } from "../../lib/requestStats.js"
-import { bucketCount, describeWindow, windowTicks } from "../../lib/timeRange.js"
+import { bucketCount, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import type { RequestRateMetrics } from "../../types/Overview.js"
 import type { RequestTrace } from "../../types/Requests.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
@@ -26,6 +26,7 @@ export function RequestRateTrend({ requests, failed, timeWindow, color }: Reques
     const loading = !metrics && !failed
     const value = metrics ? formatDecimal(metrics.current) : loading ? <Skeleton className="h-11 w-28" /> : "—"
     const window = describeWindow(timeWindow)
+    const series = metrics?.series ?? Array<number>(bucketCount(timeWindow)).fill(0)
     return (
         <TrendCard
             label="Requests / Second"
@@ -33,10 +34,11 @@ export function RequestRateTrend({ requests, failed, timeWindow, color }: Reques
             value={value}
             unit="req/s"
             busy={loading}
-            series={metrics?.series ?? Array<number>(bucketCount(timeWindow)).fill(0)}
+            series={series}
             axis={windowTicks(timeWindow, 2)}
             color={color}
             chartLabel={metrics ? `Requests per second, ${window}, peaking at ${formatDecimal(metrics.peak)}` : `Requests per second, ${window}`}
+            describePoint={index => ({ at: bucketLabel(timeWindow, index), value: `${formatDecimal(series[index] ?? 0)} req/s` })}
         >
             {metrics ? <RateStats {...metrics} /> : <TrendStatsSkeleton failed={failed} />}
         </TrendCard>

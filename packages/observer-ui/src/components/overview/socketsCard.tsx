@@ -1,5 +1,5 @@
 import { useData } from "../../client/DatatContext.js"
-import { formatCount, formatDecimal, formatSignedPercent } from "../../format.js"
+import { formatClock, formatCount, formatDecimal, formatPlural, formatSignedPercent } from "../../format.js"
 import { sessionSpan } from "../../lib/sockets.js"
 import { bucketCount, emptySeries, trendAxis, trendWindowMs } from "../../lib/trendWindow.js"
 import type { ActorInventory } from "../../types/Actors.js"
@@ -16,6 +16,7 @@ export function SocketsCard() {
     const metrics = actorTypes && sessions && getMetrics(actorTypes, sessions, now)
     const loading = !metrics && !failed
     const value = metrics ? formatCount(metrics.open) : loading ? <Skeleton className="h-11 w-28" /> : "—"
+    const series = metrics?.series ?? emptySeries
     return (
         <TrendCard
             label="WebSocket Connections"
@@ -23,10 +24,11 @@ export function SocketsCard() {
             value={value}
             unit="open"
             busy={loading}
-            series={metrics?.series ?? emptySeries}
+            series={series}
             axis={trendAxis(now)}
             color="var(--chart-2)"
             chartLabel={metrics ? `Open WebSocket connections over the last hour, now ${formatCount(metrics.open)}` : "Open WebSocket connections over the last hour"}
+            describePoint={index => ({ at: formatClock(sampleTime(now, index)), value: formatPlural(series[index] ?? 0, "open connection") })}
         >
             {metrics ? <SocketStats {...metrics} /> : <TrendStatsSkeleton failed={failed} />}
         </TrendCard>
@@ -52,9 +54,11 @@ function liveConnections(inventory: ActorInventory): Set<string> {
 }
 
 function openSeries(sessions: SocketSession[], live: Set<string>, now: number): number[] {
-    const step = trendWindowMs / (bucketCount - 1)
-    const start = now - trendWindowMs
-    return Array.from({ length: bucketCount }, (_, index) => sessions.filter(session => isOpenAt(session, live, start + index * step)).length)
+    return Array.from({ length: bucketCount }, (_, index) => sessions.filter(session => isOpenAt(session, live, sampleTime(now, index))).length)
+}
+
+function sampleTime(now: number, index: number): number {
+    return now - trendWindowMs + index * (trendWindowMs / (bucketCount - 1))
 }
 
 function isOpenAt(session: SocketSession, live: Set<string>, at: number): boolean {

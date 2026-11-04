@@ -44,6 +44,10 @@ export function windowTicks({ fromMs, toMs, live }: TimeWindow, intervals: numbe
     return Array.from({ length: intervals + 1 }, (_, index) => (live && index === intervals ? "Now" : formatTick(fromMs + (index / intervals) * spanMs, spanMs)))
 }
 
+export function bucketLabel({ fromMs, toMs, stepMs }: TimeWindow, index: number): string {
+    return formatTick(fromMs + index * stepMs, toMs - fromMs)
+}
+
 export function bucketCount({ fromMs, toMs, stepMs }: TimeWindow): number {
     return Math.max(1, Math.ceil((toMs - fromMs) / stepMs))
 }
