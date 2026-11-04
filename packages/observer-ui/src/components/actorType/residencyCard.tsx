@@ -14,9 +14,6 @@ import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { TimelineAxis, type TimelineSegment, TimelineTrack, timelineSegments } from "../ui/timeline.js"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.js"
-
-import { InstanceStatus } from "./instanceStatus.js"
-
 const previewRows = 10
 const rowGrid = "grid grid-cols-[minmax(0,210px)_1fr_minmax(0,128px)] items-center gap-6"
 
@@ -105,13 +102,14 @@ function ResidencyRow({ instance, periods, requests, timeWindow }: ResidencyRowP
             to={instancePath(instance.actorId)}
             className={`${rowGrid} h-11.5 border-b border-border/50 transition-colors outline-none last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring`}
         >
-            <div className="min-w-0">
-                <b translate="no" className="block truncate text-[13px] font-medium">
-                    {instance.actorId}
-                </b>
-                <InstanceStatus live={live} className="mt-0.5 text-[11px]">
-                    {live ? "Live now" : sleptLabel(periods, instance)}
-                </InstanceStatus>
+            <div className="flex min-w-0 items-center gap-2.5">
+                <span aria-hidden className={cn("size-2 shrink-0 rounded-full", live ? "bg-success" : "border border-muted-foreground/50")} />
+                <div className="min-w-0">
+                    <b translate="no" className="block truncate text-[13px] font-medium">
+                        {instance.actorId}
+                    </b>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground tabular-nums">{statusLabel(live, periods, instance)}</span>
+                </div>
             </div>
             <ResidencyTrack segments={segments} requests={requests} label={`${instance.actorId}: ${liveMs ? `live ${formatDuration(liveMs)}` : "dormant"}, ${describeWindow(timeWindow)}`} />
             <span className={cn("text-right text-[13px] tabular-nums", liveMs ? "text-foreground/85" : "text-muted-foreground")}>{formatDuration(liveMs)}</span>
@@ -123,7 +121,11 @@ export function liveDuration(segments: TimelineSegment[]): number {
     return segments.reduce((sum, segment) => sum + segment.toMs - segment.fromMs, 0)
 }
 
-function sleptLabel(periods: ResidencyPeriod[], instance: ActorInstance): string {
+function statusLabel(live: boolean, periods: ResidencyPeriod[], instance: ActorInstance): string {
+    if (live) {
+        const woke = periods.at(-1)?.fromMs
+        return woke ? `Woke ${formatClock(woke)}` : "Live"
+    }
     const lastLive = periods.at(-1)?.toMs ?? instance.lastActiveAtMs
     return lastLive ? `Slept ${formatClock(lastLive)}` : "Dormant"
 }
@@ -164,9 +166,12 @@ function LiveSegment({ segment, requests }: { segment: TimelineSegment; requests
 function RowSkeletons() {
     return Array.from({ length: 4 }, (_, index) => (
         <div key={index} className={`${rowGrid} h-11.5 border-b border-border/50 last:border-b-0`}>
-            <div>
-                <Skeleton className="h-3.5 w-32" />
-                <Skeleton className="mt-1.5 h-2.5 w-16" />
+            <div className="flex items-center gap-2.5">
+                <Skeleton className="size-2 rounded-full" />
+                <div>
+                    <Skeleton className="h-3.5 w-32" />
+                    <Skeleton className="mt-1.5 h-2.5 w-16" />
+                </div>
             </div>
             <Skeleton className="h-2.5 rounded-full" style={{ width: `${70 - index * 15}%` }} />
             <Skeleton className="ml-auto h-3.5 w-12" />

@@ -3,10 +3,11 @@ import { useParams } from "react-router"
 import { useData } from "../../client/DatatContext.js"
 import { useTimeWindow } from "../../client/TimeRangeContext.js"
 import { formatAgo, formatClock, formatDuration } from "../../format.js"
+import { useRequests } from "../../hooks/useRequests.js"
 import { useResidency } from "../../hooks/useResidency.js"
 import { queueTime, serviceTime } from "../../lib/requestStats.js"
 import { describeWindow } from "../../lib/timeRange.js"
-import { mockInstanceResources } from "../../mocks/instanceResources.js"
+// import { mockInstanceResources } from "../../mocks/instanceResources.js"
 import type { ActorInstance } from "../../types/Actors.js"
 import type { ResidencyPeriod } from "../../types/Residency.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
@@ -19,21 +20,22 @@ import { PageHeader } from "../ui/pageHeader.js"
 import { Skeleton } from "../ui/skeleton.js"
 
 import { ConnectionsCard } from "./connectionsCard.js"
-import { MemoryCard } from "./memoryCard.js"
+// import { MemoryCard } from "./memoryCard.js"
 import { RequestsCard } from "./requestsCard.js"
-import { StorageCard } from "./storageCard.js"
+// import { StorageCard } from "./storageCard.js"
 
 export function InstancePage() {
     const { actorName = "", actorId = "" } = useParams()
-    const { actorTypes, isError, requests, isRequestsError, sessions, isSocketsError } = useData()
+    const { baseUrl, actorTypes, isError, sessions, isSocketsError } = useData()
     const timeWindow = useTimeWindow()
+    const { requests, isError: isRequestsError } = useRequests(baseUrl, timeWindow)
     const { residency, isError: isResidencyError } = useResidency(actorName, timeWindow)
     const instance = actorTypes?.actors.find(type => type.actorName === actorName)?.instances.find(candidate => candidate.actorId === actorId) ?? null
     const ownRequests = requests?.filter(trace => trace.actorName === actorName && trace.actorId === actorId) ?? null
     const ownSessions = sessions?.filter(session => session.actorName === actorName && session.actorId === actorId) ?? null
     const livePeriods = residency && (groupLivePeriods(residency).get(actorId) ?? [])
     // observerClient doesn't serve storage or memory yet; swap this mock for those endpoints once it does.
-    const resources = instance && mockInstanceResources(instance)
+    // const resources = instance && mockInstanceResources(instance)
 
     return (
         <section aria-labelledby="instance-heading" className="flex flex-col gap-5">
@@ -44,7 +46,7 @@ export function InstancePage() {
                 </p>
             ) : (
                 <div className="flex flex-col gap-4">
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <RequestRateTrend requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} color="var(--foreground)" />
                         <TimingCard
                             label="Avg Queue Wait"
@@ -66,8 +68,8 @@ export function InstancePage() {
                             failed={isRequestsError}
                             timeWindow={timeWindow}
                         />
-                        <StorageCard storage={resources?.storage ?? null} failed={isError} />
-                        <MemoryCard memory={resources?.memory ?? null} loading={!instance && !isError} failed={isError} />
+                        {/* <StorageCard storage={resources?.storage ?? null} failed={isError} />
+                        <MemoryCard memory={resources?.memory ?? null} loading={!instance && !isError} failed={isError} /> */}
                     </div>
                     <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} />
                     <ConnectionsCard

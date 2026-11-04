@@ -9,6 +9,11 @@ const niceSteps = [10 * second, 30 * second, minute, 2 * minute, 5 * minute, 15 
 
 export const lastHour: TimeRange = { mode: "live", durationMs: hour }
 
+export function pinnedLastHour(): TimeRange {
+    const toMs = Date.now()
+    return { mode: "static", fromMs: toMs - hour, toMs }
+}
+
 export const timePresets = [
     { label: "Last 15 minutes", durationMs: 15 * minute },
     { label: "Last 1 hour", durationMs: hour },

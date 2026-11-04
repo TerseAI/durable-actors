@@ -9,7 +9,7 @@ type TimeRangeContextType = { timeWindow: TimeWindow; setRange: (range: TimeRang
 
 const TimeRangeContext = createContext<TimeRangeContextType | undefined>(undefined)
 
-export function TimeRangeProvider({ initialRange = lastHour, children }: { initialRange?: TimeRange; children: ReactNode }) {
+export function TimeRangeProvider({ initialRange = lastHour, children }: { initialRange?: TimeRange | (() => TimeRange); children: ReactNode }) {
     const [range, setRange] = useState(initialRange)
     const now = useNow(range.mode === "live")
     return <TimeRangeContext.Provider value={{ timeWindow: resolveWindow(range, now), setRange }}>{children}</TimeRangeContext.Provider>

@@ -1,6 +1,6 @@
 import { useState } from "react"
 
-import { formatClock, formatCount, formatDuration, formatPlural, formatPreciseTimeSpan } from "../../format.js"
+import { formatClock, formatDuration, formatPlural, formatPreciseTimeSpan } from "../../format.js"
 import { sessionSpan } from "../../lib/sockets.js"
 import { describeWindow } from "../../lib/timeRange.js"
 import { cn } from "../../lib/utils.js"
@@ -34,9 +34,8 @@ export function ConnectionsCard({ instance, sessions, livePeriods, requests, fai
     const [expanded, setExpanded] = useState(false)
     const sockets = instance && sessions && socketRows(sessions, instance, timeWindow)
     const shown = expanded ? sockets : sockets?.slice(0, previewRows)
-    const openCount = sockets?.filter(row => row.open).length ?? 0
     return (
-        <SectionCard title="WebSocket Connections" aside={<ConnectionKeys closed={!!sockets && openCount < sockets.length} />} busy={!shown && !failed} className="pb-3">
+        <SectionCard title="WebSocket Connections" aside={<ConnectionKeys closed={sockets?.some(row => !row.open) ?? false} />} busy={!shown && !failed} className="pb-3">
             {failed ? (
                 <p className="py-4 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
             ) : (
@@ -46,10 +45,9 @@ export function ConnectionsCard({ instance, sessions, livePeriods, requests, fai
                         {instance && sockets && shown && livePeriods ? (
                             <>
                                 <InstanceRow instance={instance} periods={livePeriods} requests={requests} timeWindow={timeWindow} />
-                                <div className="flex flex-col gap-4">
-                                    <ConnectionGroup title="Open Connections" count={openCount} rows={shown.filter(row => row.open)} timeWindow={timeWindow} />
-                                    <ConnectionGroup title="Closed Connections" count={sockets.length - openCount} rows={shown.filter(row => !row.open)} timeWindow={timeWindow} />
-                                </div>
+                                {shown.map(row => (
+                                    <SocketRow key={row.session.connectionId} row={row} timeWindow={timeWindow} />
+                                ))}
                                 {!sockets.length && <p className="pb-2 text-[13px] text-muted-foreground">No connections, {describeWindow(timeWindow)}.</p>}
                             </>
                         ) : (
@@ -81,12 +79,7 @@ function socketRows(sessions: SocketSession[], instance: ActorInstance, timeWind
             const [segment] = span ? timelineSegments([span], timeWindow, open && timeWindow.live) : []
             return span && segment ? [{ session, open, span, segment }] : []
         })
-        .sort(byRecency)
-}
-
-function byRecency(a: Connection, b: Connection): number {
-    if (a.open !== b.open) return a.open ? -1 : 1
-    return a.open ? a.span.fromMs - b.span.fromMs : b.span.toMs - a.span.toMs
+        .sort((a, b) => a.span.fromMs - b.span.fromMs)
 }
 
 function ConnectionKeys({ closed }: { closed: boolean }) {
@@ -127,23 +120,6 @@ function InstanceRow({ instance, periods, requests, timeWindow }: InstanceRowPro
                 )}
             </div>
             <ResidencyTrack segments={segments} requests={requests} label={`Residency: live ${formatDuration(liveMs)}, ${describeWindow(timeWindow)}`} />
-        </div>
-    )
-}
-
-type ConnectionGroupProps = { title: string; count: number; rows: Connection[]; timeWindow: TimeWindow }
-
-function ConnectionGroup({ title, count, rows, timeWindow }: ConnectionGroupProps) {
-    if (!rows.length) return null
-    return (
-        <div>
-            <div className="flex items-center gap-2 border-b pb-2 text-[11px] font-medium tracking-[0.06em] text-muted-foreground uppercase">
-                {title}
-                <span className="rounded-sm bg-chart-2/12 px-1.5 tracking-normal text-chart-2 tabular-nums">{formatCount(count)}</span>
-            </div>
-            {rows.map(row => (
-                <SocketRow key={row.session.connectionId} row={row} timeWindow={timeWindow} />
-            ))}
         </div>
     )
 }
