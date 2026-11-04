@@ -564,10 +564,9 @@ impl ControlPlaneService {
                 self.alarms.update(&principal.actor, timestamp_ms).await?;
                 Ok(ControlPlaneCommandReply::Unit)
             }
-            ControlPlaneCommand::InvokeActor { call, timeout_ms } => {
+            ControlPlaneCommand::InvokeActor { call } => {
                 let invocation = call.in_project(&principal.actor.project_id);
-                let timeout = std::time::Duration::from_millis(timeout_ms);
-                let outcome = super::invocation::invoke_from_host(self, &invocation, timeout).await;
+                let outcome = super::invocation::invoke_from_host(self, &invocation).await;
                 Ok(ControlPlaneCommandReply::Invocation { outcome })
             }
             ControlPlaneCommand::RefreshStorageAccess => {

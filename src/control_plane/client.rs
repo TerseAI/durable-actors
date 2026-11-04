@@ -21,9 +21,6 @@ use super::{
 };
 
 const CONTROL_PLANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-// Leaves the control plane time to answer before the request times out.
-const ACTOR_CALL_TIMEOUT: Duration =
-    CONTROL_PLANE_REQUEST_TIMEOUT.saturating_sub(Duration::from_secs(5));
 
 #[derive(Clone)]
 pub struct ControlPlaneClient {
@@ -86,9 +83,8 @@ impl ControlPlaneClient {
     }
 
     async fn invoke_actor(&self, call: crate::actor::ActorCall) -> Result<serde_json::Value> {
-        let timeout_ms = u64::try_from(ACTOR_CALL_TIMEOUT.as_millis())?;
         match self
-            .execute(ControlPlaneCommand::InvokeActor { call, timeout_ms })
+            .execute(ControlPlaneCommand::InvokeActor { call })
             .await?
         {
             ControlPlaneCommandReply::Invocation { outcome } => Ok(outcome),

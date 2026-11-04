@@ -24,7 +24,6 @@ pub(crate) enum ControlPlaneCommand {
     },
     InvokeActor {
         call: crate::actor::ActorCall,
-        timeout_ms: u64,
     },
 }
 

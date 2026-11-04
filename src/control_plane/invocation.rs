@@ -12,7 +12,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{future::Future, time::Duration};
+use std::future::Future;
 use tokio::time::Instant;
 
 use super::public_api::{
@@ -79,28 +79,19 @@ pub(super) async fn invoke(
 pub(super) async fn invoke_from_host(
     service: &super::ControlPlaneService,
     invocation: &ActorInvocation,
-    timeout: Duration,
 ) -> Value {
-    let deadline = Instant::now() + timeout.min(super::CONTROL_PLANE_REQUEST_TIMEOUT);
-    let invoked = tokio::time::timeout_at(
-        deadline,
-        resolve_and_dispatch_from_host(service, invocation, deadline),
-    )
-    .await;
-    match invoked {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(error)) => error.into_outcome(),
-        Err(_) => outcome_unknown().into_outcome(),
-    }
+    resolve_and_dispatch_from_host(service, invocation)
+        .await
+        .unwrap_or_else(ApiError::into_outcome)
 }
 
 async fn resolve_and_dispatch_from_host(
     service: &super::ControlPlaneService,
     invocation: &ActorInvocation,
-    deadline: Instant,
 ) -> Result<Value, ApiError> {
     invocation.validate().map_err(ApiError::bad_request)?;
     let started = Instant::now();
+    let deadline = started + super::CONTROL_PLANE_REQUEST_TIMEOUT;
     let resolve = || async {
         let operation = InitialOperation {
             request: InitialRequest::Invoke {
