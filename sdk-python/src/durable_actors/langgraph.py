@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import builtins
+import inspect
 import random
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from types import TracebackType
@@ -225,13 +226,16 @@ class DurableActorSaver(BaseCheckpointSaver[str]):
     def create_in_memory(
         cls,
         *,
+        transport: Any | None = None,
         actor_name: str = "LangGraphCheckpointActor",
         serde: SerializerProtocol | None = None,
     ) -> Self:
         """Create a checkpointer with an in-memory transport for local testing."""
         from .testing import InMemoryActorTransport
 
-        mem = InMemoryActorTransport()
+        mem = (
+            transport if isinstance(transport, InMemoryActorTransport) else InMemoryActorTransport()
+        )
         return cls(
             transport=mem,
             async_transport=mem.as_async(),
@@ -550,9 +554,11 @@ class DurableActorSaver(BaseCheckpointSaver[str]):
         if thread_id:
             thread_ids = [thread_id]
         elif hasattr(self.async_transport, "list_actors"):
-            discovered = cast(
-                list[str], getattr(self.async_transport, "list_actors")(self.actor_name)
-            )
+            raw_discovered = getattr(self.async_transport, "list_actors")(self.actor_name)
+            if inspect.isawaitable(raw_discovered):
+                discovered = cast(list[str], await raw_discovered)
+            else:
+                discovered = cast(list[str], raw_discovered)
             thread_ids = list(dict.fromkeys(list(self._known_thread_ids) + discovered))
         else:
             thread_ids = list(self._known_thread_ids)

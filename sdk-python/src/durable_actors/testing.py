@@ -141,6 +141,9 @@ class _InMemoryAsyncAdapter(AsyncActorTransport):
     async def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None:
         self._sync.broadcast(actor_name, actor_id, message)
 
+    def list_actors(self, actor_name: str) -> list[str]:
+        return self._sync.list_actors(actor_name)
+
     async def prepare_websocket(
         self,
         actor_name: str,

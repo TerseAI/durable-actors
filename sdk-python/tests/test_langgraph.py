@@ -502,3 +502,27 @@ def test_version_generation_is_monotonic() -> None:
     v2 = saver.get_next_version(v1, None)
     v3 = saver.get_next_version(v2, None)
     assert v1 < v2 < v3
+
+
+@pytest.mark.asyncio
+async def test_durable_saver_async_thread_discovery() -> None:
+    transport = InMemoryActorTransport()
+    saver1 = DurableActorSaver.create_in_memory(transport=transport)
+    await saver1.aput(
+        {"configurable": {"thread_id": "thread-async-1"}},
+        {
+            "v": 1,
+            "id": "cp1",
+            "ts": "",
+            "channel_values": {},
+            "channel_versions": {},
+            "versions_seen": {},
+        },
+        {},
+        {},
+    )
+
+    saver2 = DurableActorSaver.create_in_memory(transport=transport)
+    discovered = [cp async for cp in saver2.alist(None)]
+    assert len(discovered) == 1
+    assert discovered[0].config["configurable"]["thread_id"] == "thread-async-1"
