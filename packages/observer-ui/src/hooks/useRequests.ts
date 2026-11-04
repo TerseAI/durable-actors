@@ -1,5 +1,6 @@
 import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
 
+import { requestEventsKey, requestsKey } from "../client/cacheKeys.js"
 import { HttpObserverClient } from "../client/observerClient.js"
 import { subscribeToRequests } from "../client/streams/requestStream.js"
 import type { RequestTrace } from "../types/Requests.js"
@@ -7,13 +8,13 @@ import type { TimeWindow } from "../types/TimeRange.js"
 
 import { useWindowedSWR } from "./useWindowedSWR.js"
 
-export function useRequests(timeWindow: TimeWindow) {
+export function useRequests(baseUrl: string, timeWindow: TimeWindow) {
     const { live, fromMs, toMs } = timeWindow
     const durationMs = toMs - fromMs
-    const { data, error, isLoading } = useWindowedSWR(["requests"], timeWindow, async bounds => (await new HttpObserverClient().listRequests(bounds)).records)
+    const { data, error, isLoading } = useWindowedSWR(requestsKey(baseUrl), timeWindow, async bounds => (await new HttpObserverClient(baseUrl).listRequests(bounds)).records)
     
-    const { data: streamed } = useSWRSubscription(live ? ["requests/events", durationMs] : null, (_key, { next }: SWRSubscriptionOptions<RequestTrace[]>) =>
-        subscribeToRequests(page => next(null, traces => mergeTraces(traces ?? [], page.records, durationMs)))
+    const { data: streamed } = useSWRSubscription(live ? requestEventsKey(baseUrl, durationMs) : null, (_key, { next }: SWRSubscriptionOptions<RequestTrace[]>) =>
+        subscribeToRequests(baseUrl, page => next(null, traces => mergeTraces(traces ?? [], page.records, durationMs)))
     )
 
     return {

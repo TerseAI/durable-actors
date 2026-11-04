@@ -4,7 +4,7 @@ import type { ResidencyHistory } from "../types/Residency.js";
 import type { SocketSession } from "../types/Sockets.js";
 import type { TimeBounds } from "../types/TimeRange.js";
 
-const baseUrl = "/api/observe";
+export const defaultBaseUrl = "/api/observe";
 
 type totalActorInstancesPayload = Map<string, ActorInventory>
 
@@ -16,6 +16,8 @@ export interface ObserverClient {
 }
 
 export class HttpObserverClient implements ObserverClient {
+    constructor(private readonly baseUrl: string = defaultBaseUrl) {}
+
     async listActorTypes(): Promise<ActorInventory> {
         return await this.get<ActorInventory>("actors");
     }
@@ -35,9 +37,10 @@ export class HttpObserverClient implements ObserverClient {
     }
 
     private async get<T>(path: string): Promise<T> {
-        const response = await fetch(`${baseUrl.replace(/\/$/u, "")}/${path}`, {
+        const response = await fetch(`${this.baseUrl.replace(/\/$/u, "")}/${path}`, {
             method: "GET",
-            credentials: "same-origin",
+            // Hosts may serve the API from another origin and authenticate with cookies.
+            credentials: "include",
             redirect: "error",
             headers: { accept: "application/json" }
         })

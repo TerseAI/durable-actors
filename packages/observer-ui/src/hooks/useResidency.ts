@@ -1,3 +1,5 @@
+import { residencyKey } from "../client/cacheKeys.js"
+import { useData } from "../client/DatatContext.js"
 import { HttpObserverClient } from "../client/observerClient.js"
 import type { TimeWindow } from "../types/TimeRange.js"
 
@@ -7,7 +9,8 @@ import { useWindowedSWR } from "./useWindowedSWR.js"
 const liveRefreshMs = 15_000
 
 export function useResidency(actorName: string, timeWindow: TimeWindow) {
-    const { data, error, isLoading } = useWindowedSWR(["residency", actorName], timeWindow, bounds => new HttpObserverClient().listResidency(actorName, bounds), {
+    const { baseUrl } = useData()
+    const { data, error, isLoading } = useWindowedSWR(residencyKey(baseUrl, actorName), timeWindow, bounds => new HttpObserverClient(baseUrl).listResidency(actorName, bounds), {
         refreshInterval: timeWindow.live ? liveRefreshMs : 0
     })
 
