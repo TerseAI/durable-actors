@@ -13,7 +13,7 @@ export type MemoryCardProps = {
 }
 
 export function MemoryCard({ memory, loading, failed }: MemoryCardProps) {
-    const value = memory ? formatMegabytes(memory.bytes) : loading ? <Skeleton className="h-11 w-20" /> : "—"
+    const value = memory ? formatMegabytes(memory.bytes) : loading ? <Skeleton className="h-11 w-20" /> : failed ? "—" : "0"
     return (
         <StatCard label="Memory" aside={<span className="shrink-0 text-xs font-normal">while live</span>} value={value} unit="MB" busy={loading}>
             {memory ? <MemoryMeter {...memory} /> : loading || failed ? <ResourceSkeleton failed={failed} /> : <p className="mt-2 text-[13px] text-muted-foreground">Not in memory while dormant.</p>}
