@@ -18,7 +18,7 @@ export function useRequests(baseUrl: string, timeWindow: TimeWindow) {
     )
 
     return {
-        requests: data || streamed ? mergeTraces(data ?? [], streamed ?? [], durationMs) : null,
+        requests: live && (data || streamed) ? mergeTraces(data ?? [], streamed ?? [], durationMs) : (data ?? null),
         isLoading,
         isError: !streamed && Boolean(error),
         error
