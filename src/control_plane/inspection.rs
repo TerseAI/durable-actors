@@ -38,6 +38,7 @@ pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Ro
             "/v1/projects/{project_id}/observe/residency",
             get(residency_history),
         )
+        .route("/v1/projects/{project_id}/observe/logs", get(actor_logs))
         .route(
             "/v1/projects/{project_id}/observe/events",
             get(actor_events),
@@ -83,6 +84,7 @@ struct InspectionApi {
 #[derive(Clone)]
 pub(super) struct ActorInspector {
     traces: crate::request_traces::TraceStore,
+    logs: Option<crate::actor_logs::LogStore>,
     state: Arc<dyn crate::bucket::ActorStateReader>,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
     changes: crate::postgres::notifications::ChangeFeed,
@@ -96,6 +98,7 @@ impl ActorInspector {
     ) -> Self {
         Self {
             traces: crate::request_traces::TraceStore::default(),
+            logs: None,
             inventory,
             state,
             changes,
@@ -104,6 +107,11 @@ impl ActorInspector {
 
     pub(super) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
         self.traces = traces;
+        self
+    }
+
+    pub(super) fn with_logs(mut self, logs: crate::actor_logs::LogStore) -> Self {
+        self.logs = Some(logs);
         self
     }
 }
@@ -248,6 +256,21 @@ async fn residency_history(
     .map_err(|_| ApiError::unavailable("Residency history timed out"))?
     .map_err(ApiError::internal)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(history)).into_response())
+}
+
+async fn actor_logs(
+    State(state): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<crate::actor_logs::LogQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let project = project_id(path)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    let filter = query.filter(&project).map_err(ApiError::bad_request)?;
+    let logs = state.inspector.logs.as_ref().ok_or_else(|| {
+        ApiError::unavailable("Actor logs are only available in local development")
+    })?;
+    let page = logs.page(&filter).await.map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(page)).into_response())
 }
 
 async fn overview_metrics(

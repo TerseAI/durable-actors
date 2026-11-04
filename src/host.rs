@@ -2,6 +2,7 @@ mod actor_database;
 mod actor_host;
 mod assignment;
 mod config;
+mod executor_output;
 pub(crate) mod http;
 mod lease_maintenance;
 mod lifecycle;

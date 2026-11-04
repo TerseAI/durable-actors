@@ -22,6 +22,9 @@ pub(crate) enum ControlPlaneCommand {
         traces: Vec<crate::request_traces::RequestTrace>,
         dropped: u64,
     },
+    ActorLogs {
+        lines: Vec<crate::actor_logs::LogLine>,
+    },
     InvokeActor {
         call: crate::actor::ActorCall,
     },

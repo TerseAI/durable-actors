@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -23,9 +23,11 @@ use super::{
     ActorHost, HostEndpoint, HostId, HostLeaseMaintainer, LeaseRenewalTask,
     actor_host::{ActorPhase, ActorStatus},
     config::{ActorHostConfig, ExecutorConfig, HostNetwork, InvocationAuth, LeaseTiming},
+    executor_output::{ExecutorOutput, LogExport},
 };
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const LOG_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const HOST_ACTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the executor waits for its host to attach. Falling back from Rapid can
 /// spend two operation timeouts before Standard starts: the failed open, then
@@ -57,14 +59,30 @@ where
 
 pub(super) async fn serve_assigned_host(
     config: ActorHostConfig,
+    timings: HostStartupTimings,
+    warm: Option<super::spare::WarmHost>,
+    shutdown: impl Future<Output = ()> + Send,
+) -> Result<()> {
+    // The export starts during preparation but must flush on every exit, including failed startup.
+    let logs = OnceLock::new();
+    let result = run_assigned_host(config, timings, warm, shutdown, &logs).await;
+    if let Some(logs) = logs.into_inner() {
+        logs.finish(LOG_FLUSH_TIMEOUT).await;
+    }
+    result
+}
+
+async fn run_assigned_host(
+    config: ActorHostConfig,
     mut timings: HostStartupTimings,
     mut warm: Option<super::spare::WarmHost>,
     shutdown: impl Future<Output = ()> + Send,
+    logs: &OnceLock<LogExport>,
 ) -> Result<()> {
     let readiness = warm.as_mut().and_then(|warm| warm.readiness.take());
     let operation = warm.as_mut().and_then(|warm| warm.operation.take());
     let host_id = &config.identity.host_id;
-    let prepared = match prepare_actor_host(&config, &mut timings, warm).await {
+    let prepared = match prepare_actor_host(&config, &mut timings, warm, logs).await {
         Ok(prepared) => prepared,
         Err(error) => {
             log_startup(host_id, &timings, "failed", Some(&error));
@@ -258,6 +276,7 @@ async fn prepare_actor_host(
     config: &ActorHostConfig,
     timings: &mut HostStartupTimings,
     warm: Option<super::spare::WarmHost>,
+    logs: &OnceLock<LogExport>,
 ) -> Result<PreparedActorHostResources> {
     let replication = warm
         .as_ref()
@@ -344,6 +363,8 @@ async fn prepare_actor_host(
                 &config.executor,
                 timings.started_at,
                 &mut timings.javascript_spawned_at_ms,
+                &control_plane,
+                logs,
             )
             .await
         };
@@ -531,13 +552,20 @@ async fn connect_executor(
     executor: &ExecutorConfig,
     started_at: Instant,
     javascript_spawned_at_ms: &mut Option<f64>,
+    control_plane: &Arc<ControlPlaneClient>,
+    logs: &OnceLock<LogExport>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(&executor.socket).await?;
-    let javascript = spawn_executor_process(
+    let mut javascript = spawn_executor_process(
         false,
         &executor.socket.display().to_string(),
         executor.runtime,
+        executor.export_logs,
     )?;
+    if executor.export_logs {
+        let output = ExecutorOutput::capture(&mut javascript);
+        let _ = logs.set(output.export(control_plane.clone()));
+    }
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -617,10 +645,16 @@ pub(super) fn spawn_executor_process(
     generic: bool,
     socket: &str,
     runtime: ActorRuntime,
+    capture_output: bool,
 ) -> Result<tokio::process::Child> {
-    executor_command(generic, socket, runtime)
-        .spawn()
-        .context("start actor executor")
+    let mut command = executor_command(generic, socket, runtime);
+    if capture_output {
+        command
+            .env("PYTHONUNBUFFERED", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+    }
+    command.spawn().context("start actor executor")
 }
 
 fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Command {

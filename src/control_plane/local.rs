@@ -277,6 +277,7 @@ fn prepare_directory(directory: &Path) -> Result<File> {
 
 struct LocalState {
     traces: crate::request_traces::TraceStore,
+    logs: crate::actor_logs::LogStore,
     runtime: Arc<RuntimeStorage>,
     access: Arc<RuntimeAccess>,
     region: String,
@@ -307,6 +308,10 @@ async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalSt
             ),
         ))
         .await?,
+        logs: crate::actor_logs::LogStore::new(Arc::new(
+            crate::actor_logs::sqlite::SqliteLogs::open(directory.join("actor-logs.sqlite3"))
+                .await?,
+        )),
         runtime,
         access: bootstrap,
         region: "north-america-east".into(),
@@ -385,7 +390,8 @@ async fn local_routes(
             options.sdk_host.clone(),
         )),
     )))
-    .with_traces(storage.traces.clone());
+    .with_traces(storage.traces.clone())
+    .with_logs(storage.logs.clone());
     if let Some(admission) = admission {
         service.lifecycle = service.lifecycle.with_observer(admission);
     }
@@ -401,7 +407,8 @@ async fn local_routes(
         storage.runtime.clone(),
         service.changes.clone(),
     )
-    .with_traces(service.traces.clone());
+    .with_traces(service.traces.clone())
+    .with_logs(storage.logs.clone());
     let reload = LocalReload {
         service: service.clone(),
         admin: admin.clone(),

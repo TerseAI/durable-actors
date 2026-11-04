@@ -50,7 +50,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let ipc = ActorExecutorListener::bind(&socket).await?;
     let configured_runtime = std::env::var("DURABLE_ACTORS_EXECUTOR_RUNTIME").ok();
     let runtime = executor_runtime(None, configured_runtime.as_deref())?;
-    let mut javascript = spawn_executor_process(true, &socket, runtime)?;
+    let mut javascript = spawn_executor_process(true, &socket, runtime, false)?;
     let (warmed, control_plane) = tokio::join!(
         async {
             tokio::try_join!(

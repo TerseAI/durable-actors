@@ -399,6 +399,44 @@ paths:
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/observe/logs:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: listActorLogs
+            tags: [Observability]
+            summary: Get an actor instance's logs
+            description: Lines the actor printed to stdout or stderr, oldest first. Pass `before` from a page to read older lines. Local development keeps the latest 100000 lines across all actors. Other deployments return 503.
+            parameters:
+                - name: actorName
+                  in: query
+                  required: true
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
+                - name: actorId
+                  in: query
+                  required: true
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
+                - name: sessionId
+                  in: query
+                  schema: { type: string }
+                - name: before
+                  in: query
+                  schema: { type: string }
+                - name: limit
+                  in: query
+                  schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+            responses:
+                "200":
+                    description: Log lines and a cursor for older lines.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/LogPage" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
     /v1/projects/{project_id}/observe/events:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -1277,6 +1315,26 @@ components:
                             status: { type: string, enum: [live, dormant, unknown] }
                             fromMs: { type: integer, minimum: 0 }
                             toMs: { type: integer, minimum: 0 }
+        LogPage:
+            type: object
+            required: [lines, before]
+            properties:
+                before: { type: [string, "null"] }
+                lines:
+                    type: array
+                    items:
+                        type: object
+                        required: [projectId, actorName, actorId, hostId, sessionId, sequence, timestampMs, stream, message]
+                        properties:
+                            projectId: { type: string }
+                            actorName: { type: string }
+                            actorId: { type: string }
+                            hostId: { type: string }
+                            sessionId: { type: string }
+                            sequence: { type: integer, minimum: 0 }
+                            timestampMs: { type: integer, minimum: 0 }
+                            stream: { type: string, enum: [stdout, stderr, system] }
+                            message: { type: string }
         TracePage:
             type: object
             required: [epoch, cursor, capacity, evicted, dropped, persistenceFailed, records, nextCursor, resumeCursor, reset]

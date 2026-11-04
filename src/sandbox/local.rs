@@ -404,6 +404,7 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
             serde_json::to_string(&request.resources).expect("resources serializable"),
         ),
         ("DURABLE_ACTORS_LOG_MODE", "development".into()),
+        ("DURABLE_ACTORS_EXPORT_LOGS", "1".into()),
         ("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1".into()),
         ("DURABLE_ACTORS_HOST_BIND", "127.0.0.1:0".into()),
         (

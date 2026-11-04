@@ -41,6 +41,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 pub struct ControlPlaneService {
     pub(super) lifecycle: crate::actor_lifecycle::LifecycleStore,
     pub(super) traces: crate::request_traces::TraceStore,
+    logs: Option<crate::actor_logs::LogStore>,
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
@@ -84,6 +85,7 @@ impl ControlPlaneService {
         Self {
             lifecycle: Default::default(),
             traces: crate::request_traces::TraceStore::default(),
+            logs: None,
             changes: Default::default(),
             runtime_access: None,
             gateway: None,
@@ -135,6 +137,11 @@ impl ControlPlaneService {
 
     pub(crate) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
         self.traces = traces;
+        self
+    }
+
+    pub(super) fn with_logs(mut self, logs: crate::actor_logs::LogStore) -> Self {
+        self.logs = Some(logs);
         self
     }
 
@@ -552,6 +559,19 @@ impl ControlPlaneService {
                         &principal.session_id,
                         traces,
                         dropped,
+                    )
+                    .await?;
+                Ok(ControlPlaneCommandReply::Unit)
+            }
+            ControlPlaneCommand::ActorLogs { lines } => {
+                self.logs
+                    .as_ref()
+                    .context("actor logs are not collected by this control plane")?
+                    .record(
+                        &principal.actor,
+                        principal.host_id.as_str(),
+                        &principal.session_id,
+                        lines,
                     )
                     .await?;
                 Ok(ControlPlaneCommandReply::Unit)

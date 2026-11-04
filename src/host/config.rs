@@ -194,6 +194,7 @@ pub(super) struct ExecutorConfig {
     pub entrypoint: Option<String>,
     pub bundle: Option<ActorBundle>,
     pub environment: HashMap<String, String>,
+    pub export_logs: bool,
 }
 
 impl ExecutorConfig {
@@ -216,6 +217,7 @@ impl ExecutorConfig {
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?
                 .unwrap_or_default(),
+            export_logs: get("DURABLE_ACTORS_EXPORT_LOGS").as_deref() == Some("1"),
         })
     }
 }
