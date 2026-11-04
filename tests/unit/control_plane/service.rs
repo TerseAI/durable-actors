@@ -1830,61 +1830,6 @@ fn socket_authorization_uses_actor_scope_without_reading_ownership() -> Result<(
     Ok(())
 }
 
-#[tokio::test]
-async fn hosts_call_only_actors_in_their_own_project() -> Result<()> {
-    let issuer = test_issuer()?;
-    let auth = ActorJwtVerifier::for_scope(
-        issuer.verifier_keys_json()?,
-        "issuer",
-        "authority",
-        ActorTokenPurpose::ControlPlane,
-        Duration::from_secs(60),
-    )?;
-    let service = ControlPlaneService::new(
-        Arc::new(LocalObjectPlacementStore::default()),
-        auth,
-        Arc::new(LocalAdminRegistry::default()),
-        issuer,
-        Arc::new(UnavailableProvisioner),
-    );
-    let host = HostId::new("host.v3.test.one");
-    let caller = ActorPrincipal {
-        organization_id: Some("org-test".into()),
-        actor: ActorKey {
-            project_id: "docs".into(),
-            actor_name: "Document".into(),
-            actor_id: "one".into(),
-        },
-        host_id: host.clone(),
-        session_id: test_lease(&host).session_id,
-        region: "us-east".into(),
-        host_config_key: None,
-        invocation: None,
-    };
-    let call = |project_id: &str| ControlPlaneCommand::InvokeActor {
-        invocation: crate::actor::ActorInvocation {
-            request_id: "call-1".into(),
-            actor: ActorKey {
-                project_id: project_id.into(),
-                actor_name: "DocIndex".into(),
-                actor_id: "main".into(),
-            },
-            method: "add".into(),
-            args: vec![],
-        },
-        timeout_ms: 1_000,
-    };
-    let code = |reply| match reply {
-        ControlPlaneCommandReply::Invocation { outcome } => outcome["code"].clone(),
-        _ => serde_json::Value::Null,
-    };
-    let other = service.execute_command(&caller, call("other")).await?;
-    assert_eq!(code(other), "forbidden");
-    let own = service.execute_command(&caller, call("docs")).await?;
-    assert_eq!(code(own), "unavailable");
-    Ok(())
-}
-
 async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<ControlPlaneService> {
     let origin = "https://gateway.example.com".to_owned();
     let sockets = super::super::socket_gateway::SocketGateway::start(

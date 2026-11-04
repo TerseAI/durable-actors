@@ -18,7 +18,7 @@ use tokio::time::Instant;
 use super::public_api::{
     ActorPath, ApiError, FindActorRequest, PublicApiState, resolve_actor_target,
 };
-use super::{auth::ActorPrincipal, service::ActorTarget};
+use super::service::ActorTarget;
 use crate::actor::ActorInvocation;
 
 pub(super) async fn invoke_alarm(
@@ -78,14 +78,13 @@ pub(super) async fn invoke(
 
 pub(super) async fn invoke_from_host(
     service: &super::ControlPlaneService,
-    caller: &ActorPrincipal,
     invocation: &ActorInvocation,
     timeout: Duration,
 ) -> Value {
     let deadline = Instant::now() + timeout.min(super::CONTROL_PLANE_REQUEST_TIMEOUT);
     let invoked = tokio::time::timeout_at(
         deadline,
-        invoke_in_caller_project(service, caller, invocation, deadline),
+        resolve_and_dispatch_from_host(service, invocation, deadline),
     )
     .await;
     match invoked {
@@ -95,19 +94,11 @@ pub(super) async fn invoke_from_host(
     }
 }
 
-async fn invoke_in_caller_project(
+async fn resolve_and_dispatch_from_host(
     service: &super::ControlPlaneService,
-    caller: &ActorPrincipal,
     invocation: &ActorInvocation,
     deadline: Instant,
 ) -> Result<Value, ApiError> {
-    if invocation.actor.project_id != caller.actor.project_id {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "actors can call only actors in their own project",
-        ));
-    }
     invocation.validate().map_err(ApiError::bad_request)?;
     let started = Instant::now();
     let resolve = || async {

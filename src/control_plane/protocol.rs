@@ -23,7 +23,7 @@ pub(crate) enum ControlPlaneCommand {
         dropped: u64,
     },
     InvokeActor {
-        invocation: crate::actor::ActorInvocation,
+        call: crate::actor::ActorCall,
         timeout_ms: u64,
     },
 }

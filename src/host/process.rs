@@ -98,8 +98,12 @@ pub(super) async fn serve_assigned_host(
     );
     let mut started = false;
     let initialized = async {
+        let calls = Arc::new(super::actor_calls::HostActorCalls::new(
+            storage.clone(),
+            control_plane.clone(),
+        ));
         let owner_epoch =
-            initialize_executor(&executor_connection, &host, &sockets, &database).await?;
+            initialize_executor(&executor_connection, &host, &sockets, &database, calls).await?;
         let mut ready = HostReadiness {
             initial_reply: None,
             host_id: host_id.clone(),
@@ -218,6 +222,7 @@ async fn initialize_executor(
     host: &Arc<ActorHost>,
     sockets: &Arc<super::sockets::HostSockets>,
     database: &Arc<super::HostDatabase>,
+    calls: Arc<super::actor_calls::HostActorCalls>,
 ) -> Result<u64> {
     connection
         .mark_ready(
@@ -225,6 +230,7 @@ async fn initialize_executor(
             Some(sockets.clone()),
             Some(sockets.clone()),
             Some(database.background(host.actor().clone())),
+            Some(calls),
         )
         .await?;
     Ok(host.activate().await?.owner_epoch)
@@ -295,13 +301,6 @@ async fn prepare_actor_host(
         .await?
         .with_activation(assignment.new_actor, assignment.owner_hint.clone()),
     );
-    let actor_calls = super::actor_calls::ActorCallProxy::start(
-        &assignment.actor,
-        storage.clone(),
-        control_plane.clone(),
-        storage.stop.child_token(),
-    )
-    .await?;
     let persistence = super::persistence::ActorPersistence::new(storage.clone());
     let database =
         super::HostDatabase::new(endpoint.clone(), storage.clone(), persistence, replication);
@@ -332,22 +331,15 @@ async fn prepare_actor_host(
                 .entrypoint
                 .as_deref()
                 .context("missing customer entrypoint")?;
-            let mut environment = config.executor.environment.clone();
-            environment.extend(
-                actor_calls
-                    .environment()
-                    .map(|(name, value)| (name.to_owned(), value)),
-            );
             let connection = tokio::time::timeout(
                 Duration::from_secs(60),
-                executor.load(entrypoint, &environment),
+                executor.load(entrypoint, &config.executor.environment),
             )
             .await??;
             Ok((connection, javascript))
         } else {
             connect_executor(
                 &config.executor,
-                &actor_calls,
                 timings.started_at,
                 &mut timings.javascript_spawned_at_ms,
             )
@@ -535,19 +527,15 @@ fn log_startup(
 
 async fn connect_executor(
     executor: &ExecutorConfig,
-    actor_calls: &super::actor_calls::ActorCallProxy,
     started_at: Instant,
     javascript_spawned_at_ms: &mut Option<f64>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(&executor.socket).await?;
-    let javascript = executor_command(
+    let javascript = spawn_executor_process(
         false,
         &executor.socket.display().to_string(),
         executor.runtime,
-    )
-    .envs(actor_calls.environment())
-    .spawn()
-    .context("start actor executor")?;
+    )?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
