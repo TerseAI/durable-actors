@@ -509,7 +509,7 @@ async fn concurrent_hint_host_warms_launch_one_host() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test] // TODO: Test 7 Hint during a real call to a sleeping actor: launches one host, call runs once
+#[tokio::test] // TODO: Test 7 Hint during a real call to a sleeping actor: returns 202, launches one host, call runs once
 async fn hint_host_warm_during_a_call_launches_one_host() -> Result<()> {
     let reply = json!({"type":"completed", "result":null});
     let fixture = Fixture::start_with_sleeping_actor(vec![(StatusCode::OK, reply)]).await?;
@@ -529,6 +529,41 @@ async fn hint_host_warm_during_a_call_launches_one_host() -> Result<()> {
     call.await??.error_for_status()?;
     fixture.service.warmups.close();
     fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 18 Call right after a hint, while the hint is still loading the host: the call reuses that host, one launch, method runs once
+async fn a_call_during_a_hint_host_warm_reuses_its_host() -> Result<()> {
+    let reply = json!({"type":"completed", "result":null});
+    let fixture = Fixture::start_with_sleeping_actor(vec![(StatusCode::OK, reply)]).await?;
+    fixture.host.launch_gate.send_replace(false);
+    let hint = fixture.post("hint-host-warm", "api-key", json!({})).await?;
+    assert_eq!(hint.status(), StatusCode::ACCEPTED);
+    while fixture.host.launches.load(Ordering::SeqCst) < 1 {
+        tokio::task::yield_now().await;
+    }
+    let origin = fixture.origin.clone();
+    let body = json!({"requestId":"call", "method":"clear", "args":[]});
+    let call = tokio::spawn(async move { post_actor(&origin, "invoke", "api-key", body).await });
+    let waiting_calls = || {
+        fixture
+            .service
+            .starts
+            .lock()
+            .unwrap()
+            .get(&chat_room_key())
+            .map_or(0, |note| note.calls)
+    };
+    while waiting_calls() < 1 && fixture.host.launches.load(Ordering::SeqCst) < 2 {
+        tokio::task::yield_now().await;
+    }
+    fixture.host.launch_gate.send_replace(true);
+    call.await??.error_for_status()?;
+    fixture.service.warmups.close();
+    fixture.service.warmups.wait().await;
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }

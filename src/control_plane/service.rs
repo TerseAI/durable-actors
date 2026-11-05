@@ -55,15 +55,53 @@ pub struct ControlPlaneService {
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
     pub(super) warmups: tokio_util::task::TaskTracker,
-    // One actor never has two hint-started warms in progress in one control-plane process.
-    starts: Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                crate::actor_state::ActorStorageKey,
-                Arc<tokio::sync::Mutex<()>>,
-            >,
-        >,
-    >,
+    // A hint never starts an actor alongside another start; calls wait out a hint's start.
+    starts: ActorStarts,
+}
+
+type ActorStarts = Arc<
+    std::sync::Mutex<std::collections::HashMap<crate::actor_state::ActorStorageKey, StartNote>>,
+>;
+
+#[derive(Default)]
+struct StartNote {
+    hint: Option<Arc<tokio::sync::Mutex<()>>>,
+    calls: usize,
+}
+
+struct HintStart {
+    starts: ActorStarts,
+    key: crate::actor_state::ActorStorageKey,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for HintStart {
+    fn drop(&mut self) {
+        let mut starts = self.starts.lock().unwrap();
+        if let Some(note) = starts.get_mut(&self.key) {
+            note.hint = None;
+            if note.calls == 0 {
+                starts.remove(&self.key);
+            }
+        }
+    }
+}
+
+struct CallStart {
+    starts: ActorStarts,
+    key: crate::actor_state::ActorStorageKey,
+}
+
+impl Drop for CallStart {
+    fn drop(&mut self) {
+        let mut starts = self.starts.lock().unwrap();
+        if let Some(note) = starts.get_mut(&self.key) {
+            note.calls -= 1;
+            if note.calls == 0 && note.hint.is_none() {
+                starts.remove(&self.key);
+            }
+        }
+    }
 }
 
 impl ControlPlaneService {
@@ -339,32 +377,47 @@ impl ControlPlaneService {
         actor: &ActorKey,
         home_region: Option<&str>,
     ) -> Result<()> {
-        let lock = self.start_lock(actor);
-        let result = match lock.try_lock() {
-            Ok(_start) => self
-                .route_actor_when_ready(actor, self.default_region(), home_region, None, None)
-                .await
-                .map(drop),
-            Err(_) => Ok(()),
+        let Some(_start) = self.begin_hint_start(actor) else {
+            return Ok(());
         };
-        self.forget_start(actor, &lock);
-        result
+        self.route_actor_when_ready(actor, self.default_region(), home_region, None, None)
+            .await
+            .map(drop)
     }
 
-    fn start_lock(&self, actor: &ActorKey) -> Arc<tokio::sync::Mutex<()>> {
-        self.starts
-            .lock()
-            .unwrap()
-            .entry(actor.storage_key())
-            .or_default()
-            .clone()
-    }
-
-    fn forget_start(&self, actor: &ActorKey, lock: &Arc<tokio::sync::Mutex<()>>) {
+    fn begin_hint_start(&self, actor: &ActorKey) -> Option<HintStart> {
+        let key = actor.storage_key();
         let mut starts = self.starts.lock().unwrap();
-        if Arc::strong_count(lock) == 2 {
-            starts.remove(&actor.storage_key());
+        let note = starts.entry(key.clone()).or_default();
+        if note.hint.is_some() || note.calls > 0 {
+            return None;
         }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let held = lock.clone().try_lock_owned().expect("a new lock is free");
+        note.hint = Some(lock);
+        Some(HintStart {
+            starts: self.starts.clone(),
+            key,
+            _held: held,
+        })
+    }
+
+    async fn begin_call_start(&self, actor: &ActorKey) -> CallStart {
+        let key = actor.storage_key();
+        let hint = {
+            let mut starts = self.starts.lock().unwrap();
+            let note = starts.entry(key.clone()).or_default();
+            note.calls += 1;
+            note.hint.clone()
+        };
+        let start = CallStart {
+            starts: self.starts.clone(),
+            key,
+        };
+        if let Some(hint) = hint {
+            drop(hint.lock().await);
+        }
+        start
     }
 
     pub(super) fn deliver_socket_message_event(
@@ -439,6 +492,7 @@ impl ControlPlaneService {
                 grant,
             );
         }
+        let _start = self.begin_call_start(actor).await;
         let target = self
             .route_actor_when_ready(
                 actor,
