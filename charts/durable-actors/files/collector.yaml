@@ -1,5 +1,7 @@
 # Hosts are untrusted: every export needs a host JWT for the telemetry audience, and tenant
-# identity comes only from its verified claims. Everything else stays at component defaults.
+# identity comes only from its verified claims. The collector fetches the verifying keys from
+# the control plane at startup and again whenever a signature fails, so it restarts until the
+# control plane is reachable. Everything else stays at component defaults.
 extensions:
   health_check:
     # The default binds localhost, which Kubernetes probes can't reach.
@@ -8,7 +10,6 @@ extensions:
     providers:
       - issuer_url: ${env:JWT_ISSUER}
         audience: durable-actors-telemetry
-        public_keys_file: /jwks/jwks.json
 
 receivers:
   otlp:

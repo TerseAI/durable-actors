@@ -20,6 +20,7 @@ use crate::{
 
 const HOST_TOKEN_TTL: Duration = Duration::from_secs(1_800);
 pub(crate) const TELEMETRY_AUDIENCE: &str = "durable-actors-telemetry";
+pub(crate) const JWKS_PATH: &str = "/.well-known/jwks.json";
 const INVOCATION_TARGET_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
@@ -68,10 +69,24 @@ impl ActorJwtIssuer {
             !invocation_audience.is_empty(),
             "actor invocation JWT audience must not be empty"
         );
-        let pkcs8 = decode_signing_key(encoded_key)?;
+        let pkcs8 = STANDARD
+            .decode(encoded_key)
+            .context("DURABLE_ACTORS_JWT_SIGNING_KEY must be base64-encoded PKCS#8")?;
+        let key_pair = Ed25519KeyPair::from_pkcs8(&pkcs8)
+            .context("DURABLE_ACTORS_JWT_SIGNING_KEY is not an Ed25519 PKCS#8 key")?;
+        let encoding_key = EncodingKey::from_ed_der(&pkcs8);
+        let mut public_key: Jwk = serde_json::from_value(serde_json::json!({
+            "alg": "EdDSA",
+            "crv": "Ed25519",
+            "kty": "OKP",
+            "x": URL_SAFE_NO_PAD.encode(key_pair.public_key().as_ref())
+        }))
+        .context("derive the actor JWT public key")?;
+        public_key.common.key_id = Some(key_id.clone());
+        public_key.common.public_key_use = Some(PublicKeyUse::Signature);
         Ok(Self {
-            encoding_key: EncodingKey::from_ed_der(&pkcs8),
-            public_key: public_jwk(&pkcs8, &key_id)?,
+            encoding_key,
+            public_key,
             key_id,
             issuer,
             authority_audience,
@@ -184,6 +199,17 @@ impl ActorJwtIssuer {
         Ok(serde_json::to_vec(&JwkSet {
             keys: vec![self.public_key.clone()],
         })?)
+    }
+
+    /// OpenID discovery only works when the issuer is the URL that serves this document.
+    pub(crate) fn openid_configuration(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "issuer": self.issuer,
+            "jwks_uri": format!("{}{JWKS_PATH}", self.issuer.trim_end_matches('/')),
+            "response_types_supported": ["id_token"],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["EdDSA"],
+        }))?)
     }
 
     pub(crate) fn issue_host(
@@ -333,34 +359,6 @@ struct TelemetryClaims {
     project_id: String,
     actor_name: String,
     actor_id: String,
-}
-
-pub fn verifier_jwks(encoded_key: &str, key_id: &str) -> Result<String> {
-    let jwks = JwkSet {
-        keys: vec![public_jwk(&decode_signing_key(encoded_key)?, key_id)?],
-    };
-    Ok(serde_json::to_string(&jwks)?)
-}
-
-fn decode_signing_key(encoded_key: &str) -> Result<Vec<u8>> {
-    STANDARD
-        .decode(encoded_key)
-        .context("DURABLE_ACTORS_JWT_SIGNING_KEY must be base64-encoded PKCS#8")
-}
-
-fn public_jwk(pkcs8: &[u8], key_id: &str) -> Result<Jwk> {
-    let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8)
-        .context("DURABLE_ACTORS_JWT_SIGNING_KEY is not an Ed25519 PKCS#8 key")?;
-    let mut public_key: Jwk = serde_json::from_value(serde_json::json!({
-        "alg": "EdDSA",
-        "crv": "Ed25519",
-        "kty": "OKP",
-        "x": URL_SAFE_NO_PAD.encode(key_pair.public_key().as_ref())
-    }))
-    .context("derive the actor JWT public key")?;
-    public_key.common.key_id = Some(key_id.to_owned());
-    public_key.common.public_key_use = Some(PublicKeyUse::Signature);
-    Ok(public_key)
 }
 
 fn unix_millis() -> Result<i64> {

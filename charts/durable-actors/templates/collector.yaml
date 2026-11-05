@@ -41,21 +41,6 @@ spec:
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
-      # Only this init container reads the signing key; the collector sees the public JWKS.
-      initContainers:
-        - name: jwks
-          image: {{ include "actors.image" .Values.images.controlPlane | quote }}
-          command: ["/bin/sh", "-c", "/usr/local/bin/durable-actors jwks > /jwks/jwks.json"]
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: {drop: [ALL]}
-          env:
-            - name: DURABLE_ACTORS_JWT_SIGNING_KEY
-              valueFrom:
-                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: jwt-signing-key}
-          volumeMounts:
-            - {name: jwks, mountPath: /jwks}
       containers:
         - name: collector
           image: {{ include "actors.image" .Values.images.collector | quote }}
@@ -76,7 +61,7 @@ spec:
             httpGet: {path: /, port: health}
             periodSeconds: 10
           env:
-            - {name: JWT_ISSUER, value: durable-actors-control-plane}
+            - {name: JWT_ISSUER, value: {{ .Values.publicUrl | quote }}}
             - {name: CLICKHOUSE_URL, value: {{ .Values.analytics.clickhouse.url | quote }}}
             - {name: CLICKHOUSE_DATABASE, value: {{ .Values.analytics.clickhouse.database | quote }}}
             - {name: CLICKHOUSE_USER, value: {{ .Values.analytics.clickhouse.user | quote }}}
@@ -89,15 +74,12 @@ spec:
             - {name: REDIS_CA_FILE, value: {{ ternary "/redis/ca.crt" "" (not (empty .Values.redis.caSecretKey)) | quote }}}
           volumeMounts:
             - {name: config, mountPath: /etc/otelcol, readOnly: true}
-            - {name: jwks, mountPath: /jwks, readOnly: true}
             {{- if .Values.redis.caSecretKey }}
             - {name: redis-ca, mountPath: /redis, readOnly: true}
             {{- end }}
       volumes:
         - name: config
           configMap: {name: {{ include "actors.collectorName" . }}}
-        - name: jwks
-          emptyDir: {}
         {{- with .Values.redis.caSecretKey }}
         - name: redis-ca
           secret:

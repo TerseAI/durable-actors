@@ -6,6 +6,7 @@ mod client;
 mod contract_api;
 pub(crate) mod contracts;
 pub(crate) use client::{HostAuthorization, LeaseFence};
+mod discovery;
 mod event_sink;
 mod gateway;
 mod inspection;
@@ -35,7 +36,6 @@ pub(crate) const SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES: usize = usize::MAX;
 pub(crate) const MAX_CONTROL_PLANE_MESSAGE_BYTES: usize = SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES;
 pub(crate) const CONTROL_PLANE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub use issuer::verifier_jwks;
 pub use local::{DevOptions, serve_local};
 pub use organization_limits::OrganizationLimits;
 

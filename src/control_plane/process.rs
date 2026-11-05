@@ -310,12 +310,14 @@ async fn control_plane_routes(
         Arc::new(service.lifecycle.clone()),
         service.gateway.as_ref().unwrap().connections.clone(),
     ));
+    let discovery = super::discovery::router(&issuer)?;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let inspector =
         super::inspection::ActorInspector::new(inventory, storage.clone(), service.changes.clone())
             .with_traces(traces);
     let public_api = super::public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::router(inspector, admin));
+        .merge(super::inspection::router(inspector, admin))
+        .merge(discovery);
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
