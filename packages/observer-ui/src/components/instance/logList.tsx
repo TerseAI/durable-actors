@@ -149,7 +149,9 @@ function LogRow({ line, layout, expanded, onToggle, search, onFilterRequest }: L
         <li className={cn("border-b border-border/55 px-2 last:border-b-0", rowTint[line.level])}>
             <div onClick={onToggle} className={`${rowGrid} min-h-8.5 cursor-pointer text-[12.5px]`} style={{ gridTemplateColumns: layout.gridTemplateColumns }}>
                 <span className="font-mono text-xs text-muted-foreground tabular-nums">{formatLogClock(line.timestampMs)}</span>
-                {layout.columns.level && <LogLevelBadge level={line.level} className="justify-self-start" />}
+                {layout.columns.level && (
+                    <span className={cn("justify-self-start rounded-sm border px-1.5 py-px text-[9.5px] font-bold tracking-[0.07em] uppercase", badge[line.level])}>{line.level}</span>
+                )}
                 {layout.columns.request && <RequestCell requestId={line.requestId} onFilter={onFilterRequest} />}
                 <MessagePreview parsed={parsed} level={line.level} search={search} />
                 <button
@@ -246,16 +248,6 @@ function LogDetail({ line, parsed, indent }: LogDetailProps) {
             </div>
         </div>
     )
-}
-
-export function LogLevelBadge({ level, className }: { level: LogLevel; className?: string }) {
-    return <span className={cn("rounded-sm border px-1.5 py-px text-[9.5px] font-bold tracking-[0.07em] uppercase", badge[level], className)}>{level}</span>
-}
-
-// A JSON message is pretty-printed; anything else is shown as written.
-export function LogMessage({ message }: { message: string }) {
-    const { json } = parseLogMessage(message)
-    return <pre className="font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-foreground/90">{json ? highlightJson(JSON.stringify(json, null, 2)) : message}</pre>
 }
 
 function JsonBlock({ value }: { value: unknown }) {

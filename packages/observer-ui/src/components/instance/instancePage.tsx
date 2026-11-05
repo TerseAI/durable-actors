@@ -21,7 +21,7 @@ import { PageHeader } from "../ui/pageHeader.js"
 import { Skeleton } from "../ui/skeleton.js"
 
 import { ConnectionsCard } from "./connectionsCard.js"
-import { LogsCard } from "./logsCard.js"
+import { LogsCard, logsCardId } from "./logsCard.js"
 // import { MemoryCard } from "./memoryCard.js"
 import { RequestsCard } from "./requestsCard.js"
 
@@ -37,6 +37,10 @@ export function InstancePage() {
     const ownSessions = sessions?.filter(session => session.actorName === actorName && session.actorId === actorId) ?? null
     const livePeriods = residency && (groupLivePeriods(residency).get(actorId) ?? [])
     const [logRequestId, setLogRequestId] = useState<string | null>(null)
+    function showRequestLogs(requestId: string) {
+        setLogRequestId(requestId)
+        document.getElementById(logsCardId)?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }
     // observerClient doesn't serve storage or memory yet; swap this mock for those endpoints once it does.
     // const resources = instance && mockInstanceResources(instance)
 
@@ -74,7 +78,7 @@ export function InstancePage() {
                         {/* <StorageCard storage={resources?.storage ?? null} failed={isError} />
                         <MemoryCard memory={resources?.memory ?? null} loading={!instance && !isError} failed={isError} /> */}
                     </div>
-                    <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} />
+                    <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} onShowLogs={showRequestLogs} />
                     <ConnectionsCard
                         instance={instance}
                         sessions={ownSessions}

@@ -1,14 +1,13 @@
-import { useData } from "../../client/DatatContext.js"
-import { formatLogClock, formatMs, formatMsValue, formatPreciseDateTime } from "../../format.js"
-import { useRequestLogs } from "../../hooks/useLogs.js"
+import { ArrowRight } from "lucide-react"
+
+import { useDrawer } from "../../client/DrawerContext.js"
+import { formatMs, formatMsValue, formatPreciseDateTime } from "../../format.js"
 import { serviceTime } from "../../lib/requestStats.js"
 import { cn } from "../../lib/utils.js"
 import type { RequestOutcome, RequestTrace } from "../../types/Requests.js"
+import { Button } from "../ui/button.js"
 import { DrawerDescription, DrawerHeader, DrawerTitle } from "../ui/drawer.js"
 import { QueueStripes } from "../ui/queueStripes.js"
-import { Skeleton } from "../ui/skeleton.js"
-
-import { LogLevelBadge, LogMessage } from "./logList.js"
 
 const outcomeLabels: Record<RequestOutcome, string> = { completed: "Completed", failed: "Failed", rejected: "Rejected", rerouted: "Rerouted", interrupted: "Interrupted" }
 const kindLabels: Record<RequestTrace["kind"], string> = { method: "Method", websocket: "WebSocket" }
@@ -16,9 +15,10 @@ const kindLabels: Record<RequestTrace["kind"], string> = { method: "Method", web
 export type RequestDetailsProps = {
     call: RequestTrace
     blocker: RequestTrace | undefined
+    onShowLogs: () => void
 }
 
-export function RequestDetails({ call, blocker }: RequestDetailsProps) {
+export function RequestDetails({ call, blocker, onShowLogs }: RequestDetailsProps) {
     const failed = call.outcome !== "completed"
     return (
         <>
@@ -34,12 +34,12 @@ export function RequestDetails({ call, blocker }: RequestDetailsProps) {
                     {kindLabels[call.kind]} · {formatPreciseDateTime(call.startedAtMs)}
                 </DrawerDescription>
             </DrawerHeader>
-            <RequestFacts call={call} blocker={blocker} />
+            <RequestFacts call={call} blocker={blocker} onShowLogs={onShowLogs} />
         </>
     )
 }
 
-function RequestFacts({ call, blocker }: { call: RequestTrace; blocker: RequestTrace | undefined }) {
+function RequestFacts({ call, blocker, onShowLogs }: RequestDetailsProps) {
     const queued = call.queueWaitMs
     const running = queued === null ? null : serviceTime(call)
     const queueShare = queued !== null && call.durationMs > 0 ? (queued / call.durationMs) * 100 : 0
@@ -78,39 +78,22 @@ function RequestFacts({ call, blocker }: { call: RequestTrace; blocker: RequestT
                 <Detail label="Session" value={call.sessionId} mono />
                 {call.connectionId && <Detail label="Connection" value={call.connectionId} mono />}
             </dl>
-            <RequestLogs call={call} />
+            <LogsLink onShowLogs={onShowLogs} />
         </div>
     )
 }
 
-function RequestLogs({ call }: { call: RequestTrace }) {
-    const { baseUrl } = useData()
-    const { data, error } = useRequestLogs(baseUrl, call)
-    const lines = data && [...data.records].reverse()
+function LogsLink({ onShowLogs }: { onShowLogs: () => void }) {
+    const drawer = useDrawer()
+    function showLogs() {
+        drawer.close()
+        onShowLogs()
+    }
     return (
-        <section aria-label="Logs" className="mt-6">
-            <h3 className="text-[13px] font-medium">Logs</h3>
-            {data?.nextCursor && <p className="mt-1 text-xs text-muted-foreground">Showing the last {lines!.length} lines.</p>}
-            {error ? (
-                <p className="mt-2 text-xs text-muted-foreground">Couldn't load this request's logs.</p>
-            ) : !lines ? (
-                <Skeleton className="mt-3 h-16 w-full rounded-sm" />
-            ) : lines.length === 0 ? (
-                <p className="mt-2 text-xs text-muted-foreground">This request didn't log anything.</p>
-            ) : (
-                <ol className="mt-2 border-t border-border/60">
-                    {lines.map(line => (
-                        <li key={line.logId} className="border-b border-border/60 py-2.5">
-                            <div className="mb-1 flex items-center gap-2">
-                                <span className="font-mono text-[11px] text-muted-foreground tabular-nums">{formatLogClock(line.timestampMs)}</span>
-                                <LogLevelBadge level={line.level} />
-                            </div>
-                            <LogMessage message={line.message} />
-                        </li>
-                    ))}
-                </ol>
-            )}
-        </section>
+        <Button variant="link" size="sm" className="mt-3 px-0 text-[13px] has-[>svg]:px-0" onClick={showLogs}>
+            View logs
+            <ArrowRight aria-hidden />
+        </Button>
     )
 }
 

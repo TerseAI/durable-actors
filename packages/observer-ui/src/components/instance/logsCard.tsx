@@ -28,6 +28,7 @@ const levelChoices: { value: LevelChoice; label: string }[] = [
     { value: "warn", label: "Warn+" },
     { value: "error", label: "Error" }
 ]
+export const logsCardId = "logs"
 const searchDelayMs = 300
 const defaultColumns: LogColumns = { level: true, request: false }
 const columnsStorageKey = "durable-actors-observer:log-columns"
@@ -62,6 +63,7 @@ export function LogsCard({ actorName, actorId, requests, requestId, onRequestCha
     }
     return (
         <SectionCard
+            id={logsCardId}
             title="Logs"
             aside={
                 <div className="flex flex-wrap items-center gap-2">
