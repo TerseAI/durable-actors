@@ -1333,7 +1333,7 @@ components:
                             sessionId: { type: string }
                             sequence: { type: integer, minimum: 0 }
                             timestampMs: { type: integer, minimum: 0 }
-                            stream: { type: string, enum: [stdout, stderr, system] }
+                            stream: { type: string, enum: [stdout, stderr] }
                             message: { type: string }
         TracePage:
             type: object

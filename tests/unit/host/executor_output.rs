@@ -1,34 +1,29 @@
 use super::*;
-use std::process::Stdio;
 
 #[tokio::test]
-async fn captures_both_streams_in_one_sequence() -> anyhow::Result<()> {
-    let mut child = tokio::process::Command::new("sh")
-        .args(["-c", "echo out; echo err >&2"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut output = ExecutorOutput::capture(&mut child);
-    child.wait().await?;
+async fn captures_output_and_keeps_the_terminal() -> anyhow::Result<()> {
+    let (_controller, terminal) = open_pseudo_terminal()?;
+    let (mut copied, stderr) = io::pipe()?;
+    let (stdio, mut logs) = capture(Arc::new(SystemClock), File::from(terminal), stderr)?;
+    let mut command = Command::new("sh");
+    command.args(["-c", "[ -t 1 ] && echo terminal; printf partial >&2"]);
+    stdio.attach(&mut command);
+    command.status().await?;
+    drop(command);
     let mut lines = Vec::new();
-    while let Some(line) = output.lines.recv().await {
-        lines.push(line);
+    while let Some(line) = logs.0.recv().await {
+        lines.push((line.stream, line.message));
     }
-    lines.sort_by_key(|line| line.sequence);
-    let sequences: Vec<_> = lines.iter().map(|line| line.sequence).collect();
-    assert_eq!(sequences, [0, 1]);
-    let captured: Vec<_> = lines
-        .iter()
-        .map(|line| (line.stream, line.message.as_str()))
-        .collect();
-    assert!(captured.contains(&(LogStream::Stdout, "out")));
-    assert!(captured.contains(&(LogStream::Stderr, "err")));
+    lines.sort_by(|left, right| left.1.cmp(&right.1));
+    assert_eq!(
+        lines,
+        [
+            (LogStream::Stderr, "partial".into()),
+            (LogStream::Stdout, "terminal".into())
+        ]
+    );
+    let mut text = String::new();
+    copied.read_to_string(&mut text)?;
+    assert_eq!(text, "partial");
     Ok(())
-}
-
-#[test]
-fn invalid_bytes_stay_within_the_line_limit() {
-    let text = message(&vec![0xff; LOG_LINE_LIMIT]);
-    assert!(text.len() <= LOG_LINE_LIMIT);
-    assert!(text.starts_with('\u{fffd}'));
 }

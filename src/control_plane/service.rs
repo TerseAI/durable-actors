@@ -515,6 +515,13 @@ impl ActorControlPlaneService for ControlPlaneService {
         };
         Ok(Response::new(encode_reply(reply).map_err(internal)?))
     }
+
+    async fn report_logs(
+        &self,
+        request: Request<ControlPlaneRequest>,
+    ) -> std::result::Result<Response<ControlPlaneReply>, Status> {
+        self.execute(request).await
+    }
 }
 
 impl ControlPlaneService {

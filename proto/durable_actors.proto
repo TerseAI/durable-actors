@@ -4,6 +4,7 @@ package durable_actors.v1;
 
 service ActorControlPlaneService {
   rpc Execute(ControlPlaneRequest) returns (ControlPlaneReply);
+  rpc ReportLogs(ControlPlaneRequest) returns (ControlPlaneReply);
 }
 
 message ControlPlaneRequest {

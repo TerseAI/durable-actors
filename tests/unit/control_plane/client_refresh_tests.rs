@@ -21,6 +21,13 @@ impl ActorControlPlaneService for LocalCredentials {
             .unwrap(),
         ))
     }
+
+    async fn report_logs(
+        &self,
+        _: Request<ControlPlaneRequest>,
+    ) -> Result<tonic::Response<ControlPlaneReply>, tonic::Status> {
+        Err(tonic::Status::unimplemented("report_logs"))
+    }
 }
 
 #[tokio::test]
@@ -110,5 +117,12 @@ impl ActorControlPlaneService for AssignedCredentials {
             )
             .unwrap();
         LocalCredentials.execute(request).await
+    }
+
+    async fn report_logs(
+        &self,
+        _: Request<ControlPlaneRequest>,
+    ) -> Result<tonic::Response<ControlPlaneReply>, tonic::Status> {
+        Err(tonic::Status::unimplemented("report_logs"))
     }
 }

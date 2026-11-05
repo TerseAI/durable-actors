@@ -149,6 +149,7 @@ async fn run_activation(
         javascript,
         storage: WarmStorage::new().await?,
         replication: Arc::new(Litestream::default()),
+        logs: None,
     };
     let stop = CancellationToken::new();
     let _stop_guard = stop.clone().drop_guard();

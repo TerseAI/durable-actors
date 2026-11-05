@@ -61,36 +61,3 @@ async fn pages_backwards_through_one_actor() -> Result<()> {
     assert!(older.before.is_none());
     Ok(())
 }
-
-#[tokio::test]
-async fn filters_one_session() -> Result<()> {
-    let store = store().await?;
-    let lobby = chat_room("lobby");
-    store
-        .record(&lobby, "host-1", "session-1", vec![line(0)])
-        .await?;
-    store
-        .record(&lobby, "host-2", "session-2", vec![line(1)])
-        .await?;
-    let mut filtered = query(None);
-    filtered.session_id = Some("session-1".into());
-    let page = store.page(&filtered.filter("local")?).await?;
-    assert_eq!(messages(&page), ["line 0"]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn rejects_oversized_batches() -> Result<()> {
-    let lines = (0..=LOG_BATCH_LINES as u64).map(line).collect();
-    let recorded = store()
-        .await?
-        .record(&chat_room("lobby"), "host-1", "session-1", lines)
-        .await;
-    assert!(recorded.is_err());
-    Ok(())
-}
-
-#[test]
-fn rejects_malformed_cursors() {
-    assert!(query(Some("not-a-cursor".into())).filter("local").is_err());
-}

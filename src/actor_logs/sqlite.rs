@@ -24,10 +24,11 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 CREATE INDEX IF NOT EXISTS logs_actor
     ON logs (project_id, actor_name, actor_id, timestamp_ms, session_id, sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS logs_line ON logs (session_id, sequence);
 ";
 
 const INSERT: &str = "
-INSERT INTO logs (project_id, actor_name, actor_id, session_id, sequence, timestamp_ms, event)
+INSERT OR IGNORE INTO logs (project_id, actor_name, actor_id, session_id, sequence, timestamp_ms, event)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
 const PRUNE: &str = "DELETE FROM logs WHERE position <= (SELECT MAX(position) FROM logs) - ?1";
@@ -42,15 +43,10 @@ LIMIT ?8";
 
 pub(crate) struct SqliteLogs {
     connection: Arc<Mutex<Connection>>,
-    retained_lines: i64,
 }
 
 impl SqliteLogs {
     pub(crate) async fn open(path: PathBuf) -> Result<Self> {
-        Self::open_retaining(path, RETAINED_LINES).await
-    }
-
-    async fn open_retaining(path: PathBuf, retained_lines: i64) -> Result<Self> {
         let connection = tokio::task::spawn_blocking(move || {
             let connection = Connection::open(path).context("open local actor logs")?;
             connection.execute_batch(SCHEMA)?;
@@ -59,7 +55,6 @@ impl SqliteLogs {
         .await??;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
-            retained_lines,
         })
     }
 
@@ -75,11 +70,10 @@ impl SqliteLogs {
 #[async_trait]
 impl LogPersistence for SqliteLogs {
     async fn append(&self, events: Vec<LogEvent>) -> Result<()> {
-        let retained_lines = self.retained_lines;
         self.run(move |connection| {
             let transaction = connection.transaction()?;
             insert(&transaction, &events)?;
-            transaction.execute(PRUNE, [retained_lines])?;
+            transaction.execute(PRUNE, [RETAINED_LINES])?;
             transaction.commit()?;
             Ok(())
         })
@@ -138,7 +132,3 @@ fn read_page(connection: &Connection, filter: &LogFilter) -> Result<LogPage> {
 fn integer(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/actor_logs/sqlite.rs"]
-mod tests;

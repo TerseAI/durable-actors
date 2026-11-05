@@ -12,6 +12,7 @@ export class Workspace extends Actor<null, DocumentInfo, DocumentInfo[]> {
 
     async onMessage(_socket: ActorSocket<null, DocumentInfo[]>, document: DocumentInfo) {
         if (!this.documents.some(item => item.id === document.id)) this.documents = [...this.documents, document]
+        console.log("onMessage", this.documents)
         this.broadcast(this.documents)
     }
 }
@@ -26,6 +27,7 @@ export class Document extends Actor<null, string, string> {
     async onMessage(_socket: ActorSocket<null, string>, update: string) {
         const document = new Y.Doc()
         try {
+            console.log("onMessage", this.content)
             Y.applyUpdate(document, fromBase64(this.content))
             Y.applyUpdate(document, fromBase64(update))
             this.content = toBase64(Y.encodeStateAsUpdate(document))

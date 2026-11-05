@@ -18,6 +18,7 @@ pub(super) struct WarmHost {
     pub storage: WarmStorage,
     pub control_plane: Option<WarmControlPlane>,
     pub replication: Arc<dyn Replicator>,
+    pub logs: Option<super::executor_output::ExecutorLogs>,
 }
 
 pub(super) struct WarmControlPlane {
@@ -50,7 +51,14 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let ipc = ActorExecutorListener::bind(&socket).await?;
     let configured_runtime = std::env::var("DURABLE_ACTORS_EXECUTOR_RUNTIME").ok();
     let runtime = executor_runtime(None, configured_runtime.as_deref())?;
-    let mut javascript = spawn_executor_process(true, &socket, runtime, false)?;
+    let (stdio, logs) = match std::env::var("DURABLE_ACTORS_EXPORT_LOGS").as_deref() {
+        Ok("1") => {
+            let (stdio, logs) = super::executor_output::capture_terminal()?;
+            (Some(stdio), Some(logs))
+        }
+        _ => (None, None),
+    };
+    let mut javascript = spawn_executor_process(true, &socket, runtime, stdio)?;
     let (warmed, control_plane) = tokio::join!(
         async {
             tokio::try_join!(
@@ -88,6 +96,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
                 storage,
                 control_plane,
                 replication,
+                logs,
             };
             let timings = timings.configuration_loaded();
             serve_assigned_host(config, timings, Some(warm), shutdown).await

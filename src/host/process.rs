@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     process::Stdio,
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -23,7 +23,7 @@ use super::{
     ActorHost, HostEndpoint, HostId, HostLeaseMaintainer, LeaseRenewalTask,
     actor_host::{ActorPhase, ActorStatus},
     config::{ActorHostConfig, ExecutorConfig, HostNetwork, InvocationAuth, LeaseTiming},
-    executor_output::{ExecutorOutput, LogExport},
+    executor_output::{ExecutorLogs, ExecutorStdio, LogReporter, capture_terminal},
 };
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -57,32 +57,77 @@ where
     serve_assigned_host(config, timings.configuration_loaded(), None, shutdown).await
 }
 
+/// Owns the executor's log export so it flushes on every exit, including failed startup.
 pub(super) async fn serve_assigned_host(
     config: ActorHostConfig,
     timings: HostStartupTimings,
-    warm: Option<super::spare::WarmHost>,
+    mut warm: Option<super::spare::WarmHost>,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<()> {
-    // The export starts during preparation but must flush on every exit, including failed startup.
-    let logs = OnceLock::new();
-    let result = run_assigned_host(config, timings, warm, shutdown, &logs).await;
-    if let Some(logs) = logs.into_inner() {
-        logs.finish(LOG_FLUSH_TIMEOUT).await;
+    let (connections, logs) = match connect_host(&config, warm.as_mut()).await {
+        Ok(connected) => connected,
+        Err(error) => {
+            log_startup(&config.identity.host_id, &timings, "failed", Some(&error));
+            super::assignment::decline(warm.and_then(|warm| warm.readiness));
+            return Err(error);
+        }
+    };
+    let export = logs.map(|logs| logs.export(LogReporter(connections.control_plane.clone())));
+    let result = run_assigned_host(config, timings, warm, connections, shutdown).await;
+    if let Some(export) = export {
+        export.finish(LOG_FLUSH_TIMEOUT).await;
     }
     result
+}
+
+struct HostConnections {
+    control_plane: Arc<ControlPlaneClient>,
+    executor_stdio: Option<ExecutorStdio>,
+}
+
+async fn connect_host(
+    config: &ActorHostConfig,
+    mut warm: Option<&mut super::spare::WarmHost>,
+) -> Result<(HostConnections, Option<ExecutorLogs>)> {
+    let warm_control_plane = warm.as_mut().and_then(|warm| warm.control_plane.take());
+    let control_plane = connect_control_plane(&config.control_plane, warm_control_plane).await?;
+    let (executor_stdio, logs) = match warm {
+        Some(warm) => (None, warm.logs.take()),
+        None if config.executor.export_logs => {
+            let (stdio, logs) = capture_terminal()?;
+            (Some(stdio), Some(logs))
+        }
+        None => (None, None),
+    };
+    let connections = HostConnections {
+        control_plane,
+        executor_stdio,
+    };
+    Ok((connections, logs))
+}
+
+async fn connect_control_plane(
+    access: &super::config::ControlPlaneAccess,
+    warm: Option<super::spare::WarmControlPlane>,
+) -> Result<Arc<ControlPlaneClient>> {
+    let client = match warm.filter(|warm| warm.url == access.url) {
+        Some(warm) => warm.client.with_host_token(&access.host_token)?,
+        None => ControlPlaneClient::connect(&access.url, &access.host_token).await?,
+    };
+    Ok(Arc::new(client))
 }
 
 async fn run_assigned_host(
     config: ActorHostConfig,
     mut timings: HostStartupTimings,
     mut warm: Option<super::spare::WarmHost>,
+    connections: HostConnections,
     shutdown: impl Future<Output = ()> + Send,
-    logs: &OnceLock<LogExport>,
 ) -> Result<()> {
     let readiness = warm.as_mut().and_then(|warm| warm.readiness.take());
     let operation = warm.as_mut().and_then(|warm| warm.operation.take());
     let host_id = &config.identity.host_id;
-    let prepared = match prepare_actor_host(&config, &mut timings, warm, logs).await {
+    let prepared = match prepare_actor_host(&config, &mut timings, warm, connections).await {
         Ok(prepared) => prepared,
         Err(error) => {
             log_startup(host_id, &timings, "failed", Some(&error));
@@ -276,7 +321,7 @@ async fn prepare_actor_host(
     config: &ActorHostConfig,
     timings: &mut HostStartupTimings,
     warm: Option<super::spare::WarmHost>,
-    logs: &OnceLock<LogExport>,
+    connections: HostConnections,
 ) -> Result<PreparedActorHostResources> {
     let replication = warm
         .as_ref()
@@ -285,27 +330,21 @@ async fn prepare_actor_host(
     timings.replication_ready_at_ms = Some(timings.elapsed_ms());
     let invocation_auth = invocation_verifier(&config.invocation_auth)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
+    let (warm_listener, warm_executor, warm_storage) = match warm {
         Some(warm) => (
             Some(warm.listener),
             Some((warm.executor, warm.javascript)),
             Some(warm.storage),
-            warm.control_plane,
         ),
-        None => (None, None, None, None),
+        None => (None, None, None),
     };
-    let access = &config.control_plane;
-    let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
-        async {
-            match warm_control_plane.filter(|warm| warm.url == access.url) {
-                Some(warm) => warm.client.with_host_token(&access.host_token),
-                None => ControlPlaneClient::connect(&access.url, &access.host_token).await,
-            }
-        },
-        bind_host_listener(&config.network, &config.identity.host_id, warm_listener),
-    )?;
+    let HostConnections {
+        control_plane,
+        executor_stdio,
+    } = connections;
+    let (listener, route, endpoint) =
+        bind_host_listener(&config.network, &config.identity.host_id, warm_listener).await?;
     timings.control_plane_ready_at_ms = Some(timings.elapsed_ms());
-    let control_plane = Arc::new(control_plane);
     let stop = CancellationToken::new();
     let credentials = stop.clone().drop_guard();
     let assignment = &config.assignment;
@@ -363,8 +402,7 @@ async fn prepare_actor_host(
                 &config.executor,
                 timings.started_at,
                 &mut timings.javascript_spawned_at_ms,
-                &control_plane,
-                logs,
+                executor_stdio,
             )
             .await
         };
@@ -552,20 +590,15 @@ async fn connect_executor(
     executor: &ExecutorConfig,
     started_at: Instant,
     javascript_spawned_at_ms: &mut Option<f64>,
-    control_plane: &Arc<ControlPlaneClient>,
-    logs: &OnceLock<LogExport>,
+    stdio: Option<ExecutorStdio>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(&executor.socket).await?;
-    let mut javascript = spawn_executor_process(
+    let javascript = spawn_executor_process(
         false,
         &executor.socket.display().to_string(),
         executor.runtime,
-        executor.export_logs,
+        stdio,
     )?;
-    if executor.export_logs {
-        let output = ExecutorOutput::capture(&mut javascript);
-        let _ = logs.set(output.export(control_plane.clone()));
-    }
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -645,14 +678,11 @@ pub(super) fn spawn_executor_process(
     generic: bool,
     socket: &str,
     runtime: ActorRuntime,
-    capture_output: bool,
+    stdio: Option<ExecutorStdio>,
 ) -> Result<tokio::process::Child> {
     let mut command = executor_command(generic, socket, runtime);
-    if capture_output {
-        command
-            .env("PYTHONUNBUFFERED", "1")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+    if let Some(stdio) = stdio {
+        stdio.attach(&mut command);
     }
     command.spawn().context("start actor executor")
 }

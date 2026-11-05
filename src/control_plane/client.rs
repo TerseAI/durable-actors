@@ -12,7 +12,9 @@ use tonic::{
 
 use crate::{
     actor::ActorKey,
-    grpc::proto::actor_control_plane_service_client::ActorControlPlaneServiceClient,
+    grpc::proto::{
+        ControlPlaneRequest, actor_control_plane_service_client::ActorControlPlaneServiceClient,
+    },
 };
 
 use super::{
@@ -66,8 +68,12 @@ impl ControlPlaneClient {
     }
 
     pub(crate) async fn report_logs(&self, lines: Vec<crate::actor_logs::LogLine>) -> Result<()> {
-        self.execute(ControlPlaneCommand::ActorLogs { lines })
-            .await?;
+        let request = self.request(ControlPlaneCommand::ActorLogs { lines })?;
+        self.client
+            .clone()
+            .report_logs(request)
+            .await
+            .context("report actor logs")?;
         Ok(())
     }
 
@@ -213,6 +219,17 @@ impl LeaseFence {
 
 impl ControlPlaneClient {
     async fn execute(&self, command: ControlPlaneCommand) -> Result<ControlPlaneCommandReply> {
+        let reply = self
+            .client
+            .clone()
+            .execute(self.request(command)?)
+            .await
+            .context("execute actor control-plane command")?
+            .into_inner();
+        decode_reply(reply).context("decode actor control-plane reply")
+    }
+
+    fn request(&self, command: ControlPlaneCommand) -> Result<Request<ControlPlaneRequest>> {
         let mut request = Request::new(encode_command(command)?);
         request.set_timeout(CONTROL_PLANE_REQUEST_TIMEOUT);
         request.metadata_mut().insert(
@@ -222,14 +239,7 @@ impl ControlPlaneClient {
                 .map_err(|_| anyhow::anyhow!("actor authorization lock poisoned"))?
                 .clone(),
         );
-        let reply = self
-            .client
-            .clone()
-            .execute(request)
-            .await
-            .context("execute actor control-plane command")?
-            .into_inner();
-        decode_reply(reply).context("decode actor control-plane reply")
+        Ok(request)
     }
 
     fn replace_token(&self, token: &str) -> Result<()> {

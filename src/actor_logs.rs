@@ -18,7 +18,6 @@ const MAX_PAGE_LINES: usize = 1000;
 pub(crate) enum LogStream {
     Stdout,
     Stderr,
-    System,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

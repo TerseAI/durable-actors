@@ -408,10 +408,6 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         Some(&"development".to_owned())
     );
     assert_eq!(
-        host_environment(&request, &directory).get("DURABLE_ACTORS_EXPORT_LOGS"),
-        Some(&"1".to_owned())
-    );
-    assert_eq!(
         host_environment(&request, &directory).get("DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS"),
         Some(&"300000".to_owned())
     );

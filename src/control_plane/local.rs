@@ -241,6 +241,10 @@ fn logged_routes(routes: tonic::service::Routes) -> Router {
     routes.into_axum_router().layer(
         TraceLayer::new_for_http()
             .make_span_with(|request: &Request| {
+                // Actor output already reaches the terminal directly.
+                if request.uri().path().ends_with("/ReportLogs") {
+                    return Span::none();
+                }
                 info_span!(
                     target: "durable_actors::dev",
                     "control_plane_request",
@@ -249,6 +253,9 @@ fn logged_routes(routes: tonic::service::Routes) -> Router {
                 )
             })
             .on_response(|response: &Response, latency: Duration, span: &Span| {
+                if span.is_none() {
+                    return;
+                }
                 info!(
                     target: "durable_actors::dev",
                     parent: span,

@@ -2,6 +2,7 @@ pub mod actor;
 mod actor_lifecycle;
 mod actor_logs;
 pub mod actor_state;
+mod batch_export;
 pub mod bucket;
 pub mod clock;
 pub mod control_plane;

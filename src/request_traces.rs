@@ -348,7 +348,19 @@ impl TraceSender {
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1024);
         let dropped = Arc::new(AtomicU64::new(0));
-        tokio::spawn(export_traces(client, receiver, dropped.clone(), stop));
+        let traces = futures_util::StreamExt::take_until(
+            tokio_stream::wrappers::ReceiverStream::new(receiver),
+            stop.cancelled_owned(),
+        );
+        let reporter = TraceReporter {
+            client,
+            dropped: dropped.clone(),
+        };
+        tokio::spawn(crate::batch_export::export(
+            traces,
+            TRACE_BATCH_SIZE,
+            reporter,
+        ));
         Self { sender, dropped }
     }
 
@@ -359,42 +371,26 @@ impl TraceSender {
     }
 }
 
-async fn export_traces(
+struct TraceReporter {
     client: Arc<crate::control_plane::ControlPlaneClient>,
-    mut receiver: mpsc::Receiver<RequestTrace>,
-    lost: Arc<AtomicU64>,
-    stop: tokio_util::sync::CancellationToken,
-) {
-    let mut interval = tokio::time::interval(Duration::from_millis(200));
-    loop {
-        tokio::select! { _ = stop.cancelled() => break, _ = interval.tick() => {} }
-        while report_batch(&client, &mut receiver, &lost).await == TRACE_BATCH_SIZE {}
-    }
+    dropped: Arc<AtomicU64>,
 }
 
-async fn report_batch(
-    client: &crate::control_plane::ControlPlaneClient,
-    receiver: &mut mpsc::Receiver<RequestTrace>,
-    lost: &AtomicU64,
-) -> usize {
-    let mut batch = Vec::new();
-    while batch.len() < TRACE_BATCH_SIZE {
-        match receiver.try_recv() {
-            Ok(trace) => batch.push(trace),
-            Err(_) => break,
+#[async_trait::async_trait]
+impl crate::batch_export::BatchSink<RequestTrace> for TraceReporter {
+    async fn report(&self, traces: Vec<RequestTrace>) {
+        let count = traces.len() as u64;
+        let missing = self.dropped.swap(0, Ordering::Relaxed);
+        let reported = tokio::time::timeout(
+            Duration::from_secs(3),
+            self.client.report_traces(traces, missing),
+        )
+        .await;
+        if !matches!(reported, Ok(Ok(()))) {
+            self.dropped
+                .fetch_add(count.saturating_add(missing), Ordering::Relaxed);
         }
     }
-    let count = batch.len();
-    let missing = lost.swap(0, Ordering::Relaxed);
-    if count == 0 && missing == 0 {
-        return 0;
-    }
-    let reported =
-        tokio::time::timeout(Duration::from_secs(3), client.report_traces(batch, missing)).await;
-    if !matches!(reported, Ok(Ok(()))) {
-        lost.fetch_add((count as u64).saturating_add(missing), Ordering::Relaxed);
-    }
-    count
 }
 
 pub(crate) struct TraceRecorder {
