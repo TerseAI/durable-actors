@@ -646,6 +646,7 @@ paths:
                 - { $ref: "#/components/parameters/LogActorId" }
                 - { $ref: "#/components/parameters/LogRequestId" }
                 - { $ref: "#/components/parameters/LogLevel" }
+                - { $ref: "#/components/parameters/LogSearch" }
                 - { $ref: "#/components/parameters/FromMs" }
                 - { $ref: "#/components/parameters/ToMs" }
                 - name: limit
@@ -669,6 +670,33 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/observe/logs/histogram:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: getActorLogHistogram
+            tags: [Observability]
+            summary: Count actor logs over time
+            description: Line counts per level in equal time buckets, with the same filters as the logs endpoint. Bucket i starts at fromMs + i * bucketMs.
+            parameters:
+                - { $ref: "#/components/parameters/LogActorName" }
+                - { $ref: "#/components/parameters/LogActorId" }
+                - { $ref: "#/components/parameters/LogRequestId" }
+                - { $ref: "#/components/parameters/LogSearch" }
+                - { name: fromMs, in: query, required: true, schema: { type: integer, minimum: 0 } }
+                - { name: toMs, in: query, required: true, description: Exclusive; must be after fromMs., schema: { type: integer, minimum: 1 } }
+                - { name: bucketMs, in: query, required: true, description: At most 1000 buckets per range., schema: { type: integer, minimum: 1 } }
+            responses:
+                "200":
+                    description: One entry per bucket, empty buckets included.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/ActorLogHistogram" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
     /v1/projects/{project_id}/observe/logs/events:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -685,6 +713,7 @@ paths:
                 - { $ref: "#/components/parameters/LogActorId" }
                 - { $ref: "#/components/parameters/LogRequestId" }
                 - { $ref: "#/components/parameters/LogLevel" }
+                - { $ref: "#/components/parameters/LogSearch" }
             responses:
                 "200": { $ref: "#/components/responses/EventStream" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
@@ -777,6 +806,11 @@ components:
             in: query
             description: Only lines at this level or more severe. warn returns warn and error lines.
             schema: { type: string, enum: [debug, info, warn, error] }
+        LogSearch:
+            name: search
+            in: query
+            description: Only lines whose message contains this text, ignoring case.
+            schema: { type: string, minLength: 1, maxLength: 256 }
         FromMs:
             name: fromMs
             in: query
@@ -1379,6 +1413,22 @@ components:
             properties:
                 records: { type: array, items: { $ref: "#/components/schemas/ActorLog" } }
                 nextCursor: { type: [string, "null"] }
+        ActorLogHistogram:
+            type: object
+            required: [fromMs, bucketMs, buckets]
+            properties:
+                fromMs: { type: integer, minimum: 0 }
+                bucketMs: { type: integer, minimum: 1 }
+                buckets:
+                    type: array
+                    items:
+                        type: object
+                        required: [debug, info, warn, error]
+                        properties:
+                            debug: { type: integer, minimum: 0 }
+                            info: { type: integer, minimum: 0 }
+                            warn: { type: integer, minimum: 0 }
+                            error: { type: integer, minimum: 0 }
         StateAttribution:
             type: [object, "null"]
             required: [operation, connectionId, committedAtMs, interleaved]

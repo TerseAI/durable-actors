@@ -2,7 +2,9 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use super::*;
 use crate::request_traces::{
-    InvalidTraceQuery, RequestTrace, TraceEvent, TraceRecord, logs::ActorLog, metrics::ClassMetrics,
+    InvalidTraceQuery, RequestTrace, TraceEvent, TraceRecord,
+    logs::{ActorLog, LogHistogram, LogHistogramQuery},
+    metrics::ClassMetrics,
 };
 
 impl ClickHouseTracePersistence {
@@ -90,6 +92,7 @@ impl ClickHouseTracePersistence {
                 .param("actor_id", query.actor_id.as_deref().unwrap_or(""))
                 .param("request_id", query.request_id.as_deref().unwrap_or(""))
                 .param("levels", query.levels().unwrap_or_default().join(","))
+                .param("search", query.search.as_deref().unwrap_or(""))
                 .param("from", millis(query.from_ms.unwrap_or(0)))
                 .param("to", millis(query.to_ms.unwrap_or(u64::MAX)))
                 .param("has_cursor", after.is_some())
@@ -109,6 +112,31 @@ impl ClickHouseTracePersistence {
             rows.into_iter().map(LogRow::into_log).collect(),
             query.limit(),
         )
+    }
+
+    pub(super) async fn read_log_histogram(
+        &self,
+        project: &str,
+        query: &LogHistogramQuery,
+    ) -> Result<LogHistogram> {
+        let rows = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.query(include_str!("logs_histogram.sql"), project)
+                .param("actor_name", query.actor_name.as_deref().unwrap_or(""))
+                .param("actor_id", query.actor_id.as_deref().unwrap_or(""))
+                .param("request_id", query.request_id.as_deref().unwrap_or(""))
+                .param("search", query.search.as_deref().unwrap_or(""))
+                .param("from", millis(query.from_ms))
+                .param("to", millis(query.to_ms))
+                .param("bucket", millis(query.bucket_ms))
+                .fetch_all::<LogBucketRow>(),
+        )
+        .await??;
+        let mut histogram = LogHistogram::empty(query);
+        for row in rows {
+            histogram.add(row.bucket, &row.level, row.lines);
+        }
+        Ok(histogram)
     }
 
     pub(super) async fn read_metrics(
@@ -289,6 +317,13 @@ impl SpanRow {
             },
         })
     }
+}
+
+#[derive(Row, Deserialize)]
+struct LogBucketRow {
+    bucket: u64,
+    level: String,
+    lines: u64,
 }
 
 #[derive(Row, Deserialize)]

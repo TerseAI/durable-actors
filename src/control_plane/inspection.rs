@@ -67,6 +67,10 @@ pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Ro
             "/v1/projects/{project_id}/observe/logs/events",
             get(log_events),
         )
+        .route(
+            "/v1/projects/{project_id}/observe/logs/histogram",
+            get(log_histogram),
+        )
         .with_state(InspectionApi { inspector, admin })
 }
 
@@ -379,6 +383,21 @@ async fn log_history(
         .await
         .map_err(trace_query_error)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(page)).into_response())
+}
+
+async fn log_histogram(
+    State(state): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<crate::request_traces::logs::LogHistogramQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    let histogram = state
+        .inspector
+        .traces
+        .log_histogram(&path.0.project_id, &query)
+        .await
+        .map_err(trace_query_error)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(histogram)).into_response())
 }
 
 async fn log_events(

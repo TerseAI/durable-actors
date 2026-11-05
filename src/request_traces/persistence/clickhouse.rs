@@ -11,7 +11,7 @@ use super::TraceQueries;
 use crate::request_traces::{
     TracePage,
     history::HistoryQuery,
-    logs::{LogPage, LogQuery},
+    logs::{LogHistogram, LogHistogramQuery, LogPage, LogQuery},
     metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange},
     replay::ReplayQuery,
 };
@@ -119,6 +119,14 @@ impl TraceQueries for ClickHouseTracePersistence {
 
     async fn logs(&self, project: &str, query: &LogQuery) -> Result<LogPage> {
         self.read_logs(project, query).await
+    }
+
+    async fn log_histogram(
+        &self,
+        project: &str,
+        query: &LogHistogramQuery,
+    ) -> Result<LogHistogram> {
+        self.read_log_histogram(project, query).await
     }
 
     async fn metrics(&self, project: &str, range: &TimeRange) -> Result<OverviewMetrics> {

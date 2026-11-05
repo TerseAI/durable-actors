@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use super::{InvalidTraceQuery, TRACE_CAPACITY, history::HistoryQuery};
 use crate::actor::LogLevel;
 
+const MAX_SEARCH_CHARS: usize = 256;
+const MAX_HISTOGRAM_BUCKETS: u64 = 1_000;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ActorLog {
@@ -28,6 +31,8 @@ pub(crate) struct LogQuery {
     pub request_id: Option<String>,
     /// The least severe level to include.
     pub level: Option<LogLevel>,
+    /// Text the message must contain, ignoring case.
+    pub search: Option<String>,
     pub from_ms: Option<u64>,
     pub to_ms: Option<u64>,
     pub limit: Option<usize>,
@@ -36,6 +41,12 @@ pub(crate) struct LogQuery {
 
 impl LogQuery {
     pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.search
+                .as_ref()
+                .is_none_or(|text| (1..=MAX_SEARCH_CHARS).contains(&text.chars().count())),
+            "search must be 1 to {MAX_SEARCH_CHARS} characters"
+        );
         HistoryQuery {
             request_id: self.request_id.clone(),
             actor_name: self.actor_name.clone(),
@@ -65,6 +76,10 @@ impl LogQuery {
             && self
                 .levels()
                 .is_none_or(|levels| levels.contains(&log.level.as_str()))
+            && self
+                .search
+                .as_ref()
+                .is_none_or(|text| log.message.to_lowercase().contains(&text.to_lowercase()))
     }
 
     pub(crate) fn levels(&self) -> Option<Vec<&'static str>> {
@@ -73,6 +88,90 @@ impl LogQuery {
 
     pub(crate) fn after(&self) -> Result<Option<LogCursor>> {
         self.cursor.as_deref().map(LogCursor::decode).transpose()
+    }
+}
+
+/// Line counts per level in equal time buckets, filtered like a log query.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LogHistogramQuery {
+    pub actor_name: Option<String>,
+    pub actor_id: Option<String>,
+    pub request_id: Option<String>,
+    pub search: Option<String>,
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub bucket_ms: u64,
+}
+
+impl LogHistogramQuery {
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(self.from_ms < self.to_ms, "fromMs must be before toMs");
+        ensure!(
+            self.bucket_ms > 0 && self.buckets() <= MAX_HISTOGRAM_BUCKETS,
+            "bucketMs must split the range into 1 to {MAX_HISTOGRAM_BUCKETS} buckets"
+        );
+        self.lines().validate()
+    }
+
+    /// The lines it counts: every level, from fromMs up to but excluding toMs.
+    pub(crate) fn lines(&self) -> LogQuery {
+        LogQuery {
+            actor_name: self.actor_name.clone(),
+            actor_id: self.actor_id.clone(),
+            request_id: self.request_id.clone(),
+            search: self.search.clone(),
+            from_ms: Some(self.from_ms),
+            to_ms: Some(self.to_ms - 1),
+            ..Default::default()
+        }
+    }
+
+    fn buckets(&self) -> u64 {
+        (self.to_ms - self.from_ms).div_ceil(self.bucket_ms)
+    }
+}
+
+/// Bucket `i` covers `fromMs + i * bucketMs` up to the next bucket.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LogHistogram {
+    pub from_ms: u64,
+    pub bucket_ms: u64,
+    pub buckets: Vec<LevelCounts>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub(crate) struct LevelCounts {
+    pub debug: u64,
+    pub info: u64,
+    pub warn: u64,
+    pub error: u64,
+}
+
+impl LogHistogram {
+    pub(crate) fn empty(query: &LogHistogramQuery) -> Self {
+        Self {
+            from_ms: query.from_ms,
+            bucket_ms: query.bucket_ms,
+            buckets: vec![LevelCounts::default(); query.buckets() as usize],
+        }
+    }
+
+    pub(crate) fn add(&mut self, bucket: u64, level: &str, lines: u64) {
+        let Some(counts) = usize::try_from(bucket)
+            .ok()
+            .and_then(|index| self.buckets.get_mut(index))
+        else {
+            return;
+        };
+        match level {
+            "debug" => counts.debug += lines,
+            "info" => counts.info += lines,
+            "warn" => counts.warn += lines,
+            "error" => counts.error += lines,
+            _ => {}
+        }
     }
 }
 

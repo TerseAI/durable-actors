@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use super::{
     TracePage,
     history::HistoryQuery,
-    logs::{LogPage, LogQuery},
+    logs::{LogHistogram, LogHistogramQuery, LogPage, LogQuery},
     metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange},
     replay::ReplayQuery,
 };
@@ -19,6 +19,11 @@ pub(crate) trait TraceQueries: Send + Sync {
     async fn history(&self, project_id: &str, query: &HistoryQuery) -> Result<TracePage>;
     async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage>;
     async fn logs(&self, project_id: &str, query: &LogQuery) -> Result<LogPage>;
+    async fn log_histogram(
+        &self,
+        project_id: &str,
+        query: &LogHistogramQuery,
+    ) -> Result<LogHistogram>;
     async fn metrics(&self, project_id: &str, query: &TimeRange) -> Result<OverviewMetrics>;
     async fn queue_waits(
         &self,
@@ -46,6 +51,10 @@ impl TraceQueries for NoTraceQueries {
 
     async fn logs(&self, _: &str, _: &LogQuery) -> Result<LogPage> {
         LogPage::new(Vec::new(), 0)
+    }
+
+    async fn log_histogram(&self, _: &str, query: &LogHistogramQuery) -> Result<LogHistogram> {
+        Ok(LogHistogram::empty(query))
     }
 
     async fn metrics(&self, _: &str, _: &TimeRange) -> Result<OverviewMetrics> {

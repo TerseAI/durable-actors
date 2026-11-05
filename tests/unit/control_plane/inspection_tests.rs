@@ -511,7 +511,7 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
 }
 
 #[tokio::test]
-async fn logs_filter_by_request_and_level_in_history_and_live_tail() -> Result<()> {
+async fn log_filters_apply_to_history_live_tail_and_histogram() -> Result<()> {
     let fixture = Fixture::start().await?;
     let log = |id: &str, request: Option<&str>, level: &str| ActorLog {
         log_id: id.into(),
@@ -548,8 +548,29 @@ async fn logs_filter_by_request_and_level_in_history_and_live_tail() -> Result<(
         .await?;
     assert_eq!(severe["records"].as_array().unwrap().len(), 1);
     assert_eq!(severe["records"][0]["logId"], "b");
+    let found: Value = fixture
+        .get("/v1/projects/default/observe/logs?search=E%3C")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(found["records"][0]["logId"], "e");
+    assert_eq!(found["records"].as_array().unwrap().len(), 1);
+    let histogram: Value = fixture
+        .get("/v1/projects/default/observe/logs/histogram?fromMs=0&toMs=2000&bucketMs=1000")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        histogram["buckets"],
+        serde_json::json!([
+            {"debug": 0, "info": 0, "warn": 0, "error": 0},
+            {"debug": 1, "info": 1, "warn": 0, "error": 1}
+        ])
+    );
     let mut stream = fixture
-        .get("/v1/projects/default/observe/logs/events?requestId=request-2&level=warn")
+        .get("/v1/projects/default/observe/logs/events?requestId=request-2&level=warn&search=D")
         .await?
         .error_for_status()?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -565,13 +586,18 @@ async fn logs_filter_by_request_and_level_in_history_and_live_tail() -> Result<(
     let tail = stream_inventory(&mut stream).await?;
     assert_eq!(tail["records"].as_array().unwrap().len(), 1);
     assert_eq!(tail["records"][0]["logId"], "d");
-    assert_eq!(
-        fixture
-            .get("/v1/projects/default/observe/logs?limit=501")
-            .await?
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
+    for invalid in [
+        "logs?limit=501",
+        "logs/histogram?fromMs=0&toMs=2000&bucketMs=1",
+    ] {
+        assert_eq!(
+            fixture
+                .get(&format!("/v1/projects/default/observe/{invalid}"))
+                .await?
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
     Ok(())
 }
 

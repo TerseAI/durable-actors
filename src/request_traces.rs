@@ -186,6 +186,16 @@ impl TraceStore {
         self.queries.logs(project_id, query).await
     }
 
+    pub(crate) async fn log_histogram(
+        &self,
+        project_id: &str,
+        query: &logs::LogHistogramQuery,
+    ) -> Result<logs::LogHistogram> {
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        query.validate().context(InvalidTraceQuery)?;
+        self.queries.log_histogram(project_id, query).await
+    }
+
     pub(crate) async fn metrics(
         &self,
         project_id: &str,

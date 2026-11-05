@@ -15,7 +15,7 @@ use super::TraceQueries;
 use crate::request_traces::{
     TraceEvent, TracePage,
     history::HistoryQuery,
-    logs::{ActorLog, LogPage, LogQuery},
+    logs::{ActorLog, LogHistogram, LogHistogramQuery, LogPage, LogQuery},
     metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange},
     replay::ReplayQuery,
 };
@@ -139,6 +139,17 @@ impl TraceQueries for SqliteTracePersistence {
         let project_id = project_id.to_owned();
         let query = query.clone();
         self.run(move |connection| logs::query(connection, &project_id, &query))
+            .await
+    }
+
+    async fn log_histogram(
+        &self,
+        project_id: &str,
+        query: &LogHistogramQuery,
+    ) -> Result<LogHistogram> {
+        let project_id = project_id.to_owned();
+        let query = query.clone();
+        self.run(move |connection| logs::histogram(connection, &project_id, &query))
             .await
     }
 }

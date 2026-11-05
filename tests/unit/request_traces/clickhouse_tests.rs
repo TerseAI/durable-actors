@@ -146,7 +146,7 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
     use crate::actor::LogLevel;
     use crate::request_traces::{
         history::HistoryQuery,
-        logs::LogQuery,
+        logs::{LogHistogramQuery, LogQuery},
         metrics::{QueueWaitQuery, TimeRange},
         persistence::TraceQueries,
     };
@@ -215,6 +215,38 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
         ..Default::default()
     };
     assert!(store.logs(project, &severe).await?.records.is_empty());
+    let search = LogQuery {
+        search: Some("HELL".into()),
+        ..Default::default()
+    };
+    assert_eq!(store.logs(project, &search).await?.records.len(), 1);
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    let histogram = store
+        .log_histogram(
+            project,
+            &LogHistogramQuery {
+                actor_name: Some("Room".into()),
+                actor_id: None,
+                request_id: None,
+                search: Some("hello".into()),
+                from_ms: now - 3_600_000,
+                to_ms: now + 60_000,
+                bucket_ms: 60_000,
+            },
+        )
+        .await?;
+    assert_eq!(
+        histogram
+            .buckets
+            .iter()
+            .map(|bucket| bucket.info)
+            .sum::<u64>(),
+        1
+    );
     assert_eq!(
         store
             .metrics(project, &TimeRange::default())
