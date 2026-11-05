@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
 
 import { Columns3, Search, X } from "lucide-react"
 
@@ -90,21 +90,10 @@ export function LogsCard({ actorName, actorId, requests, requestId, onRequestCha
 }
 
 function SearchField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-    const input = useRef<HTMLInputElement>(null)
-    useEffect(() => {
-        const focusOnSlash = (event: KeyboardEvent) => {
-            if (event.key !== "/" || isTyping(event.target)) return
-            event.preventDefault()
-            input.current?.focus()
-        }
-        document.addEventListener("keydown", focusOnSlash)
-        return () => document.removeEventListener("keydown", focusOnSlash)
-    }, [])
     return (
         <label className="flex h-8 w-64 items-center gap-2 rounded-lg border bg-background/40 px-2.5 text-[12.5px] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40">
             <Search aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
             <input
-                ref={input}
                 value={value}
                 maxLength={256}
                 placeholder="Search messages"
@@ -115,7 +104,7 @@ function SearchField({ value, onChange }: { value: string; onChange: (value: str
                 }}
                 className="min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground"
             />
-            {value ? (
+            {value && (
                 <button
                     type="button"
                     aria-label="Clear search"
@@ -124,15 +113,9 @@ function SearchField({ value, onChange }: { value: string; onChange: (value: str
                 >
                     <X className="size-2.5" />
                 </button>
-            ) : (
-                <kbd className="rounded border px-1.5 font-mono text-[10.5px] text-muted-foreground">/</kbd>
             )}
         </label>
     )
-}
-
-function isTyping(target: EventTarget | null): boolean {
-    return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
 }
 
 function LevelControl({ value, onChange, totals }: { value: LevelChoice; onChange: (value: LevelChoice) => void; totals: LevelCounts | undefined }) {
