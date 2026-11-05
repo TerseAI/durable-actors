@@ -63,8 +63,8 @@ export function LogList({ lines, failed, search, filtered, onFilterRequest, onCl
             return next
         })
     return (
-        <div ref={scroller} className="-mx-2 max-h-[640px] overflow-y-auto px-2">
-            <div className={`${rowGrid} sticky top-0 z-[1] -mx-2 h-7.5 border-b bg-card px-4 text-xs text-muted-foreground`} style={{ gridTemplateColumns: layout.gridTemplateColumns }}>
+        <div ref={scroller} className="max-h-[640px] overflow-y-auto">
+            <div className={`${rowGrid} sticky top-0 z-[1] h-7.5 border-b bg-card px-2 text-xs text-muted-foreground`} style={{ gridTemplateColumns: layout.gridTemplateColumns }}>
                 <span>Time</span>
                 {columns.level && <span>Level</span>}
                 {columns.request && <span>Request</span>}
@@ -133,7 +133,7 @@ type LogRowProps = {
 function LogRow({ line, layout, expanded, onToggle, search, onFilterRequest }: LogRowProps) {
     const parsed = parseLogMessage(line.message)
     return (
-        <li className={cn("-mx-2 border-b border-border/55 px-2 last:border-b-0", rowTint[line.level])}>
+        <li className={cn("border-b border-border/55 px-2 last:border-b-0", rowTint[line.level])}>
             <div onClick={onToggle} className={`${rowGrid} min-h-8.5 cursor-pointer text-[12.5px]`} style={{ gridTemplateColumns: layout.gridTemplateColumns }}>
                 <span className="font-mono text-xs text-muted-foreground tabular-nums">{formatLogClock(line.timestampMs)}</span>
                 {layout.columns.level && (

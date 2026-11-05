@@ -47,12 +47,12 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
     }
     return (
         <div className="mt-4 border-b pb-3.5">
-            <div className="grid grid-cols-[32px_1fr] gap-x-2.5">
-                <ScaleLabels scale={scale} />
+            <div className="relative pt-4">
+                <Gridlines scale={scale} />
                 <div
                     role="img"
                     aria-label={`Log lines per ${formatDuration(bucketMs)}; drag across the chart to zoom into a time range`}
-                    className="relative h-24 cursor-crosshair touch-none select-none"
+                    className="relative ml-[42px] h-24 cursor-crosshair touch-none select-none"
                     onPointerDown={event => {
                         event.currentTarget.setPointerCapture(event.pointerId)
                         dragStart.current = bucketAt(event)
@@ -65,8 +65,6 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
                     onPointerUp={finishDrag}
                     onPointerLeave={() => setHovered(null)}
                 >
-                    <div className="absolute inset-x-0 top-0 border-t border-dashed border-border/80" />
-                    <div className="absolute inset-x-0 top-1/2 border-t border-dashed border-border/80" />
                     <div className="absolute inset-0 flex items-end gap-0.5">
                         {buckets.map((counts, index) => (
                             <Bar key={index} counts={counts} scale={scale} level={level} hovered={index === hovered} />
@@ -88,13 +86,14 @@ function niceScale(peak: number): number {
     }
 }
 
-function ScaleLabels({ scale }: { scale: number }) {
+// Lines span the card's full width; each value sits just above its line, left of the bars.
+function Gridlines({ scale }: { scale: number }) {
     return (
-        <div aria-hidden className="relative h-24 text-right text-[11px] text-muted-foreground tabular-nums">
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-4 h-24">
             {[scale, scale / 2, 0].map((value, index) => (
-                <span key={index} className="absolute right-0 -translate-y-1/2" style={{ top: `${index * 50}%` }}>
-                    {formatCount(value)}
-                </span>
+                <div key={index} className="absolute inset-x-0 border-t border-dashed border-border/80" style={{ top: `${index * 50}%` }}>
+                    <span className="absolute bottom-0.5 left-0 text-[11px] leading-none text-muted-foreground tabular-nums">{formatCount(value)}</span>
+                </div>
             ))}
         </div>
     )
