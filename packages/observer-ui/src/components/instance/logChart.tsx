@@ -1,4 +1,4 @@
-import { type PointerEvent, useRef, useState } from "react"
+import { type PointerEvent, useState } from "react"
 
 import { formatClock, formatCount, formatDuration, formatPlural, formatPreciseClock, formatTick } from "../../format.js"
 import { countAtLeast, logLevels } from "../../lib/logs.js"
@@ -29,7 +29,6 @@ export type LogChartProps = {
 export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
     const [hovered, setHovered] = useState<number | null>(null)
     const [drag, setDrag] = useState<Drag | null>(null)
-    const dragStart = useRef<number | null>(null)
     if (!histogram) return <Skeleton className="mt-4 mb-3.5 h-[122px] w-full rounded-sm" />
     const { buckets, fromMs, bucketMs } = histogram
     const scale = niceScale(Math.max(...buckets.map(counts => countAtLeast(counts, null)), 1))
@@ -38,12 +37,10 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
         return Math.min(buckets.length - 1, Math.max(0, Math.floor(((event.clientX - box.left) / box.width) * buckets.length)))
     }
     const finishDrag = (event: PointerEvent<HTMLDivElement>) => {
-        const start = dragStart.current
         const end = bucketAt(event)
-        dragStart.current = null
         setDrag(null)
-        if (start === null || start === end) return
-        onZoom({ fromMs: fromMs + Math.min(start, end) * bucketMs, toMs: fromMs + (Math.max(start, end) + 1) * bucketMs })
+        if (!drag || drag.from === end) return
+        onZoom({ fromMs: fromMs + Math.min(drag.from, end) * bucketMs, toMs: fromMs + (Math.max(drag.from, end) + 1) * bucketMs })
     }
     return (
         <div className="mt-4 border-b pb-3.5">
@@ -55,12 +52,11 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
                     className="relative ml-[42px] h-24 cursor-crosshair touch-none select-none"
                     onPointerDown={event => {
                         event.currentTarget.setPointerCapture(event.pointerId)
-                        dragStart.current = bucketAt(event)
-                        setDrag({ from: dragStart.current, to: dragStart.current })
+                        setDrag({ from: bucketAt(event), to: bucketAt(event) })
                     }}
                     onPointerMove={event => {
                         setHovered(bucketAt(event))
-                        if (dragStart.current !== null) setDrag({ from: dragStart.current, to: bucketAt(event) })
+                        if (drag) setDrag({ ...drag, to: bucketAt(event) })
                     }}
                     onPointerUp={finishDrag}
                     onPointerLeave={() => setHovered(null)}

@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useEffect, useRef, useState } from "react"
+import { Fragment, type ReactNode, useState } from "react"
 
 import { Check, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy } from "lucide-react"
 
@@ -18,6 +18,7 @@ type Expansion = { all: boolean; toggled: ReadonlySet<string> }
 
 const rowGrid = "grid items-center gap-x-4"
 const columnGap = 16
+const loadAheadPx = 240
 const widths = { time: 104, level: 58, request: 104 }
 const badge: Record<LogLevel, string> = {
     debug: "border-border/60 text-muted-foreground/70",
@@ -48,14 +49,6 @@ export type LogListProps = {
 export function LogList({ lines, failed, search, filtered, onFilterRequest, onClearFilters, onReachEnd, columns }: LogListProps) {
     const layout = layoutFor(columns)
     const [expansion, setExpansion] = useState<Expansion>({ all: false, toggled: new Set() })
-    const scroller = useRef<HTMLDivElement>(null)
-    const end = useRef<HTMLDivElement>(null)
-    useEffect(() => {
-        if (!onReachEnd || !end.current) return
-        const observer = new IntersectionObserver(entries => entries.some(entry => entry.isIntersecting) && onReachEnd(), { root: scroller.current, rootMargin: "240px" })
-        observer.observe(end.current)
-        return () => observer.disconnect()
-    }, [onReachEnd])
     if (failed) return <p className="py-6 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
     if (!lines) return <ListSkeleton layout={layout} />
     if (!lines.length) return <EmptyList filtered={filtered} onClearFilters={onClearFilters} />
@@ -68,7 +61,13 @@ export function LogList({ lines, failed, search, filtered, onFilterRequest, onCl
             return { all, toggled: next }
         })
     return (
-        <div ref={scroller} className="max-h-[640px] overflow-y-auto">
+        <div
+            className="max-h-[640px] overflow-y-auto"
+            onScroll={event => {
+                const box = event.currentTarget
+                if (onReachEnd && box.scrollHeight - box.scrollTop - box.clientHeight < loadAheadPx) onReachEnd()
+            }}
+        >
             <div className={`${rowGrid} sticky top-0 z-[1] h-7.5 border-b bg-card px-2 text-xs text-muted-foreground`} style={{ gridTemplateColumns: layout.gridTemplateColumns }}>
                 <span>Time</span>
                 {columns.level && <span>Level</span>}
@@ -90,7 +89,6 @@ export function LogList({ lines, failed, search, filtered, onFilterRequest, onCl
                     <LogRow key={line.logId} line={line} layout={layout} expanded={isExpanded(line.logId)} onToggle={() => toggle(line.logId)} search={search} onFilterRequest={onFilterRequest} />
                 ))}
             </ol>
-            <div ref={end} aria-hidden className="h-px" />
         </div>
     )
 }
