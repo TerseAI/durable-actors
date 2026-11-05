@@ -143,6 +143,7 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
 
 // Inserts with the exporter's column lists, so the schema stays compatible with the collector.
 async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) -> Result<()> {
+    use crate::actor::LogLevel;
     use crate::request_traces::{
         history::HistoryQuery,
         logs::LogQuery,
@@ -202,12 +203,18 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
             project,
             &LogQuery {
                 request_id: Some("request-1".into()),
+                level: Some(LogLevel::Info),
                 ..Default::default()
             },
         )
         .await?;
     assert_eq!(logs.records.len(), 1);
     assert_eq!(logs.records[0].message, "hello");
+    let severe = LogQuery {
+        level: Some(LogLevel::Warn),
+        ..Default::default()
+    };
+    assert!(store.logs(project, &severe).await?.records.is_empty());
     assert_eq!(
         store
             .metrics(project, &TimeRange::default())

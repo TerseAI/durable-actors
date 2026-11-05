@@ -3,6 +3,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 use super::{InvalidTraceQuery, TRACE_CAPACITY, history::HistoryQuery};
+use crate::actor::LogLevel;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +26,8 @@ pub(crate) struct LogQuery {
     pub actor_name: Option<String>,
     pub actor_id: Option<String>,
     pub request_id: Option<String>,
+    /// The least severe level to include.
+    pub level: Option<LogLevel>,
     pub from_ms: Option<u64>,
     pub to_ms: Option<u64>,
     pub limit: Option<usize>,
@@ -59,6 +62,13 @@ impl LogQuery {
                 .request_id
                 .as_ref()
                 .is_none_or(|id| log.request_id.as_ref() == Some(id))
+            && self
+                .levels()
+                .is_none_or(|levels| levels.contains(&log.level.as_str()))
+    }
+
+    pub(crate) fn levels(&self) -> Option<Vec<&'static str>> {
+        self.level.map(LogLevel::and_above)
     }
 
     pub(crate) fn after(&self) -> Result<Option<LogCursor>> {

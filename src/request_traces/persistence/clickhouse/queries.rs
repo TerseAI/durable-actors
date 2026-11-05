@@ -89,6 +89,7 @@ impl ClickHouseTracePersistence {
                 .param("actor_name", query.actor_name.as_deref().unwrap_or(""))
                 .param("actor_id", query.actor_id.as_deref().unwrap_or(""))
                 .param("request_id", query.request_id.as_deref().unwrap_or(""))
+                .param("levels", query.levels().unwrap_or_default().join(","))
                 .param("from", millis(query.from_ms.unwrap_or(0)))
                 .param("to", millis(query.to_ms.unwrap_or(u64::MAX)))
                 .param("has_cursor", after.is_some())

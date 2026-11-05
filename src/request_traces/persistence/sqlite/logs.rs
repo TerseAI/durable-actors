@@ -63,6 +63,12 @@ pub(super) fn query(
         ("actor_id = ?", query.actor_id.clone().map(Value::Text)),
         ("request_id = ?", query.request_id.clone().map(Value::Text)),
         (
+            "json_extract(log, '$.level') IN (SELECT value FROM json_each(?))",
+            query
+                .levels()
+                .map(|levels| Value::Text(serde_json::json!(levels).to_string())),
+        ),
+        (
             "timestamp_ms >= ?",
             query.from_ms.map(|ms| Value::Integer(ms as i64)),
         ),

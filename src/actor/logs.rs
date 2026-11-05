@@ -2,7 +2,7 @@ use std::io::Write;
 
 use serde::Deserialize;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum LogLevel {
     Debug,
@@ -19,6 +19,15 @@ impl LogLevel {
             Self::Warn => "warn",
             Self::Error => "error",
         }
+    }
+
+    /// The names of this level and every more severe one.
+    pub(crate) fn and_above(self) -> Vec<&'static str> {
+        [Self::Debug, Self::Info, Self::Warn, Self::Error]
+            .into_iter()
+            .filter(|level| *level >= self)
+            .map(Self::as_str)
+            .collect()
     }
 }
 

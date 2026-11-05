@@ -9,6 +9,7 @@ WHERE ProjectId = {project:String}
     AND ({actor_name:String} = '' OR ActorName = {actor_name:String})
     AND ({actor_id:String} = '' OR ActorId = {actor_id:String})
     AND ({request_id:String} = '' OR RequestId = {request_id:String})
+    AND ({levels:String} = '' OR has(splitByChar(',', {levels:String}), lower(SeverityText)))
     AND toUnixTimestamp64Milli(Timestamp) BETWEEN {from:Int64} AND {to:Int64}
     AND (NOT {has_cursor:Bool} OR (timestamp_ms, log_id) < ({after_time:UInt64}, {after_id:String}))
 ORDER BY timestamp_ms DESC, log_id DESC

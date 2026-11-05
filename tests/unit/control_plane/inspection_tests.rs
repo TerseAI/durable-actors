@@ -511,9 +511,9 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
 }
 
 #[tokio::test]
-async fn logs_filter_by_request_in_history_and_live_tail() -> Result<()> {
+async fn logs_filter_by_request_and_level_in_history_and_live_tail() -> Result<()> {
     let fixture = Fixture::start().await?;
-    let log = |id: &str, request: Option<&str>| ActorLog {
+    let log = |id: &str, request: Option<&str>, level: &str| ActorLog {
         log_id: id.into(),
         project_id: "default".into(),
         actor_name: "Room".into(),
@@ -521,12 +521,16 @@ async fn logs_filter_by_request_in_history_and_live_tail() -> Result<()> {
         host_id: "host".into(),
         request_id: request.map(str::to_owned),
         timestamp_ms: 1000,
-        level: "info".into(),
+        level: level.into(),
         message: format!("<b>{id}</b>"),
     };
     fixture
         .telemetry
-        .append_logs(vec![log("a", Some("request-1")), log("b", None)])
+        .append_logs(vec![
+            log("a", Some("request-1"), "info"),
+            log("b", None, "error"),
+            log("e", None, "debug"),
+        ])
         .await?;
     let page: Value = fixture
         .get("/v1/projects/default/observe/logs?requestId=request-1")
@@ -536,14 +540,27 @@ async fn logs_filter_by_request_in_history_and_live_tail() -> Result<()> {
         .await?;
     assert_eq!(page["records"].as_array().unwrap().len(), 1);
     assert_eq!(page["records"][0]["message"], "<b>a</b>");
+    let severe: Value = fixture
+        .get("/v1/projects/default/observe/logs?level=warn")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(severe["records"].as_array().unwrap().len(), 1);
+    assert_eq!(severe["records"][0]["logId"], "b");
     let mut stream = fixture
-        .get("/v1/projects/default/observe/logs/events?requestId=request-2")
+        .get("/v1/projects/default/observe/logs/events?requestId=request-2&level=warn")
         .await?
         .error_for_status()?;
     tokio::time::sleep(Duration::from_millis(100)).await;
     fixture.live.publish(
         otlp::live_channel("default", Signal::Logs),
-        log_request(&[log("c", Some("request-1")), log("d", Some("request-2"))]).encode_to_vec(),
+        log_request(&[
+            log("c", Some("request-1"), "error"),
+            log("d", Some("request-2"), "warn"),
+            log("f", Some("request-2"), "info"),
+        ])
+        .encode_to_vec(),
     );
     let tail = stream_inventory(&mut stream).await?;
     assert_eq!(tail["records"].as_array().unwrap().len(), 1);

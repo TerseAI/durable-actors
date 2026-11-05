@@ -645,6 +645,7 @@ paths:
                 - { $ref: "#/components/parameters/LogActorName" }
                 - { $ref: "#/components/parameters/LogActorId" }
                 - { $ref: "#/components/parameters/LogRequestId" }
+                - { $ref: "#/components/parameters/LogLevel" }
                 - { $ref: "#/components/parameters/FromMs" }
                 - { $ref: "#/components/parameters/ToMs" }
                 - name: limit
@@ -683,6 +684,7 @@ paths:
                 - { $ref: "#/components/parameters/LogActorName" }
                 - { $ref: "#/components/parameters/LogActorId" }
                 - { $ref: "#/components/parameters/LogRequestId" }
+                - { $ref: "#/components/parameters/LogLevel" }
             responses:
                 "200": { $ref: "#/components/responses/EventStream" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
@@ -770,6 +772,11 @@ components:
             in: query
             description: Only lines written while this request's invocation ran.
             schema: { type: string, minLength: 1, maxLength: 256 }
+        LogLevel:
+            name: level
+            in: query
+            description: Only lines at this level or more severe. warn returns warn and error lines.
+            schema: { type: string, enum: [debug, info, warn, error] }
         FromMs:
             name: fromMs
             in: query
