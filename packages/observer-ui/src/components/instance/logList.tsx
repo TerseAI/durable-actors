@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react"
 
-import { Check, ChevronRight, Copy } from "lucide-react"
+import { Check, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy } from "lucide-react"
 
 import { formatLogClock, formatPlural } from "../../format.js"
 import { type ParsedMessage, constructorRequestId, parseLogMessage, shortRequestId, summarizeJson } from "../../lib/logs.js"
@@ -12,6 +12,9 @@ import { Skeleton } from "../ui/skeleton.js"
 export type LogColumns = { level: boolean; request: boolean }
 
 type Layout = { columns: LogColumns; gridTemplateColumns: string; messageOffset: number }
+
+// "Expand all" also covers lines that load later; toggled rows are the exceptions to it.
+type Expansion = { all: boolean; toggled: ReadonlySet<string> }
 
 const rowGrid = "grid items-center gap-x-4"
 const columnGap = 16
@@ -44,7 +47,7 @@ export type LogListProps = {
 
 export function LogList({ lines, failed, search, filtered, onFilterRequest, onClearFilters, onReachEnd, columns }: LogListProps) {
     const layout = layoutFor(columns)
-    const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+    const [expansion, setExpansion] = useState<Expansion>({ all: false, toggled: new Set() })
     const scroller = useRef<HTMLDivElement>(null)
     const end = useRef<HTMLDivElement>(null)
     useEffect(() => {
@@ -56,11 +59,13 @@ export function LogList({ lines, failed, search, filtered, onFilterRequest, onCl
     if (failed) return <p className="py-6 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
     if (!lines) return <ListSkeleton layout={layout} />
     if (!lines.length) return <EmptyList filtered={filtered} onClearFilters={onClearFilters} />
+    const isExpanded = (logId: string) => expansion.all !== expansion.toggled.has(logId)
+    const anyExpanded = lines.some(line => isExpanded(line.logId))
     const toggle = (logId: string) =>
-        setExpanded(open => {
-            const next = new Set(open)
+        setExpansion(({ all, toggled }) => {
+            const next = new Set(toggled)
             if (!next.delete(logId)) next.add(logId)
-            return next
+            return { all, toggled: next }
         })
     return (
         <div ref={scroller} className="max-h-[640px] overflow-y-auto">
@@ -68,11 +73,21 @@ export function LogList({ lines, failed, search, filtered, onFilterRequest, onCl
                 <span>Time</span>
                 {columns.level && <span>Level</span>}
                 {columns.request && <span>Request</span>}
-                <span>Message</span>
+                <span className="col-span-2 flex items-center justify-between">
+                    Message
+                    <button
+                        type="button"
+                        onClick={() => setExpansion({ all: !anyExpanded, toggled: new Set() })}
+                        className="flex items-center gap-1 rounded-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                        {anyExpanded ? <ChevronsDownUp className="size-3.5" /> : <ChevronsUpDown className="size-3.5" />}
+                        {anyExpanded ? "Collapse all" : "Expand all"}
+                    </button>
+                </span>
             </div>
             <ol>
                 {lines.map(line => (
-                    <LogRow key={line.logId} line={line} layout={layout} expanded={expanded.has(line.logId)} onToggle={() => toggle(line.logId)} search={search} onFilterRequest={onFilterRequest} />
+                    <LogRow key={line.logId} line={line} layout={layout} expanded={isExpanded(line.logId)} onToggle={() => toggle(line.logId)} search={search} onFilterRequest={onFilterRequest} />
                 ))}
             </ol>
             <div ref={end} aria-hidden className="h-px" />
