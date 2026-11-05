@@ -94,7 +94,7 @@ telemetry:
     enabled: true
 ```
 
-The collector accepts only host tokens and replaces any tenant attributes with the token's verified project, actor, host, and session. An init container derives its public JWKS from `jwt-signing-key`; restart the collector after rotating that key. Sandboxes reach it on port 4317, and sandboxes outside the cluster use the ingress. The control plane creates `otel_traces` and `otel_logs`; the ClickHouse user also needs INSERT on them for the collector.
+The collector accepts only host tokens and replaces any tenant attributes with the token's verified project, actor, host, and session. An init container derives its public JWKS from `jwt-signing-key`; restart the collector after rotating that key. Sandboxes reach it on port 4317, and sandboxes outside the cluster use the ingress. The control plane creates `otel_traces` and `otel_logs`, and the collector inserts into them with the same ClickHouse user. The old `actor_traces` and `actor_trace_status` tables are no longer written and empty out through their TTL; drop them by hand if you want the space back sooner.
 
 ## Usage publishing
 

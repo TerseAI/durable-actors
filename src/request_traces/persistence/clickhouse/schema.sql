@@ -1,6 +1,3 @@
-DROP TABLE IF EXISTS actor_traces;
-DROP TABLE IF EXISTS actor_trace_status;
-
 -- Columns match the OpenTelemetry Collector ClickHouse exporter (v0.163.0), which inserts by name.
 -- Tenant columns come from resource attributes the collector stamps from verified host claims.
 -- Partitioning and retention use the server's insert time so hosts cannot extend either.
