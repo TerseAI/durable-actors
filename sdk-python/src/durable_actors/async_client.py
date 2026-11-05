@@ -17,6 +17,7 @@ from .client import (
     NEVER_SENT,
     ActorInvocationError,
     ActorProtocolError,
+    ActorWarmReply,
     ClientConfiguration,
     SocketGrant,
     component,
@@ -36,6 +37,7 @@ class AsyncActorTransport(AsyncRpcTransport, Protocol):
         self, actor_name: str, actor_id: str, metadata: Any, *, home_region: str | None = None
     ) -> SocketGrant: ...
     async def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None: ...
+    async def warm(self, actor_name: str, actor_id: str) -> ActorWarmReply: ...
 
 
 class AsyncClient(ClientConfiguration):
@@ -176,6 +178,33 @@ class AsyncClient(ClientConfiguration):
                 "outcome_unknown", request_id, "broadcast delivery could not be confirmed"
             ) from error
 
+    async def warm(self, actor_name: str, actor_id: str) -> ActorWarmReply:
+        """Ask the server to start the actor's host before calls arrive."""
+        self._ensure_open()
+        path = self.actor_path(actor_name, actor_id)
+        request_id = str(uuid.uuid4())
+        body: dict[str, Any] = {"homeRegion": self.home_region} if self.home_region else {}
+        try:
+            response = await self._http.post(
+                self.origin + path + "/hint-host-warm",
+                headers={**self.headers, "x-request-id": request_id},
+                json=body,
+                follow_redirects=False,
+            )
+        except httpx.TransportError as error:
+            if not isinstance(error, NEVER_SENT):
+                raise ActorInvocationError(
+                    "outcome_unknown",
+                    request_id,
+                    "warm hint response was lost; the host may be starting",
+                ) from error
+            raise ActorInvocationError(
+                "unavailable", request_id, f"could not connect to {self.origin}: {error}"
+            ) from error
+        if not response.is_success:
+            invocation_response(response, request_id)
+        return ActorWarmReply(status="accepted")
+
     async def get_contract(self) -> dict[str, Any]:
         self._ensure_open()
         response = await self._http.get(
@@ -253,7 +282,19 @@ class _DefaultTransport:
         async with AsyncClient() as client:
             await client.broadcast(actor_name, actor_id, message)
 
+    async def warm(self, actor_name: str, actor_id: str) -> ActorWarmReply:
+        async with AsyncClient() as client:
+            return await client.warm(actor_name, actor_id)
+
 
 def default_async_client() -> AsyncActorTransport:
     """Use a request-scoped transport; inject AsyncClient to reuse a connection pool."""
     return _DefaultTransport()
+
+
+async def warm_async_actor(
+    actor_name: str, actor_id: str, transport: AsyncActorTransport | None = None
+) -> ActorWarmReply:
+    return await (transport if transport is not None else default_async_client()).warm(
+        actor_name, actor_id
+    )

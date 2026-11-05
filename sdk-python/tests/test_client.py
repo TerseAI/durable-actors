@@ -1,4 +1,5 @@
 import errno
+import json
 import os
 import subprocess
 import sys
@@ -6,7 +7,7 @@ import sys
 import httpx
 import pytest
 
-from durable_actors.client import ActorInvocationError, Client
+from durable_actors.client import ActorInvocationError, ActorWarmReply, Client
 
 
 def test_gateway_calls_retry_only_explicit_non_execution():
@@ -123,3 +124,33 @@ assert all(client is clients[0] for client in clients)
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert closed.read_text() == "closed"
+
+
+def test_warm_sends_one_hint_with_the_caller_credential():
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(202, json={"status": "accepted"})
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with Client("http://control.test", project_id="test", api_key="key", http=http) as client:
+            assert client.warm("Counter", "one") == ActorWarmReply(status="accepted")
+    assert [request.url.path for request in calls] == [
+        "/v1/projects/test/actors/Counter/one/hint-host-warm"
+    ]
+    assert calls[0].headers["authorization"] == "Bearer key"
+    assert json.loads(calls[0].content) == {}
+
+
+def test_warm_reports_the_server_error_code():
+    def handle(request):
+        return httpx.Response(
+            409, json={"error": {"code": "conflict", "message": "homeRegion conflicts"}}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with Client("http://control.test", project_id="test", api_key="key", http=http) as client:
+            with pytest.raises(ActorInvocationError) as error:
+                client.warm("Counter", "one")
+    assert error.value.code == "conflict"

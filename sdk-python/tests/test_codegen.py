@@ -569,3 +569,17 @@ async def test_generated_async_client_invokes_and_decodes_shared_models(tmp_path
             result = await actor.echo(message)
     assert type(result) is generated.actors.Echo.Message
     assert result == message
+
+
+def test_generated_warm_uses_the_caller_transport(tmp_path, monkeypatch):
+    generate_client(json.loads(json.dumps(public_contract([Chat]))), tmp_path / "warm_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    module = importlib.import_module("warm_client")
+    warmed = []
+
+    class Warming(Transport):
+        def warm(self, actor_name, actor_id):
+            warmed.append((actor_name, actor_id))
+
+    assert module.actors.Chat.warm("lobby", Warming()) is None
+    assert warmed == [("Chat", "lobby")]

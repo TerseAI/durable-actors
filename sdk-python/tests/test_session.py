@@ -23,6 +23,7 @@ class Transport:
         self.closed = False
         self.entered = Event()
         self.release = Event()
+        self.warmed = []
 
     def invoke(self, actor_name, actor_id, method, args):
         assert not self.closed
@@ -41,6 +42,9 @@ class Transport:
 
     def broadcast(self, actor_name, actor_id, message):
         assert not self.closed
+
+    def warm(self, actor_name, actor_id):
+        self.warmed.append((actor_name, actor_id))
 
     def close(self):
         self.closed = True
@@ -169,3 +173,11 @@ def test_five_minute_session_survives_135_second_idle_without_authorization():
         clock.now += 161
         session.invoke("Chat", "one", "read", [])
         assert len(transports) == 2
+
+
+def test_warm_uses_the_current_session():
+    clock = Clock()
+    session, transports = make_session(clock)
+    with session:
+        assert session.warm("Chat", "one") is None
+        assert transports[0].warmed == [("Chat", "one")]

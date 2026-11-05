@@ -39,6 +39,8 @@ def generate_client(contract: Document, output: Path) -> None:
         "import builtins as _builtins\n"
         "from typing import TypeAlias as _TypeAlias, Literal as _Literal\n"
         "from durable_actors.client import ActorTransport as _ActorTransport\n"
+        "from durable_actors.client import warm_actor as _warm_actor\n"
+        "from durable_actors.client import ActorWarmReply as _ActorWarmReply\n"
         "from durable_actors.generated import Unset as _Unset\n"
         "from durable_actors.proxy import SocketAuthorization as _SocketAuthorization, prepare_authorization as _prepare_authorization\n"
         "from durable_actors.client import SocketGrant as _SocketGrant\n"
@@ -52,6 +54,8 @@ def generate_client(contract: Document, output: Path) -> None:
         "import builtins as _builtins\n"
         "from typing import TypeAlias as _TypeAlias, Literal as _Literal\n"
         "from durable_actors.async_client import AsyncActorTransport as _ActorTransport\n"
+        "from durable_actors.async_client import warm_async_actor as _warm_actor\n"
+        "from durable_actors.client import ActorWarmReply as _ActorWarmReply\n"
         "from durable_actors.generated import Unset as _Unset\n"
         "from durable_actors.proxy import prepare_async_authorization as _prepare_authorization\n"
         "from durable_actors.client import SocketGrant as _SocketGrant\n"
@@ -232,6 +236,8 @@ def actor_namespace(
         "",
         *get_method(client, stub, asynchronous),
         "",
+        *warm_method(name, asynchronous),
+        "",
         *authorization_methods(name, types, model, asynchronous),
         "",
         *method_namespace(actor, types, model),
@@ -249,7 +255,7 @@ def namespace_aliases(
             for kind in ("Metadata", "Incoming", "Outgoing", "State", "EmittedState", "StatePatch")
         },
     }
-    reserved = {*aliases, "Methods", "get", "Authorization", "prepare_websocket"}
+    reserved = {*aliases, "Methods", "get", "warm", "Authorization", "prepare_websocket"}
     state_models = {
         types["Socket" + kind].removeprefix("_models.")
         for kind in ("State", "EmittedState", "StatePatch")
@@ -281,6 +287,24 @@ def get_method(client: str, stub: str, asynchronous: bool) -> list[str]:
             8,
         ),
         f"        return {client}.{stub}(actor_id, transport)",
+    ]
+
+
+def warm_method(name: str, asynchronous: bool) -> list[str]:
+    prefix = "async " if asynchronous else ""
+    awaited = "await " if asynchronous else ""
+    return [
+        "    @_builtins.staticmethod",
+        f"    {prefix}def warm(actor_id: _builtins.str, transport: _ActorTransport | None = None) -> _ActorWarmReply:",
+        docstring(
+            "Ask the server to start this actor's host before calls arrive.\n\n"
+            "Args:\n"
+            "    actor_id: Identity of the actor to warm.\n"
+            "    transport: Optional caller-owned transport. Uses the SDK-managed\n"
+            "        transport when omitted.",
+            8,
+        ),
+        f"        return {awaited}_warm_actor({name!r}, actor_id, transport)",
     ]
 
 

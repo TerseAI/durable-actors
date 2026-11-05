@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from threading import Lock
 from types import TracebackType
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -70,6 +70,16 @@ class SocketGrant(BaseModel):
     connect_by_ms: int
 
 
+class ActorWarmReply(BaseModel):
+    """Server acknowledgement of a warm hint.
+
+    Attributes:
+        status: The hint's status.
+    """
+
+    status: Literal["accepted"]
+
+
 class RpcTransport(Protocol):
     """Synchronous RPC boundary implemented by Client and custom transports."""
 
@@ -77,7 +87,7 @@ class RpcTransport(Protocol):
 
 
 class ActorTransport(RpcTransport, Protocol):
-    """Transport supporting synchronous RPCs, WebSocket authorization, and broadcasts."""
+    """Transport supporting synchronous RPCs, WebSocket authorization, broadcasts, and warms."""
 
     def prepare_websocket(
         self,
@@ -89,6 +99,8 @@ class ActorTransport(RpcTransport, Protocol):
     ) -> SocketGrant: ...
 
     def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None: ...
+
+    def warm(self, actor_name: str, actor_id: str) -> ActorWarmReply: ...
 
 
 class ClientConfiguration:
@@ -315,6 +327,43 @@ class Client(ClientConfiguration):
                 "outcome_unknown", request_id, "broadcast delivery could not be confirmed"
             ) from error
 
+    def warm(self, actor_name: str, actor_id: str) -> ActorWarmReply:
+        """Ask the server to start the actor's host before calls arrive.
+
+        Args:
+            actor_name: Exported actor class name.
+            actor_id: Identity of the actor instance.
+
+        Raises:
+            ActorInvocationError: The hint was rejected, could not be sent, or its reply was lost.
+
+        Returns as soon as the server accepts the hint; the host starts in the background.
+        """
+        self._ensure_open()
+        path = self.actor_path(actor_name, actor_id)
+        request_id = str(uuid.uuid4())
+        body: dict[str, Any] = {"homeRegion": self.home_region} if self.home_region else {}
+        try:
+            response = self._http.post(
+                self.origin + path + "/hint-host-warm",
+                headers={**self.headers, "x-request-id": request_id},
+                json=body,
+                follow_redirects=False,
+            )
+        except httpx.TransportError as error:
+            if not isinstance(error, NEVER_SENT):
+                raise ActorInvocationError(
+                    "outcome_unknown",
+                    request_id,
+                    "warm hint response was lost; the host may be starting",
+                ) from error
+            raise ActorInvocationError(
+                "unavailable", request_id, f"could not connect to {self.origin}: {error}"
+            ) from error
+        if not response.is_success:
+            invocation_response(response, request_id)
+        return ActorWarmReply(status="accepted")
+
     def get_contract(self) -> dict[str, Any]:
         """Fetch the published actor contract used to generate typed clients."""
         self._ensure_open()
@@ -387,6 +436,12 @@ def default_client() -> Client:
             _shared_client = Client()
             atexit.register(_shared_client.close)
         return _shared_client
+
+
+def warm_actor(
+    actor_name: str, actor_id: str, transport: ActorTransport | None = None
+) -> ActorWarmReply:
+    return (transport if transport is not None else default_client()).warm(actor_name, actor_id)
 
 
 def component(value: str, maximum: int) -> str:

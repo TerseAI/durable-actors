@@ -14,7 +14,15 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
-from .client import ActorTransport, Client, SocketGrant, component, validate_origin
+from .client import (
+    ActorTransport,
+    ActorWarmReply,
+    Client,
+    SocketGrant,
+    component,
+    validate_origin,
+    warm_actor,
+)
 
 
 class ActorSession(BaseModel):
@@ -86,6 +94,11 @@ class ActorSessionTransport:
         """Invoke using a current session, refreshing before expiry when needed."""
         with self._acquire() as client:
             return client.invoke(actor_name, actor_id, method, args)
+
+    def warm(self, actor_name: str, actor_id: str) -> ActorWarmReply:
+        """Warm using a current session, refreshing before expiry when needed."""
+        with self._acquire() as client:
+            return warm_actor(actor_name, actor_id, client)
 
     def prepare_websocket(
         self,

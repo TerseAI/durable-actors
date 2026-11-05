@@ -9,6 +9,7 @@ from .async_connection import AsyncConnection as AsyncConnection
 from .client import ActorInvocationError as ActorInvocationError
 from .client import ActorProtocolError as ActorProtocolError
 from .client import ActorTransport as ActorTransport
+from .client import ActorWarmReply as ActorWarmReply
 from .client import Client as Client
 from .client import SocketGrant as SocketGrant
 from .compute import ComputeOptions as ComputeOptions
