@@ -1,9 +1,14 @@
-import { formatMs, formatMsValue, formatPreciseDateTime } from "../../format.js"
+import { useData } from "../../client/DatatContext.js"
+import { formatLogClock, formatMs, formatMsValue, formatPreciseDateTime } from "../../format.js"
+import { useRequestLogs } from "../../hooks/useLogs.js"
 import { serviceTime } from "../../lib/requestStats.js"
 import { cn } from "../../lib/utils.js"
 import type { RequestOutcome, RequestTrace } from "../../types/Requests.js"
 import { DrawerDescription, DrawerHeader, DrawerTitle } from "../ui/drawer.js"
 import { QueueStripes } from "../ui/queueStripes.js"
+import { Skeleton } from "../ui/skeleton.js"
+
+import { LogLevelBadge, LogMessage } from "./logList.js"
 
 const outcomeLabels: Record<RequestOutcome, string> = { completed: "Completed", failed: "Failed", rejected: "Rejected", rerouted: "Rerouted", interrupted: "Interrupted" }
 const kindLabels: Record<RequestTrace["kind"], string> = { method: "Method", websocket: "WebSocket" }
@@ -73,7 +78,39 @@ function RequestFacts({ call, blocker }: { call: RequestTrace; blocker: RequestT
                 <Detail label="Session" value={call.sessionId} mono />
                 {call.connectionId && <Detail label="Connection" value={call.connectionId} mono />}
             </dl>
+            <RequestLogs call={call} />
         </div>
+    )
+}
+
+function RequestLogs({ call }: { call: RequestTrace }) {
+    const { baseUrl } = useData()
+    const { data, error } = useRequestLogs(baseUrl, call)
+    const lines = data && [...data.records].reverse()
+    return (
+        <section aria-label="Logs" className="mt-6">
+            <h3 className="text-[13px] font-medium">Logs</h3>
+            {data?.nextCursor && <p className="mt-1 text-xs text-muted-foreground">Showing the last {lines!.length} lines.</p>}
+            {error ? (
+                <p className="mt-2 text-xs text-muted-foreground">Couldn't load this request's logs.</p>
+            ) : !lines ? (
+                <Skeleton className="mt-3 h-16 w-full rounded-sm" />
+            ) : lines.length === 0 ? (
+                <p className="mt-2 text-xs text-muted-foreground">This request didn't log anything.</p>
+            ) : (
+                <ol className="mt-2 border-t border-border/60">
+                    {lines.map(line => (
+                        <li key={line.logId} className="border-b border-border/60 py-2.5">
+                            <div className="mb-1 flex items-center gap-2">
+                                <span className="font-mono text-[11px] text-muted-foreground tabular-nums">{formatLogClock(line.timestampMs)}</span>
+                                <LogLevelBadge level={line.level} />
+                            </div>
+                            <LogMessage message={line.message} />
+                        </li>
+                    ))}
+                </ol>
+            )}
+        </section>
     )
 }
 

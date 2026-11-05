@@ -34,10 +34,9 @@ export type RequestsCardProps = {
     requests: RequestTrace[] | null
     failed: boolean
     timeWindow: TimeWindow
-    onSelectRequest?: (requestId: string) => void
 }
 
-export function RequestsCard({ requests, failed, timeWindow, onSelectRequest }: RequestsCardProps) {
+export function RequestsCard({ requests, failed, timeWindow }: RequestsCardProps) {
     const [picked, setPicked] = useState<number | null>(null)
     const drawer = useDrawer()
 
@@ -48,7 +47,6 @@ export function RequestsCard({ requests, failed, timeWindow, onSelectRequest }: 
     const calls = inSlice?.slice(-callLimit)
 
     function inspect(call: RequestTrace, element: HTMLElement) {
-        onSelectRequest?.(call.requestId)
         if (drawer.openKey === call.eventId) return drawer.close()
         const blocker = traces ? blockerOf(call, traces) : undefined
         drawer.show({ key: call.eventId, content: <RequestDetails call={call} blocker={blocker} /> }, element)

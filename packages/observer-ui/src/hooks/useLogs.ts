@@ -7,12 +7,15 @@ import { HttpObserverClient } from "../client/observerClient.js"
 import { subscribeToLogs } from "../client/streams/logStream.js"
 import { alignBounds, chartBucketMs } from "../lib/logs.js"
 import type { ActorLog, ActorLogPage, LogFilter } from "../types/Logs.js"
+import type { RequestTrace } from "../types/Requests.js"
 import type { TimeWindow } from "../types/TimeRange.js"
 
 import { currentBounds, windowKey } from "./useWindowedSWR.js"
 
 const liveRefreshMs = 5_000
 const streamedLimit = 2_000
+// Spans and log lines share the host's clock; the slack only absorbs millisecond rounding.
+const requestSlackMs = 1_000
 
 export function useLogs(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter) {
     const history = useLogHistory(baseUrl, timeWindow, filter)
@@ -27,6 +30,12 @@ export function useLogs(baseUrl: string, timeWindow: TimeWindow, filter: LogFilt
         histogram,
         isError: !pages && Boolean(history.error)
     }
+}
+
+export function useRequestLogs(baseUrl: string, call: RequestTrace) {
+    const filter: LogFilter = { actorName: call.actorName, actorId: call.actorId, requestId: call.requestId, level: null, search: "" }
+    const bounds = { fromMs: Math.floor(call.startedAtMs) - requestSlackMs, toMs: Math.ceil(call.startedAtMs + call.durationMs) + requestSlackMs }
+    return useSWR([...logsKey(baseUrl, filter), bounds.fromMs, bounds.toMs], () => new HttpObserverClient(baseUrl).listLogs(filter, bounds, null))
 }
 
 function useLogHistory(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter) {

@@ -74,7 +74,7 @@ export function InstancePage() {
                         {/* <StorageCard storage={resources?.storage ?? null} failed={isError} />
                         <MemoryCard memory={resources?.memory ?? null} loading={!instance && !isError} failed={isError} /> */}
                     </div>
-                    <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} onSelectRequest={setLogRequestId} />
+                    <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} />
                     <ConnectionsCard
                         instance={instance}
                         sessions={ownSessions}
