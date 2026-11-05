@@ -2,8 +2,8 @@ DROP TABLE IF EXISTS actor_traces;
 DROP TABLE IF EXISTS actor_trace_status;
 
 -- Columns match the OpenTelemetry Collector ClickHouse exporter (v0.163.0), which inserts by name.
--- Tenant columns come from resource attributes the collector stamps from verified host claims;
--- partitioning and retention use the server's insert time so hosts cannot extend either.
+-- Tenant columns come from resource attributes the collector stamps from verified host claims.
+-- Partitioning and retention use the server's insert time so hosts cannot extend either.
 CREATE TABLE IF NOT EXISTS otel_traces (
     Timestamp DateTime64(9) CODEC(Delta, ZSTD(1)),
     TraceId String CODEC(ZSTD(1)),
