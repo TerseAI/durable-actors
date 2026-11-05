@@ -10,8 +10,6 @@ import type { RequestTrace } from "../../types/Requests.js"
 import { Button } from "../ui/button.js"
 import { Skeleton } from "../ui/skeleton.js"
 
-type Json = NonNullable<ParsedMessage["json"]> | string | number | boolean | null
-
 export type LogColumns = { level: boolean; request: boolean }
 
 type Layout = { columns: LogColumns; gridTemplateColumns: string; messageOffset: number }
@@ -31,6 +29,8 @@ const rowTint: Record<LogLevel, string> = {
     warn: "shadow-[inset_2px_0_0_color-mix(in_oklab,var(--warning)_75%,transparent)]",
     error: "bg-[linear-gradient(90deg,color-mix(in_oklab,var(--danger)_10%,transparent),transparent_70%)] shadow-[inset_2px_0_0_var(--danger)]"
 }
+// A quoted key with its colon, a quoted string, or a number, boolean, or null in pretty-printed JSON.
+const jsonToken = /("(?:\\.|[^"\\])*")(?=\s*:)\s*:|("(?:\\.|[^"\\])*")|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/gu
 const kindLabels: Record<RequestTrace["kind"], string> = { method: "RPC", websocket: "WebSocket" }
 
 export type LogListProps = {
@@ -277,32 +277,26 @@ function MessageBlock({ message, level, search }: { message: string; level: LogL
     )
 }
 
-function JsonBlock({ value }: { value: Json }) {
-    return (
-        <div className="max-h-96 overflow-auto rounded-lg border bg-(--code-bg) px-3.5 py-2.5 font-mono text-xs leading-relaxed">
-            <JsonNode value={value} />
-        </div>
-    )
+function JsonBlock({ value }: { value: NonNullable<ParsedMessage["json"]> }) {
+    return <pre className="max-h-96 overflow-auto rounded-lg border bg-(--code-bg) px-3.5 py-2.5 font-mono text-xs leading-relaxed">{highlightJson(JSON.stringify(value, null, 2))}</pre>
 }
 
-function JsonNode({ value }: { value: Json }): ReactNode {
-    if (value === null || typeof value !== "object") return <span className={typeof value === "string" ? "text-(--tk-string)" : "text-(--tk-type)"}>{JSON.stringify(value)}</span>
-    const entries: [string | null, Json][] = Array.isArray(value) ? value.map(item => [null, item]) : Object.entries(value)
-    const [open, close] = Array.isArray(value) ? ["[", "]"] : ["{", "}"]
-    if (!entries.length) return <span className="text-muted-foreground">{`${open}${close}`}</span>
-    return (
-        <>
-            <span className="text-muted-foreground">{open}</span>
-            {entries.map(([key, item], index) => (
-                <div key={key ?? index} className="pl-4">
-                    {key !== null && <span className="text-(--tk-plain)">{key}: </span>}
-                    <JsonNode value={item} />
-                    {index < entries.length - 1 && <span className="text-muted-foreground">,</span>}
-                </div>
-            ))}
-            <span className="text-muted-foreground">{close}</span>
-        </>
-    )
+function highlightJson(text: string): ReactNode[] {
+    const parts: ReactNode[] = []
+    let at = 0
+    for (const match of text.matchAll(jsonToken)) {
+        const [token, key, string] = match
+        parts.push(
+            text.slice(at, match.index),
+            <span key={match.index} className={key ? "text-(--tk-plain)" : string ? "text-(--tk-string)" : "text-(--tk-type)"}>
+                {key ?? token}
+            </span>
+        )
+        if (key) parts.push(token.slice(key.length))
+        at = match.index + token.length
+    }
+    parts.push(text.slice(at))
+    return parts
 }
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {
