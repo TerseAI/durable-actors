@@ -9,16 +9,6 @@ const dateTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeri
 const preciseClock = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })
 const preciseDateTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })
 const logClock = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, hourCycle: "h23" })
-const logTime = new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    fractionalSecondDigits: 3,
-    hourCycle: "h23",
-    timeZoneName: "short"
-})
 
 const timeSpan = (day: Intl.DateTimeFormat, time: Intl.DateTimeFormat) => (fromMs: number, toMs: number) =>
     `${day.format(fromMs)} – ${new Date(fromMs).toDateString() === new Date(toMs).toDateString() ? time.format(toMs) : day.format(toMs)}`
@@ -29,7 +19,6 @@ export const formatTick = (ms: number, spanMs: number) => (spanMs < 86_400_000 ?
 export const formatTimeSpan = timeSpan(dateTime, clock)
 export const formatPreciseTimeSpan = timeSpan(preciseDateTime, preciseClock)
 export const formatLogClock = (ms: number) => logClock.format(ms)
-export const formatLogTime = (ms: number) => logTime.format(ms)
 export const formatCount = (value: number) => count.format(value)
 export const formatDecimal = (value: number) => decimal.format(value)
 export const formatPercent = (ratio: number) => percent.format(ratio)

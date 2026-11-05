@@ -79,7 +79,6 @@ export function LogsCard({ actorName, actorId, requests, requestId, onRequestCha
                 lines={logs.lines}
                 failed={logs.isError}
                 search={search}
-                calls={calls}
                 filtered={Boolean(requestId || search || minimum)}
                 onFilterRequest={onRequestChange}
                 onClearFilters={clearFilters}

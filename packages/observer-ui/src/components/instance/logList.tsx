@@ -2,11 +2,10 @@ import { Fragment, type ReactNode, useEffect, useRef, useState } from "react"
 
 import { Check, ChevronRight, Copy, ListFilter } from "lucide-react"
 
-import { formatLogClock, formatLogTime, formatMs, formatPlural } from "../../format.js"
+import { formatLogClock, formatPlural } from "../../format.js"
 import { type ParsedMessage, constructorRequestId, parseLogMessage, shortRequestId, summarizeJson } from "../../lib/logs.js"
 import { cn } from "../../lib/utils.js"
 import type { ActorLog, LogLevel } from "../../types/Logs.js"
-import type { RequestTrace } from "../../types/Requests.js"
 import { Button } from "../ui/button.js"
 import { Skeleton } from "../ui/skeleton.js"
 
@@ -31,13 +30,11 @@ const rowTint: Record<LogLevel, string> = {
 }
 // A quoted key with its colon, a quoted string, or a number, boolean, or null in pretty-printed JSON.
 const jsonToken = /("(?:\\.|[^"\\])*")(?=\s*:)\s*:|("(?:\\.|[^"\\])*")|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/gu
-const kindLabels: Record<RequestTrace["kind"], string> = { method: "RPC", websocket: "WebSocket" }
 
 export type LogListProps = {
     lines: ActorLog[] | null
     failed: boolean
     search: string
-    calls: Map<string, RequestTrace>
     filtered: boolean
     onFilterRequest: (requestId: string) => void
     onClearFilters: () => void
@@ -45,7 +42,7 @@ export type LogListProps = {
     columns: LogColumns
 }
 
-export function LogList({ lines, failed, search, calls, filtered, onFilterRequest, onClearFilters, onReachEnd, columns }: LogListProps) {
+export function LogList({ lines, failed, search, filtered, onFilterRequest, onClearFilters, onReachEnd, columns }: LogListProps) {
     const layout = layoutFor(columns)
     const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
     const scroller = useRef<HTMLDivElement>(null)
@@ -75,16 +72,7 @@ export function LogList({ lines, failed, search, calls, filtered, onFilterReques
             </div>
             <ol>
                 {lines.map(line => (
-                    <LogRow
-                        key={line.logId}
-                        line={line}
-                        layout={layout}
-                        expanded={expanded.has(line.logId)}
-                        onToggle={() => toggle(line.logId)}
-                        search={search}
-                        call={line.requestId ? calls.get(line.requestId) : undefined}
-                        onFilterRequest={onFilterRequest}
-                    />
+                    <LogRow key={line.logId} line={line} layout={layout} expanded={expanded.has(line.logId)} onToggle={() => toggle(line.logId)} search={search} onFilterRequest={onFilterRequest} />
                 ))}
             </ol>
             <div ref={end} aria-hidden className="h-px" />
@@ -139,11 +127,10 @@ type LogRowProps = {
     expanded: boolean
     onToggle: () => void
     search: string
-    call: RequestTrace | undefined
     onFilterRequest: (requestId: string) => void
 }
 
-function LogRow({ line, layout, expanded, onToggle, search, call, onFilterRequest }: LogRowProps) {
+function LogRow({ line, layout, expanded, onToggle, search, onFilterRequest }: LogRowProps) {
     const parsed = parseLogMessage(line.message)
     return (
         <li className={cn("-mx-2 border-b border-border/55 px-2 last:border-b-0", rowTint[line.level])}>
@@ -167,7 +154,7 @@ function LogRow({ line, layout, expanded, onToggle, search, call, onFilterReques
                     <ChevronRight className={cn("size-3.5 transition-transform", expanded && "rotate-90")} />
                 </button>
             </div>
-            {expanded && <LogDetail line={line} parsed={parsed} search={search} call={call} indent={layout.messageOffset} onFilterRequest={onFilterRequest} />}
+            {expanded && <LogDetail line={line} parsed={parsed} indent={layout.messageOffset} onFilterRequest={onFilterRequest} />}
         </li>
     )
 }
@@ -229,33 +216,23 @@ function JsonPreview({ value, search }: { value: NonNullable<ParsedMessage["json
     )
 }
 
-type LogDetailProps = { line: ActorLog; parsed: ParsedMessage; search: string; call: RequestTrace | undefined; indent: number; onFilterRequest: (requestId: string) => void }
+type LogDetailProps = { line: ActorLog; parsed: ParsedMessage; indent: number; onFilterRequest: (requestId: string) => void }
 
-function LogDetail({ line, parsed, search, call, indent, onFilterRequest }: LogDetailProps) {
+function LogDetail({ line, parsed, indent, onFilterRequest }: LogDetailProps) {
     const requestId = line.requestId !== constructorRequestId ? line.requestId : null
+    const entry = {
+        timestamp: new Date(line.timestampMs).toISOString(),
+        level: line.level,
+        actorName: line.actorName,
+        actorId: line.actorId,
+        requestId: line.requestId,
+        message: parsed.json ?? line.message
+    }
     return (
         <div className="pr-6 pb-4" style={{ paddingLeft: indent }}>
-            {parsed.json ? <JsonBlock value={parsed.json} /> : <MessageBlock message={line.message} level={line.level} search={search} />}
-            <dl className="mt-3.5 grid grid-cols-2 gap-x-6 gap-y-3 text-xs">
-                <Detail label="Time">{formatLogTime(line.timestampMs)}</Detail>
-                <Detail label="Request">
-                    {requestId ? <span className="font-mono">{requestId}</span> : line.requestId ? "Constructor, while the actor was loading" : "None; logged after its call returned"}
-                </Detail>
-                {call && (
-                    <Detail label="Call">
-                        {call.operation}
-                        <span className="text-muted-foreground">
-                            {" "}
-                            · {kindLabels[call.kind]} · {call.outcome} after {formatMs(call.durationMs)}
-                        </span>
-                    </Detail>
-                )}
-                <Detail label="Actor">
-                    {line.actorName} / {line.actorId}
-                </Detail>
-            </dl>
-            <div className="mt-3.5 flex gap-2">
-                <CopyButton text={line.message} />
+            <JsonBlock value={entry} />
+            <div className="mt-3 flex gap-2">
+                <CopyButton text={JSON.stringify(entry, null, 2)} />
                 {requestId && (
                     <Button variant="outline" size="xs" onClick={() => onFilterRequest(requestId)}>
                         <ListFilter />
@@ -267,18 +244,12 @@ function LogDetail({ line, parsed, search, call, indent, onFilterRequest }: LogD
     )
 }
 
-function MessageBlock({ message, level, search }: { message: string; level: LogLevel; search: string }) {
-    const [first = "", ...rest] = message.split("\n")
+function JsonBlock({ value }: { value: unknown }) {
     return (
-        <pre className="max-h-96 overflow-auto rounded-lg border bg-(--code-bg) px-3.5 py-2.5 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-foreground/95">
-            <span className={cn(level === "error" && "text-danger")}>{highlight(first, search)}</span>
-            {rest.length > 0 && `\n${rest.join("\n")}`}
+        <pre className="max-h-96 overflow-auto rounded-lg border bg-(--code-bg) px-3.5 py-2.5 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap">
+            {highlightJson(JSON.stringify(value, null, 2))}
         </pre>
     )
-}
-
-function JsonBlock({ value }: { value: NonNullable<ParsedMessage["json"]> }) {
-    return <pre className="max-h-96 overflow-auto rounded-lg border bg-(--code-bg) px-3.5 py-2.5 font-mono text-xs leading-relaxed">{highlightJson(JSON.stringify(value, null, 2))}</pre>
 }
 
 function highlightJson(text: string): ReactNode[] {
@@ -299,15 +270,6 @@ function highlightJson(text: string): ReactNode[] {
     return parts
 }
 
-function Detail({ label, children }: { label: string; children: ReactNode }) {
-    return (
-        <div className="min-w-0">
-            <dt className="mb-0.5 text-muted-foreground">{label}</dt>
-            <dd className="truncate text-foreground/95">{children}</dd>
-        </div>
-    )
-}
-
 function CopyButton({ text }: { text: string }) {
     const [copied, setCopied] = useState(false)
     return (
@@ -322,7 +284,7 @@ function CopyButton({ text }: { text: string }) {
             }
         >
             {copied ? <Check /> : <Copy />}
-            {copied ? "Copied" : "Copy message"}
+            {copied ? "Copied" : "Copy JSON"}
         </Button>
     )
 }
