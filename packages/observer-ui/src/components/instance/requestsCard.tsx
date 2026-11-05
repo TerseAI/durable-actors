@@ -31,9 +31,10 @@ export type RequestsCardProps = {
     requests: RequestTrace[] | null
     failed: boolean
     timeWindow: TimeWindow
+    onSelectRequest?: (requestId: string) => void
 }
 
-export function RequestsCard({ requests, failed, timeWindow }: RequestsCardProps) {
+export function RequestsCard({ requests, failed, timeWindow, onSelectRequest }: RequestsCardProps) {
     const [picked, setPicked] = useState<number | null>(null)
     const traces = requests && countable(requests)
     const counts = traces && requestCounts(traces, timeWindow)
@@ -47,7 +48,7 @@ export function RequestsCard({ requests, failed, timeWindow }: RequestsCardProps
             ) : counts && selected !== null && inSlice && calls ? (
                 <>
                     <SliceHistogram counts={counts} selected={selected} onSelect={setPicked} timeWindow={timeWindow} />
-                    <Waterfall calls={calls} total={inSlice.length} />
+                    <Waterfall calls={calls} total={inSlice.length} onSelectRequest={onSelectRequest} />
                 </>
             ) : (
                 <WaterfallSkeleton />
@@ -111,7 +112,7 @@ function SliceHistogram({ counts, selected, onSelect, timeWindow }: SliceHistogr
     )
 }
 
-function Waterfall({ calls, total }: { calls: RequestTrace[]; total: number }) {
+function Waterfall({ calls, total, onSelectRequest }: { calls: RequestTrace[]; total: number; onSelectRequest?: (requestId: string) => void }) {
     if (!calls.length) return <p className="py-6 text-[13px] text-muted-foreground">No requests in this slice.</p>
     const origin = calls[0]!.startedAtMs
     const scale = waterfallScale(extentMs(calls))
@@ -121,7 +122,7 @@ function Waterfall({ calls, total }: { calls: RequestTrace[]; total: number }) {
             <WaterfallAxis scale={scale} />
             <ol>
                 {rows.map(row => (
-                    <MethodRow key={row.key} row={row} calls={calls} origin={origin} scale={scale} />
+                    <MethodRow key={row.key} row={row} calls={calls} origin={origin} scale={scale} onSelectRequest={onSelectRequest} />
                 ))}
             </ol>
             <WaterfallFooter calls={calls} methods={rows.length} total={total} />
@@ -175,9 +176,9 @@ function WaterfallAxis({ scale: { spanMs, ticks, unit } }: { scale: Scale }) {
     )
 }
 
-type MethodRowProps = { row: MethodCalls; calls: RequestTrace[]; origin: number; scale: Scale }
+type MethodRowProps = { row: MethodCalls; calls: RequestTrace[]; origin: number; scale: Scale; onSelectRequest?: (requestId: string) => void }
 
-function MethodRow({ row, calls, origin, scale }: MethodRowProps) {
+function MethodRow({ row, calls, origin, scale, onSelectRequest }: MethodRowProps) {
     const failed = row.calls.some(isFailed)
     const avgWait = averageOf(row.calls, queueTime) ?? 0
     const avgRun = averageOf(row.calls, serviceTime) ?? 0
@@ -193,6 +194,7 @@ function MethodRow({ row, calls, origin, scale }: MethodRowProps) {
                 calls={calls}
                 origin={origin}
                 scale={scale}
+                onSelectRequest={onSelectRequest}
             />
             <span className={cn("text-right", failed ? "text-danger" : "text-foreground/90")}>{formatCount(row.calls.length)}</span>
             <span className="text-right text-muted-foreground">{formatMs(avgWait)}</span>
@@ -215,7 +217,7 @@ function KindBadge({ kind }: { kind: RequestTrace["kind"] }) {
 
 type MethodTrackProps = MethodRowProps & { label: string }
 
-function MethodTrack({ label, row, calls, origin, scale: { spanMs, ticks } }: MethodTrackProps) {
+function MethodTrack({ label, row, calls, origin, scale: { spanMs, ticks }, onSelectRequest }: MethodTrackProps) {
     const at = (ms: number) => `${(ms / spanMs) * 100}%`
     return (
         <div
@@ -225,7 +227,14 @@ function MethodTrack({ label, row, calls, origin, scale: { spanMs, ticks } }: Me
             style={{ backgroundSize: `${100 / (ticks.length - 1)}% 100%` }}
         >
             {row.calls.map(call => (
-                <CallBar key={call.eventId} call={call} blocker={blockerOf(call, calls)} left={at(call.startedAtMs - origin)} width={at(call.durationMs)} />
+                <CallBar
+                    key={call.eventId}
+                    call={call}
+                    blocker={blockerOf(call, calls)}
+                    left={at(call.startedAtMs - origin)}
+                    width={at(call.durationMs)}
+                    onSelect={onSelectRequest && (() => onSelectRequest(call.requestId))}
+                />
             ))}
         </div>
     )
@@ -236,28 +245,37 @@ function blockerOf(call: RequestTrace, calls: RequestTrace[]): RequestTrace | un
     return calls.find(other => other !== call && other.startedAtMs + (other.queueWaitMs ?? 0) <= call.startedAtMs && call.startedAtMs < other.startedAtMs + other.durationMs)
 }
 
-type CallBarProps = { call: RequestTrace; blocker: RequestTrace | undefined; left: string; width: string }
+type CallBarProps = { call: RequestTrace; blocker: RequestTrace | undefined; left: string; width: string; onSelect?: () => void }
 
-function CallBar({ call, blocker, left, width }: CallBarProps) {
+function CallBar({ call, blocker, left, width, onSelect }: CallBarProps) {
     const queueShare = call.durationMs > 0 ? (call.queueWaitMs ?? 0) / call.durationMs : 0
     const failed = isFailed(call)
     return (
         <Tooltip>
             <TooltipTrigger asChild>
-                <span className="group absolute top-1/2 flex h-3 min-w-0.75 -translate-y-1/2 before:absolute before:-inset-y-2 before:inset-x-0" style={{ left, width }}>
+                <button
+                    type="button"
+                    onClick={onSelect}
+                    className={cn(
+                        "group absolute top-1/2 flex h-3 min-w-0.75 -translate-y-1/2 outline-none before:absolute before:-inset-y-2 before:inset-x-0",
+                        onSelect ? "cursor-pointer" : "cursor-default"
+                    )}
+                    style={{ left, width }}
+                >
                     {queueShare > 0 && <span className={`h-full rounded-l-[2px] ${queueStripes}`} style={{ width: `${queueShare * 100}%` }} />}
                     <span
                         className={cn(
-                            "h-full min-w-0.75 flex-1 rounded-[2px] outline-offset-2 group-hover:outline-2 group-hover:outline-foreground",
+                            "h-full min-w-0.75 flex-1 rounded-[2px] outline-offset-2 group-hover:outline-2 group-hover:outline-foreground group-focus-visible:outline-2 group-focus-visible:outline-ring",
                             queueShare > 0 && "rounded-l-none",
                             failed ? "bg-danger" : "bg-foreground"
                         )}
                     />
                     {failed && <span className="absolute top-1/2 left-full ml-2 -translate-y-1/2 text-[11px] whitespace-nowrap text-danger">{outcomeLabels[call.outcome]}</span>}
-                </span>
+                </button>
             </TooltipTrigger>
             <TooltipContent className="tabular-nums">
                 <CallDetail call={call} blocker={blocker} />
+                {onSelect && <span className="font-medium"> · Click to filter logs to this request</span>}
             </TooltipContent>
         </Tooltip>
     )
