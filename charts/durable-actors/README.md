@@ -82,7 +82,19 @@ Store `clickhouse-password` in `credentialsSecret`. Precreate the database and g
 
 For an existing installation, first deploy lifecycle-capable control planes, then upgrade the TypeScript/Python images and redeploy actor bundles so new hosts report. Enable `analytics.backend: clickhouse` after that rollout. Installations already using ClickHouse switch inventory readers on upgrade; old hosts do not appear until an upgraded activation reports. Historical inventory is not backfilled.
 
-PostgreSQL remains required for control-plane bookkeeping and deployment metadata. The default `analytics.backend: postgres` reads inventory from an in-memory lifecycle cache on each control-plane replica; it resets on restart and is not shared across replicas. All modes use lifecycle reports for inventory without GCS scans. See [host lifecycle reports](../../docs/reference/configuration.md#host-lifecycle-reports) for freshness and retention behavior.
+PostgreSQL remains required for control-plane bookkeeping and deployment metadata. The default `analytics.backend: none` reads inventory from an in-memory lifecycle cache on each control-plane replica; it resets on restart and is not shared across replicas. All modes use lifecycle reports for inventory without GCS scans. See [host lifecycle reports](../../docs/reference/configuration.md#host-lifecycle-reports) for freshness and retention behavior.
+
+## Request spans and actor logs
+
+Hosts export request spans and actor console output to an OpenTelemetry Collector, which writes them to ClickHouse and publishes them to Redis for live views. Enable it with ClickHouse analytics and Redis:
+
+```yaml
+telemetry:
+  collector:
+    enabled: true
+```
+
+The collector accepts only host tokens and replaces any tenant attributes with the token's verified project, actor, host, and session. An init container derives its public JWKS from `jwt-signing-key`; restart the collector after rotating that key. Sandboxes reach it on port 4317, and sandboxes outside the cluster use the ingress. The control plane creates `otel_traces` and `otel_logs`; the ClickHouse user also needs INSERT on them for the collector.
 
 ## Usage publishing
 

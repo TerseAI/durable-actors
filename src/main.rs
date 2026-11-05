@@ -4,7 +4,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use durable_actors::{
     control_plane::{
-        ControlPlaneProcessConfig, DevOptions, serve_control_plane, serve_local, serve_pool_manager,
+        ControlPlaneProcessConfig, DevOptions, serve_control_plane, serve_local,
+        serve_pool_manager, verifier_jwks,
     },
     host::serve_actor_host,
 };
@@ -54,8 +55,10 @@ fn init_logging(development: bool) {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    if let Some(Commands::Dev(options)) = cli.command {
-        return serve_local(options, shutdown_signal()).await;
+    match cli.command {
+        Some(Commands::Dev(options)) => return serve_local(options, shutdown_signal()).await,
+        Some(Commands::Jwks) => return print_jwks(),
+        None => {}
     }
     let shutdown = shutdown_signal();
     match std::env::var("DURABLE_ACTORS_PROCESS_ROLE")
@@ -88,6 +91,18 @@ struct Cli {
 enum Commands {
     #[command(about = "Start local actors with persistent file storage")]
     Dev(DevOptions),
+    #[command(
+        about = "Print the JWKS that verifies tokens signed by DURABLE_ACTORS_JWT_SIGNING_KEY"
+    )]
+    Jwks,
+}
+
+fn print_jwks() -> Result<()> {
+    let key = std::env::var("DURABLE_ACTORS_JWT_SIGNING_KEY")
+        .map_err(|_| anyhow::anyhow!("DURABLE_ACTORS_JWT_SIGNING_KEY is required"))?;
+    let key_id = std::env::var("DURABLE_ACTORS_JWT_KEY_ID").unwrap_or_else(|_| "primary".into());
+    println!("{}", verifier_jwks(&key, &key_id)?);
+    Ok(())
 }
 
 async fn shutdown_signal() {

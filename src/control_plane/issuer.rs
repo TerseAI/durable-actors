@@ -19,6 +19,7 @@ use crate::{
 };
 
 const HOST_TOKEN_TTL: Duration = Duration::from_secs(1_800);
+pub(crate) const TELEMETRY_AUDIENCE: &str = "durable-actors-telemetry";
 const INVOCATION_TARGET_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
@@ -67,24 +68,10 @@ impl ActorJwtIssuer {
             !invocation_audience.is_empty(),
             "actor invocation JWT audience must not be empty"
         );
-        let pkcs8 = STANDARD
-            .decode(encoded_key)
-            .context("DURABLE_ACTORS_JWT_SIGNING_KEY must be base64-encoded PKCS#8")?;
-        let key_pair = Ed25519KeyPair::from_pkcs8(&pkcs8)
-            .context("DURABLE_ACTORS_JWT_SIGNING_KEY is not an Ed25519 PKCS#8 key")?;
-        let encoding_key = EncodingKey::from_ed_der(&pkcs8);
-        let mut public_key: Jwk = serde_json::from_value(serde_json::json!({
-            "alg": "EdDSA",
-            "crv": "Ed25519",
-            "kty": "OKP",
-            "x": URL_SAFE_NO_PAD.encode(key_pair.public_key().as_ref())
-        }))
-        .context("derive the actor JWT public key")?;
-        public_key.common.key_id = Some(key_id.clone());
-        public_key.common.public_key_use = Some(PublicKeyUse::Signature);
+        let pkcs8 = decode_signing_key(encoded_key)?;
         Ok(Self {
-            encoding_key,
-            public_key,
+            encoding_key: EncodingKey::from_ed_der(&pkcs8),
+            public_key: public_jwk(&pkcs8, &key_id)?,
             key_id,
             issuer,
             authority_audience,
@@ -218,6 +205,7 @@ impl ActorJwtIssuer {
             aud: vec![
                 self.authority_audience.clone(),
                 self.invocation_audience.clone(),
+                TELEMETRY_AUDIENCE.into(),
             ],
             sub: host_id.as_str().to_owned(),
             process_id: host_id.as_str().to_owned(),
@@ -229,6 +217,11 @@ impl ActorJwtIssuer {
             nbf: now_ms / 1000,
             exp: expires_at_ms / 1000,
             invocation: None,
+            telemetry: Some(TelemetryClaims {
+                project_id: actor.project_id.clone(),
+                actor_name: actor.actor_name.clone(),
+                actor_id: actor.actor_id.clone(),
+            }),
             actor: actor.clone(),
         })
     }
@@ -275,6 +268,7 @@ impl ActorJwtIssuer {
             nbf: now,
             exp: expires_at,
             actor: actor.clone(),
+            telemetry: None,
             invocation: Some(ActorInvocationCapability {
                 route: super::gateway::backend_origin(route)?.to_string(),
                 actor: actor.clone(),
@@ -328,6 +322,45 @@ struct ActorJwtClaims {
     exp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     invocation: Option<ActorInvocationCapability>,
+    // Top-level copies of the actor key so the telemetry collector can read them as flat claims.
+    #[serde(flatten)]
+    telemetry: Option<TelemetryClaims>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TelemetryClaims {
+    project_id: String,
+    actor_name: String,
+    actor_id: String,
+}
+
+pub fn verifier_jwks(encoded_key: &str, key_id: &str) -> Result<String> {
+    let jwks = JwkSet {
+        keys: vec![public_jwk(&decode_signing_key(encoded_key)?, key_id)?],
+    };
+    Ok(serde_json::to_string(&jwks)?)
+}
+
+fn decode_signing_key(encoded_key: &str) -> Result<Vec<u8>> {
+    STANDARD
+        .decode(encoded_key)
+        .context("DURABLE_ACTORS_JWT_SIGNING_KEY must be base64-encoded PKCS#8")
+}
+
+fn public_jwk(pkcs8: &[u8], key_id: &str) -> Result<Jwk> {
+    let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8)
+        .context("DURABLE_ACTORS_JWT_SIGNING_KEY is not an Ed25519 PKCS#8 key")?;
+    let mut public_key: Jwk = serde_json::from_value(serde_json::json!({
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kty": "OKP",
+        "x": URL_SAFE_NO_PAD.encode(key_pair.public_key().as_ref())
+    }))
+    .context("derive the actor JWT public key")?;
+    public_key.common.key_id = Some(key_id.to_owned());
+    public_key.common.public_key_use = Some(PublicKeyUse::Signature);
+    Ok(public_key)
 }
 
 fn unix_millis() -> Result<i64> {

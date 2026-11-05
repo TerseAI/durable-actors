@@ -68,6 +68,39 @@ jobs:
             - name: Check the python image runtime
               run: bash scripts/test-runtime-image.sh durable-actors:ci-python "python"
 
+            - name: Build collector image
+              uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2.3.0
+              with:
+                  context: .
+                  target: collector
+                  platforms: ${{ matrix.platform }}
+                  load: true
+                  tags: durable-actors:ci-collector
+            - name: Validate the collector configuration
+              run: |
+                  jwks="$(mktemp -d)"
+                  key="$(python3 -c "import os,base64;print(base64.b64encode(bytes.fromhex('302e020100300506032b657004220420')+os.urandom(32)).decode())")"
+                  docker run --rm -e DURABLE_ACTORS_JWT_SIGNING_KEY="$key" --entrypoint /usr/local/bin/durable-actors durable-actors:ci-control-plane jwks > "$jwks/jwks.json"
+                  chmod -R a+rX "$jwks"
+                  docker run --rm -v "$jwks:/jwks:ro" -v "$PWD/charts/durable-actors/files:/etc/otelcol:ro" \
+                    -e JWT_ISSUER=durable-actors-control-plane -e CLICKHOUSE_URL=http://clickhouse:8123 \
+                    -e CLICKHOUSE_DATABASE=telemetry -e CLICKHOUSE_USER=writer -e CLICKHOUSE_PASSWORD=secret \
+                    -e REDIS_URL=redis://redis:6379/0 -e REDIS_CA_FILE= \
+                    durable-actors:ci-collector validate --config=/etc/otelcol/collector.yaml
+
+    collector:
+        name: Collector exporter
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+              with:
+                  go-version: "1.26.0"
+                  cache-dependency-path: collector/redisliveexporter/go.sum
+            - name: Test the redislive exporter
+              working-directory: collector/redisliveexporter
+              run: go vet ./... && go test ./...
+
     rust:
         name: Rust runtime
         runs-on: blacksmith-4vcpu-ubuntu-2404

@@ -5,7 +5,7 @@ mod auth;
 mod client;
 mod contract_api;
 pub(crate) mod contracts;
-pub(crate) use client::LeaseFence;
+pub(crate) use client::{HostAuthorization, LeaseFence};
 mod event_sink;
 mod gateway;
 mod inspection;
@@ -16,6 +16,7 @@ mod invocation;
 mod issuer;
 mod local;
 mod local_build;
+mod local_telemetry;
 mod local_watch;
 mod process;
 pub(crate) use process::RuntimeImages;
@@ -34,6 +35,7 @@ pub(crate) const SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES: usize = usize::MAX;
 pub(crate) const MAX_CONTROL_PLANE_MESSAGE_BYTES: usize = SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES;
 pub(crate) const CONTROL_PLANE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+pub use issuer::verifier_jwks;
 pub use local::{DevOptions, serve_local};
 pub use organization_limits::OrganizationLimits;
 

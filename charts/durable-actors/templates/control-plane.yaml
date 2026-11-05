@@ -77,6 +77,10 @@ spec:
             - {name: DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS, value: {{ $.Values.alarms.pollIntervalMs | quote }}}
             - {name: DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS, value: {{ $.Values.postgres.maxConnections | quote }}}
             - {name: DURABLE_ACTORS_ANALYTICS_BACKEND, value: {{ $.Values.analytics.backend | quote }}}
+            {{- if $.Values.telemetry.collector.enabled }}
+            - name: DURABLE_ACTORS_OTLP_ENDPOINT
+              value: {{ printf "http://%s.%s.svc.cluster.local:4317" (include "actors.collectorName" $) $.Release.Namespace | quote }}
+            {{- end }}
             {{- with $.Values.usage.topic }}
             - {name: DURABLE_ACTORS_USAGE_TOPIC, value: {{ . | quote }}}
             {{- end }}

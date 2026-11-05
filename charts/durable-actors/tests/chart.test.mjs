@@ -43,6 +43,37 @@ test("configures ClickHouse analytics with a password from the credentials secre
     assert.match(output, /name: DURABLE_ACTORS_CLICKHOUSE_PASSWORD\n\s+valueFrom:\n\s+secretKeyRef: \{name: "actors-credentials", key: "clickhouse-password"\}/)
 })
 
+const collector = {
+    analytics: { backend: "clickhouse", clickhouse: { url: "https://clickhouse.example.com:8443", database: "actors", user: "writer", passwordSecretKey: "clickhouse-password" } },
+    redis: { urlSecretKey: "redis-url" },
+    telemetry: { collector: { enabled: true } }
+}
+
+test("runs an authenticated telemetry collector that only sandboxes and the ingress reach", () => {
+    assert.doesNotMatch(manifests(), /collector|DURABLE_ACTORS_OTLP_ENDPOINT/)
+    const output = manifests({ ...collector, ingress: { enabled: true, className: "nginx", tlsSecret: "actors-tls" } })
+    assert.match(output, /name: actors-durable-actors-collector\n/)
+    assert.match(output, /durable-actors@sha256:d{64}/)
+    assert.match(output, /authenticator: oidc/)
+    assert.match(output, /public_keys_file: \/jwks\/jwks.json/)
+    assert.match(output, /command: \["\/bin\/sh", "-c", "\/usr\/local\/bin\/durable-actors jwks > \/jwks\/jwks.json"\]/)
+    assert.equal(output.match(/key: jwt-signing-key/g).length, 3)
+    assert.match(output, /DURABLE_ACTORS_OTLP_ENDPOINT\n\s+value: "http:\/\/actors-durable-actors-collector.actors.svc.cluster.local:4317"/)
+    assert.match(output, /app.kubernetes.io\/name: actors-durable-actors-collector\}\n\s+ports:\n\s+- \{protocol: TCP, port: 4317\}/)
+    assert.match(output, /path: \/opentelemetry.proto.collector.logs.v1.LogsService\n\s+pathType: Prefix\n\s+backend:\n\s+service:\n\s+name: actors-durable-actors-collector/)
+})
+
+test("the collector requires ClickHouse analytics and Redis for live updates", () => {
+    for (const overrides of [
+        { ...collector, analytics: { backend: "none" } },
+        { ...collector, redis: { urlSecretKey: "" } }
+    ]) {
+        const result = render(overrides)
+        assert.notEqual(result.status, 0)
+        assert.match(result.stderr, /telemetry.collector requires/)
+    }
+})
+
 test("starts one controller and one pool manager using one Standard bucket", () => {
     const output = manifests()
     assert.match(output, /replicas: 1\b/)

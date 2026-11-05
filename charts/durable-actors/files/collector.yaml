@@ -1,0 +1,81 @@
+# Hosts are untrusted: every export needs a host JWT for the telemetry audience, tenant
+# identity comes only from its verified claims, and limits are enforced here.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  oidc:
+    providers:
+      - issuer_url: ${env:JWT_ISSUER}
+        audience: durable-actors-telemetry
+        public_keys_file: /jwks/jwks.json
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 16
+        auth:
+          authenticator: oidc
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  resource/tenant:
+    attributes:
+      - {pattern: ^durable_actors\., action: delete}
+      - {key: durable_actors.organization_id, from_context: auth.claims.organizationId, action: insert}
+      - {key: durable_actors.project_id, from_context: auth.claims.projectId, action: insert}
+      - {key: durable_actors.actor_name, from_context: auth.claims.actorName, action: insert}
+      - {key: durable_actors.actor_id, from_context: auth.claims.actorId, action: insert}
+      - {key: durable_actors.host_id, from_context: auth.claims.sub, action: insert}
+      - {key: durable_actors.session_id, from_context: auth.claims.sessionId, action: insert}
+  transform/limits:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - truncate_all(attributes, 16384)
+          - limit(attributes, 32, [])
+    log_statements:
+      - context: log
+        statements:
+          - set(body, Substring(body, 0, 262144)) where IsString(body) and Len(body) > 262144
+          - truncate_all(attributes, 1024)
+          - limit(attributes, 16, [])
+
+exporters:
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_URL}
+    database: ${env:CLICKHOUSE_DATABASE}
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    # The control plane owns the schema (src/request_traces/persistence/clickhouse/schema.sql).
+    create_schema: false
+    async_insert: true
+    traces_table_name: otel_traces
+    logs_table_name: otel_logs
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      batch:
+        flush_timeout: 200ms
+    retry_on_failure:
+      enabled: true
+  redislive:
+    endpoint: ${env:REDIS_URL}
+    ca_file: ${env:REDIS_CA_FILE}
+
+service:
+  extensions: [health_check, oidc]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/tenant, transform/limits]
+      exporters: [clickhouse, redislive]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/tenant, transform/limits]
+      exporters: [clickhouse, redislive]

@@ -114,7 +114,8 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process accepts browser WebSockets; defaults to `true`. |
 | `DURABLE_ACTORS_PUBLIC_URL` | Public HTTPS origin for client invocation and socket routing. |
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace, and spare bookkeeping database; the user needs migration privileges. |
-| `DURABLE_ACTORS_ANALYTICS_BACKEND` | Telemetry backend: `postgres` (default) or `clickhouse`. ClickHouse supplies request analytics and actor inventory. PostgreSQL remains required for control-plane bookkeeping. |
+| `DURABLE_ACTORS_ANALYTICS_BACKEND` | Telemetry backend: `none` (default) or `clickhouse`. ClickHouse stores request spans, actor logs, and actor inventory; with `none`, request and log endpoints return empty results. PostgreSQL remains required for control-plane bookkeeping. |
+| `DURABLE_ACTORS_OTLP_ENDPOINT` | OpenTelemetry Collector gRPC endpoint passed to actor hosts as `OTEL_EXPORTER_OTLP_ENDPOINT`. Hosts export request spans and actor logs there with their host token; unset disables export. |
 | `DURABLE_ACTORS_CLICKHOUSE_URL` | ClickHouse HTTP(S) endpoint, required for the ClickHouse backend. |
 | `DURABLE_ACTORS_CLICKHOUSE_DATABASE` | Existing ClickHouse database. The application user needs SELECT, INSERT, CREATE TABLE, CREATE VIEW, and ALTER TABLE privileges in it. |
 | `DURABLE_ACTORS_CLICKHOUSE_USER` | ClickHouse application user. |
@@ -146,7 +147,7 @@ Standard mode rejects Rapid bucket and archive settings. Storage mode and bucket
 
 Upgraded hosts report `started` after activation, `heartbeat` every 10 seconds, `draining` before executor shutdown, and `stopped` after the storage shutdown attempt. Reports contain the ownership epoch, a per-session sequence, activation/report timestamps, requested resources, residency, and waiting operations. The sandbox provider supplies resources through the internal `DURABLE_ACTORS_HOST_RESOURCES` JSON environment variable. Each report has a one-second timeout and is best effort.
 
-The control plane derives project, actor, host, session, and region from the authenticated host token without reading ownership. This allows a stop report after ownership release. All dashboard inventory comes from lifecycle reports. With the default PostgreSQL analytics backend or local development, inventory uses a bounded in-memory cache (10,000 actors, 24-hour idle expiry). This POC cache is local to each control-plane process, resets on restart, and contains only reports received by that replica. Use ClickHouse for shared, persistent inventory across replicas.
+The control plane derives project, actor, host, session, and region from the authenticated host token without reading ownership. This allows a stop report after ownership release. All dashboard inventory comes from lifecycle reports. Without ClickHouse, and in local development, inventory uses a bounded in-memory cache (10,000 actors, 24-hour idle expiry). This POC cache is local to each control-plane process, resets on restart, and contains only reports received by that replica. Use ClickHouse for shared, persistent inventory across replicas.
 
 With `DURABLE_ACTORS_ANALYTICS_BACKEND=clickhouse`, the existing bounded telemetry writer batches reports into `actor_lifecycle`. A materialized view maintains `actor_inventory`, ordered by ownership epoch and report sequence so late reports from an old activation cannot overwrite its replacement. Raw reports use the configured analytics retention period; latest inventory records have no TTL, keeping stopped actors visible.
 
