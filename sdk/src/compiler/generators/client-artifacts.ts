@@ -9,8 +9,16 @@ import { parsePublicContract } from "../validate-public-contract.js"
 import { backendSource } from "./backend-generator.js"
 import { usageComment } from "./usage-comment.js"
 
+interface ClientArtifactOptions {
+    /** Lets browser bundles include the server client, which sends `DURABLE_ACTORS_SECRET`. For local testing and demos only. */
+    readonly allowBrowser?: boolean
+}
+
 /** Returns JavaScript and TypeScript declarations with a standalone runtime, without writing files or executing actor code. */
-async function generateClientArtifacts(input: PublicActorContract): Promise<ReadonlyMap<string, string>> {
+async function generateClientArtifacts(
+    input: PublicActorContract,
+    options: ClientArtifactOptions = {}
+): Promise<ReadonlyMap<string, string>> {
     const document = parsePublicContract(input)
     const contracts = document.actors.map(actor => actor.socket)
     const declarations = contracts.map(contract => actorDeclarations(contract))
@@ -29,12 +37,13 @@ ${declarations.join("\n")}
 
 ${backendSource(document.actors)}
 ${proxySource(contracts)}`
-    return clientArtifacts(source, document.typescript)
+    return clientArtifacts(source, document.typescript, options.allowBrowser ?? false)
 }
 
 async function clientArtifacts(
     source: string,
-    typescript: PublicActorContract["typescript"]
+    typescript: PublicActorContract["typescript"],
+    allowBrowser: boolean
 ): Promise<ReadonlyMap<string, string>> {
     const options = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
     const javascript = ts.transpileModule(source, { compilerOptions: options, fileName: "index.ts" })
@@ -47,11 +56,8 @@ async function clientArtifacts(
         ["index.js", await formatSource(javascript.outputText)],
         ["index.d.ts", await formatSource(declaration.outputText)],
         ["types.d.ts", await formatSource(typescript.declarations)],
-        [
-            "package.json",
-            JSON.stringify({ private: true, type: "module", peerDependencies: typescript.dependencies }, null, 2) + "\n"
-        ],
-        ...Object.entries(runtimeFiles)
+        ...Object.entries(runtimeFiles),
+        ...packageFiles(typescript.dependencies, allowBrowser)
     ])
 }
 
@@ -63,6 +69,39 @@ function formatSource(source: string): Promise<string> {
         semi: false,
         trailingComma: "none"
     })
+}
+
+// Bundlers disagree on which package.json maps a relative import: Vite 6 and 7 read the importer's,
+// while Vite 8 and webpack read the imported file's. Both files carry the stub mapping.
+function packageFiles(
+    dependencies: PublicActorContract["typescript"]["dependencies"],
+    allowBrowser: boolean
+): [string, string][] {
+    const browser = (server: string, stub: string) => (allowBrowser ? {} : { browser: { [server]: stub } })
+    return [
+        [
+            "package.json",
+            packageJson({
+                private: true,
+                type: "module",
+                peerDependencies: dependencies,
+                ...browser("./runtime/index.js", "./runtime/index.browser.js")
+            })
+        ],
+        [
+            "runtime/package.json",
+            packageJson({
+                private: true,
+                type: "module",
+                sideEffects: false,
+                ...browser("./index.js", "./index.browser.js")
+            })
+        ]
+    ]
+}
+
+function packageJson(value: object): string {
+    return JSON.stringify(value, null, 2) + "\n"
 }
 
 function actorDeclarations(contract: SocketContract): string {
@@ -109,4 +148,4 @@ ${contracts.map(({ actorName }) => `[${JSON.stringify(actorName)}]: import("./ru
 }
 
 export { generateClientArtifacts }
-export type { PublicActorContract }
+export type { ClientArtifactOptions, PublicActorContract }

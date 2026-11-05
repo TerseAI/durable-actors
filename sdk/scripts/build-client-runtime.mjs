@@ -23,17 +23,6 @@ const result = program.emit(undefined, (file, contents) => {
     files[file] = contents
 })
 if (result.emitSkipped || result.diagnostics.length) throw new Error("Could not compile the standalone client runtime")
-files["runtime/package.json"] =
-    JSON.stringify(
-        {
-            private: true,
-            type: "module",
-            sideEffects: false,
-            browser: { "./index.js": "./index.browser.js" }
-        },
-        null,
-        2
-    ) + "\n"
 files["runtime/LICENSE.md"] = await readFile("LICENSE.md", "utf8")
 await rm("src/generated", { recursive: true, force: true })
 await mkdir("src/generated", { recursive: true })

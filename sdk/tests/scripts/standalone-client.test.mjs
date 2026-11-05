@@ -9,6 +9,7 @@ import path from "node:path"
 import { test } from "node:test"
 import { promisify } from "node:util"
 import ts from "typescript"
+import { build as viteBuild } from "vite"
 
 import { generateClient } from "../../dist/compiler/generators/client-generator.js"
 
@@ -190,12 +191,24 @@ async function invokeClient(directory, origin, format) {
 }
 
 async function checkBrowser(directory) {
-    const browser = await build({ entryPoints: [path.join(directory, "generated/index.js")], bundle: true, platform: "browser", format: "esm", write: false, logLevel: "silent" })
-    const module = await import(`data:text/javascript;base64,${Buffer.from(browser.outputFiles[0].text).toString("base64")}`)
-    assert.throws(() => module.actors.ChatRoom.get("lobby"), /server/)
-    assert.throws(() => new module.ActorProxy(), /server/)
-    assert.throws(() => module.createActorTransport({ controlPlaneUrl: "http://localhost:7100" }), /server/)
-    assert.throws(() => module.createActorSessionTransport({ projectId: "team-a", getSession: async () => null }), /server/)
-    assert.equal(new module.ActorSessionRejectedError("access revoked").name, "ActorSessionRejectedError")
-    assert.ok(browser.outputFiles[0].contents.length < 10_000)
+    const entry = path.join(directory, "generated/index.js")
+    for (const bundle of [await esbuildBrowserBundle(entry), await viteBrowserBundle(directory, entry)]) {
+        const module = await import(`data:text/javascript;base64,${Buffer.from(bundle).toString("base64")}`)
+        assert.throws(() => module.actors.ChatRoom.get("lobby"), /server/)
+        assert.throws(() => new module.ActorProxy(), /server/)
+        assert.throws(() => module.createActorTransport({ controlPlaneUrl: "http://localhost:7100" }), /server/)
+        assert.throws(() => module.createActorSessionTransport({ projectId: "team-a", getSession: async () => null }), /server/)
+        assert.equal(new module.ActorSessionRejectedError("access revoked").name, "ActorSessionRejectedError")
+        assert.ok(bundle.length < 10_000)
+    }
+}
+
+async function esbuildBrowserBundle(entry) {
+    const result = await build({ entryPoints: [entry], bundle: true, platform: "browser", format: "esm", write: false, logLevel: "silent" })
+    return result.outputFiles[0].text
+}
+
+async function viteBrowserBundle(root, entry) {
+    const result = await viteBuild({ root, configFile: false, logLevel: "silent", build: { write: false, lib: { entry, formats: ["es"], fileName: "index" } } })
+    return [result].flat()[0].output[0].code
 }
