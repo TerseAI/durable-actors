@@ -1,6 +1,7 @@
 -- Columns match the OpenTelemetry Collector ClickHouse exporter (v0.163.0), which inserts by name.
 -- Tenant columns come from resource attributes the collector stamps from verified host claims.
--- Partitioning and retention use the server's insert time so hosts cannot extend either.
+-- Partitioning and retention use the server's insert time. Partitioning by host timestamps would
+-- let one host's clock fail inserts that carry other projects' rows, and whole partitions expire cheaply.
 CREATE TABLE IF NOT EXISTS otel_traces (
     Timestamp DateTime64(9) CODEC(Delta, ZSTD(1)),
     TraceId String CODEC(ZSTD(1)),

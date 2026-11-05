@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::Result;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, LoggerProvider, Severity};
@@ -6,8 +6,8 @@ use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
     Resource,
-    logs::{self, BatchLogProcessor, SdkLogger, SdkLoggerProvider},
-    trace::{self, BatchSpanProcessor, SdkTracer, SdkTracerProvider},
+    logs::{SdkLogger, SdkLoggerProvider},
+    trace::{SdkTracer, SdkTracerProvider},
 };
 use tonic::transport::ClientTlsConfig;
 
@@ -19,7 +19,6 @@ use crate::{
 
 const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const SCOPE: &str = "durable-actors-host";
-const EXPORT_DELAY: Duration = Duration::from_millis(200);
 
 pub(crate) struct HostTelemetry {
     traces: SdkTracerProvider,
@@ -72,19 +71,11 @@ impl HostTelemetry {
         Ok(Self {
             traces: SdkTracerProvider::builder()
                 .with_resource(resource.clone())
-                .with_span_processor(
-                    BatchSpanProcessor::builder(spans)
-                        .with_batch_config(span_batches())
-                        .build(),
-                )
+                .with_batch_exporter(spans)
                 .build(),
             logs: SdkLoggerProvider::builder()
                 .with_resource(resource)
-                .with_log_processor(
-                    BatchLogProcessor::builder(logs)
-                        .with_batch_config(log_batches())
-                        .build(),
-                )
+                .with_batch_exporter(logs)
                 .build(),
         })
     }
@@ -102,44 +93,6 @@ fn exporter<B: WithExportConfig + WithTonicConfig>(
         builder.with_tls_config(ClientTlsConfig::new().with_webpki_roots())
     } else {
         builder
-    }
-}
-
-// Batch sizes keep one export under the collector's 16 MiB request limit with
-// 256 KiB log lines and 16 KiB socket metadata; the queues share the sandbox's memory.
-fn span_batches() -> trace::BatchConfig {
-    let config = trace::BatchConfigBuilder::default();
-    let config = default_unless_set(config, "OTEL_BSP_MAX_QUEUE_SIZE", |c| {
-        c.with_max_queue_size(4096)
-    });
-    let config = default_unless_set(config, "OTEL_BSP_MAX_EXPORT_BATCH_SIZE", |c| {
-        c.with_max_export_batch_size(512)
-    });
-    default_unless_set(config, "OTEL_BSP_SCHEDULE_DELAY", |c| {
-        c.with_scheduled_delay(EXPORT_DELAY)
-    })
-    .build()
-}
-
-fn log_batches() -> logs::BatchConfig {
-    let config = logs::BatchConfigBuilder::default();
-    let config = default_unless_set(config, "OTEL_BLRP_MAX_QUEUE_SIZE", |c| {
-        c.with_max_queue_size(1024)
-    });
-    let config = default_unless_set(config, "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE", |c| {
-        c.with_max_export_batch_size(32)
-    });
-    default_unless_set(config, "OTEL_BLRP_SCHEDULE_DELAY", |c| {
-        c.with_scheduled_delay(EXPORT_DELAY)
-    })
-    .build()
-}
-
-fn default_unless_set<B>(builder: B, variable: &str, apply: impl FnOnce(B) -> B) -> B {
-    if std::env::var_os(variable).is_some() {
-        builder
-    } else {
-        apply(builder)
     }
 }
 
