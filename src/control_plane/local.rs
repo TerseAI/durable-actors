@@ -391,8 +391,7 @@ async fn local_routes(
         Arc::new(super::local_build::ActorCodeCompiler::new(
             options.sdk_host.clone(),
         )),
-    )))
-    .with_traces(storage.traces.clone());
+    )));
     if let Some(admission) = admission {
         service.lifecycle = service.lifecycle.with_observer(admission);
     }
@@ -409,7 +408,7 @@ async fn local_routes(
         storage.runtime.clone(),
         service.changes.clone(),
     )
-    .with_traces(service.traces.clone());
+    .with_traces(storage.traces.clone());
     let reload = LocalReload {
         service: service.clone(),
         admin: admin.clone(),

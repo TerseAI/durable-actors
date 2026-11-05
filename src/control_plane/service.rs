@@ -40,7 +40,6 @@ const FALLBACK_REGION: &str = "north-america-central";
 #[derive(Clone)]
 pub struct ControlPlaneService {
     pub(super) lifecycle: crate::actor_lifecycle::LifecycleStore,
-    pub(super) traces: crate::request_traces::TraceStore,
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
@@ -83,7 +82,6 @@ impl ControlPlaneService {
     ) -> Self {
         Self {
             lifecycle: Default::default(),
-            traces: crate::request_traces::TraceStore::default(),
             changes: Default::default(),
             runtime_access: None,
             gateway: None,
@@ -130,11 +128,6 @@ impl ControlPlaneService {
         sink: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     ) -> Self {
         self.socket_events = sink;
-        self
-    }
-
-    pub(crate) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
-        self.traces = traces;
         self
     }
 

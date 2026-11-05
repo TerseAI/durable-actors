@@ -60,6 +60,7 @@ impl SqliteTracePersistence {
                 connection.busy_timeout(Duration::from_secs(5))?;
                 initialize(&mut connection, &path)?;
                 logs::initialize(&connection)?;
+                connection.execute_batch("DROP TABLE IF EXISTS trace_status")?;
                 *shared = Some(connection);
             }
             operation(shared.as_mut().unwrap())

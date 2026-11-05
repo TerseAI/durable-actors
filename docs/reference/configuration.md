@@ -113,7 +113,7 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_CONTROL_PLANE_URL` | Private Kubernetes Service origin reachable from sandboxes. |
 | `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process accepts browser WebSockets; defaults to `true`. |
 | `DURABLE_ACTORS_PUBLIC_URL` | Public HTTPS origin for client invocation and socket routing. |
-| `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace, and spare bookkeeping database; the user needs migration privileges. |
+| `DURABLE_ACTORS_POSTGRES_URL` | Registry and spare bookkeeping database; the user needs migration privileges. |
 | `DURABLE_ACTORS_ANALYTICS_BACKEND` | Telemetry backend: `none` (default) or `clickhouse`. ClickHouse stores request spans, actor logs, and actor inventory; with `none`, request and log endpoints return empty results. PostgreSQL remains required for control-plane bookkeeping. |
 | `DURABLE_ACTORS_OTLP_ENDPOINT` | OpenTelemetry Collector gRPC endpoint passed to actor hosts as `OTEL_EXPORTER_OTLP_ENDPOINT`. Hosts export request spans and actor logs there with their host token; unset disables export. |
 | `DURABLE_ACTORS_CLICKHOUSE_URL` | ClickHouse HTTP(S) endpoint, required for the ClickHouse backend. |
@@ -121,7 +121,7 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_CLICKHOUSE_USER` | ClickHouse application user. |
 | `DURABLE_ACTORS_CLICKHOUSE_PASSWORD` | ClickHouse application password. Supply through a secret. |
 | `DURABLE_ACTORS_USAGE_TOPIC` | Optional Pub/Sub topic, `projects/<gcp-project>/topics/<topic>`, for actor activation usage. Unset disables publishing. The control plane uses Application Default Credentials with publisher access to this topic. |
-| `DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS` | PostgreSQL pool size per process, default `8`, range 1–1,000. The chart sets it from `postgres.maxConnections`. Invocation routing, trace writes, and alarm polling share the pool. Budget the database's connection limit for this pool size times the controller replica count, plus other database clients. |
+| `DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS` | PostgreSQL pool size per process, default `8`, range 1–1,000. The chart sets it from `postgres.maxConnections`. Invocation routing and alarm polling share the pool. Budget the database's connection limit for this pool size times the controller replica count, plus other database clients. |
 | `DURABLE_ACTORS_REDIS_URL` | Redis that carries socket messages between processes; required with more than one. `redis://host:6379`, or `rediss://:password@host:6378` for TLS. If the connection drops, the process closes its sockets with `1012` and browsers reconnect. Unset, a single process keeps everything in memory. The chart reads it from the key named by `redis.urlSecretKey`. |
 | `DURABLE_ACTORS_REDIS_CA_CERT` | PEM CA for a `rediss://` server with a private CA, such as Memorystore. The chart reads it from the key named by `redis.caSecretKey`. |
 | `DURABLE_ACTORS_PERSISTENCE` | `standard` by default. Select `rapid` for Rapid append logs with Standard archives. |
@@ -149,7 +149,7 @@ Upgraded hosts report `started` after activation, `heartbeat` every 10 seconds, 
 
 The control plane derives project, actor, host, session, and region from the authenticated host token without reading ownership. This allows a stop report after ownership release. All dashboard inventory comes from lifecycle reports. Without ClickHouse, and in local development, inventory uses a bounded in-memory cache (10,000 actors, 24-hour idle expiry). This POC cache is local to each control-plane process, resets on restart, and contains only reports received by that replica. Use ClickHouse for shared, persistent inventory across replicas.
 
-With `DURABLE_ACTORS_ANALYTICS_BACKEND=clickhouse`, the existing bounded telemetry writer batches reports into `actor_lifecycle`. A materialized view maintains `actor_inventory`, ordered by ownership epoch and report sequence so late reports from an old activation cannot overwrite its replacement. Raw reports use the configured analytics retention period; latest inventory records have no TTL, keeping stopped actors visible.
+With `DURABLE_ACTORS_ANALYTICS_BACKEND=clickhouse`, the control plane's bounded lifecycle writer batches reports into `actor_lifecycle`. A materialized view maintains `actor_inventory`, ordered by ownership epoch and report sequence so late reports from an old activation cannot overwrite its replacement. Raw reports use the configured analytics retention period; latest inventory records have no TTL, keeping stopped actors visible.
 
 With ClickHouse enabled, dashboard inventory and request analytics come from ClickHouse, deployment metadata from PostgreSQL, and current sockets from the gateway/Redis. Inventory reads never fall back to GCS in any mode: an actor without a report is absent from lifecycle inventory, while a ClickHouse read error is returned to the dashboard. A report older than 35 seconds is shown as unknown unless it is a confirmed `stopped` report, which remains dormant. Explicit state inspection and authoritative ownership still use GCS.
 

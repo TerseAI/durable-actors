@@ -292,7 +292,6 @@ async fn control_plane_routes(
     )
     .with_runtime_access(runtime_access)
     .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
-    .with_traces(traces)
     .with_socket_event_sink(socket_events);
     if let Some(redis) = redis {
         service.routes = Arc::new(super::routes::RedisRoutes::new(
@@ -314,7 +313,7 @@ async fn control_plane_routes(
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let inspector =
         super::inspection::ActorInspector::new(inventory, storage.clone(), service.changes.clone())
-            .with_traces(service.traces.clone());
+            .with_traces(traces);
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin));
     let internal_api = service.into_internal_service();
