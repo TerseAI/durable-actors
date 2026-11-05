@@ -39,7 +39,7 @@ export type RequestsCardProps = {
 export function RequestsCard({ requests, failed, timeWindow }: RequestsCardProps) {
     const [picked, setPicked] = useState<number | null>(null)
     const drawer = useDrawer()
-    
+
     const traces = requests && countable(requests)
     const counts = traces && requestCounts(traces, timeWindow)
     const selected = counts && (picked !== null && picked < counts.length ? picked : latestActive(counts))

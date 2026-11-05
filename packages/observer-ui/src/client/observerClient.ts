@@ -31,7 +31,7 @@ export class HttpObserverClient implements ObserverClient {
         if (cursor) query.set("cursor", cursor)
         if (actorName) query.set("actorName", actorName)
         if (actorId) query.set("actorId", actorId)
-            
+
         return await this.get<RequestTracePage>(`requests?${query}`)
     }
 
