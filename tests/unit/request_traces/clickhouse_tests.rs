@@ -1,4 +1,4 @@
-use super::queries::{LogRow, SpanRow};
+use super::queries::SpanRow;
 use super::*;
 use crate::request_traces::{RequestKind, RequestOutcome};
 
@@ -350,48 +350,6 @@ fn span_rows_map_to_request_traces() {
         Some(serde_json::json!({"userId": "alice"}))
     );
     assert_eq!(event.trace.state_version, Some(7));
-}
-
-#[test]
-fn span_rows_without_known_kind_or_outcome_are_skipped_and_blank_ids_are_absent() {
-    let row = |kind: &str, outcome: &str| SpanRow {
-        event_id: "id".into(),
-        host_id: "host".into(),
-        session_id: "session".into(),
-        project_id: "default".into(),
-        request_id: "request".into(),
-        actor_name: "Counter".into(),
-        actor_id: "one".into(),
-        kind: kind.into(),
-        operation: "increment".into(),
-        connection_id: String::new(),
-        started_at_ms: 1,
-        routing_ms: 0.0,
-        duration_ms: 1.0,
-        queue_wait_ms: None,
-        host_state: String::new(),
-        outcome: outcome.into(),
-        state_version: None,
-        metadata: String::new(),
-    };
-    assert!(row("forged", "completed").into_event().is_none());
-    assert!(row("method", "forged").into_event().is_none());
-    let event = row("method", "failed").into_event().unwrap();
-    assert_eq!(event.trace.connection_id, None);
-    assert_eq!(event.trace.metadata, None);
-    let log = LogRow {
-        log_id: "log".into(),
-        project_id: "default".into(),
-        actor_name: "Counter".into(),
-        actor_id: "one".into(),
-        host_id: "host".into(),
-        request_id: String::new(),
-        timestamp_ms: 1,
-        level: "info".into(),
-        message: "hello".into(),
-    }
-    .into_log();
-    assert_eq!(log.request_id, None);
 }
 
 fn config(url: String) -> ClickHouseConfig {

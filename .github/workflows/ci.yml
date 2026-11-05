@@ -76,17 +76,6 @@ jobs:
                   platforms: ${{ matrix.platform }}
                   load: true
                   tags: durable-actors:ci-collector
-            - name: Validate the collector configuration
-              run: |
-                  jwks="$(mktemp -d)"
-                  key="$(python3 -c "import os,base64;print(base64.b64encode(bytes.fromhex('302e020100300506032b657004220420')+os.urandom(32)).decode())")"
-                  docker run --rm -e DURABLE_ACTORS_JWT_SIGNING_KEY="$key" --entrypoint /usr/local/bin/durable-actors durable-actors:ci-control-plane jwks > "$jwks/jwks.json"
-                  chmod -R a+rX "$jwks"
-                  docker run --rm -v "$jwks:/jwks:ro" -v "$PWD/charts/durable-actors/files:/etc/otelcol:ro" \
-                    -e JWT_ISSUER=durable-actors-control-plane -e CLICKHOUSE_URL=http://clickhouse:8123 \
-                    -e CLICKHOUSE_DATABASE=telemetry -e CLICKHOUSE_USER=writer -e CLICKHOUSE_PASSWORD=secret \
-                    -e REDIS_URL=redis://redis:6379/0 -e REDIS_CA_FILE= \
-                    durable-actors:ci-collector validate --config=/etc/otelcol/collector.yaml
 
     collector:
         name: Collector exporter

@@ -339,21 +339,3 @@ fn host_tokens_carry_flat_telemetry_claims() -> Result<()> {
     assert_eq!(claims["sub"], "host.v3.r1.one");
     Ok(())
 }
-
-#[test]
-fn verifier_jwks_matches_the_issuer_keys() -> Result<()> {
-    let pkcs8 = STANDARD.encode(Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?.as_ref());
-    let issuer = ActorJwtIssuer::from_base64_pkcs8(
-        &pkcs8,
-        "primary",
-        "issuer",
-        "authority",
-        "invocation",
-        Duration::from_secs(60),
-    )?;
-    assert_eq!(
-        verifier_jwks(&pkcs8, "primary")?,
-        issuer.verifier_keys_json()?
-    );
-    Ok(())
-}

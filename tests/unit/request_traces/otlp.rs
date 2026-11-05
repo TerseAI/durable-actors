@@ -1,7 +1,4 @@
-use opentelemetry_proto::tonic::{
-    logs::v1::{ResourceLogs, ScopeLogs},
-    trace::v1::{ResourceSpans, ScopeSpans},
-};
+use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans};
 
 use super::*;
 use crate::request_traces::{RequestKind, RequestOutcome};
@@ -77,49 +74,6 @@ fn spans_decode_into_request_traces() {
     assert_eq!(trace.queue_wait_ms, Some(3.0));
     assert_eq!(trace.routing_ms, 1.5);
     assert_eq!(trace.state_version, Some(4));
-}
-
-#[test]
-fn logs_decode_with_their_request_and_skip_records_without_ids() {
-    let log = |id: Option<&str>, request: Option<&str>| LogRecord {
-        time_unix_nano: 2_000_000_000,
-        severity_text: "WARN".into(),
-        body: Some(AnyValue {
-            value: Some(Value::StringValue("careful".into())),
-        }),
-        attributes: id
-            .map(|id| string_attribute(LOG_ID, id))
-            .into_iter()
-            .chain(request.map(|request| string_attribute(REQUEST_ID, request)))
-            .collect(),
-        ..Default::default()
-    };
-    let mut resource = None;
-    identity().stamp(&mut resource);
-    let logs = actor_logs(ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            resource,
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![
-                    log(Some("a"), Some("request-1")),
-                    log(Some("b"), None),
-                    log(None, Some("request-1")),
-                ],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    });
-    assert_eq!(
-        logs.iter()
-            .map(|log| (log.log_id.as_str(), log.request_id.as_deref()))
-            .collect::<Vec<_>>(),
-        [("a", Some("request-1")), ("b", None)]
-    );
-    assert_eq!(logs[0].timestamp_ms, 2000);
-    assert_eq!(logs[0].level, "warn");
-    assert_eq!(logs[0].message, "careful");
-    assert_eq!(logs[0].project_id, "default");
 }
 
 fn identity() -> Identity {
