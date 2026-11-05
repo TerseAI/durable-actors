@@ -4,7 +4,7 @@ import { useParams } from "react-router"
 import { useData } from "../../client/DatatContext.js"
 import { useTimeWindow } from "../../client/TimeRangeContext.js"
 import { formatAgo, formatClock, formatDuration } from "../../format.js"
-import { useRequests } from "../../hooks/useRequests.js"
+import { useInstanceRequests } from "../../hooks/useActorRequests.js"
 import { useResidency } from "../../hooks/useResidency.js"
 import { queueTime, serviceTime } from "../../lib/requestStats.js"
 import { describeWindow } from "../../lib/timeRange.js"
@@ -29,12 +29,11 @@ import { RequestsCard } from "./requestsCard.js"
 
 export function InstancePage() {
     const { actorName = "", actorId = "" } = useParams()
-    const { baseUrl, actorTypes, isError, sessions, isSocketsError } = useData()
+    const { actorTypes, isError, sessions, isSocketsError } = useData()
     const timeWindow = useTimeWindow()
-    const { requests, isError: isRequestsError } = useRequests(baseUrl, timeWindow)
+    const { requests: ownRequests, isError: isRequestsError } = useInstanceRequests(actorName, actorId)
     const { residency, isError: isResidencyError } = useResidency(actorName, timeWindow)
     const instance = actorTypes?.actors.find(type => type.actorName === actorName)?.instances.find(candidate => candidate.actorId === actorId) ?? null
-    const ownRequests = requests?.filter(trace => trace.actorName === actorName && trace.actorId === actorId) ?? null
     const ownSessions = sessions?.filter(session => session.actorName === actorName && session.actorId === actorId) ?? null
     const livePeriods = residency && (groupLivePeriods(residency).get(actorId) ?? [])
     const [logRequestId, setLogRequestId] = useState<string | null>(null)

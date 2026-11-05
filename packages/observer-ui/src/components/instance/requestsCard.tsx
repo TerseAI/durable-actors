@@ -1,5 +1,6 @@
 import { useState } from "react"
 
+import { useDrawer } from "../../client/DrawerContext.js"
 import { formatClock, formatCount, formatDecimal, formatDuration, formatMs, formatPlural, formatPreciseClock } from "../../format.js"
 import { averageOf, countable, queueTime, requestCounts, serviceTime } from "../../lib/requestStats.js"
 import { bucketIndex, windowTicks } from "../../lib/timeRange.js"
@@ -7,9 +8,12 @@ import { cn } from "../../lib/utils.js"
 import type { RequestOutcome, RequestTrace } from "../../types/Requests.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
 import { BarChart } from "../ui/barChart.js"
+import { QueueStripes } from "../ui/queueStripes.js"
 import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.js"
+
+import { RequestDetails } from "./requestDetails.js"
 
 const callLimit = 40
 const labelRoom = 0.9
@@ -20,7 +24,6 @@ const axisUnits = [
     { label: "min", ms: 60_000, below: Infinity }
 ]
 const waterfallGrid = "grid grid-cols-[52px_minmax(0,150px)_1fr_52px_70px_70px] items-center gap-4.5"
-const queueStripes = "bg-[repeating-linear-gradient(135deg,var(--chart-1)_0_2px,transparent_2px_4px)] shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--chart-1)_50%,transparent)]"
 const outcomeLabels: Record<RequestOutcome, string> = { completed: "ok", failed: "failed", rejected: "rejected", rerouted: "rerouted", interrupted: "interrupted" }
 const kindLabels: Record<RequestTrace["kind"], string> = { method: "rpc", websocket: "ws" }
 
@@ -36,11 +39,21 @@ export type RequestsCardProps = {
 
 export function RequestsCard({ requests, failed, timeWindow, onSelectRequest }: RequestsCardProps) {
     const [picked, setPicked] = useState<number | null>(null)
+    const drawer = useDrawer()
+
     const traces = requests && countable(requests)
     const counts = traces && requestCounts(traces, timeWindow)
     const selected = counts && (picked !== null && picked < counts.length ? picked : latestActive(counts))
     const inSlice = traces && selected !== null ? sliceCalls(traces, timeWindow, selected) : null
     const calls = inSlice?.slice(-callLimit)
+
+    function inspect(call: RequestTrace, element: HTMLElement) {
+        onSelectRequest?.(call.requestId)
+        if (drawer.openKey === call.eventId) return drawer.close()
+        const blocker = traces ? blockerOf(call, traces) : undefined
+        drawer.show({ key: call.eventId, content: <RequestDetails call={call} blocker={blocker} /> }, element)
+    }
+
     return (
         <SectionCard title="Requests" aside={<WaterfallKeys />} busy={!counts && !failed} className="pb-3.5">
             {failed ? (
@@ -48,7 +61,7 @@ export function RequestsCard({ requests, failed, timeWindow, onSelectRequest }: 
             ) : counts && selected !== null && inSlice && calls ? (
                 <>
                     <SliceHistogram counts={counts} selected={selected} onSelect={setPicked} timeWindow={timeWindow} />
-                    <Waterfall calls={calls} total={inSlice.length} onSelectRequest={onSelectRequest} />
+                    <Waterfall calls={calls} total={inSlice.length} inspectedId={drawer.openKey} onInspect={inspect} />
                 </>
             ) : (
                 <WaterfallSkeleton />
@@ -70,7 +83,7 @@ function WaterfallKeys() {
     return (
         <div className="flex gap-4.5 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.75">
-                <span className={`h-2 w-4 rounded-xs ${queueStripes}`} />
+                <QueueStripes className="h-2 w-4 rounded-xs" />
                 Queue wait
             </span>
             <span className="flex items-center gap-1.75">
@@ -112,7 +125,9 @@ function SliceHistogram({ counts, selected, onSelect, timeWindow }: SliceHistogr
     )
 }
 
-function Waterfall({ calls, total, onSelectRequest }: { calls: RequestTrace[]; total: number; onSelectRequest?: (requestId: string) => void }) {
+type InspectionProps = { inspectedId: string | null; onInspect: (call: RequestTrace, element: HTMLElement) => void }
+
+function Waterfall({ calls, total, inspectedId, onInspect }: { calls: RequestTrace[]; total: number } & InspectionProps) {
     if (!calls.length) return <p className="py-6 text-[13px] text-muted-foreground">No requests in this slice.</p>
     const origin = calls[0]!.startedAtMs
     const scale = waterfallScale(extentMs(calls))
@@ -122,7 +137,7 @@ function Waterfall({ calls, total, onSelectRequest }: { calls: RequestTrace[]; t
             <WaterfallAxis scale={scale} />
             <ol>
                 {rows.map(row => (
-                    <MethodRow key={row.key} row={row} calls={calls} origin={origin} scale={scale} onSelectRequest={onSelectRequest} />
+                    <MethodRow key={row.key} row={row} calls={calls} origin={origin} scale={scale} inspectedId={inspectedId} onInspect={onInspect} />
                 ))}
             </ol>
             <WaterfallFooter calls={calls} methods={rows.length} total={total} />
@@ -176,9 +191,9 @@ function WaterfallAxis({ scale: { spanMs, ticks, unit } }: { scale: Scale }) {
     )
 }
 
-type MethodRowProps = { row: MethodCalls; calls: RequestTrace[]; origin: number; scale: Scale; onSelectRequest?: (requestId: string) => void }
+type MethodRowProps = { row: MethodCalls; calls: RequestTrace[]; origin: number; scale: Scale } & InspectionProps
 
-function MethodRow({ row, calls, origin, scale, onSelectRequest }: MethodRowProps) {
+function MethodRow({ row, calls, origin, scale, inspectedId, onInspect }: MethodRowProps) {
     const failed = row.calls.some(isFailed)
     const avgWait = averageOf(row.calls, queueTime) ?? 0
     const avgRun = averageOf(row.calls, serviceTime) ?? 0
@@ -188,14 +203,7 @@ function MethodRow({ row, calls, origin, scale, onSelectRequest }: MethodRowProp
             <span translate="no" className={cn("truncate text-[13px]", failed ? "text-danger" : "text-foreground/90")}>
                 {row.operation}
             </span>
-            <MethodTrack
-                label={`${row.operation}: ${formatPlural(row.calls.length, "call")}, average wait ${formatMs(avgWait)}, average run ${formatMs(avgRun)}`}
-                row={row}
-                calls={calls}
-                origin={origin}
-                scale={scale}
-                onSelectRequest={onSelectRequest}
-            />
+            <MethodTrack row={row} calls={calls} origin={origin} scale={scale} inspectedId={inspectedId} onInspect={onInspect} />
             <span className={cn("text-right", failed ? "text-danger" : "text-foreground/90")}>{formatCount(row.calls.length)}</span>
             <span className="text-right text-muted-foreground">{formatMs(avgWait)}</span>
             <span className="text-right text-foreground/90">{formatMs(avgRun)}</span>
@@ -215,14 +223,12 @@ function KindBadge({ kind }: { kind: RequestTrace["kind"] }) {
     )
 }
 
-type MethodTrackProps = MethodRowProps & { label: string }
-
-function MethodTrack({ label, row, calls, origin, scale: { spanMs, ticks }, onSelectRequest }: MethodTrackProps) {
+function MethodTrack({ row, calls, origin, scale: { spanMs, ticks }, inspectedId, onInspect }: MethodRowProps) {
     const at = (ms: number) => `${(ms / spanMs) * 100}%`
     return (
         <div
-            role="img"
-            aria-label={label}
+            role="group"
+            aria-label={`${row.operation} calls`}
             className="relative h-full bg-[linear-gradient(90deg,color-mix(in_oklab,var(--border)_55%,transparent)_1px,transparent_1px)]"
             style={{ backgroundSize: `${100 / (ticks.length - 1)}% 100%` }}
         >
@@ -231,9 +237,10 @@ function MethodTrack({ label, row, calls, origin, scale: { spanMs, ticks }, onSe
                     key={call.eventId}
                     call={call}
                     blocker={blockerOf(call, calls)}
+                    selected={call.eventId === inspectedId}
+                    onInspect={onInspect}
                     left={at(call.startedAtMs - origin)}
                     width={at(call.durationMs)}
-                    onSelect={onSelectRequest && (() => onSelectRequest(call.requestId))}
                 />
             ))}
         </div>
@@ -242,31 +249,36 @@ function MethodTrack({ label, row, calls, origin, scale: { spanMs, ticks }, onSe
 
 function blockerOf(call: RequestTrace, calls: RequestTrace[]): RequestTrace | undefined {
     if (!call.queueWaitMs) return undefined
-    return calls.find(other => other !== call && other.startedAtMs + (other.queueWaitMs ?? 0) <= call.startedAtMs && call.startedAtMs < other.startedAtMs + other.durationMs)
+    return calls.find(other => other.eventId !== call.eventId && other.startedAtMs + (other.queueWaitMs ?? 0) <= call.startedAtMs && call.startedAtMs < other.startedAtMs + other.durationMs)
 }
 
-type CallBarProps = { call: RequestTrace; blocker: RequestTrace | undefined; left: string; width: string; onSelect?: () => void }
+type CallBarProps = { call: RequestTrace; blocker: RequestTrace | undefined; selected: boolean; onInspect: InspectionProps["onInspect"]; left: string; width: string }
 
-function CallBar({ call, blocker, left, width, onSelect }: CallBarProps) {
+function CallBar({ call, blocker, selected, onInspect, left, width }: CallBarProps) {
     const queueShare = call.durationMs > 0 ? (call.queueWaitMs ?? 0) / call.durationMs : 0
     const failed = isFailed(call)
+    const runMs = serviceTime(call) ?? call.durationMs
+    const label = `${call.operation}, ${call.hostState}${call.queueWaitMs ? `, waited ${formatMs(call.queueWaitMs)}` : ""}, ran ${formatMs(runMs)}${failed ? `, ${outcomeLabels[call.outcome]}` : ""}`
     return (
         <Tooltip>
             <TooltipTrigger asChild>
                 <button
                     type="button"
-                    onClick={onSelect}
+                    aria-pressed={selected}
+                    aria-label={label}
+                    onClick={event => onInspect(call, event.currentTarget)}
                     className={cn(
-                        "group absolute top-1/2 flex h-3 min-w-0.75 -translate-y-1/2 outline-none before:absolute before:-inset-y-2 before:inset-x-0",
-                        onSelect ? "cursor-pointer" : "cursor-default"
+                        "group absolute top-1/2 flex h-3 min-w-0.75 -translate-y-1/2 cursor-pointer border-0 bg-transparent p-0 before:absolute before:-inset-y-2 before:inset-x-0",
+                        selected && "z-10"
                     )}
                     style={{ left, width }}
                 >
-                    {queueShare > 0 && <span className={`h-full rounded-l-[2px] ${queueStripes}`} style={{ width: `${queueShare * 100}%` }} />}
+                    {queueShare > 0 && <QueueStripes className="h-full rounded-l-[2px]" style={{ width: `${queueShare * 100}%` }} />}
                     <span
                         className={cn(
-                            "h-full min-w-0.75 flex-1 rounded-[2px] outline-offset-2 group-hover:outline-2 group-hover:outline-foreground group-focus-visible:outline-2 group-focus-visible:outline-ring",
+                            "h-full min-w-0.75 flex-1 rounded-[2px] outline-offset-2 group-hover:outline-2 group-hover:outline-foreground group-focus-visible:outline-2 group-focus-visible:outline-foreground",
                             queueShare > 0 && "rounded-l-none",
+                            selected && "outline-2 outline-foreground",
                             failed ? "bg-danger" : "bg-foreground"
                         )}
                     />
@@ -275,7 +287,6 @@ function CallBar({ call, blocker, left, width, onSelect }: CallBarProps) {
             </TooltipTrigger>
             <TooltipContent className="tabular-nums">
                 <CallDetail call={call} blocker={blocker} />
-                {onSelect && <span className="font-medium"> · Click to filter logs to this request</span>}
             </TooltipContent>
         </Tooltip>
     )
@@ -285,6 +296,8 @@ function CallDetail({ call, blocker }: { call: RequestTrace; blocker: RequestTra
     const runMs = serviceTime(call) ?? call.durationMs
     return (
         <span>
+            <b className="font-medium capitalize">{call.hostState}</b>
+            {" · "}
             {call.queueWaitMs ? (
                 <>
                     Waited <b className="font-medium">{formatMs(call.queueWaitMs)}</b>
