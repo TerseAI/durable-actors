@@ -22,8 +22,10 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
         )
         .map(Arc::new)
     };
-    let writer = LifecycleStore::new(backend()?);
     let persistence = backend()?;
+    // Surfaces schema errors directly; the writer would otherwise retry them silently.
+    ingestion::initialize(&persistence.client, 86400).await?;
+    let writer = LifecycleStore::new(backend()?);
     let reader = LifecycleStore::new(persistence.clone());
     let project = format!("lifecycle-{}", uuid::Uuid::new_v4());
     let mut event = LifecycleEvent {
