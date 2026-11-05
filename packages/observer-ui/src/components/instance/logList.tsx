@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react"
 
-import { Check, ChevronRight, Copy, ListFilter } from "lucide-react"
+import { Check, ChevronRight, Copy } from "lucide-react"
 
 import { formatLogClock, formatPlural } from "../../format.js"
 import { type ParsedMessage, constructorRequestId, parseLogMessage, shortRequestId, summarizeJson } from "../../lib/logs.js"
@@ -154,7 +154,7 @@ function LogRow({ line, layout, expanded, onToggle, search, onFilterRequest }: L
                     <ChevronRight className={cn("size-3.5 transition-transform", expanded && "rotate-90")} />
                 </button>
             </div>
-            {expanded && <LogDetail line={line} parsed={parsed} indent={layout.messageOffset} onFilterRequest={onFilterRequest} />}
+            {expanded && <LogDetail line={line} parsed={parsed} indent={layout.messageOffset} />}
         </li>
     )
 }
@@ -216,10 +216,9 @@ function JsonPreview({ value, search }: { value: NonNullable<ParsedMessage["json
     )
 }
 
-type LogDetailProps = { line: ActorLog; parsed: ParsedMessage; indent: number; onFilterRequest: (requestId: string) => void }
+type LogDetailProps = { line: ActorLog; parsed: ParsedMessage; indent: number }
 
-function LogDetail({ line, parsed, indent, onFilterRequest }: LogDetailProps) {
-    const requestId = line.requestId !== constructorRequestId ? line.requestId : null
+function LogDetail({ line, parsed, indent }: LogDetailProps) {
     const entry = {
         timestamp: new Date(line.timestampMs).toISOString(),
         level: line.level,
@@ -231,14 +230,8 @@ function LogDetail({ line, parsed, indent, onFilterRequest }: LogDetailProps) {
     return (
         <div className="pr-6 pb-4" style={{ paddingLeft: indent }}>
             <JsonBlock value={entry} />
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3">
                 <CopyButton text={JSON.stringify(entry, null, 2)} />
-                {requestId && (
-                    <Button variant="outline" size="xs" onClick={() => onFilterRequest(requestId)}>
-                        <ListFilter />
-                        Show only this request
-                    </Button>
-                )}
             </div>
         </div>
     )

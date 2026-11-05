@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from "react"
 
-import { Columns3, Download, Search, X } from "lucide-react"
+import { Columns3, Search, X } from "lucide-react"
 
 import { useData } from "../../client/DatatContext.js"
 import { useSetTimeRange } from "../../client/TimeRangeContext.js"
-import { formatCount, formatLogClock } from "../../format.js"
+import { formatCount } from "../../format.js"
 import { useDebouncedValue } from "../../hooks/useDebouncedValue.js"
 import { useLogs } from "../../hooks/useLogs.js"
 import { countAtLeast, levelTotals, shortRequestId } from "../../lib/logs.js"
 import { cn } from "../../lib/utils.js"
-import type { ActorLog, LevelCounts, LogLevel } from "../../types/Logs.js"
+import type { LevelCounts, LogLevel } from "../../types/Logs.js"
 import type { RequestTrace } from "../../types/Requests.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
 import { Button } from "../ui/button.js"
@@ -85,7 +85,6 @@ export function LogsCard({ actorName, actorId, requests, requestId, onRequestCha
                 onReachEnd={logs.hasOlder && !logs.loadingOlder ? logs.loadOlder : undefined}
                 columns={columns}
             />
-            {logs.lines && logs.lines.length > 0 && <LogFooter lines={logs.lines} hasOlder={logs.hasOlder} loadingOlder={logs.loadingOlder} onLoadOlder={logs.loadOlder} />}
         </SectionCard>
     )
 }
@@ -225,35 +224,4 @@ function RequestChip({ requestId, call, onRemove, onClearFilters }: RequestChipP
             </button>
         </div>
     )
-}
-
-type LogFooterProps = { lines: ActorLog[]; hasOlder: boolean; loadingOlder: boolean; onLoadOlder: () => void }
-
-function LogFooter({ lines, hasOlder, loadingOlder, onLoadOlder }: LogFooterProps) {
-    return (
-        <div className="flex items-center justify-between border-t pt-3 text-xs text-muted-foreground tabular-nums">
-            <span>{hasOlder ? `Loaded back to ${formatLogClock(lines.at(-1)!.timestampMs)}` : "All matching lines loaded"}</span>
-            <div className="flex gap-2">
-                <Button variant="outline" size="xs" onClick={() => downloadLines(lines)}>
-                    <Download />
-                    Download
-                </Button>
-                {hasOlder && (
-                    <Button variant="outline" size="xs" disabled={loadingOlder} onClick={onLoadOlder}>
-                        {loadingOlder ? "Loading…" : "Load older lines"}
-                    </Button>
-                )}
-            </div>
-        </div>
-    )
-}
-
-function downloadLines(lines: ActorLog[]): void {
-    const text = lines.map(line => `${new Date(line.timestampMs).toISOString()} ${line.level.toUpperCase().padEnd(5)} ${line.requestId ?? "-"} ${line.message}`).join("\n")
-    const url = URL.createObjectURL(new Blob([`${text}\n`], { type: "text/plain" }))
-    const link = document.createElement("a")
-    link.href = url
-    link.download = "logs.txt"
-    link.click()
-    URL.revokeObjectURL(url)
 }
