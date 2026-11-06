@@ -49,8 +49,7 @@ function useLogHistogram(baseUrl: string, timeWindow: TimeWindow, filter: LogFil
     const client = new HttpObserverClient(baseUrl)
     const bucketMs = chartBucketMs(timeWindow.toMs - timeWindow.fromMs)
     return useSWR([...logHistogramKey(baseUrl, filter), ...windowKey(timeWindow), bucketMs], () => client.getLogHistogram(filter, alignBounds(currentBounds(timeWindow), bucketMs), bucketMs), {
-        refreshInterval: timeWindow.live ? liveRefreshMs : 0,
-        keepPreviousData: true
+        refreshInterval: timeWindow.live ? liveRefreshMs : 0
     })
 }
 

@@ -40,18 +40,19 @@ export type LogListProps = {
     failed: boolean
     search: string
     filtered: boolean
+    range: string
     onFilterRequest: (requestId: string) => void
     onClearFilters: () => void
     onReachEnd: (() => void) | undefined
     columns: LogColumns
 }
 
-export function LogList({ lines, failed, search, filtered, onFilterRequest, onClearFilters, onReachEnd, columns }: LogListProps) {
+export function LogList({ lines, failed, search, filtered, range, onFilterRequest, onClearFilters, onReachEnd, columns }: LogListProps) {
     const layout = layoutFor(columns)
     const [expansion, setExpansion] = useState<Expansion>({ all: false, toggled: new Set() })
     if (failed) return <p className="py-6 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
     if (!lines) return <ListSkeleton layout={layout} />
-    if (!lines.length) return <EmptyList filtered={filtered} onClearFilters={onClearFilters} />
+    if (!lines.length) return <EmptyList filtered={filtered} range={range} onClearFilters={onClearFilters} />
     const isExpanded = (logId: string) => expansion.all !== expansion.toggled.has(logId)
     const anyExpanded = lines.some(line => isExpanded(line.logId))
     const toggle = (logId: string) =>
@@ -117,18 +118,18 @@ function ListSkeleton({ layout }: { layout: Layout }) {
     )
 }
 
-function EmptyList({ filtered, onClearFilters }: { filtered: boolean; onClearFilters: () => void }) {
+function EmptyList({ filtered, range, onClearFilters }: { filtered: boolean; range: string; onClearFilters: () => void }) {
     return (
-        <p className="py-8 text-center text-[13px] text-muted-foreground">
+        <p className="pt-3.5 pb-1 text-[13px] text-muted-foreground">
             {filtered ? (
                 <>
-                    No lines match these filters.{" "}
+                    No logs match these filters, {range}.{" "}
                     <button type="button" onClick={onClearFilters} className="font-medium text-foreground underline decoration-border underline-offset-3 hover:decoration-foreground">
                         Clear filters
                     </button>
                 </>
             ) : (
-                "No logs in this time range."
+                `No logs, ${range}.`
             )}
         </p>
     )
