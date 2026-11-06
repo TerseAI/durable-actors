@@ -212,6 +212,39 @@ paths:
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/hint-host-warm:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: hintHostWarm
+            tags: [Actors]
+            summary: Warm an actor host
+            security: [{ ApiKey: [] }, { ActorSession: [] }, {}]
+            description: Hints that latency-sensitive calls to this actor are coming, so the runtime can start its host in the background. Responds by acknowledging the hint, before the host is ready. Creates the actor if it does not exist.
+            requestBody:
+                required: false
+                content:
+                    application/json:
+                        schema: { $ref: "#/components/schemas/FindActorRequest" }
+            responses:
+                "202":
+                    description: Hint accepted.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                required: [status]
+                                properties:
+                                    status: { type: string, enum: [accepted] }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "403": { $ref: "#/components/responses/AccessDisabled" }
+                "404": { $ref: "#/components/responses/NotFound" }
+                "409": { $ref: "#/components/responses/Conflict" }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "500": { $ref: "#/components/responses/Internal" }
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke:
         servers:
             - url: "{actorHost}"
