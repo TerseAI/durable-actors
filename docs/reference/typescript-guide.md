@@ -55,6 +55,14 @@ Run it with `bun run --bun client`, which runs `bun client.ts`. Bun loads `.env`
 
 An actor starts when one of its methods is called, stays in memory while it is busy, and shuts down after sitting idle. Regenerate the client after changing an actor's methods.
 
+`warm` hints that calls to an actor are coming soon, so the server can start the actor ahead of them. It is optional: without it, the first call starts the actor as usual. The server acknowledges the hint and starts the actor in the background; if the actor is already running or starting, the hint does nothing. A warm that starts an actor counts against the same limits as a call that does.
+
+A common use is to warm the actors a user is about to need when their session begins, so their first call does not wait for startup.
+
+```typescript
+await actors.BankAccount.warm("demo")
+```
+
 ## Ephemeral fields
 
 Next, count the deposits made since the actor last woke up. The `@Ephemeral` decorator keeps a field in memory only while the actor is awake. It resets when the actor shuts down.

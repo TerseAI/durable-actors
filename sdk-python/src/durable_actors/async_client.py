@@ -179,7 +179,7 @@ class AsyncClient(ClientConfiguration):
             ) from error
 
     async def warm(self, actor_name: str, actor_id: str) -> ActorWarmReply:
-        """Ask the server to start the actor's host before calls arrive."""
+        """Hint that calls to this actor are coming soon, so the server can start its host in the background."""
         self._ensure_open()
         path = self.actor_path(actor_name, actor_id)
         request_id = str(uuid.uuid4())
@@ -192,12 +192,6 @@ class AsyncClient(ClientConfiguration):
                 follow_redirects=False,
             )
         except httpx.TransportError as error:
-            if not isinstance(error, NEVER_SENT):
-                raise ActorInvocationError(
-                    "outcome_unknown",
-                    request_id,
-                    "warm hint response was lost; the host may be starting",
-                ) from error
             raise ActorInvocationError(
                 "unavailable", request_id, f"could not connect to {self.origin}: {error}"
             ) from error

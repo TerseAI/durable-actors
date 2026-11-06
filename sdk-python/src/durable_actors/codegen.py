@@ -297,7 +297,7 @@ def warm_method(name: str, asynchronous: bool) -> list[str]:
         "    @_builtins.staticmethod",
         f"    {prefix}def warm(actor_id: _builtins.str, transport: _ActorTransport | None = None) -> _ActorWarmReply:",
         docstring(
-            "Ask the server to start this actor's host before calls arrive.\n\n"
+            "Hint that calls to this actor are coming soon, so the server can start its host in the background.\n\n"
             "Args:\n"
             "    actor_id: Identity of the actor to warm.\n"
             "    transport: Optional caller-owned transport. Uses the SDK-managed\n"
