@@ -1,8 +1,9 @@
 import { z } from "zod"
 
+import type { ActorStateMessage, ActorStateUpdate } from "../client-runtime/state.js"
 import { ActorProtocolError, ActorSerializationError, ActorValidationError } from "../errors.js"
 import { jsonValueSchema } from "../json.js"
-import type { JsonObject, JsonValue } from "../json.js"
+import type { JsonValue } from "../json.js"
 import type { SocketContract } from "../wire/contract.js"
 
 import { socketTagsSchema } from "./socketProtocol.js"
@@ -14,21 +15,6 @@ interface ActorSchemas<Metadata = unknown, Incoming = unknown, Outgoing = Incomi
     readonly incoming?: z.ZodType<Incoming, Incoming>
     readonly outgoing?: z.ZodType<Outgoing, Outgoing>
     readonly tag?: z.ZodType<Tag, Tag>
-}
-
-/** Initial snapshot of public `@Emittable` fields. */
-interface ActorStateMessage<State = JsonObject> {
-    readonly type: "state"
-    readonly state: State
-    readonly version?: number
-}
-
-/** Saved state update. Merge `changes` and delete fields listed in `removed`. */
-interface ActorStateUpdate<State = JsonObject> {
-    readonly type: "state_update"
-    readonly changes: Partial<State>
-    readonly removed: readonly string[]
-    readonly version: number
 }
 
 const stateMessageSchema = z.discriminatedUnion("type", [
