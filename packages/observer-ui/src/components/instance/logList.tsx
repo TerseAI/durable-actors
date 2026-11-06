@@ -103,10 +103,11 @@ function layoutFor(columns: LogColumns): Layout {
     }
 }
 
+// Fills the list's max height (640px) so loading doesn't resize the card.
 function ListSkeleton({ layout }: { layout: Layout }) {
     return (
-        <div className="py-2">
-            {Array.from({ length: 6 }, (_, index) => (
+        <div className="h-[640px] overflow-hidden py-2">
+            {Array.from({ length: 18 }, (_, index) => (
                 <div key={index} className={`${rowGrid} h-8.5 px-2`} style={{ gridTemplateColumns: layout.gridTemplateColumns }}>
                     <Skeleton className="h-3.5 w-20" />
                     {layout.columns.level && <Skeleton className="h-4 w-11" />}

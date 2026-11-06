@@ -29,7 +29,7 @@ export type LogChartProps = {
 export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
     const [hovered, setHovered] = useState<number | null>(null)
     const [drag, setDrag] = useState<Drag | null>(null)
-    if (!histogram) return <Skeleton className="mt-4 mb-3.5 h-[122px] w-full rounded-sm" />
+    if (!histogram) return <ChartSkeleton />
     const { buckets, fromMs, bucketMs } = histogram
     const peak = Math.max(...buckets.map(counts => countAtLeast(counts, null)))
     const scale = niceScale(Math.max(peak, 1))
@@ -72,6 +72,15 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
                 </div>
             </div>
             <TimeLabels histogram={histogram} live={live} />
+        </div>
+    )
+}
+
+// Same frame and height as the chart (plot, time labels, divider), so loading doesn't move the list.
+function ChartSkeleton() {
+    return (
+        <div className="mt-4 border-b pb-3.5">
+            <Skeleton className="h-[135px] w-full rounded-sm" />
         </div>
     )
 }
