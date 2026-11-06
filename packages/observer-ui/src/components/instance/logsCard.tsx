@@ -8,6 +8,7 @@ import { formatCount } from "../../format.js"
 import { useDebouncedValue } from "../../hooks/useDebouncedValue.js"
 import { useLogs } from "../../hooks/useLogs.js"
 import { countAtLeast, levelTotals, shortRequestId } from "../../lib/logs.js"
+import { describeWindow } from "../../lib/timeRange.js"
 import { cn } from "../../lib/utils.js"
 import type { LevelCounts, LogLevel } from "../../types/Logs.js"
 import type { RequestTrace } from "../../types/Requests.js"
@@ -82,6 +83,7 @@ export function LogsCard({ actorName, actorId, requests, requestId, onRequestCha
                 failed={logs.isError}
                 search={search}
                 filtered={Boolean(requestId || search || minimum)}
+                range={describeWindow(timeWindow)}
                 onFilterRequest={onRequestChange}
                 onClearFilters={clearFilters}
                 onReachEnd={logs.hasOlder && !logs.loadingOlder ? logs.loadOlder : undefined}

@@ -29,9 +29,10 @@ export type LogChartProps = {
 export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
     const [hovered, setHovered] = useState<number | null>(null)
     const [drag, setDrag] = useState<Drag | null>(null)
-    if (!histogram) return <Skeleton className="mt-4 mb-3.5 h-[122px] w-full rounded-sm" />
+    if (!histogram) return <ChartSkeleton />
     const { buckets, fromMs, bucketMs } = histogram
-    const scale = niceScale(Math.max(...buckets.map(counts => countAtLeast(counts, null)), 1))
+    const peak = Math.max(...buckets.map(counts => countAtLeast(counts, null)))
+    const scale = niceScale(Math.max(peak, 1))
     const bucketAt = (event: PointerEvent<HTMLDivElement>) => {
         const box = event.currentTarget.getBoundingClientRect()
         return Math.min(buckets.length - 1, Math.max(0, Math.floor(((event.clientX - box.left) / box.width) * buckets.length)))
@@ -45,7 +46,7 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
     return (
         <div className="mt-4 border-b pb-3.5">
             <div className="relative pt-4">
-                <Gridlines scale={scale} />
+                <Gridlines scale={peak ? scale : 0} />
                 <div
                     role="img"
                     aria-label={`Log lines per ${formatDuration(bucketMs)}; drag across the chart to zoom into a time range`}
@@ -75,6 +76,15 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
     )
 }
 
+// Same frame and height as the chart (plot, time labels, divider), so loading doesn't move the list.
+function ChartSkeleton() {
+    return (
+        <div className="mt-4 border-b pb-3.5">
+            <Skeleton className="h-[135px] w-full rounded-sm" />
+        </div>
+    )
+}
+
 function niceScale(peak: number): number {
     for (let magnitude = 1; ; magnitude *= 10) {
         const step = scaleSteps.find(candidate => candidate * magnitude >= peak)
@@ -84,10 +94,11 @@ function niceScale(peak: number): number {
 
 // Lines span the card's full width; each value sits just above its line, left of the bars.
 function Gridlines({ scale }: { scale: number }) {
+    const values = scale ? [scale, scale / 2, 0] : [0]
     return (
         <div aria-hidden className="pointer-events-none absolute inset-x-0 top-4 h-24">
-            {[scale, scale / 2, 0].map((value, index) => (
-                <div key={index} className="absolute inset-x-0 border-t border-dashed border-border/80" style={{ top: `${index * 50}%` }}>
+            {values.map(value => (
+                <div key={value} className="absolute inset-x-0 border-t border-dashed border-border/80" style={{ top: `${scale ? 100 - (value / scale) * 100 : 100}%` }}>
                     <span className="absolute bottom-0.5 left-0 text-[11px] leading-none text-muted-foreground tabular-nums">{formatCount(value)}</span>
                 </div>
             ))}

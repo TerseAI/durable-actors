@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router"
+import { Navigate, Route, Routes, useParams } from "react-router"
 
 import { DrawerProvider } from "./client/DrawerContext.js"
 import { TimeRangeProvider } from "./client/TimeRangeContext.js"
@@ -17,7 +17,7 @@ export function ObserverRoutes() {
                     path="actors/:actorName/instances/:actorId"
                     element={
                         <TimeRangeProvider initialRange={pinnedLastHour}>
-                            <InstancePage />
+                            <InstanceRoute />
                         </TimeRangeProvider>
                     }
                 />
@@ -25,4 +25,10 @@ export function ObserverRoutes() {
             </Routes>
         </DrawerProvider>
     )
+}
+
+// Filters and selections belong to one instance, so each instance gets a fresh page.
+function InstanceRoute() {
+    const { actorName, actorId } = useParams()
+    return <InstancePage key={`${actorName}/${actorId}`} />
 }
