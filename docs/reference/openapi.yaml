@@ -728,7 +728,7 @@ components:
         ActorSession:
             type: http
             scheme: bearer
-            description: Runtime-issued project-scoped session, accepted only for actor RPC discovery.
+            description: Runtime-issued project-scoped session, accepted for actor RPC discovery and host warm hints.
         SocketTicket:
             type: apiKey
             in: query
