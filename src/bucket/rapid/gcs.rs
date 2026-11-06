@@ -13,7 +13,7 @@ impl RapidSnapshots {
             anyhow::bail!("Rapid persistence configuration required");
         };
         GcsBucket::with_clients(archive_bucket, clients.clone())?
-            .require_standard()
+            .require_archive()
             .await?;
         for placement in buckets {
             let bucket = clients

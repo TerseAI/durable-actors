@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use google_cloud_auth::credentials::{
     CacheableResource, Credentials, CredentialsProvider, EntityTag,
@@ -47,19 +47,20 @@ impl GcsBucket {
         self.clients.clone()
     }
 
-    pub(crate) async fn require_standard(&self) -> Result<()> {
+    pub(crate) async fn require_archive(&self) -> Result<()> {
         let bucket = self
             .clients
             .control
             .get_bucket()
             .set_name(&self.bucket)
             .send()
-            .await?;
+            .await
+            .with_context(|| format!("read archive bucket metadata for {}", self.bucket))?;
         anyhow::ensure!(
             bucket.storage_class == "STANDARD",
             "archive bucket must use Standard GCS"
         );
-        Ok(())
+        validate_archive_retention(&bucket)
     }
 
     pub async fn new(bucket: &str) -> Result<Self> {
@@ -243,6 +244,37 @@ fn bucket_name(bucket: &str) -> Result<String> {
         "invalid storage bucket"
     );
     Ok(format!("projects/_/buckets/{bucket}"))
+}
+
+fn validate_archive_retention(bucket: &google_cloud_storage::model::Bucket) -> Result<()> {
+    let Some(lifecycle) = &bucket.lifecycle else {
+        return Ok(());
+    };
+    for rule in &lifecycle.rule {
+        let action = rule
+            .action
+            .as_ref()
+            .context("archive bucket lifecycle action missing")?;
+        match action.r#type.as_str() {
+            "SetStorageClass" | "AbortIncompleteMultipartUpload" => continue,
+            "Delete" => {}
+            other => anyhow::bail!("unsupported archive bucket lifecycle action: {other:?}"),
+        }
+        let prefixes = rule
+            .condition
+            .as_ref()
+            .map(|condition| condition.matches_prefix.as_slice())
+            .unwrap_or_default();
+        let archive = super::rapid::ARCHIVE_PREFIX;
+        anyhow::ensure!(
+            !prefixes.is_empty()
+                && prefixes
+                    .iter()
+                    .all(|prefix| !archive.starts_with(prefix) && !prefix.starts_with(archive)),
+            "archive bucket lifecycle deletion must exclude recovery objects under {archive}"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone, Default)]
