@@ -105,9 +105,13 @@ pub struct CreateSpareRequest {
 pub struct EnsureHostRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) initial_operation: Option<assignment::InitialOperation>,
-    pub actor_is_new: bool,
+    /// The epoch the control plane claimed for this host, which the host adopts on startup.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub owner_hint: Option<String>,
+    pub ownership_claim: Option<String>,
+    /// Where a host outside the spare pool serves, fixed before it starts so its ownership can be
+    /// claimed first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_route: Option<String>,
     pub actor: Option<crate::actor::ActorKey>,
     pub code_snapshot: Option<String>,
     pub spare: Option<SpareHandle>,
@@ -205,6 +209,10 @@ pub trait SandboxProvider: Send + Sync {
 
     async fn create_spare(&self, _request: &CreateSpareRequest) -> Result<SpareHandle> {
         anyhow::bail!("provider does not support generic spares")
+    }
+    /// A route for a host started outside the spare pool, known before the host starts.
+    async fn reserve_route(&self) -> Result<String> {
+        anyhow::bail!("provider cannot choose a host route before the host starts")
     }
     async fn retire_spare(&self, _request: &SpareHandle) -> Result<()> {
         anyhow::bail!("provider does not support generic spares")

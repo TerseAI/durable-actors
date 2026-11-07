@@ -18,7 +18,9 @@ pub use file::FileBucket;
 pub use gcs::GcsBucket;
 pub(crate) use gcs::WarmStorage;
 pub(crate) use runtime::{ActorStateReader, CachedBase};
-pub use runtime::{LoadedActor, OwnershipHint, RuntimeStorage, RuntimeStorageReader};
+pub use runtime::{
+    LoadedActor, OwnershipClaim, OwnershipHint, RuntimeStorage, RuntimeStorageReader,
+};
 
 #[derive(Clone, Debug)]
 pub struct BucketObject {

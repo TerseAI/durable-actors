@@ -153,6 +153,67 @@ async fn registers_immediately_and_renews_on_schedule() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_partly_spent_claim_renews_at_once_and_fences_at_its_own_expiry() -> Result<()> {
+    struct Claimed {
+        calls: AtomicUsize,
+        changed: Notify,
+        clock: Arc<ManualClock>,
+    }
+
+    #[async_trait]
+    impl HostLeaseRegistry for Claimed {
+        async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.changed.notify_one();
+            if call > 0 {
+                return std::future::pending().await;
+            }
+            Ok(HostLease {
+                id: request.id.clone(),
+                session_id: request.session_id.clone(),
+                route: request.route.clone(),
+                expires_at_ms: self.clock.now_ms()? + 12_000,
+            })
+        }
+
+        async fn unregister(&self, _: &HostId, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let clock = Arc::new(ManualClock::new(1_000));
+    let store = Arc::new(Claimed {
+        calls: AtomicUsize::new(0),
+        changed: Notify::new(),
+        clock: clock.clone(),
+    });
+    let manager = Arc::new(HostLeaseMaintainer::new(
+        HostEndpoint {
+            id: HostId::new("claimed"),
+            route: "http://host".into(),
+        },
+        "session".into(),
+        store.clone(),
+        clock,
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+    )?);
+    let started = Instant::now();
+    let renewal = manager.start().await?;
+    let mut lease_lost = renewal.lease_lost();
+    while store.calls.load(Ordering::SeqCst) < 2 {
+        store.changed.notified().await;
+    }
+    assert!(started.elapsed() < Duration::from_secs(1));
+    while !*lease_lost.borrow() {
+        lease_lost.changed().await?;
+    }
+    assert_eq!(started.elapsed(), Duration::from_secs(12));
+    renewal.shutdown().await?;
+    Ok(())
+}
+
 #[test]
 fn new_hosts_receive_unique_session_ids() {
     let first = HostEndpoint {

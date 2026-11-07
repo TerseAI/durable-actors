@@ -321,7 +321,7 @@ async fn prepare_actor_host(
             assignment.actor.clone(),
         )
         .await?
-        .with_activation(assignment.new_actor, assignment.owner_hint.clone())
+        .with_claim(assignment.claim.clone())
         .with_node_cache(node_cache.clone()),
     );
     let persistence = super::persistence::ActorPersistence::new(storage.clone());

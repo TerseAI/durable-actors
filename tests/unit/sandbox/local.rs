@@ -276,8 +276,8 @@ impl LocalFixture {
     fn request(&self, id: &str) -> EnsureHostRequest {
         EnsureHostRequest {
             initial_operation: None,
-            actor_is_new: true,
-            owner_hint: None,
+            ownership_claim: None,
+            host_route: None,
             actor: Some(ActorKey {
                 project_id: "test".into(),
                 actor_name: "Counter".into(),
@@ -381,8 +381,8 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
     provider.shutdown().await;
     let request = EnsureHostRequest {
         initial_operation: None,
-        actor_is_new: true,
-        owner_hint: Some("{\"generation\":17,\"record\":{\"epoch\":3}}".into()),
+        ownership_claim: Some("{\"epoch\":3}".into()),
+        host_route: Some("http://127.0.0.1:47123".into()),
         actor: None,
         code_snapshot: None,
         spare: None,
@@ -413,9 +413,18 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         host_environment(&request, &directory).get("DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS"),
         Some(&"300000".to_owned())
     );
+    let environment = host_environment(&request, &directory);
     assert_eq!(
-        host_environment(&request, &directory).get("DURABLE_ACTORS_OWNER_HINT"),
-        request.owner_hint.as_ref()
+        environment.get("DURABLE_ACTORS_OWNERSHIP_CLAIM"),
+        request.ownership_claim.as_ref()
+    );
+    assert_eq!(
+        environment.get("DURABLE_ACTORS_HOST_ROUTE"),
+        request.host_route.as_ref()
+    );
+    assert_eq!(
+        environment.get("DURABLE_ACTORS_HOST_BIND"),
+        Some(&"127.0.0.1:47123".to_owned())
     );
     let error = provider.ensure_host(&request).await.unwrap_err();
     assert!(error.to_string().contains("shutting down"), "{error:#}");

@@ -622,35 +622,36 @@ impl Stack {
             )?
             .token;
         let publisher = Arc::new(ControlPlaneClient::connect(control_plane, token.clone()).await?);
-        let storage = Arc::new(
-            crate::host::storage::HostStorage::new(
-                crate::bucket::access::HostStorageConfig {
-                    persistence: crate::bucket::SnapshotStoreConfig::Local,
-                    bucket: crate::bucket::access::BucketLocation::File {
-                        directory: runtime.directory.path().into(),
-                    },
-                    region: "us-east".into(),
-                    tokens: None,
-                    ownership: Default::default(),
+        let storage = crate::host::storage::HostStorage::new(
+            crate::bucket::access::HostStorageConfig {
+                persistence: crate::bucket::SnapshotStoreConfig::Local,
+                bucket: crate::bucket::access::BucketLocation::File {
+                    directory: runtime.directory.path().into(),
                 },
-                host_id.clone(),
-                "00000000-0000-4000-8000-000000000001".into(),
-                publisher.clone(),
-                tokio_util::sync::CancellationToken::new(),
-                None,
-                actor.clone(),
-            )
-            .await?
-            .with_activation(true, None),
-        );
-        storage
-            .register(&HostLeaseRequest {
-                id: host_id.clone(),
-                session_id: "00000000-0000-4000-8000-000000000001".into(),
-                route: host_route.clone(),
-                duration_ms: 60_000,
-            })
+                region: "us-east".into(),
+                tokens: None,
+                ownership: Default::default(),
+            },
+            host_id.clone(),
+            "00000000-0000-4000-8000-000000000001".into(),
+            publisher.clone(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            actor.clone(),
+        )
+        .await?;
+        let lease = HostLeaseRequest {
+            id: host_id.clone(),
+            session_id: "00000000-0000-4000-8000-000000000001".into(),
+            route: host_route.clone(),
+            duration_ms: 60_000,
+        };
+        let claim = storage
+            .runtime
+            .claim_activation(&actor, &lease, "us-east", true, None)
             .await?;
+        let storage = Arc::new(storage.with_claim(claim));
+        storage.register(&lease).await?;
 
         let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(
             actor.clone(),

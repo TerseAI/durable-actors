@@ -162,7 +162,7 @@ fn assignment_environment(
     let manifest = crate::bundle::ActorBundle::decode(artifact)?;
     let actor = request.actor.as_ref().context("actor identity required")?;
     actor.validate()?;
-    let mut environment = HashMap::from([
+    let environment = HashMap::from([
         ("DURABLE_ACTORS_PROCESS_ROLE".into(), "host".into()),
         (
             "DURABLE_ACTORS_HOST_RESOURCES".into(),
@@ -218,8 +218,11 @@ fn assignment_environment(
         ),
         ("DURABLE_ACTORS_ACTOR".into(), serde_json::to_string(actor)?),
         (
-            "DURABLE_ACTORS_ACTOR_IS_NEW".into(),
-            request.actor_is_new.to_string(),
+            "DURABLE_ACTORS_OWNERSHIP_CLAIM".into(),
+            request
+                .ownership_claim
+                .clone()
+                .context("ownership claim required")?,
         ),
         (
             "DURABLE_ACTORS_RUNTIME_CONFIG".into(),
@@ -229,9 +232,6 @@ fn assignment_environment(
                 .context("host storage configuration required")?,
         ),
     ]);
-    if let Some(hint) = &request.owner_hint {
-        environment.insert("DURABLE_ACTORS_OWNER_HINT".into(), hint.clone());
-    }
     Ok(environment)
 }
 

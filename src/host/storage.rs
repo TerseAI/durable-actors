@@ -17,8 +17,8 @@ use super::{
 use crate::{
     actor::ActorKey,
     bucket::{
-        BucketSnapshots, GcsBucket, OwnershipLocation, RapidSnapshots, RuntimeStorage,
-        SnapshotStore, WarmStorage,
+        BucketSnapshots, GcsBucket, OwnershipClaim, OwnershipLocation, RapidSnapshots,
+        RuntimeStorage, SnapshotStore, WarmStorage,
         access::{HostStorageConfig, StorageToken, StorageTokens},
     },
     clock::{Clock, SystemClock},
@@ -37,8 +37,7 @@ pub(crate) struct HostStorage {
     session: String,
     region: String,
     actor: ActorKey,
-    new_actor: bool,
-    owner_hint: Option<crate::bucket::OwnershipHint>,
+    claim: Option<OwnershipClaim>,
     node_cache: Option<NodeCacheClient>,
     activation: Mutex<Option<ActorActivation>>,
     checkpoint: Mutex<Option<crate::bucket::recovery::PrefetchedCheckpoint>>,
@@ -98,8 +97,7 @@ impl HostStorage {
             session,
             region: config.region,
             actor,
-            new_actor: false,
-            owner_hint: None,
+            claim: None,
             node_cache: None,
             activation: Mutex::new(None),
             checkpoint: Mutex::new(None),
@@ -172,13 +170,8 @@ impl HostStorage {
         Ok(())
     }
 
-    pub(crate) fn with_activation(
-        mut self,
-        new_actor: bool,
-        owner_hint: Option<crate::bucket::OwnershipHint>,
-    ) -> Self {
-        self.new_actor = new_actor;
-        self.owner_hint = owner_hint;
+    pub(crate) fn with_claim(mut self, claim: OwnershipClaim) -> Self {
+        self.claim = Some(claim);
         self
     }
 
@@ -401,11 +394,14 @@ impl HostLeaseRegistry for HostStorage {
         } else {
             self.runtime.renew_activation(&self.actor, request).await?
         };
-        self.fence.lock().unwrap().confirm(
-            started,
-            Duration::from_millis(request.duration_ms),
-            Instant::now(),
-        )?;
+        let now = Instant::now();
+        // The control plane claimed the first lease before this host started activating.
+        let remaining = lease
+            .expires_at_ms
+            .saturating_sub(crate::clock::Clock::now_ms(&SystemClock)?);
+        let duration = Duration::from_millis(request.duration_ms)
+            .min(now.duration_since(started) + Duration::from_millis(remaining));
+        self.fence.lock().unwrap().confirm(started, duration, now)?;
         self.lease.lock().unwrap().replace(lease.clone());
         Ok(lease)
     }
@@ -420,24 +416,24 @@ impl HostLeaseRegistry for HostStorage {
 }
 
 impl HostStorage {
-    /// A database this node saved at the hinted base stands in for the base's checkpoint, so it
-    /// downloads during the ownership CAS and the checkpoint is never fetched. A snapshot this node
-    /// saved stands in for the base's object storage read.
+    /// A database this node saved at the claimed base stands in for the base's checkpoint, so it
+    /// downloads alongside the base snapshot and the checkpoint is never fetched. A snapshot this
+    /// node saved stands in for the base's object storage read.
     async fn activate(&self, request: &HostLeaseRequest) -> Result<HostLease> {
-        let (saved, snapshot) = tokio::join!(self.find_saved_database(), self.find_snapshot());
+        let claim = self
+            .claim
+            .as_ref()
+            .context("assignment carries no ownership claim")?;
+        let digest = claim.base().map(|base| base.digest.as_str());
+        let (saved, snapshot) =
+            tokio::join!(self.find_saved_database(digest), self.find_snapshot(digest));
         let cached = crate::bucket::CachedBase {
             database: saved.is_some(),
             snapshot,
         };
         let (loaded, saved) = tokio::join!(
-            self.runtime.register_activation_with(
-                &self.actor,
-                request,
-                &self.region,
-                self.new_actor,
-                self.owner_hint.as_ref(),
-                &cached,
-            ),
+            self.runtime
+                .adopt_activation(&self.actor, request, &self.region, claim, &cached),
             receive_saved_database(saved),
         );
         let loaded = loaded?;
@@ -451,11 +447,14 @@ impl HostStorage {
         Ok(loaded.placement.lease)
     }
 
-    async fn find_saved_database(&self) -> Option<(String, DatabaseDownload)> {
+    async fn find_saved_database(
+        &self,
+        digest: Option<&str>,
+    ) -> Option<(String, DatabaseDownload)> {
         let cache = self.node_cache.as_ref()?;
-        let digest = self.owner_hint.as_ref()?.sealed_base()?.digest.clone();
-        match cache.database(&digest).await {
-            Ok(download) => download.map(|download| (digest, download)),
+        let digest = digest?;
+        match cache.database(digest).await {
+            Ok(download) => download.map(|download| (digest.to_owned(), download)),
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "node cache database lookup failed");
                 None
@@ -463,9 +462,9 @@ impl HostStorage {
         }
     }
 
-    async fn find_snapshot(&self) -> Option<bytes::Bytes> {
+    async fn find_snapshot(&self, digest: Option<&str>) -> Option<bytes::Bytes> {
         let cache = self.node_cache.as_ref()?;
-        let digest = &self.owner_hint.as_ref()?.sealed_base()?.digest;
+        let digest = digest?;
         let started = Instant::now();
         match cache.snapshot(digest).await {
             Ok(snapshot) => {

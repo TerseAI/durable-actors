@@ -57,16 +57,21 @@ struct Ownership {
     base: Option<SnapshotRef>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct OwnershipHint {
     generation: i64,
     record: Ownership,
 }
 
-impl OwnershipHint {
-    /// The snapshot the previous owner sealed, which a new activation loads unchanged.
-    pub(crate) fn sealed_base(&self) -> Option<&SnapshotRef> {
-        self.record.base.as_ref().filter(|_| self.record.sealed)
+/// An epoch the control plane claimed for one host. The host adopts it without writing ownership.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OwnershipClaim(Ownership);
+
+impl OwnershipClaim {
+    /// The durable snapshot the claimed epoch starts from.
+    pub(crate) fn base(&self) -> Option<&SnapshotRef> {
+        self.0.base.as_ref()
     }
 }
 

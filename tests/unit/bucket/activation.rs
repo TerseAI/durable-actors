@@ -573,7 +573,7 @@ async fn expired_owner_hint_cannot_fence_a_renewed_session() -> Result<()> {
         .runtime
         .get_owner_with_hint(&f.actor.storage_key())
         .await?;
-    let hint: OwnershipHint = serde_json::from_str(&serde_json::to_string(&hint.unwrap())?)?;
+    let hint = hint.unwrap();
     f.clock.0.store(10_000, Ordering::SeqCst);
     let renewed = f.runtime.renew_activation(&f.actor, &first).await?;
     f.clock.0.store(11_000, Ordering::SeqCst);
@@ -1016,10 +1016,16 @@ async fn sealed_activation() -> Result<(Fixture, Arc<PausedSnapshots>, Ownership
 }
 
 #[tokio::test]
-async fn sealed_activation_overlaps_ownership_head_and_checkpoint_but_waits_to_open_the_stream()
--> Result<()> {
+async fn an_adopted_activation_overlaps_head_and_checkpoint_without_writing_ownership() -> Result<()>
+{
     let (f, snapshots, hint) = sealed_activation().await?;
-    let gates: Vec<SnapshotGate> = (0..3)
+    let next = request("next");
+    let claim = f
+        .runtime
+        .claim_activation(&f.actor, &next, "us-east", false, Some(&hint))
+        .await?;
+    let claim: OwnershipClaim = serde_json::from_str(&serde_json::to_string(&claim)?)?;
+    let gates: Vec<SnapshotGate> = (0..2)
         .map(|_| {
             (
                 Arc::new(tokio::sync::Semaphore::new(0)),
@@ -1027,35 +1033,38 @@ async fn sealed_activation_overlaps_ownership_head_and_checkpoint_but_waits_to_o
             )
         })
         .collect();
-    *f.bucket.delay_write.lock().unwrap() = Some(gates[0].clone());
-    *snapshots.gates[0].lock().unwrap() = Some(gates[1].clone());
-    *snapshots.gates[1].lock().unwrap() = Some(gates[2].clone());
-    let next = request("next");
+    *snapshots.gates[0].lock().unwrap() = Some(gates[0].clone());
+    *snapshots.gates[1].lock().unwrap() = Some(gates[1].clone());
+    let writes = f.bucket.writes.load(Ordering::SeqCst);
+    let cached = CachedBase::default();
     let activated = tokio::time::timeout(Duration::from_secs(5), async {
         let control = async {
             for (entered, _) in &gates {
                 entered.acquire().await?.forget();
             }
-            for (_, resume) in &gates[1..] {
+            assert_eq!(snapshots.starts.load(Ordering::SeqCst), 0);
+            for (_, resume) in &gates {
                 resume.add_permits(1);
             }
-            snapshots.downloaded.acquire().await?.forget();
-            assert_eq!(snapshots.starts.load(Ordering::SeqCst), 0);
-            gates[0].1.add_permits(1);
             anyhow::Ok(())
         };
         let (loaded, controlled) = tokio::join!(
             f.runtime
-                .register_activation(&f.actor, &next, "us-east", false, Some(&hint)),
+                .adopt_activation(&f.actor, &next, "us-east", &claim, &cached),
             control,
         );
         controlled?;
         loaded
     })
     .await??;
+    assert_eq!(f.bucket.writes.load(Ordering::SeqCst), writes);
     assert_eq!(activated.placement.owner_epoch, 2);
     assert_eq!(activated.placement.state_version, 1);
     assert_eq!(snapshots.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        f.runtime.get_owner(&f.actor.storage_key()).await?.unwrap(),
+        activated.placement
+    );
     Ok(())
 }
 
@@ -1082,10 +1091,96 @@ async fn failed_sealed_download_releases_its_claim_and_preserves_the_durable_bas
 }
 
 #[tokio::test]
+async fn a_claim_settles_races_before_its_host_starts_and_only_its_host_adopts_it() -> Result<()> {
+    let (f, _, hint) = sealed_activation().await?;
+    let next = request("next");
+    let writes = f.bucket.writes.load(Ordering::SeqCst);
+    let claim = f
+        .runtime
+        .claim_activation(&f.actor, &next, "us-east", false, Some(&hint))
+        .await?;
+    assert_eq!(f.bucket.writes.load(Ordering::SeqCst), writes + 1);
+    let late = f
+        .runtime
+        .claim_activation(&f.actor, &request("late"), "us-east", false, Some(&hint))
+        .await;
+    assert!(
+        late.err()
+            .unwrap()
+            .to_string()
+            .contains("previous owner lease is still active")
+    );
+    let refused = f
+        .runtime
+        .adopt_activation(
+            &f.actor,
+            &request("other"),
+            "us-east",
+            &claim,
+            &CachedBase::default(),
+        )
+        .await;
+    assert_eq!(
+        refused.err().unwrap().to_string(),
+        "control plane claimed a different activation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoking_a_claim_seals_its_epoch_unless_its_host_already_renewed() -> Result<()> {
+    for renewed in [false, true] {
+        let (f, _, hint) = sealed_activation().await?;
+        let next = request("next");
+        let claim = f
+            .runtime
+            .claim_activation(&f.actor, &next, "us-east", false, Some(&hint))
+            .await?;
+        if renewed {
+            f.runtime
+                .adopt_activation(&f.actor, &next, "us-east", &claim, &CachedBase::default())
+                .await?;
+            f.runtime.renew_activation(&f.actor, &next).await?;
+        }
+
+        f.runtime.revoke_claim(&claim).await?;
+
+        let (_, current) = f
+            .runtime
+            .get_owner_with_hint(&f.actor.storage_key())
+            .await?;
+        let current = current.unwrap();
+        assert_eq!(current.record.epoch, 2);
+        assert_eq!(current.record.sealed, !renewed);
+        assert_eq!(current.record.lease.expires_at_ms == 0, !renewed);
+        if !renewed {
+            assert_eq!(current.record.base, hint.record.base);
+            let again = f
+                .runtime
+                .register_activation(
+                    &f.actor,
+                    &request("again"),
+                    "us-east",
+                    false,
+                    Some(&current),
+                )
+                .await?;
+            assert_eq!(again.placement.owner_epoch, 3);
+            assert_eq!(again.placement.state_version, 1);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_cached_base_snapshot_replaces_its_download_only_when_its_digest_matches() -> Result<()> {
     for (database, tampered) in [(true, false), (false, false), (true, true)] {
         let (f, snapshots, hint) = sealed_activation().await?;
-        let base = hint.sealed_base().context("hint has no sealed base")?;
+        let base = hint
+            .record
+            .base
+            .as_ref()
+            .context("hint has no sealed base")?;
         let bytes = crate::bucket::SnapshotStore::get(&snapshots.inner, &base.object)
             .await?
             .context("base snapshot missing")?;
@@ -1098,16 +1193,14 @@ async fn a_cached_base_snapshot_replaces_its_download_only_when_its_digest_match
                 bytes.clone()
             }),
         };
+        let next = request("next");
+        let claim = f
+            .runtime
+            .claim_activation(&f.actor, &next, "us-east", false, Some(&hint))
+            .await?;
         let loaded = f
             .runtime
-            .register_activation_with(
-                &f.actor,
-                &request("next"),
-                "us-east",
-                false,
-                Some(&hint),
-                &cached,
-            )
+            .adopt_activation(&f.actor, &next, "us-east", &claim, &cached)
             .await;
         if tampered {
             assert_eq!(loaded.err().unwrap().to_string(), "head download failed");

@@ -1037,12 +1037,22 @@ pub(crate) struct SandboxHostProvisioner {
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     resource_bounds: Option<crate::sandbox::ResourceBounds>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
+    claims: Option<Arc<crate::bucket::RuntimeStorageReader>>,
     provider: Arc<dyn SandboxProvider>,
     runtime: HostSandboxRuntimeConfig,
     issuer: ActorJwtIssuer,
 }
 
 impl SandboxHostProvisioner {
+    /// The ownership store every activation is claimed in before its host starts.
+    pub(super) fn with_ownership_claims(
+        mut self,
+        claims: Arc<crate::bucket::RuntimeStorageReader>,
+    ) -> Self {
+        self.claims = Some(claims);
+        self
+    }
+
     pub(super) fn with_actor_admission(
         mut self,
         admission: Arc<super::organization_limits::ActorAdmission>,
@@ -1080,6 +1090,7 @@ impl SandboxHostProvisioner {
             pool: None,
             resource_bounds: None,
             runtime_access: None,
+            claims: None,
             provider,
             runtime,
             issuer,
@@ -1183,11 +1194,10 @@ impl SandboxHostProvisioner {
         let started_at = Instant::now();
         let mut request = self.request(spec, region, actor)?;
         request.initial_operation = operation.cloned();
-        request.actor_is_new = new_actor;
-        request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
+        let ownership = (new_actor, owner_hint);
         let Some(admission) = &self.admission else {
             return self
-                .provision(spec, region, actor, request, started_at)
+                .provision(spec, region, actor, ownership, request, started_at)
                 .await;
         };
         let (host, session) = (request.host_id.clone(), request.session_id.clone());
@@ -1196,7 +1206,7 @@ impl SandboxHostProvisioner {
             .reserve(organization, actor, &host, &session)
             .await?;
         let launched = self
-            .provision(spec, region, actor, request, started_at)
+            .provision(spec, region, actor, ownership, request, started_at)
             .await;
         if launched.is_err() {
             admission
@@ -1211,9 +1221,14 @@ impl SandboxHostProvisioner {
         spec: &HostLaunchSpec,
         region: &str,
         actor: &ActorKey,
+        (new_actor, owner_hint): (bool, Option<&OwnershipHint>),
         mut request: EnsureHostRequest,
         started_at: Instant,
     ) -> Result<(HostLease, u64, Option<Value>)> {
+        let claims = self
+            .claims
+            .as_ref()
+            .context("actor hosts require an ownership store")?;
         let token = async {
             match &self.runtime_access {
                 Some(access) => Ok(Some(
@@ -1254,14 +1269,42 @@ impl SandboxHostProvisioner {
                 return Err(error);
             }
         };
+        let created = self.pool.is_some() && request.spare.is_none();
+        let claim = match self
+            .claim(claims, region, actor, new_actor, owner_hint, &mut request)
+            .await
+        {
+            Ok(claim) => claim,
+            Err(error) => {
+                if let Some(pool) = &self.pool {
+                    let _ = pool.failed(request.host_id.as_str()).await;
+                }
+                if let Some(spare) = request.spare.as_ref().filter(|_| created)
+                    && let Err(cleanup) = self.provider.retire_spare(spare).await
+                {
+                    warn!(%cleanup, resource = %spare.resource_id, "failed to retire unclaimed sandbox");
+                }
+                return Err(error);
+            }
+        };
         if let Some(operation) = &mut request.initial_operation {
             operation.routing_ms += elapsed_ms(started_at);
         }
         let handle = match self.provider.ensure_host(&request).await {
-            Ok(handle) => handle,
+            Ok(mut handle) => {
+                if let Some(provisioning) = handle.provisioning.as_mut() {
+                    provisioning.reused &= !created;
+                }
+                handle
+            }
             Err(error) => {
                 if let Some(pool) = &self.pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
+                }
+                if !error.is::<AssignmentOutcomeUnknown>()
+                    && let Err(revoke) = claims.revoke_claim(&claim).await
+                {
+                    warn!(%revoke, host_id = %request.host_id, "failed assignment kept its ownership claim until the lease expires");
                 }
                 warn!(
                     event = "actor_host_provisioning",
@@ -1359,6 +1402,58 @@ impl SandboxHostProvisioner {
         Ok((lease, owner_epoch, handle.initial_reply))
     }
 
+    /// Claims the actor for the host about to start. A live owner or a lost race fails here,
+    /// before any assignment, so the caller routes to the winner.
+    async fn claim(
+        &self,
+        claims: &crate::bucket::RuntimeStorageReader,
+        region: &str,
+        actor: &ActorKey,
+        new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
+        request: &mut EnsureHostRequest,
+    ) -> Result<crate::bucket::OwnershipClaim> {
+        let lease = crate::host_leases::HostLeaseRequest {
+            id: request.host_id.clone(),
+            session_id: request.session_id.clone(),
+            route: self.host_route(request).await?,
+            duration_ms: crate::host_leases::DEFAULT_HOST_LEASE_MS,
+        };
+        let claim = claims
+            .claim_activation(actor, &lease, region, new_actor, owner_hint)
+            .await?;
+        request.ownership_claim = Some(serde_json::to_string(&claim)?);
+        Ok(claim)
+    }
+
+    /// The claimed spare's route, or the route of a sandbox started for this request when none was
+    /// free.
+    async fn host_route(&self, request: &mut EnsureHostRequest) -> Result<String> {
+        if let Some(spare) = &request.spare {
+            return Ok(spare.route.clone());
+        }
+        if self.pool.is_none() {
+            let route = self.provider.reserve_route().await?;
+            request.host_route = Some(route.clone());
+            return Ok(route);
+        }
+        let spare = self
+            .provider
+            .create_spare(&crate::sandbox::CreateSpareRequest {
+                control_plane_url: Some(request.control_plane_url.clone()),
+                otlp_endpoint: request.otlp_endpoint.clone(),
+                kind: crate::sandbox::SpareKind::Actor,
+                name: format!("do-actor-{}", request.session_id),
+                image_ref: request.image_ref.clone(),
+                canonical_region: request.canonical_region.clone(),
+                resources: request.resources.clone(),
+            })
+            .await?;
+        let route = spare.route.clone();
+        request.spare = Some(spare);
+        Ok(route)
+    }
+
     fn request(
         &self,
         spec: &HostLaunchSpec,
@@ -1392,8 +1487,8 @@ impl SandboxHostProvisioner {
             .token;
         Ok(EnsureHostRequest {
             initial_operation: None,
-            actor_is_new: false,
-            owner_hint: None,
+            ownership_claim: None,
+            host_route: None,
             actor: Some(actor.clone()),
             code_snapshot: spec.code_snapshot.clone(),
             spare: None,

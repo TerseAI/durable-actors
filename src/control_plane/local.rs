@@ -282,6 +282,7 @@ struct LocalState {
         crate::request_traces::live::InProcessFeed,
     ),
     runtime: Arc<RuntimeStorage>,
+    claims: Arc<crate::bucket::RuntimeStorageReader>,
     access: Arc<RuntimeAccess>,
     region: String,
 }
@@ -302,6 +303,11 @@ async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalSt
         BucketLocation::File { directory } => Arc::new(FileBucket::new(directory.clone())?),
         BucketLocation::Gcs { bucket, .. } => Arc::new(GcsBucket::new(bucket).await?),
     };
+    let claims = Arc::new(crate::bucket::RuntimeStorageReader::new(
+        bucket.clone(),
+        Arc::new(SystemClock),
+        Arc::new(crate::litestream::EmbeddedRestore),
+    )?);
     let runtime = Arc::new(RuntimeStorage::new(bucket, Arc::new(SystemClock))?);
     let bootstrap = Arc::new(RuntimeAccess::new(location, runtime.persistence.clone())?);
     let telemetry = Arc::new(
@@ -314,6 +320,7 @@ async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalSt
         traces: crate::request_traces::TraceStore::new(telemetry.clone(), Arc::new(live.clone())),
         telemetry: (telemetry, live),
         runtime,
+        claims,
         access: bootstrap,
         region: "north-america-east".into(),
     })
@@ -363,7 +370,8 @@ async fn local_routes(
     let admission =
         super::organization_limits::local_admission(&mut |name| std::env::var(name).ok())?;
     let mut provisioner = SandboxHostProvisioner::new(provider, runtime, issuer.clone(), None)
-        .with_runtime_access(storage.access.clone());
+        .with_runtime_access(storage.access.clone())
+        .with_ownership_claims(storage.claims.clone());
     if let Some(admission) = &admission {
         provisioner = provisioner.with_actor_admission(admission.clone());
     }

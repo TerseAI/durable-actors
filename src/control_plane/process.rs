@@ -280,6 +280,7 @@ async fn control_plane_routes(
         provisioner = provisioner.with_actor_admission(admission.clone());
         lifecycle = lifecycle.with_observer(admission);
     }
+    provisioner = provisioner.with_ownership_claims(storage.clone());
     let socket_events = config
         .socket_event_sink
         .map(|sink| {
