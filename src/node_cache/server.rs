@@ -29,6 +29,7 @@ pub(super) fn router(store: Arc<DiskStore>, tokens: Arc<HostTokens>) -> Router {
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .route("/code/{digest}", get(read_code).put(write_code))
         .route("/sqlite/{digest}", get(read_database).put(write_database))
+        .route("/snapshot/{digest}", get(read_snapshot).put(write_snapshot))
         .with_state(NodeCache { store, tokens })
 }
 
@@ -61,7 +62,11 @@ async fn read_database(
     headers: HeaderMap,
 ) -> Response {
     match cache.authorize(&headers, &digest) {
-        Ok(host) => cache.serve(&database_key(&host.actor, &digest)).await,
+        Ok(host) => {
+            cache
+                .serve(&actor_key("sqlite", &host.actor, &digest))
+                .await
+        }
         Err(status) => status.into_response(),
     }
 }
@@ -75,8 +80,38 @@ async fn write_database(
     match cache.authorize(&headers, &digest) {
         Ok(host) => {
             cache
-                .receive(&database_key(&host.actor, &digest), body, None)
+                .receive(&actor_key("sqlite", &host.actor, &digest), body, None)
                 .await
+        }
+        Err(status) => status,
+    }
+}
+
+async fn read_snapshot(
+    State(cache): State<NodeCache>,
+    Path(digest): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    match cache.authorize(&headers, &digest) {
+        Ok(host) => {
+            cache
+                .serve(&actor_key("snapshot", &host.actor, &digest))
+                .await
+        }
+        Err(status) => status.into_response(),
+    }
+}
+
+async fn write_snapshot(
+    State(cache): State<NodeCache>,
+    Path(digest): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> StatusCode {
+    match cache.authorize(&headers, &digest) {
+        Ok(host) => {
+            let key = actor_key("snapshot", &host.actor, &digest);
+            cache.receive(&key, body, Some(&digest)).await
         }
         Err(status) => status,
     }
@@ -146,12 +181,12 @@ fn code_key(digest: &str) -> String {
     format!("code/{digest}")
 }
 
-/// Databases are keyed by the actor in the host token, so a host can neither read nor replace
-/// another actor's database.
-fn database_key(actor: &ActorKey, snapshot: &str) -> String {
+/// Actor state is keyed by the actor in the host token, so a host can neither read nor replace
+/// another actor's database or snapshot.
+fn actor_key(kind: &str, actor: &ActorKey, snapshot: &str) -> String {
     let scope = format!("{}\n{snapshot}", actor.storage_key().as_str());
     format!(
-        "sqlite/{}",
+        "{kind}/{}",
         URL_SAFE_NO_PAD.encode(digest(&SHA256, scope.as_bytes()).as_ref())
     )
 }

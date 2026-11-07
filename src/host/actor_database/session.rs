@@ -290,24 +290,36 @@ impl DatabaseSession {
         Ok(version)
     }
 
-    /// Saves the database for the next activation on this node when it matches its last published
-    /// snapshot. Returns the bytes saved.
+    /// Saves the last published snapshot, and the database when it matches that snapshot, for the
+    /// next activation on this node. Returns the database bytes saved.
     pub(super) async fn save_to_node_cache(&self) -> Result<Option<u64>> {
         let (Some(cache), Some(cached)) = (&self.node_cache, &self.cached_state) else {
             return Ok(None);
         };
-        let Some(digest) = cached.published_snapshot() else {
+        let Some(snapshot) = cached.published_snapshot() else {
             return Ok(None);
         };
-        let Some(database) = cached
-            .sqlite
-            .export(crate::node_cache::MAX_DATABASE_BYTES)
-            .await?
-        else {
-            return Ok(None);
+        let database = async {
+            let Some(database) = cached
+                .sqlite
+                .export(crate::node_cache::MAX_DATABASE_BYTES)
+                .await?
+            else {
+                return Ok(None);
+            };
+            cache
+                .store_database(&snapshot.digest, database.path())
+                .await?;
+            Ok(Some(database.as_file().metadata()?.len()))
         };
-        cache.store_database(digest, database.path()).await?;
-        Ok(Some(database.as_file().metadata()?.len()))
+        let (stored, database) = tokio::join!(
+            cache.store_snapshot(&snapshot.digest, snapshot.bytes.clone()),
+            database
+        );
+        if let Err(error) = stored {
+            warn!(error = %format!("{error:#}"), "node cache snapshot save failed");
+        }
+        database
     }
 
     pub(super) fn reset(&mut self) {
@@ -348,7 +360,7 @@ impl DatabaseSession {
         &self,
         owner_epoch: u64,
         state_version: u64,
-        loaded: &[u8],
+        loaded: &bytes::Bytes,
     ) -> Result<ResidentDatabase> {
         let snapshot = StateSnapshot::decode(loaded)?;
         ensure!(
@@ -371,7 +383,10 @@ impl DatabaseSession {
         cached.sqlite_head = parent.filter(|_| cached.synced > 0);
         cached.state_version = state_version;
         cached.published = Some(cached.synced);
-        cached.snapshot_digest = Some(digest);
+        cached.snapshot = Some(PublishedSnapshot {
+            digest,
+            bytes: loaded.clone(),
+        });
         cached.set_completion(snapshot.request_id, snapshot.completion);
         Ok(cached)
     }
@@ -616,12 +631,16 @@ impl DatabaseSession {
             .context("state version overflow")?;
         next_write.object_name = stream.object(next_write.state_version);
         let pending = cached.pending.take().expect("pending commit checked above");
+        let bytes = pending.snapshot.encode()?;
         let head = SnapshotRef::new(
             pending.ticket.object_name.clone(),
             &pending.snapshot,
-            &pending.snapshot.encode()?,
+            &bytes,
         );
-        cached.snapshot_digest = Some(head.digest.clone());
+        cached.snapshot = Some(PublishedSnapshot {
+            digest: head.digest.clone(),
+            bytes,
+        });
         cached.sqlite_head = Some(head);
         cached.state_version = pending.snapshot.state_version;
         cached.published = Some(pending.txid);
@@ -635,8 +654,8 @@ struct ResidentDatabase {
     database: SqliteDatabase,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
-    /// Digest of the published snapshot this database matches.
-    snapshot_digest: Option<String>,
+    /// The published snapshot this database matches.
+    snapshot: Option<PublishedSnapshot>,
     owner_epoch: u64,
     state_version: u64,
     published: Option<u64>,
@@ -645,6 +664,11 @@ struct ResidentDatabase {
     last_result: Option<Value>,
     next_write: Option<WritePlan>,
     pending: Option<PendingStateCommit>,
+}
+
+struct PublishedSnapshot {
+    digest: String,
+    bytes: bytes::Bytes,
 }
 
 struct PendingStateCommit {
@@ -661,7 +685,7 @@ impl ResidentDatabase {
             synced: sqlite.txid(),
             sqlite,
             sqlite_head: None,
-            snapshot_digest: None,
+            snapshot: None,
             owner_epoch,
             state_version: 0,
             published: None,
@@ -672,11 +696,11 @@ impl ResidentDatabase {
         })
     }
 
-    fn published_snapshot(&self) -> Option<&str> {
+    fn published_snapshot(&self) -> Option<&PublishedSnapshot> {
         if self.pending.is_some() || self.published != Some(self.synced) {
             return None;
         }
-        self.snapshot_digest.as_deref()
+        self.snapshot.as_ref()
     }
 
     fn unpublished(&self, committed: Option<u64>) -> Option<u64> {

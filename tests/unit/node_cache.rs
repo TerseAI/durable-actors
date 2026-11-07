@@ -62,6 +62,28 @@ async fn saved_databases_are_only_visible_to_hosts_of_the_same_actor() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn saved_snapshots_must_match_their_digest_and_stay_with_their_actor() -> Result<()> {
+    let issuer = issuer()?;
+    let cache = NodeCache::start(&issuer).await?;
+    let digest = sha256(b"snapshot");
+    let owner = cache.client(&host_token(&issuer, "one")?)?;
+
+    assert!(owner.snapshot(&digest).await?.is_none());
+    assert!(
+        owner
+            .store_snapshot(&digest, "tampered".into())
+            .await
+            .is_err()
+    );
+    owner.store_snapshot(&digest, "snapshot".into()).await?;
+
+    assert_eq!(owner.snapshot(&digest).await?.unwrap(), "snapshot");
+    let other = cache.client(&host_token(&issuer, "two")?)?;
+    assert!(other.snapshot(&digest).await?.is_none());
+    Ok(())
+}
+
 struct NodeCache {
     url: String,
     _directory: tempfile::TempDir,

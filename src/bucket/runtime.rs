@@ -21,6 +21,7 @@ use crate::{
 use super::{Bucket, replace};
 
 mod activation;
+pub(crate) use activation::CachedBase;
 mod history;
 pub(crate) use history::ActorStateReader;
 mod session;

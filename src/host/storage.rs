@@ -416,9 +416,14 @@ impl HostLeaseRegistry for HostStorage {
 
 impl HostStorage {
     /// A database this node saved at the hinted base stands in for the base's checkpoint, so it
-    /// downloads during the ownership CAS and the checkpoint is never fetched.
+    /// downloads during the ownership CAS and the checkpoint is never fetched. A snapshot this node
+    /// saved stands in for the base's object storage read.
     async fn activate(&self, request: &HostLeaseRequest) -> Result<HostLease> {
-        let saved = self.find_saved_database().await;
+        let (saved, snapshot) = tokio::join!(self.find_saved_database(), self.find_snapshot());
+        let cached = crate::bucket::CachedBase {
+            database: saved.is_some(),
+            snapshot,
+        };
         let (loaded, saved) = tokio::join!(
             self.runtime.register_activation_with(
                 &self.actor,
@@ -426,7 +431,7 @@ impl HostStorage {
                 &self.region,
                 self.new_actor,
                 self.owner_hint.as_ref(),
-                saved.is_none(),
+                &cached,
             ),
             receive_saved_database(saved),
         );
@@ -448,6 +453,26 @@ impl HostStorage {
             Ok(download) => download.map(|download| (digest, download)),
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "node cache database lookup failed");
+                None
+            }
+        }
+    }
+
+    async fn find_snapshot(&self) -> Option<bytes::Bytes> {
+        let cache = self.node_cache.as_ref()?;
+        let digest = &self.owner_hint.as_ref()?.sealed_base()?.digest;
+        let started = Instant::now();
+        match cache.snapshot(digest).await {
+            Ok(snapshot) => {
+                tracing::info!(
+                    event = "actor_snapshot_cache_lookup",
+                    hit = snapshot.is_some(),
+                    duration_ms = started.elapsed().as_secs_f64() * 1000.0
+                );
+                snapshot
+            }
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "node cache snapshot lookup failed");
                 None
             }
         }

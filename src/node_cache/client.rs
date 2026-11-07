@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_util::{TryStreamExt, stream::BoxStream};
 use reqwest::header::AUTHORIZATION;
 use tokio::io::AsyncWriteExt;
@@ -77,7 +77,8 @@ impl NodeCacheClient {
     }
 
     pub(crate) async fn store_code(&self, digest: &str, path: &Path) -> Result<()> {
-        self.write(&format!("code/{digest}"), path).await
+        self.write(&format!("code/{digest}"), file_body(path).await?)
+            .await
     }
 
     /// The actor database saved at the snapshot with this digest, once the cache has answered
@@ -90,7 +91,27 @@ impl NodeCacheClient {
     }
 
     pub(crate) async fn store_database(&self, digest: &str, path: &Path) -> Result<()> {
-        self.write(&format!("sqlite/{digest}"), path).await
+        self.write(&format!("sqlite/{digest}"), file_body(path).await?)
+            .await
+    }
+
+    /// The actor state snapshot with this digest, as this node last saw it published.
+    pub(crate) async fn snapshot(&self, digest: &str) -> Result<Option<Bytes>> {
+        let Some(chunks) = self.read(&format!("snapshot/{digest}")).await? else {
+            return Ok(None);
+        };
+        let bytes = chunks
+            .try_fold(BytesMut::new(), |mut bytes, chunk| async move {
+                bytes.extend_from_slice(&chunk);
+                Ok(bytes)
+            })
+            .await?;
+        Ok(Some(bytes.freeze()))
+    }
+
+    pub(crate) async fn store_snapshot(&self, digest: &str, bytes: Bytes) -> Result<()> {
+        self.write(&format!("snapshot/{digest}"), bytes.into())
+            .await
     }
 
     async fn read(&self, entry: &str) -> Result<Option<BoxStream<'static, Result<Bytes>>>> {
@@ -108,20 +129,24 @@ impl NodeCacheClient {
         Ok(Some(Box::pin(chunks.map_err(anyhow::Error::from))))
     }
 
-    async fn write(&self, entry: &str, path: &Path) -> Result<()> {
-        let file = tokio::fs::File::open(path).await?;
+    async fn write(&self, entry: &str, body: reqwest::Body) -> Result<()> {
         self.connection
             .http
             .put(self.connection.url.join(entry)?)
             .header(AUTHORIZATION, self.authorization.header()?)
-            .body(reqwest::Body::wrap_stream(
-                tokio_util::io::ReaderStream::new(file),
-            ))
+            .body(body)
             .send()
             .await?
             .error_for_status()?;
         Ok(())
     }
+}
+
+async fn file_body(path: &Path) -> Result<reqwest::Body> {
+    let file = tokio::fs::File::open(path).await?;
+    Ok(reqwest::Body::wrap_stream(
+        tokio_util::io::ReaderStream::new(file),
+    ))
 }
 
 pub(crate) struct DatabaseDownload(BoxStream<'static, Result<Bytes>>);
