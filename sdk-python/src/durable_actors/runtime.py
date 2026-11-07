@@ -230,9 +230,10 @@ class ActorRuntime:
                 state = self.snapshot()
                 if self.definition.reentrant_methods:
                     await self.database.begin()
-                await self.database.replace_fields(state)
+                await self.database.update_fields(self.stored, state)
                 await self.database.commit()
                 self.last_state = state
+                self.stored = state
         except Exception:
             await self.database.rollback()
             raise

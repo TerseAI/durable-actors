@@ -252,7 +252,7 @@ class Sleeper(Actor):
                 receive, send = host.receive, host.send
                 assert (await receive())["type"] == "attach"
                 actor = {"project_id": "local", "actor_name": "Sleeper", "actor_id": "one"}
-                send({"type": "attached", "protocol": 30, "actor": actor})
+                send({"type": "attached", "protocol": 32, "actor": actor})
                 read = {"type": "invoke", "request_id": "r", "method": "read", "args": []}
                 send({"type": "command", "message_id": 0, "command": read})
                 assert (await receive())["reply"]["result"] == [1, 0]
