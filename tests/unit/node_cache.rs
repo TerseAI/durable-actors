@@ -5,11 +5,13 @@ use crate::{
     host::HostId,
 };
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
+use axum::serve::ListenerExt;
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use futures_util::TryStreamExt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::task::AbortOnDropHandle;
 
 #[tokio::test]
@@ -84,8 +86,31 @@ async fn saved_snapshots_must_match_their_digest_and_stay_with_their_actor() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn warm_connections_serve_every_activation_read_at_once() -> Result<()> {
+    let issuer = issuer()?;
+    let cache = NodeCache::start(&issuer).await?;
+    let connection = NodeCacheConnection::new(&cache.url)?;
+    connection.preconnect().await;
+    connection.preconnect().await;
+    let warmed = cache.connections.load(Ordering::SeqCst);
+    let host = connection.authorize(HostAuthorization::fixed(&host_token(&issuer, "one")?)?);
+    let digest = sha256(b"snapshot");
+
+    let (code, database, snapshot) = tokio::join!(
+        host.code(&digest),
+        host.database(&digest),
+        host.snapshot(&digest)
+    );
+
+    assert!(code?.is_none() && database?.is_none() && snapshot?.is_none());
+    assert_eq!(cache.connections.load(Ordering::SeqCst), warmed);
+    Ok(())
+}
+
 struct NodeCache {
     url: String,
+    connections: Arc<AtomicUsize>,
     _directory: tempfile::TempDir,
     _server: AbortOnDropHandle<std::io::Result<()>>,
 }
@@ -103,9 +128,15 @@ impl NodeCache {
         )?);
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", listener.local_addr()?);
+        let connections = Arc::new(AtomicUsize::new(0));
+        let accepted = connections.clone();
+        let listener = listener.tap_io(move |_| {
+            accepted.fetch_add(1, Ordering::SeqCst);
+        });
         let routes = server::router(store, tokens);
         Ok(Self {
             url,
+            connections,
             _directory: directory,
             _server: AbortOnDropHandle::new(tokio::spawn(async move {
                 axum::serve(listener, routes).await

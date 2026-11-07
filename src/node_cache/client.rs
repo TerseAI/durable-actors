@@ -12,6 +12,9 @@ use crate::control_plane::HostAuthorization;
 // short connect timeout keeps installs from stalling.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// Activation reads code, the database and the snapshot at once, and a read that finds no idle
+/// connection pays for a new one inside gVisor.
+const WARM_CONNECTIONS: usize = 4;
 
 /// Built and connected while a spare waits: building the client alone costs ~15 ms in gVisor, so
 /// assignment only attaches the host token.
@@ -55,10 +58,26 @@ impl NodeCacheConnection {
         }
     }
 
-    async fn preconnect(&self) {
-        if let Ok(url) = self.url.join("healthz") {
-            let _ = self.http.get(url).send().await;
+    /// Keeps the pooled connections open while the spare waits, and replaces any a cache restart
+    /// closed.
+    pub(crate) async fn keep_warm(&self) {
+        let period = Duration::from_secs(20);
+        let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            self.preconnect().await;
         }
+    }
+
+    pub(super) async fn preconnect(&self) {
+        let Ok(url) = self.url.join("healthz") else {
+            return;
+        };
+        futures_util::future::join_all(
+            (0..WARM_CONNECTIONS).map(|_| self.http.get(url.clone()).send()),
+        )
+        .await;
     }
 }
 

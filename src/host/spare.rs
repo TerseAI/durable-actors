@@ -77,6 +77,12 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         status = javascript.wait() => anyhow::bail!("generic actor executor exited: {}", status?),
         () = &mut shutdown => return Ok(()),
         () = storage.keep_warm() => unreachable!("storage warmup stopped"),
+        () = async {
+            match &node_cache {
+                Some(cache) => cache.keep_warm().await,
+                None => std::future::pending().await,
+            }
+        } => unreachable!("node cache warmup stopped"),
     };
     tokio::fs::remove_file(&ready).await?;
     let timings = HostStartupTimings::start();
