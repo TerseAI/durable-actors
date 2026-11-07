@@ -96,7 +96,7 @@ impl Litestream {
     }
 }
 
-/// Runs the WAL checkpoint once commits pause, so a commit never waits on one.
+/// Runs the WAL checkpoint once commits pause, so commits rarely wait on one.
 struct IdleCheckpoint {
     commits: watch::Sender<()>,
     _task: AbortOnDropHandle<()>,
