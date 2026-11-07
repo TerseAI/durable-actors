@@ -35,7 +35,7 @@ fn credentials_are_scoped_to_one_actor_and_its_deployed_code() -> Result<()> {
                 rule(
                     "authority",
                     crate::storage_paths::owner(&actor.storage_key())?,
-                    Permissions::OBJECT_USER
+                    Permissions::OBJECT_VIEWER
                 ),
                 rule(
                     "code",

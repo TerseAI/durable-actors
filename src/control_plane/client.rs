@@ -315,23 +315,41 @@ impl crate::bucket::OwnershipStore for ControlPlaneClient {
         }
     }
 
-    async fn replace(
+    async fn replace(&self, _: &str, _: Option<i64>, _: bytes::Bytes) -> Result<bool> {
+        anyhow::bail!("hosts renew and release ownership through activation commands")
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::bucket::ActivationAuthority for ControlPlaneClient {
+    async fn renew_activation(
         &self,
-        key: &str,
-        generation: Option<i64>,
-        bytes: bytes::Bytes,
-    ) -> Result<bool> {
-        let command = ControlPlaneCommand::ReplaceOwnership {
-            key: key.into(),
-            generation,
-            bytes: bytes.to_vec(),
+        _: &ActorKey,
+        request: &crate::host_leases::HostLeaseRequest,
+    ) -> Result<crate::host_leases::HostLease> {
+        let command = ControlPlaneCommand::RenewActivation {
+            request: request.clone(),
         };
-        let replaced = match self.execute(command).await {
-            Ok(ControlPlaneCommandReply::OwnershipReplaced { replaced }) => Ok(replaced),
-            Ok(_) => Err(anyhow::anyhow!("unexpected ownership replace reply")),
-            Err(error) => Err(error),
-        };
-        crate::bucket::confirm_replace(self, key, &bytes, replaced).await
+        match self.execute(command).await? {
+            ControlPlaneCommandReply::Lease { lease } => Ok(lease),
+            _ => anyhow::bail!("unexpected lease renewal reply"),
+        }
+    }
+
+    async fn release_activation(
+        &self,
+        _: &ActorKey,
+        _: &crate::host::HostId,
+        _: &str,
+        checkpoint: Option<crate::bucket::SessionCheckpoint>,
+    ) -> Result<()> {
+        match self
+            .execute(ControlPlaneCommand::ReleaseActivation { checkpoint })
+            .await?
+        {
+            ControlPlaneCommandReply::Unit => Ok(()),
+            _ => anyhow::bail!("unexpected activation release reply"),
+        }
     }
 }
 

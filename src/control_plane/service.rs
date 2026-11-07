@@ -54,6 +54,7 @@ pub struct ControlPlaneService {
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
     ownership: Option<Arc<dyn crate::bucket::OwnershipStore>>,
+    activations: Option<Arc<crate::bucket::RuntimeStorageReader>>,
     hosts: reqwest::Client,
 }
 
@@ -63,6 +64,15 @@ impl ControlPlaneService {
         ownership: Option<Arc<dyn crate::bucket::OwnershipStore>>,
     ) -> Self {
         self.ownership = ownership;
+        self
+    }
+
+    /// The store that applies hosts' lease renewals and releases.
+    pub(super) fn with_activation_authority(
+        mut self,
+        activations: Arc<crate::bucket::RuntimeStorageReader>,
+    ) -> Self {
+        self.activations = Some(activations);
         self
     }
 
@@ -105,6 +115,7 @@ impl ControlPlaneService {
             socket_events: None,
             local_builds: None,
             ownership: None,
+            activations: None,
             hosts: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(std::time::Duration::from_secs(5))
@@ -562,16 +573,27 @@ impl ControlPlaneService {
                     }),
                 })
             }
-            ControlPlaneCommand::ReplaceOwnership {
-                key,
-                generation,
-                bytes,
-            } => {
-                let replaced = self
-                    .host_ownership(principal, &key)?
-                    .replace(&key, generation, bytes.into())
+            ControlPlaneCommand::RenewActivation { request } => {
+                ensure!(
+                    request.id == principal.host_id && request.session_id == principal.session_id,
+                    "host lease scope mismatch"
+                );
+                let lease = self
+                    .activations()?
+                    .renew_activation(&principal.actor, &request)
                     .await?;
-                Ok(ControlPlaneCommandReply::OwnershipReplaced { replaced })
+                Ok(ControlPlaneCommandReply::Lease { lease })
+            }
+            ControlPlaneCommand::ReleaseActivation { checkpoint } => {
+                self.activations()?
+                    .release_activation(
+                        &principal.actor,
+                        &principal.host_id,
+                        &principal.session_id,
+                        checkpoint,
+                    )
+                    .await?;
+                Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
@@ -631,6 +653,13 @@ impl ControlPlaneService {
             LifecycleKind::Draining => self.routes.put(actor, RouteEntry::Draining(identity)).await,
             LifecycleKind::Stopped => self.routes.put(actor, RouteEntry::Stopped(identity)).await,
         }
+    }
+
+    fn activations(&self) -> Result<&dyn crate::bucket::ActivationAuthority> {
+        Ok(self
+            .activations
+            .as_deref()
+            .context("activation authority is not configured")?)
     }
 
     fn host_ownership(

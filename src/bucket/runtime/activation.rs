@@ -106,35 +106,20 @@ impl RuntimeStorage {
         actor: &ActorKey,
         request: &HostLeaseRequest,
     ) -> Result<HostLease> {
-        let (generation, mut record) = self
-            .load(&actor.storage_key())
-            .await?
-            .context("actor ownership missing")?;
-        ensure!(
-            record.actor == *actor
-                && record.lease.id == request.id
-                && record.lease.session_id == request.session_id,
-            "actor ownership changed"
-        );
-        let current = &record.lease;
-        ensure!(
-            current.expires_at_ms > self.clock.now_ms()?,
-            "expired activation cannot renew"
-        );
-        ensure!(
-            current.route == request.route,
-            "activation route cannot change"
-        );
-        let lease = self.new_lease(request)?;
-        record.lease = lease.clone();
-        self.save_activation(&mut record, Some(generation)).await?;
+        let lease = match &self.authority {
+            Some(authority) => authority.renew_activation(actor, request).await?,
+            None => self.reader.renew_activation(actor, request).await?,
+        };
         if let Some(owned) = self
             .owned
             .lock()
             .unwrap()
             .get_mut(actor.storage_key().as_str())
         {
-            ensure!(owned.epoch == record.epoch, "local ownership epoch changed");
+            ensure!(
+                owned.lease.session_id == lease.session_id,
+                "local ownership session changed"
+            );
             owned.lease = lease.clone();
         }
         Ok(lease)
@@ -157,29 +142,18 @@ impl RuntimeStorage {
         session: &str,
         checkpoint: Option<SessionCheckpoint>,
     ) -> Result<()> {
-        for _ in 0..3 {
-            let Some((generation, mut record)) = self.load(&actor.storage_key()).await? else {
-                return Ok(());
-            };
-            if record.lease.id != *host
-                || record.lease.session_id != session
-                || record.lease.expires_at_ms == 0
-            {
-                return Ok(());
+        match &self.authority {
+            Some(authority) => {
+                authority
+                    .release_activation(actor, host, session, checkpoint)
+                    .await
             }
-            record.lease.expires_at_ms = 0;
-            if let Some(checkpoint) = &checkpoint {
-                record.base = checkpoint.snapshot.clone();
-                record.sealed = true;
-            }
-            if self
-                .replace_activation(&mut record, Some(generation))
-                .await?
-            {
-                return Ok(());
+            None => {
+                self.reader
+                    .release_activation(actor, host, session, checkpoint)
+                    .await
             }
         }
-        anyhow::bail!("actor activation kept changing during release")
     }
 
     async fn load_activation_base(
@@ -257,13 +231,98 @@ impl RuntimeStorage {
         };
         (checkpoint, started.elapsed().as_secs_f64() * 1_000.0)
     }
+}
 
-    async fn save_activation(&self, record: &mut Ownership, generation: Option<i64>) -> Result<()> {
+/// The only ownership writes an adopted activation makes. A host sends them to the control plane,
+/// which applies them to the record it claimed.
+#[async_trait]
+pub(crate) trait ActivationAuthority: Send + Sync {
+    async fn renew_activation(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+    ) -> Result<HostLease>;
+    async fn release_activation(
+        &self,
+        actor: &ActorKey,
+        host: &HostId,
+        session: &str,
+        checkpoint: Option<SessionCheckpoint>,
+    ) -> Result<()>;
+}
+
+#[async_trait]
+impl ActivationAuthority for RuntimeStorageReader {
+    async fn renew_activation(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+    ) -> Result<HostLease> {
+        let (generation, mut record) = self
+            .load(&actor.storage_key())
+            .await?
+            .context("actor ownership missing")?;
         ensure!(
-            self.replace_activation(record, generation).await?,
+            record.actor == *actor
+                && record.lease.id == request.id
+                && record.lease.session_id == request.session_id,
+            "actor ownership changed"
+        );
+        let current = &record.lease;
+        ensure!(
+            current.expires_at_ms > self.clock.now_ms()?,
+            "expired activation cannot renew"
+        );
+        ensure!(
+            current.route == request.route,
+            "activation route cannot change"
+        );
+        let lease = self.new_lease(request)?;
+        record.lease = lease.clone();
+        ensure!(
+            self.replace_activation(&mut record, Some(generation))
+                .await?,
             "actor activation changed concurrently"
         );
-        Ok(())
+        Ok(lease)
+    }
+
+    async fn release_activation(
+        &self,
+        actor: &ActorKey,
+        host: &HostId,
+        session: &str,
+        checkpoint: Option<SessionCheckpoint>,
+    ) -> Result<()> {
+        if let Some(base) = checkpoint.as_ref().and_then(|c| c.snapshot.as_ref()) {
+            ensure!(
+                crate::storage_paths::actor_from_snapshot(&base.object)? == *actor,
+                "checkpoint belongs to another actor"
+            );
+        }
+        for _ in 0..3 {
+            let Some((generation, mut record)) = self.load(&actor.storage_key()).await? else {
+                return Ok(());
+            };
+            if record.lease.id != *host
+                || record.lease.session_id != session
+                || record.lease.expires_at_ms == 0
+            {
+                return Ok(());
+            }
+            record.lease.expires_at_ms = 0;
+            if let Some(checkpoint) = &checkpoint {
+                record.base = checkpoint.snapshot.clone();
+                record.sealed = true;
+            }
+            if self
+                .replace_activation(&mut record, Some(generation))
+                .await?
+            {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("actor activation kept changing during release")
     }
 }
 

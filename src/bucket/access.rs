@@ -289,11 +289,11 @@ fn scopes(
     code: Option<&crate::bundle::ActorBundle>,
 ) -> Result<Scopes> {
     // Owner paths end in `<base64url id>.json`, and base64url has no `.`, so this prefix matches
-    // only this actor's owner object.
+    // only this actor's owner object. Hosts only read it; the control plane writes ownership.
     let mut ownership = vec![rule(
         bucket,
         crate::storage_paths::owner(&actor.storage_key())?,
-        Permissions::OBJECT_USER,
+        Permissions::OBJECT_VIEWER,
     )];
     if let Some(code) = code {
         ensure!(

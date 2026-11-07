@@ -87,7 +87,8 @@ impl HostStorage {
         let runtime = match config.ownership {
             OwnershipLocation::Bucket => runtime,
             OwnershipLocation::ControlPlane => runtime.with_ownership(client.clone()),
-        };
+        }
+        .with_authority(client.clone());
         Ok(Self {
             objects,
             observer: client,

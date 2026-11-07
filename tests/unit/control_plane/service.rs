@@ -1962,6 +1962,127 @@ async fn the_control_plane_claims_ownership_before_any_host_starts() -> Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn hosts_renew_and_release_only_their_own_claimed_activation() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let ownership = Arc::new(crate::bucket::RuntimeStorageReader::new(
+        Arc::new(crate::bucket::FileBucket::new(directory.path().into())?),
+        Arc::new(crate::clock::SystemClock),
+        Arc::new(crate::litestream::EmbeddedRestore),
+    )?);
+    let actor = ActorKey {
+        project_id: "p".into(),
+        actor_name: "Room".into(),
+        actor_id: "one".into(),
+    };
+    let request = crate::host_leases::HostLeaseRequest {
+        id: HostId::new("host.v3.test.one"),
+        session_id: "00000000-0000-4000-8000-000000000001".into(),
+        route: "http://host".into(),
+        duration_ms: 30_000,
+    };
+    ownership
+        .claim_activation(&actor, &request, "us-east", true, None)
+        .await?;
+    let claimed = ownership.get_owner(&actor.storage_key()).await?.unwrap();
+    let issuer = test_issuer()?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    let service = ControlPlaneService::new(
+        Arc::new(LocalObjectPlacementStore::default()),
+        auth,
+        Arc::new(LocalAdminRegistry::default()),
+        issuer,
+        Arc::new(UnavailableProvisioner),
+    )
+    .with_activation_authority(ownership.clone());
+    let principal = ActorPrincipal {
+        organization_id: Some("org-test".into()),
+        actor: actor.clone(),
+        host_id: request.id.clone(),
+        session_id: request.session_id.clone(),
+        region: "us-east".into(),
+        host_config_key: None,
+        invocation: None,
+    };
+    let renew =
+        |request: &crate::host_leases::HostLeaseRequest| ControlPlaneCommand::RenewActivation {
+            request: request.clone(),
+        };
+
+    let mut foreign = request.clone();
+    foreign.session_id = "00000000-0000-4000-8000-000000000002".into();
+    let refused = service.execute_command(&principal, renew(&foreign)).await;
+    assert!(
+        refused
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("scope mismatch")
+    );
+    let mut stale = principal.clone();
+    stale.session_id = foreign.session_id.clone();
+    assert!(
+        service
+            .execute_command(&stale, renew(&foreign))
+            .await
+            .is_err()
+    );
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let ControlPlaneCommandReply::Lease { lease } =
+        service.execute_command(&principal, renew(&request)).await?
+    else {
+        anyhow::bail!("renewal returned no lease");
+    };
+    assert!(lease.expires_at_ms > claimed.lease.expires_at_ms);
+    let renewed = ownership.get_owner(&actor.storage_key()).await?.unwrap();
+    assert_eq!(renewed.owner_epoch, claimed.owner_epoch);
+    assert_eq!(renewed.lease, lease);
+
+    let checkpoint = |owner: &ActorKey| -> Result<_> {
+        Ok(Some(crate::bucket::SessionCheckpoint {
+            snapshot: Some(crate::storage::SnapshotRef {
+                object: crate::storage::snapshot_object_name(owner, 3, &"a".repeat(32))?,
+                state_version: 3,
+                request_id: "request".into(),
+                digest: "digest".into(),
+            }),
+        }))
+    };
+    let mut other = actor.clone();
+    other.actor_id = "two".into();
+    let release = |checkpoint| ControlPlaneCommand::ReleaseActivation { checkpoint };
+    let refused = service
+        .execute_command(&principal, release(checkpoint(&other)?))
+        .await;
+    assert!(refused.err().unwrap().to_string().contains("another actor"));
+    service
+        .execute_command(&principal, release(checkpoint(&actor)?))
+        .await?;
+    let released = ownership.get_owner(&actor.storage_key()).await?.unwrap();
+    assert_eq!(released.lease.expires_at_ms, 0);
+    assert!(
+        service
+            .execute_command(&principal, renew(&request))
+            .await
+            .is_err()
+    );
+    let (_, hint) = ownership.get_owner_with_hint(&actor.storage_key()).await?;
+    let mut next = request.clone();
+    next.session_id = foreign.session_id;
+    let claim = ownership
+        .claim_activation(&actor, &next, "us-east", false, hint.as_ref())
+        .await?;
+    assert_eq!(serde_json::to_value(&claim)?["base"]["state_version"], 3);
+    Ok(())
+}
+
 async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<ControlPlaneService> {
     let origin = "https://gateway.example.com".to_owned();
     let sockets = super::super::socket_gateway::SocketGateway::start(

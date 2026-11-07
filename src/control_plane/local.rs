@@ -390,6 +390,7 @@ async fn local_routes(
         Arc::new(provisioner),
     )
     .with_runtime_access(storage.access.clone())
+    .with_activation_authority(storage.claims.clone())
     .with_alarm_store(Arc::new(
         super::alarms::SqliteAlarmStore::open(directory.join("alarms.sqlite3")).await?,
     ))

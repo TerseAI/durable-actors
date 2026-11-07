@@ -24,11 +24,12 @@ pub(crate) enum ControlPlaneCommand {
     LoadOwnership {
         key: String,
     },
-    ReplaceOwnership {
-        key: String,
-        generation: Option<i64>,
-        #[serde(with = "base64_bytes")]
-        bytes: Vec<u8>,
+    RenewActivation {
+        request: crate::host_leases::HostLeaseRequest,
+    },
+    /// Ends the calling host's lease, sealing `checkpoint` as the next epoch's base when present.
+    ReleaseActivation {
+        checkpoint: Option<crate::bucket::SessionCheckpoint>,
     },
 }
 
@@ -58,8 +59,8 @@ pub(crate) enum ControlPlaneCommandReply {
     Ownership {
         record: Option<OwnershipRecord>,
     },
-    OwnershipReplaced {
-        replaced: bool,
+    Lease {
+        lease: crate::host_leases::HostLease,
     },
     Unit,
 }

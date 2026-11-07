@@ -298,7 +298,8 @@ async fn control_plane_routes(
     .with_runtime_access(runtime_access)
     .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
     .with_socket_event_sink(socket_events)
-    .with_ownership_store(ownership);
+    .with_ownership_store(ownership)
+    .with_activation_authority(storage.clone());
     if let Some(redis) = redis {
         service.routes = Arc::new(super::routes::RedisRoutes::new(
             redis,

@@ -21,7 +21,7 @@ use crate::{
 use super::{Bucket, OwnershipStore, replace};
 
 mod activation;
-pub(crate) use activation::CachedBase;
+pub(crate) use activation::{ActivationAuthority, CachedBase};
 mod history;
 pub(crate) use history::ActorStateReader;
 mod session;
@@ -31,6 +31,8 @@ mod session;
 mod activation_tests;
 pub struct RuntimeStorage {
     reader: RuntimeStorageReader,
+    /// Where renewals and releases go when this process is a host rather than the control plane.
+    authority: Option<Arc<dyn ActivationAuthority>>,
     owned: Mutex<HashMap<String, Ownership>>,
     uploaded: Mutex<HashMap<String, UploadedSnapshots>>,
 }
@@ -88,8 +90,10 @@ struct UploadedSnapshots {
     latest: Option<SnapshotRef>,
 }
 
+/// The durable base a released session seals for the next epoch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SessionCheckpoint {
-    snapshot: Option<SnapshotRef>,
+    pub(crate) snapshot: Option<SnapshotRef>,
 }
 
 struct LoadedSnapshot {
@@ -132,9 +136,15 @@ impl RuntimeStorage {
                 clock,
                 Arc::new(crate::litestream::EmbeddedRestore),
             )?,
+            authority: None,
             owned: Mutex::new(HashMap::new()),
             uploaded: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub(crate) fn with_authority(mut self, authority: Arc<dyn ActivationAuthority>) -> Self {
+        self.authority = Some(authority);
+        self
     }
 
     pub(crate) fn with_persistence(
