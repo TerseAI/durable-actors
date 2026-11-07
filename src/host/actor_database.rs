@@ -49,6 +49,10 @@ pub(crate) trait ActorStorage: Send + Sync {
     ) -> Result<Option<crate::storage::SnapshotRef>> {
         Ok(None)
     }
+    /// The database this node saved at the snapshot with `digest`, already downloaded.
+    fn take_saved_database(&self, _digest: &str) -> Option<tempfile::NamedTempFile> {
+        None
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -92,12 +96,19 @@ impl HostDatabase {
         storage: Arc<dyn ActorStorage>,
         writer: Arc<dyn crate::state_transport::SnapshotWriter>,
         replication: Arc<dyn Replicator>,
+        node_cache: Option<crate::node_cache::NodeCacheClient>,
     ) -> Arc<Self> {
         let (commands, incoming) = mpsc::channel(64);
         let version = Arc::new(AtomicU64::new(0));
         let stopped = CancellationToken::new();
         let service = DatabaseService {
-            session: DatabaseSession::new(endpoint, storage.clone(), writer, replication),
+            session: DatabaseSession::new(
+                endpoint,
+                storage.clone(),
+                writer,
+                replication,
+                node_cache,
+            ),
             version: version.clone(),
             stopped: stopped.clone(),
             ready: BTreeMap::new(),
@@ -193,6 +204,33 @@ impl HostDatabase {
         result
             .await
             .context("database service stopped during eviction")
+    }
+
+    /// Best effort within `budget`: a missing entry only means the next activation rebuilds the
+    /// database from its history.
+    pub(super) async fn save_to_node_cache(&self, budget: std::time::Duration) {
+        let started = std::time::Instant::now();
+        let saved = tokio::time::timeout(budget, async {
+            let (reply, saved) = oneshot::channel();
+            self.send(Command::SaveToNodeCache { reply }).await?;
+            saved
+                .await
+                .context("database service stopped while saving")?
+        })
+        .await
+        .context("node cache save timed out")
+        .and_then(|result| result);
+        match saved {
+            Ok(None) => {}
+            Ok(Some(bytes)) => tracing::info!(
+                event = "actor_sqlite_saved",
+                bytes,
+                duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            ),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "node cache database save failed")
+            }
+        }
     }
 
     async fn send(&self, command: Command) -> Result<()> {
@@ -338,6 +376,9 @@ enum Command {
     Reset {
         reply: oneshot::Sender<()>,
     },
+    SaveToNodeCache {
+        reply: oneshot::Sender<Result<Option<u64>>>,
+    },
 }
 
 struct PendingCompletion {
@@ -401,6 +442,9 @@ impl DatabaseService {
             Command::Reset { reply } => {
                 self.session.reset();
                 let _ = reply.send(());
+            }
+            Command::SaveToNodeCache { reply } => {
+                let _ = reply.send(self.session.save_to_node_cache().await);
             }
         }
         true

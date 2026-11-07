@@ -20,7 +20,10 @@ mod local_build;
 mod local_telemetry;
 mod local_watch;
 mod process;
-pub(crate) use process::RuntimeImages;
+pub(crate) use issuer::JWKS_PATH;
+pub(crate) use process::{
+    DEFAULT_AUTHORITY_AUDIENCE, DEFAULT_JWT_ISSUER, DEFAULT_JWT_TTL_SECONDS, RuntimeImages,
+};
 mod organization_limits;
 mod protocol;
 mod public_api;

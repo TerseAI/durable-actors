@@ -667,6 +667,7 @@ impl Stack {
             storage.clone(),
             storage.runtime.clone(),
             replication.clone(),
+            None,
         );
         let host = Arc::new(ActorHost::new(
             endpoint,

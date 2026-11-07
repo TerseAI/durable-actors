@@ -23,6 +23,7 @@ use crate::{
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
+    node_cache::{DatabaseDownload, NodeCacheClient},
     storage::WritePlan,
 };
 
@@ -37,11 +38,18 @@ pub(crate) struct HostStorage {
     actor: ActorKey,
     new_actor: bool,
     owner_hint: Option<crate::bucket::OwnershipHint>,
+    node_cache: Option<NodeCacheClient>,
     activation: Mutex<Option<ActorActivation>>,
     checkpoint: Mutex<Option<crate::bucket::recovery::PrefetchedCheckpoint>>,
+    saved_database: Mutex<Option<SavedDatabase>>,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
     renewal: tokio::sync::Mutex<()>,
+}
+
+struct SavedDatabase {
+    digest: String,
+    file: tempfile::NamedTempFile,
 }
 
 impl HostStorage {
@@ -87,8 +95,10 @@ impl HostStorage {
             actor,
             new_actor: false,
             owner_hint: None,
+            node_cache: None,
             activation: Mutex::new(None),
             checkpoint: Mutex::new(None),
+            saved_database: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
             renewal: tokio::sync::Mutex::new(()),
@@ -133,15 +143,28 @@ impl HostStorage {
         Ok((runtime, Some(objects)))
     }
 
-    pub(crate) async fn install_code(&self, artifact: &crate::bundle::ActorBundle) -> Result<()> {
-        artifact
+    pub(crate) async fn install_code(
+        &self,
+        artifact: &crate::bundle::ActorBundle,
+        cache: Option<&NodeCacheClient>,
+    ) -> Result<()> {
+        let started = Instant::now();
+        let cache_hits = artifact
             .install(
                 std::path::Path::new("/customer"),
                 self.objects
                     .as_ref()
                     .context("GCS artifact client missing")?,
+                cache,
             )
-            .await
+            .await?;
+        tracing::info!(
+            event = "actor_code_installed",
+            files = artifact.files.len(),
+            cache_hits,
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+        );
+        Ok(())
     }
 
     pub(crate) fn with_activation(
@@ -151,6 +174,11 @@ impl HostStorage {
     ) -> Self {
         self.new_actor = new_actor;
         self.owner_hint = owner_hint;
+        self
+    }
+
+    pub(crate) fn with_node_cache(mut self, node_cache: Option<NodeCacheClient>) -> Self {
+        self.node_cache = node_cache;
         self
     }
 
@@ -258,6 +286,11 @@ impl ActorStorage for HostStorage {
         )))
     }
 
+    fn take_saved_database(&self, digest: &str) -> Option<tempfile::NamedTempFile> {
+        let saved = self.saved_database.lock().unwrap().take()?;
+        (saved.digest == digest).then_some(saved.file)
+    }
+
     fn ensure_authority(&self) -> Result<()> {
         ensure!(
             !self.stop.is_cancelled(),
@@ -357,29 +390,11 @@ impl HostLeaseRegistry for HostStorage {
         let _renewal = self.renewal.lock().await;
         let started = Instant::now();
         self.fence.lock().unwrap().begin(started)?;
-        let actor = &self.actor;
         let first = self.lease.lock().unwrap().is_none();
         let lease = if first {
-            let loaded = self
-                .runtime
-                .register_activation(
-                    actor,
-                    request,
-                    &self.region,
-                    self.new_actor,
-                    self.owner_hint.as_ref(),
-                )
-                .await?;
-            let lease = loaded.placement.lease;
-            *self.checkpoint.lock().unwrap() = loaded.checkpoint;
-            *self.activation.lock().unwrap() = Some(ActorActivation {
-                owner_epoch: loaded.placement.owner_epoch,
-                state_version: loaded.placement.state_version,
-                state: loaded.state,
-            });
-            lease
+            self.activate(request).await?
         } else {
-            self.runtime.renew_activation(actor, request).await?
+            self.runtime.renew_activation(&self.actor, request).await?
         };
         self.fence.lock().unwrap().confirm(
             started,
@@ -396,6 +411,66 @@ impl HostLeaseRegistry for HostStorage {
         );
         self.finish(tokio::time::Instant::now() + Duration::from_secs(25))
             .await
+    }
+}
+
+impl HostStorage {
+    /// A database this node saved at the hinted base stands in for the base's checkpoint, so it
+    /// downloads during the ownership CAS and the checkpoint is never fetched.
+    async fn activate(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+        let saved = self.find_saved_database().await;
+        let (loaded, saved) = tokio::join!(
+            self.runtime.register_activation_with(
+                &self.actor,
+                request,
+                &self.region,
+                self.new_actor,
+                self.owner_hint.as_ref(),
+                saved.is_none(),
+            ),
+            receive_saved_database(saved),
+        );
+        let loaded = loaded?;
+        *self.saved_database.lock().unwrap() = saved;
+        *self.checkpoint.lock().unwrap() = loaded.checkpoint;
+        *self.activation.lock().unwrap() = Some(ActorActivation {
+            owner_epoch: loaded.placement.owner_epoch,
+            state_version: loaded.placement.state_version,
+            state: loaded.state,
+        });
+        Ok(loaded.placement.lease)
+    }
+
+    async fn find_saved_database(&self) -> Option<(String, DatabaseDownload)> {
+        let cache = self.node_cache.as_ref()?;
+        let digest = self.owner_hint.as_ref()?.sealed_base()?.digest.clone();
+        match cache.database(&digest).await {
+            Ok(download) => download.map(|download| (digest, download)),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "node cache database lookup failed");
+                None
+            }
+        }
+    }
+}
+
+async fn receive_saved_database(
+    saved: Option<(String, DatabaseDownload)>,
+) -> Option<SavedDatabase> {
+    let (digest, download) = saved?;
+    let started = Instant::now();
+    match download.receive().await {
+        Ok(file) => {
+            tracing::info!(
+                event = "actor_sqlite_cache_received",
+                duration_ms = started.elapsed().as_secs_f64() * 1000.0
+            );
+            Some(SavedDatabase { digest, file })
+        }
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "node cache database download failed");
+            None
+        }
     }
 }
 

@@ -1,0 +1,61 @@
+{{- if .Values.nodeCache.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "actors.nodeCacheName" . }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "actors.nodeCacheName" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "actors.nodeCacheName" . }}
+    spec:
+      automountServiceAccountToken: false
+      # Runs beside the sandboxes but outside gVisor, so customer code never shares its pod.
+      nodeSelector: {sandbox.gke.io/runtime: gvisor}
+      tolerations:
+        - {key: sandbox.gke.io/runtime, operator: Equal, value: gvisor, effect: NoSchedule}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+      containers:
+        - name: node-cache
+          image: {{ include "actors.image" .Values.images.controlPlane | quote }}
+          ports:
+            - {name: http, containerPort: 7103}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            {{- toYaml .Values.nodeCache.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          env:
+            - {name: DURABLE_ACTORS_PROCESS_ROLE, value: node_cache}
+            - {name: DURABLE_ACTORS_NODE_CACHE_CAPACITY_BYTES, value: {{ mul .Values.nodeCache.capacityGiB 1073741824 | quote }}}
+            - name: DURABLE_ACTORS_CONTROL_PLANE_URL
+              value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "actors.name" .) .Release.Namespace | quote }}
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
+      volumes:
+        - name: cache
+          emptyDir: {sizeLimit: {{ printf "%dGi" (add .Values.nodeCache.capacityGiB 1) }}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "actors.nodeCacheName" . }}
+spec:
+  # Each sandbox reaches the cache on its own node.
+  internalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: {{ include "actors.nodeCacheName" . }}
+  ports:
+    - {name: http, port: 7103, targetPort: http}
+{{- end }}

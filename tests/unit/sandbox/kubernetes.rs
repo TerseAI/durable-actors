@@ -24,6 +24,7 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
             "us-west4-c".into(),
         ],
         "test-token",
+        Some("http://node-cache:7103"),
     )?;
     assert_eq!(
         pod.metadata
@@ -80,6 +81,10 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
             .allow_privilege_escalation,
         Some(false)
     );
+    assert!(spec.containers[0].env.as_ref().unwrap().iter().any(|var| {
+        var.name == "DURABLE_ACTORS_NODE_CACHE_URL"
+            && var.value.as_deref() == Some("http://node-cache:7103")
+    }));
     Ok(())
 }
 
@@ -306,6 +311,7 @@ async fn fake_cluster(
             namespace: "sandboxes".into(),
             zones: BTreeMap::from([("north-america-west".into(), vec!["us-west4-a".into()])]),
             reap_concurrency: 4,
+            node_cache_url: None,
         },
     );
     Ok((cluster, server))

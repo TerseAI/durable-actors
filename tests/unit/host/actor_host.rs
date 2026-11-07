@@ -56,7 +56,7 @@ fn create_host(
     publisher: Arc<dyn ActorSocketPublisher>,
     replication: Arc<dyn crate::litestream::Replicator>,
 ) -> ActorHost {
-    let database = HostDatabase::new(endpoint.clone(), storage, writer, replication);
+    let database = HostDatabase::new(endpoint.clone(), storage, writer, replication, None);
     ActorHost::new(endpoint, counter(), executor, database, publisher)
 }
 
@@ -1481,6 +1481,7 @@ async fn early_database_preparation_restores_once_without_hydrating_customer_cod
         authority.clone(),
         Arc::new(FakeStateTransport::default()),
         replication().await,
+        None,
     );
     let executor = Arc::new(Executor(AtomicUsize::new(0)));
     for _ in 0..2 {
@@ -2457,6 +2458,7 @@ async fn background_database_writes_outlive_invocations() -> Result<()> {
         Arc::new(FakeAuthority::default()),
         writes.clone(),
         replication().await,
+        None,
     );
     let background = database.background(counter());
     let host = ActorHost::new(
@@ -2519,6 +2521,7 @@ async fn background_database_follows_the_owner_epoch_across_activations() -> Res
         Arc::new(FakeAuthority::default()),
         Arc::new(FakeStateTransport::default()),
         replication().await,
+        None,
     );
     let background = database.background(counter());
     let host = ActorHost::new(

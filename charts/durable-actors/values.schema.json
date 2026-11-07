@@ -266,6 +266,15 @@
         }
       }
     },
+    "nodeCache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "capacityGiB": {"type": "integer", "minimum": 1},
+        "resources": {"type": "object"}
+      }
+    },
     "redis": {
       "type": "object",
       "additionalProperties": false,

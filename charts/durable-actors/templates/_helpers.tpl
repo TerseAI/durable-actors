@@ -4,6 +4,9 @@
 {{- define "actors.collectorName" -}}
 {{- printf "%s-collector" (include "actors.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
+{{- define "actors.nodeCacheName" -}}
+{{- printf "%s-node-cache" (include "actors.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
 {{- define "actors.sandboxNamespace" -}}
 {{- default (printf "%s-%s" .Release.Namespace .Release.Name | trunc 63 | trimSuffix "-") .Values.sandboxNamespace -}}
 {{- end -}}

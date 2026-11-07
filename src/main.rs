@@ -69,6 +69,7 @@ async fn run(cli: Cli) -> Result<()> {
             serve_pool_manager(ControlPlaneProcessConfig::from_env()?, shutdown).await
         }
         "spare" => durable_actors::host::serve_spare(shutdown).await,
+        "node_cache" => durable_actors::node_cache::serve_node_cache(shutdown).await,
         "host" => serve_actor_host(shutdown).await,
         role => anyhow::bail!("unsupported DURABLE_ACTORS_PROCESS_ROLE {role:?}"),
     }

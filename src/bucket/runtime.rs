@@ -61,6 +61,13 @@ pub struct OwnershipHint {
     record: Ownership,
 }
 
+impl OwnershipHint {
+    /// The snapshot the previous owner sealed, which a new activation loads unchanged.
+    pub(crate) fn sealed_base(&self) -> Option<&SnapshotRef> {
+        self.record.base.as_ref().filter(|_| self.record.sealed)
+    }
+}
+
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
     pub state: Option<Bytes>,

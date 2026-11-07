@@ -17,10 +17,10 @@ use crate::{
 
 use super::{ActorJwtVerifier, ControlPlaneService};
 
-const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
-const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
+pub(crate) const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
+pub(crate) const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-actors-invoke";
-const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
+pub(crate) const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
 /// Bump the version when the bus's messages change.
 const SOCKET_BUS_NAMESPACE: &str = "durable-actors:v1:sockets";
 
@@ -839,6 +839,7 @@ fn sandbox_backend(
                         1,
                         1024,
                     )? as usize,
+                    node_cache_url: node_cache_url(get)?,
                 }),
                 regions,
             ))
@@ -886,6 +887,15 @@ fn sandbox_backend(
         }
         provider => anyhow::bail!("unsupported DURABLE_ACTORS_SANDBOX_PROVIDER {provider:?}"),
     }
+}
+
+fn node_cache_url(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Option<String>> {
+    get("DURABLE_ACTORS_GKE_NODE_CACHE_URL")
+        .map(|url| {
+            reqwest::Url::parse(&url).context("DURABLE_ACTORS_GKE_NODE_CACHE_URL must be a URL")?;
+            Ok(url)
+        })
+        .transpose()
 }
 
 fn modal_region(region: &str) -> Option<&'static str> {

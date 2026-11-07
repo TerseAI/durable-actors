@@ -31,7 +31,7 @@ bytes = "1"
 prost = "0.14"
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
 opentelemetry = { version = "0.33", default-features = false, features = ["trace", "logs"] }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "logs"] }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace", "logs", "tls-aws-lc", "tls-webpki-roots"] }
@@ -39,7 +39,7 @@ opentelemetry-proto = { version = "0.33", default-features = false, features = [
 tower-http = { version = "0.6", features = ["trace"] }
 tonic = { version = "0.14", features = ["tls-aws-lc", "tls-webpki-roots"] }
 tonic-prost = "0.14"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "hickory-dns"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "hickory-dns", "stream"] }
 hickory-resolver = "0.26"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }

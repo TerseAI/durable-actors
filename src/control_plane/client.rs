@@ -157,6 +157,22 @@ impl ControlPlaneClient {
 #[derive(Clone)]
 pub(crate) struct HostAuthorization(Arc<RwLock<MetadataValue<tonic::metadata::Ascii>>>);
 
+impl HostAuthorization {
+    pub(crate) fn header(&self) -> Result<String> {
+        Ok(self
+            .0
+            .read()
+            .map_err(|_| anyhow::anyhow!("actor authorization lock poisoned"))?
+            .to_str()?
+            .to_owned())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixed(token: &str) -> Result<Self> {
+        Ok(Self(Arc::new(RwLock::new(bearer_authorization(token)?))))
+    }
+}
+
 impl tonic::service::Interceptor for HostAuthorization {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, tonic::Status> {
         let authorization = self

@@ -21,6 +21,21 @@ impl RuntimeStorage {
         new_actor: bool,
         owner_hint: Option<&OwnershipHint>,
     ) -> Result<LoadedActor> {
+        self.register_activation_with(actor, request, region, new_actor, owner_hint, true)
+            .await
+    }
+
+    /// Without `prefetch_checkpoint`, a sealed base's checkpoint is left for SQLite recovery to
+    /// fetch, for callers that expect to open the database another way.
+    pub(crate) async fn register_activation_with(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+        region: &str,
+        new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
+        prefetch_checkpoint: bool,
+    ) -> Result<LoadedActor> {
         actor.validate()?;
         crate::placement::validate_region(region)?;
         request.validate_duration()?;
@@ -53,7 +68,7 @@ impl RuntimeStorage {
                 if previous.is_none_or(|record| record.sealed) {
                     // A sealed base is immutable; only the CAS winner may adopt the downloaded state.
                     let (recovery, replaced) = tokio::join!(
-                        self.recover_activation(previous),
+                        self.recover_activation(previous, prefetch_checkpoint),
                         self.claim_activation(
                             &mut record,
                             current.as_ref().map(|(generation, _)| *generation)
@@ -62,7 +77,9 @@ impl RuntimeStorage {
                     let (replaced, elapsed) = replaced?;
                     (recovery, replaced, elapsed)
                 } else {
-                    let recovery = self.recover_activation(previous).await?;
+                    let recovery = self
+                        .recover_activation(previous, prefetch_checkpoint)
+                        .await?;
                     record.base = recovery
                         .snapshot
                         .as_ref()
@@ -267,10 +284,17 @@ impl RuntimeStorage {
         Ok((replaced, started.elapsed().as_secs_f64() * 1_000.0))
     }
 
-    async fn recover_activation(&self, current: Option<&Ownership>) -> Result<ActivationRecovery> {
+    async fn recover_activation(
+        &self,
+        current: Option<&Ownership>,
+        prefetch_checkpoint: bool,
+    ) -> Result<ActivationRecovery> {
         let Some(record) = current else {
             return Ok(ActivationRecovery::default());
         };
+        if record.sealed && !prefetch_checkpoint {
+            return self.load_activation_snapshot(record).await;
+        }
         if record.sealed {
             return self.recover_sealed_activation(record).await;
         }

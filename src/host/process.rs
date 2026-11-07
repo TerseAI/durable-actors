@@ -28,6 +28,7 @@ use super::{
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_ACTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const NODE_CACHE_SAVE_BUDGET: Duration = Duration::from_secs(5);
 /// How long the executor waits for its host to attach. Falling back from Rapid can
 /// spend two operation timeouts before Standard starts: the failed open, then
 /// deleting the replicas that did open.
@@ -200,6 +201,9 @@ pub(super) async fn serve_assigned_host(
         let result = storage
             .finish(shutdown_deadline - Duration::from_secs(2))
             .await;
+        if result.is_ok() {
+            database.save_to_node_cache(NODE_CACHE_SAVE_BUDGET).await;
+        }
         lifecycle.stop().await;
         result
     })
@@ -275,15 +279,17 @@ async fn prepare_actor_host(
     timings.replication_ready_at_ms = Some(timings.elapsed_ms());
     let invocation_auth = invocation_verifier(&config.invocation_auth)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
-        Some(warm) => (
-            Some(warm.listener),
-            Some((warm.executor, warm.javascript)),
-            Some(warm.storage),
-            warm.control_plane,
-        ),
-        None => (None, None, None, None),
-    };
+    let (warm_listener, warm_executor, warm_storage, warm_control_plane, warm_node_cache) =
+        match warm {
+            Some(warm) => (
+                Some(warm.listener),
+                Some((warm.executor, warm.javascript)),
+                Some(warm.storage),
+                warm.control_plane,
+                warm.node_cache,
+            ),
+            None => (None, None, None, None, None),
+        };
     let access = &config.control_plane;
     let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
         async {
@@ -296,6 +302,11 @@ async fn prepare_actor_host(
     )?;
     timings.control_plane_ready_at_ms = Some(timings.elapsed_ms());
     let control_plane = Arc::new(control_plane);
+    let node_cache = match warm_node_cache {
+        Some(connection) => Some(connection),
+        None => crate::node_cache::NodeCacheConnection::from_env()?,
+    }
+    .map(|connection| connection.authorize(control_plane.authorization()));
     let stop = CancellationToken::new();
     let credentials = stop.clone().drop_guard();
     let assignment = &config.assignment;
@@ -310,11 +321,17 @@ async fn prepare_actor_host(
             assignment.actor.clone(),
         )
         .await?
-        .with_activation(assignment.new_actor, assignment.owner_hint.clone()),
+        .with_activation(assignment.new_actor, assignment.owner_hint.clone())
+        .with_node_cache(node_cache.clone()),
     );
     let persistence = super::persistence::ActorPersistence::new(storage.clone());
-    let database =
-        super::HostDatabase::new(endpoint.clone(), storage.clone(), persistence, replication);
+    let database = super::HostDatabase::new(
+        endpoint.clone(),
+        storage.clone(),
+        persistence,
+        replication,
+        node_cache.clone(),
+    );
     let started = timings.started_at;
     let storage_ready = async {
         let result = prepare_storage(
@@ -334,7 +351,7 @@ async fn prepare_actor_host(
     };
     let executor_ready = async {
         if let Some(bundle) = &config.executor.bundle {
-            storage.install_code(bundle).await?;
+            storage.install_code(bundle, node_cache.as_ref()).await?;
         }
         let result = if let Some((executor, javascript)) = warm_executor {
             let entrypoint = config
