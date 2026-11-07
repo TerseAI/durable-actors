@@ -153,6 +153,25 @@ async def test_non_graceful_eviction_skips_on_sleep():
     assert (await restored.handle(command("ping")))["result"] is False
 
 
+async def test_failing_on_sleep_still_evicts():
+    class Probe(Actor):
+        asleep: bool = persisted(False)
+
+        def on_sleep(self) -> None:
+            self.asleep = True
+            raise RuntimeError("sleep failed")
+
+        def ping(self) -> bool:
+            return self.asleep
+
+    host = HostDatabase()
+    runtime = ActorRuntime(Probe, Effects(), host)
+    assert (await runtime.handle(command("ping")))["result"] is False
+    assert await runtime.handle({"type": "evict", "graceful": True}) == {"type": "evicted"}
+    restored = ActorRuntime(Probe, Effects(), host)
+    assert (await restored.handle(command("ping")))["result"] is False
+
+
 async def test_alarm_lifecycle_uses_the_normal_invocation_path():
     class Reminder(Actor):
         fired: bool = persisted(False)

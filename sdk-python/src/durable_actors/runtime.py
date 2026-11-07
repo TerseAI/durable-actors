@@ -66,6 +66,10 @@ class ActorRuntime:
         try:
             if graceful and self.fatal is None:
                 await self.run_hook("on_sleep")
+        except Exception:
+            # run_hook rolled back on_sleep's writes. The instance is discarded either
+            # way, so the host still gets evicted, as in the TypeScript runtime.
+            traceback.print_exc()
         finally:
             self.instance = None
             self.fatal = None
