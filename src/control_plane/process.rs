@@ -519,6 +519,10 @@ impl ControlPlaneProcessConfig {
                 "DURABLE_ACTORS_INVOKE_API_KEY has surrounding whitespace"
             );
             ensure!(
+                api_key.is_some(),
+                "DURABLE_ACTORS_INVOKE_API_KEY requires DURABLE_ACTORS_SECRET"
+            );
+            ensure!(
                 api_key.as_ref() != Some(invoke_api_key),
                 "DURABLE_ACTORS_INVOKE_API_KEY must differ from DURABLE_ACTORS_SECRET"
             );

@@ -175,14 +175,11 @@ async fn invoke_api_key_is_distinct_from_the_administrative_secret() -> Result<(
             <= crate::control_plane::session::MAX_SESSION_LIFETIME_SECONDS
     );
 
-    let (_, anyone, _, _) = fixture(None).await?;
-    let anyone = anyone.with_invoke_api_key(Some("invoke-secret".into()))?;
+    let (_, open, _, _) = fixture(None).await?;
     assert!(
-        anyone
-            .authorize_discovery("Bearer anything", "default")?
-            .is_none()
+        open.with_invoke_api_key(Some("invoke-secret".into()))
+            .is_err()
     );
-    assert!(anyone.authorize_socket_discovery("").is_ok());
     Ok(())
 }
 

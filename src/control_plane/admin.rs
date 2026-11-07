@@ -230,6 +230,10 @@ impl AdminService {
                 "invoke API key is invalid"
             );
             ensure!(
+                self.api_key.is_some(),
+                "invoke API key requires the admin API key"
+            );
+            ensure!(
                 self.api_key.as_ref() != Some(invoke_api_key),
                 "invoke API key must differ from the admin API key"
             );

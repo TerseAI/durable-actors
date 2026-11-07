@@ -7,7 +7,8 @@ info:
         When DURABLE_ACTORS_SECRET is set on the server, authenticate backend requests
         with that bearer API key; never expose it to browsers. When unset, no API key is required.
         DURABLE_ACTORS_INVOKE_API_KEY optionally adds a long-lived key that only findActor,
-        invokeActor, and findWebSocket accept; its invocations are limited to published RPC methods.
+        invokeActor, and findWebSocket accept; it requires DURABLE_ACTORS_SECRET. Its actor
+        invocations are limited to published RPC methods.
         Project-scoped actor routes work in development and production. Run `durable-actors dev`
         and copy the printed connection settings into your backend's environment. The default
         local project ID is `local`; use it as `project_id` in requests.
@@ -777,7 +778,7 @@ components:
         InvokeApiKey:
             type: http
             scheme: bearer
-            description: Long-lived key set by DURABLE_ACTORS_INVOKE_API_KEY. Accepted only by findActor, invokeActor, and findWebSocket; invocations are limited to published RPC methods. Never send it to browsers.
+            description: Long-lived key set by DURABLE_ACTORS_INVOKE_API_KEY. Requires DURABLE_ACTORS_SECRET. Accepted only by findActor, invokeActor, and findWebSocket. Actor invocations are limited to published RPC methods; findWebSocket accepts caller-supplied connection metadata, as with ApiKey. Never send it to browsers.
         ActorTicket:
             type: http
             scheme: bearer

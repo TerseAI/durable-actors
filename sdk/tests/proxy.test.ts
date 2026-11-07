@@ -61,6 +61,35 @@ test("socket grants use environment settings and prefer the shared secret over t
     await proxy.handle({ actorName: "Room", actorId: "one", metadata: {} })
 })
 
+test("socket grants fall back to the invoke API key when no shared secret is set", async t => {
+    const environment = process.env
+    t.after(() => {
+        process.env = environment
+    })
+    const { DURABLE_ACTORS_SECRET: _secret, DURABLE_ACTORS_API_KEY: _apiKey, ...rest } = environment
+    process.env = {
+        ...rest,
+        DURABLE_ACTORS_PROJECT_ID: "local",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: "http://127.0.0.1:8123",
+        DURABLE_ACTORS_INVOKE_API_KEY: "invoke-key"
+    }
+    const proxy = new SocketProxy(
+        actors,
+        {},
+        {
+            fetch: async (_url, init) => {
+                assert.equal(new Headers(init?.headers).get("authorization"), "Bearer invoke-key")
+                return Response.json({
+                    websocketUrl: "ws://127.0.0.1:8123/socket?key=ticket",
+                    homeRegion: "local",
+                    connectByMs: 1000
+                })
+            }
+        }
+    )
+    await proxy.handle({ actorName: "Room", actorId: "one", metadata: {} })
+})
+
 test("socket grants target the configured project as well as the actor", async () => {
     for (const projectId of ["team-a", "team-b"]) {
         const options = { projectId, controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }

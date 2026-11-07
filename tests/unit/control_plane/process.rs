@@ -273,6 +273,15 @@ fn invoke_api_key_is_optional_and_must_differ_from_the_shared_secret() -> Result
         });
         assert!(result.is_err(), "server accepted invoke key {invoke_key:?}");
     }
+    values.insert("DURABLE_ACTORS_INVOKE_API_KEY", "invoke-key");
+    values.remove("DURABLE_ACTORS_SECRET");
+    let result = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    });
+    assert!(
+        result.is_err(),
+        "server accepted an invoke key without a secret"
+    );
     Ok(())
 }
 
