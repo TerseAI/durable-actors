@@ -78,15 +78,24 @@ class ActorRuntime {
 
     async shutdown(): Promise<void> {
         if (this.instance === undefined) return
-
-        const fields = this.definition.state.fields.filter(field => field.resource).reverse()
-
-        await runWithActorDatabase(this.instance, async () => {
-            for (const field of fields) {
-                const resource = Reflect.get(this.instance!, field.name) as ActorResource
-                await resource.onGracefulShutdown()
+        const instance = this.instance
+        try {
+            if (await this.runLifecycleHook(instance, "onSleep")) {
+                validateActorState(instance, this.definition.state)
+                this.database.commit()
             }
-        })
+        } catch (error) {
+            this.database.rollback()
+            throw error
+        } finally {
+            const fields = this.definition.state.fields.filter(field => field.resource).reverse()
+            await runWithActorDatabase(instance, async () => {
+                for (const field of fields) {
+                    const resource = Reflect.get(instance, field.name) as ActorResource
+                    await resource.onGracefulShutdown()
+                }
+            })
+        }
     }
 
     private get interleaved(): boolean {
@@ -257,6 +266,23 @@ class ActorRuntime {
             }
         })
         return instance
+    }
+
+    private async runLifecycleHook(instance: AnyActor, name: "onSleep"): Promise<boolean> {
+        const method: unknown = Reflect.get(instance, name)
+        if (typeof method !== "function") return false
+        // No socket can be reached during eviction, so the hook sees no connections and its effects are dropped.
+        await runWithActorSockets(
+            instance,
+            [],
+            async () =>
+                runWithActorDatabase(instance, async () => {
+                    await Reflect.apply(method, instance, [])
+                }),
+            undefined,
+            this.schemas
+        )
+        return true
     }
 }
 
