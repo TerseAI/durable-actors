@@ -172,6 +172,28 @@ async def test_failing_on_sleep_still_evicts():
     assert (await restored.handle(command("ping")))["result"] is False
 
 
+async def test_on_sleep_sees_no_connections():
+    class Probe(Actor):
+        seen: list[int] = persisted([])
+
+        def on_sleep(self) -> None:
+            self.seen = [len(self.get_connections()), self.get_connection_count()]
+            self.broadcast("bye")
+
+        def ping(self) -> list[int]:
+            return self.seen
+
+    effects = Effects()
+    effects.connections = [{"id": "live", "metadata": None, "tags": []}]
+    host = HostDatabase()
+    runtime = ActorRuntime(Probe, effects, host)
+    await runtime.handle(command("ping"))
+    assert await runtime.handle({"type": "evict", "graceful": True}) == {"type": "evicted"}
+    assert effects.published == []
+    restored = ActorRuntime(Probe, Effects(), host)
+    assert (await restored.handle(command("ping")))["result"] == [0, 0]
+
+
 async def test_alarm_lifecycle_uses_the_normal_invocation_path():
     class Reminder(Actor):
         fired: bool = persisted(False)

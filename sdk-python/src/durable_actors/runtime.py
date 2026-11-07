@@ -224,6 +224,7 @@ class ActorRuntime:
             self.effects,
             None,
             False,
+            isolated=True,
         )
         token = scope_context.set(scope)
         try:

@@ -143,6 +143,7 @@ class SocketScope:
         effects: Effects,
         connections: list[Document] | None,
         live: bool,
+        isolated: bool = False,
     ) -> None:
         self.loop = asyncio.get_running_loop()
         self.thread = get_ident()
@@ -154,6 +155,8 @@ class SocketScope:
         )
         self.effects = effects
         self.live = live
+        # An isolated scope (on_sleep) reaches no socket, as in the TypeScript runtime.
+        self.isolated = isolated
         self.active = True
         self.pending: list[Document] = []
         self.sockets: dict[str, ActorSocket[Any, Any, Any]] = {}
@@ -185,6 +188,8 @@ class SocketScope:
         self.ensure_active()
         if tag is not None:
             validate_tags((tag,))
+        if self.isolated:
+            return []
         connections = await self.effects.get_connections(tag=tag)
         if isinstance(connections, int):
             raise ValueError("expected socket list")
@@ -200,6 +205,8 @@ class SocketScope:
 
     async def get_connection_count(self) -> int:
         self.ensure_active()
+        if self.isolated:
+            return 0
         count = await self.effects.get_connections(count_only=True)
         if not isinstance(count, int):
             raise ValueError("expected socket count")
