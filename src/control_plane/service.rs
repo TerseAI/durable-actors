@@ -40,7 +40,6 @@ const FALLBACK_REGION: &str = "north-america-central";
 #[derive(Clone)]
 pub struct ControlPlaneService {
     pub(super) lifecycle: crate::actor_lifecycle::LifecycleStore,
-    pub(super) traces: crate::request_traces::TraceStore,
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
@@ -54,6 +53,7 @@ pub struct ControlPlaneService {
     alarms: Arc<dyn super::alarms::AlarmStore>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
+    hosts: reqwest::Client,
 }
 
 impl ControlPlaneService {
@@ -82,7 +82,6 @@ impl ControlPlaneService {
     ) -> Self {
         Self {
             lifecycle: Default::default(),
-            traces: crate::request_traces::TraceStore::default(),
             changes: Default::default(),
             runtime_access: None,
             gateway: None,
@@ -96,7 +95,19 @@ impl ControlPlaneService {
             alarms: Arc::new(super::alarms::MemoryAlarmStore::default()),
             socket_events: None,
             local_builds: None,
+            hosts: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .expect("actor invocation HTTP client"),
         }
+    }
+
+    pub(super) fn host_client(&self) -> reqwest::Client {
+        self.gateway.as_ref().map_or_else(
+            || self.hosts.clone(),
+            |gateway| gateway.connections.http.clone(),
+        )
     }
 
     pub(super) fn with_alarm_store(mut self, alarms: Arc<dyn super::alarms::AlarmStore>) -> Self {
@@ -117,11 +128,6 @@ impl ControlPlaneService {
         sink: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     ) -> Self {
         self.socket_events = sink;
-        self
-    }
-
-    pub(crate) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
-        self.traces = traces;
         self
     }
 
@@ -524,25 +530,6 @@ impl ControlPlaneService {
             ControlPlaneCommand::SocketOperation { .. } => {
                 anyhow::bail!("socket operation requires authenticated routing")
             }
-            ControlPlaneCommand::RequestTraces { traces, dropped } => {
-                ensure!(
-                    traces.len() <= crate::request_traces::TRACE_BATCH_SIZE,
-                    "trace batch too large"
-                );
-                for trace in &traces {
-                    trace.validate()?;
-                }
-                self.traces
-                    .record(
-                        &principal.actor.project_id,
-                        principal.host_id.as_str(),
-                        &principal.session_id,
-                        traces,
-                        dropped,
-                    )
-                    .await?;
-                Ok(ControlPlaneCommandReply::Unit)
-            }
             ControlPlaneCommand::GetAlarm => {
                 let timestamp_ms = self.alarms.get(&principal.actor).await?;
                 Ok(ControlPlaneCommandReply::Alarm { timestamp_ms })
@@ -550,6 +537,11 @@ impl ControlPlaneService {
             ControlPlaneCommand::UpdateAlarm { timestamp_ms } => {
                 self.alarms.update(&principal.actor, timestamp_ms).await?;
                 Ok(ControlPlaneCommandReply::Unit)
+            }
+            ControlPlaneCommand::InvokeActor { call } => {
+                let invocation = call.in_project(&principal.actor.project_id);
+                let outcome = super::invocation::invoke_from_host(self, &invocation).await;
+                Ok(ControlPlaneCommandReply::Invocation { outcome })
             }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
@@ -1370,6 +1362,7 @@ impl SandboxHostProvisioner {
             host_token,
             jwt_public_keys: self.issuer.verifier_keys_json()?,
             control_plane_url: self.runtime.control_plane_url.clone(),
+            otlp_endpoint: self.runtime.otlp_endpoint.clone(),
             jwt_issuer: self.runtime.jwt_issuer.clone(),
             invocation_jwt_audience: self.runtime.invocation_jwt_audience.clone(),
             image_ref: match &self.runtime_images {

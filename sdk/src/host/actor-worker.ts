@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks"
+import { format } from "node:util"
 import { parentPort, workerData } from "node:worker_threads"
 import type { TransferListItem } from "node:worker_threads"
 
@@ -7,14 +8,17 @@ import type { ActorClass } from "../actor/actor.js"
 import { ACTOR_ARTIFACT_VERSION } from "../actor/schema.js"
 import type { ActorSchema } from "../actor/schema.js"
 import type { SocketEffect, SocketLookup, SocketQuery } from "../actor/socketProtocol.js"
+import { remoteActorClient, runWithActorClient } from "../client/client.js"
 import { ActorConfigurationError, ActorDefinitionError, errorMessage } from "../errors.js"
+import type { JsonValue } from "../json.js"
 
 import { ActorRuntime } from "./actor-runtime.js"
 import { requestDatabaseCall } from "./database-bridge.js"
 import { DatabaseProxy } from "./database.js"
 import type { DatabaseCall, DatabaseResult } from "./database.js"
+import { HostActorClient } from "./host-actor-client.js"
 import { failedReply } from "./protocol.js"
-import type { ActorWorkerData, ActorWorkerMessage, ActorWorkerRequest } from "./protocol.js"
+import type { ActorCallRequest, ActorWorkerData, ActorWorkerMessage, ActorWorkerRequest, LogLevel } from "./protocol.js"
 
 const port = parentPort
 if (port === null) throw new Error("actor Worker requires a parent message port")
@@ -28,10 +32,15 @@ process.once("exit", () => {
 
 let assigned = false
 const invocation = new AsyncLocalStorage<number>()
+const LOG_LIMIT_BYTES = 256 * 1024
+captureConsole()
 const loadingConnections = new Map<
     number,
     { resolve: (connections: SocketLookup) => void; reject: (error: Error) => void }
 >()
+const actorCalls = new Map<number, (outcome: JsonValue) => void>()
+let nextActorCallId = 0
+const actorClient = new HostActorClient(callActor, remoteActorClient)
 if (workerData !== undefined && workerData !== null) void initialize(workerData as ActorWorkerData)
 else {
     post({ type: "warm" })
@@ -49,6 +58,11 @@ async function initialize(data: ActorWorkerData): Promise<void> {
         const actorNames = await loadActorEntrypoint(data.moduleUrl)
         port!.on("message", (message: ActorWorkerRequest) => {
             if (message.type === "load") throw new Error("customer code already assigned")
+            if (message.type === "actor_result") {
+                actorCalls.get(message.callId)?.(message.outcome)
+                actorCalls.delete(message.callId)
+                return
+            }
             if (message.type === "socket_connections") {
                 const pending = loadingConnections.get(message.messageId)
                 loadingConnections.delete(message.messageId)
@@ -76,7 +90,7 @@ async function initialize(data: ActorWorkerData): Promise<void> {
                 getConnections
             )
             invocation.run(message.messageId, () => {
-                void runtime!.handle(message.command).then(
+                void runWithActorClient(actorClient, () => runtime!.handle(message.command)).then(
                     reply => post({ type: "reply", messageId: message.messageId, reply }),
                     error =>
                         post({
@@ -97,6 +111,26 @@ function post(message: ActorWorkerMessage, transfer?: readonly TransferListItem[
     if (!exiting) port!.postMessage(message, transfer)
 }
 
+// Console output travels to the host tagged with the invocation that wrote it, instead of stdout.
+function captureConsole(): void {
+    const levels = [
+        ["debug", "debug"],
+        ["log", "info"],
+        ["info", "info"],
+        ["warn", "warn"],
+        ["error", "error"]
+    ] as const satisfies readonly (readonly [keyof Console, LogLevel])[]
+    for (const [method, level] of levels)
+        console[method] = (...args: unknown[]) =>
+            post({ type: "log", messageId: invocation.getStore(), level, message: truncateLog(format(...args)) })
+}
+
+function truncateLog(message: string): string {
+    if (message.length * 3 <= LOG_LIMIT_BYTES) return message
+    const bytes = Buffer.from(message)
+    return bytes.length <= LOG_LIMIT_BYTES ? message : bytes.subarray(0, LOG_LIMIT_BYTES).toString()
+}
+
 function allowNextInvocation(): void {
     const messageId = invocation.getStore()
     if (messageId === undefined) throw new Error("invocation admission has no active invocation")
@@ -107,6 +141,14 @@ function callDatabase(call: DatabaseCall): DatabaseResult {
     if (exiting) throw new Error("actor Worker is exiting")
     const messageId = invocation.getStore()
     return requestDatabaseCall(request => post({ type: "database_call", messageId, call, request }, [request.port]))
+}
+
+function callActor(call: ActorCallRequest): Promise<JsonValue> {
+    return new Promise(resolve => {
+        const callId = ++nextActorCallId
+        actorCalls.set(callId, resolve)
+        post({ type: "actor_call", callId, call })
+    })
 }
 
 function publish(effects: readonly SocketEffect[]): void {

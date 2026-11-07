@@ -41,6 +41,70 @@ class Settings(Actor):
         assert (await send(3, read))["result"] == "secret"
 
 
+async def test_actors_call_other_actors_through_the_host(tmp_path):
+    entrypoint = build(
+        tmp_path,
+        "calling_actors",
+        """from durable_actors import Actor
+class Document(Actor):
+    def publish(self) -> list[str]:
+        return Index.get("main").add("doc-1")
+class Index(Actor):
+    def add(self, document: str) -> list[str]:
+        return [document]
+""",
+    )
+    publish = {"type": "invoke", "request_id": "publish", "method": "publish", "args": []}
+    async with warm_executor(entrypoint, {}) as host:
+        async with asyncio.timeout(5):
+            host.send({"type": "command", "message_id": 1, "command": publish})
+            call = await host.receive()
+            assert call["type"] == "actor_call"
+            assert {key: call["call"][key] for key in ("actor_name", "actor_id", "method")} == {
+                "actor_name": "Index",
+                "actor_id": "main",
+                "method": "add",
+            }
+            assert call["call"]["args"] == ["doc-1"]
+            host.send(
+                {
+                    "type": "actor_result",
+                    "call_id": call["call_id"],
+                    "outcome": {"type": "completed", "result": ["doc-1"]},
+                }
+            )
+            assert (await host.receive())["reply"] == {"type": "invoked", "result": ["doc-1"]}
+
+
+async def test_output_reaches_the_host_tagged_with_its_invocation(tmp_path):
+    entrypoint = build(
+        tmp_path,
+        "logging_actors",
+        """import sys
+import threading
+from durable_actors import Actor
+class Greeter(Actor):
+    def greet(self, name: str) -> str:
+        print(f"hello {name}")
+        print("careful", file=sys.stderr)
+        background = threading.Thread(target=print, args=("background",))
+        background.start()
+        background.join()
+        return name
+""",
+    )
+    greet = {"type": "invoke", "request_id": "greet", "method": "greet", "args": ["ada"]}
+    async with warm_executor(entrypoint, {}) as host:
+        async with asyncio.timeout(5):
+            host.send({"type": "command", "message_id": 7, "command": greet})
+            assert (await host.receive())["reply"]["result"] == "ada"
+    assert host.logs == [
+        {"type": "log", "message_id": 7, "level": "info", "message": "hello ada"},
+        {"type": "log", "message_id": 7, "level": "error", "message": "careful"},
+        {"type": "log", "message_id": None, "level": "info", "message": "background"},
+    ]
+
+
 async def test_executor_reports_whether_its_attached_actor_is_resident(tmp_path):
     entrypoint = build(
         tmp_path,
@@ -87,7 +151,7 @@ class Counter(Actor):
                 host = ExecutorHost(reader, writer, database)
                 try:
                     if generic:
-                        assert await host.receive() == {"type": "warm", "protocol": 30}
+                        assert await host.receive() == {"type": "warm", "protocol": 32}
                         host.send(
                             {
                                 "type": "load",
@@ -97,10 +161,10 @@ class Counter(Actor):
                         )
                     assert await host.receive() == {
                         "type": "attach",
-                        "protocol": 30,
+                        "protocol": 32,
                         "actor_names": ["Counter"],
                     }
-                    host.send({"type": "attached", "protocol": 30, "actor": actor})
+                    host.send({"type": "attached", "protocol": 32, "actor": actor})
                     host.send(
                         {
                             "type": "command",
@@ -316,7 +380,7 @@ class Counter(Actor):
                 receive, send = host.receive, host.send
                 assert (await receive())["type"] == "attach"
                 actor = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
-                send({"type": "attached", "protocol": 30, "actor": actor})
+                send({"type": "attached", "protocol": 32, "actor": actor})
                 invocation = {
                     "type": "invoke",
                     "request_id": "r1",

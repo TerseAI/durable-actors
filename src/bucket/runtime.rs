@@ -299,6 +299,14 @@ impl RuntimeStorage {
     fn remember(&self, record: Ownership, snapshot: Option<LoadedSnapshot>) -> LoadedActor {
         let mut placement = record.placement();
         apply_snapshot(&mut placement, snapshot.as_ref().map(|s| &s.reference));
+        if let Some(snapshot) = &snapshot {
+            self.uploaded
+                .lock()
+                .unwrap()
+                .entry(record.lease.session_id.clone())
+                .or_default()
+                .latest = Some(snapshot.reference.clone());
+        }
         self.owned
             .lock()
             .unwrap()
@@ -480,6 +488,7 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
         if let Some(parent) = crate::state_log::StateSnapshot::decode(&bytes)?
             .sqlite
             .parent
+            && !self.uploaded_latest(&stream.session, &parent)
         {
             let bytes = self
                 .read_persisted(&parent.object)
@@ -504,6 +513,17 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
 }
 
 impl RuntimeStorage {
+    /// A parent this session restored or uploaded itself is already verified, so it needs no
+    /// download.
+    fn uploaded_latest(&self, session: &str, parent: &SnapshotRef) -> bool {
+        self.uploaded
+            .lock()
+            .unwrap()
+            .get(session)
+            .and_then(|uploaded| uploaded.latest.as_ref())
+            == Some(parent)
+    }
+
     fn ensure_write_owner(&self, plan: &WritePlan) -> Result<()> {
         let actor = crate::storage_paths::actor_from_snapshot(&plan.object_name)?;
         let owned = self.owned.lock().unwrap();

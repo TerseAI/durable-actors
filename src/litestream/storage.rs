@@ -1,11 +1,11 @@
 use super::{DatabaseRestore, Replicator};
 use anyhow::{Context, Result, ensure};
-use base64::engine::general_purpose::STANDARD;
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -13,7 +13,25 @@ pub struct LtxFile {
     pub level: u8,
     pub first: u64,
     pub last: u64,
-    pub data: crate::payload::Text,
+    /// Raw LTX bytes; JSON state, written before binary snapshots, carries them as base64.
+    #[serde(with = "base64_data")]
+    pub data: Bytes,
+}
+
+mod base64_data {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use bytes::Bytes;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(data: &Bytes, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(data))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Bytes, D::Error> {
+        let text = crate::payload::Text::deserialize(deserializer)?;
+        crate::payload::copy(base64::read::DecoderReader::new(text.as_ref(), &STANDARD))
+            .map_err(D::Error::custom)
+    }
 }
 
 impl LtxFile {
@@ -24,15 +42,13 @@ impl LtxFile {
             "invalid LTX transaction range"
         );
         ensure!(self.level != 9 || self.first == 1, "invalid LTX snapshot");
-        let count = std::io::copy(&mut self.reader(), &mut std::io::sink())?;
-        ensure!(count > 0, "empty LTX file");
+        // Only the header magic is checked: snapshots are validated on every encode and decode,
+        // and a full LTX decode here made each of those another pass over the database.
+        ensure!(self.data.starts_with(b"LTX1"), "malformed LTX file");
         Ok(())
     }
 
-    pub(crate) fn reader(&self) -> impl std::io::Read {
-        base64::read::DecoderReader::new(self.data.as_ref(), &STANDARD)
-    }
-
+    #[cfg(test)]
     fn path(&self, replica: &Path) -> PathBuf {
         replica
             .join("ltx")
@@ -49,18 +65,33 @@ pub(crate) struct SqliteCapture {
 }
 
 impl SqliteCapture {
-    pub(crate) async fn new(replication: Arc<dyn Replicator>) -> Result<Self> {
-        Self::open(replication, tempfile::tempdir()?).await
+    /// `full_snapshots` is how often Litestream adds a full copy to the captured history, for
+    /// stores without checkpoints of their own.
+    pub(crate) async fn new(
+        replication: Arc<dyn Replicator>,
+        full_snapshots: Option<Duration>,
+    ) -> Result<Self> {
+        Self::open(replication, tempfile::tempdir()?, full_snapshots, None).await
     }
 
+    /// With `resume`, capture continues the restored history, so the next commit is a delta at
+    /// `txid + 1`; otherwise it starts a new history whose first commit holds every page.
     pub(crate) async fn restore(
         replication: Arc<dyn Replicator>,
         files: &[LtxFile],
         txid: u64,
+        full_snapshots: Option<Duration>,
+        resume: bool,
     ) -> Result<Self> {
         let directory = tempfile::tempdir()?;
         restore_database(replication.as_ref(), directory.path(), files, txid).await?;
-        Self::open(replication, directory).await
+        Self::open(
+            replication,
+            directory,
+            full_snapshots,
+            resume.then_some(txid),
+        )
+        .await
     }
 
     pub(crate) fn path(&self) -> PathBuf {
@@ -80,22 +111,23 @@ impl SqliteCapture {
     pub(crate) async fn capture(&mut self, txid: u64) -> Result<Vec<LtxFile>> {
         ensure!(txid >= self.txid, "SQLite transaction went backwards");
         let files = collect_ltx_files(&self.path(), self.published, txid).await?;
-        if let Some(snapshot) = files.iter().find(|file| file.level == 9) {
-            self.prune(snapshot.last).await?;
+        // The captured files travel in this commit's snapshot, so the local copies are spent.
+        if let Err(error) = self.prune(txid).await {
+            tracing::warn!(error = %format!("{error:#}"), "local LTX cleanup deferred");
         }
         self.txid = txid;
         self.published = txid;
         Ok(files)
     }
 
-    async fn prune(&self, snapshot: u64) -> Result<()> {
+    async fn prune(&self, through: u64) -> Result<()> {
         let replica = self.replica();
         tokio::task::spawn_blocking(move || {
             use terse_litestream::ReplicaStore;
-            let store = terse_litestream::FileStore::new(replica);
+            let store = terse_litestream::FileStore::scratch(replica);
             for level in [0, 9] {
                 for segment in store.list(level)? {
-                    if segment.max_txid < snapshot || (level == 0 && segment.max_txid == snapshot) {
+                    if segment.max_txid <= through {
                         store.remove(&segment)?;
                     }
                 }
@@ -105,7 +137,14 @@ impl SqliteCapture {
         .await?
     }
 
-    async fn open(replication: Arc<dyn Replicator>, directory: tempfile::TempDir) -> Result<Self> {
+    // A new history captures every page at the first write rather than here, so an activation
+    // that only reads never pays for it.
+    async fn open(
+        replication: Arc<dyn Replicator>,
+        directory: tempfile::TempDir,
+        full_snapshots: Option<Duration>,
+        resume_at: Option<u64>,
+    ) -> Result<Self> {
         let mut capture = Self {
             replication,
             directory: Some(directory),
@@ -117,19 +156,19 @@ impl SqliteCapture {
             let db = rusqlite::Connection::open(path)?;
             db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
                 CREATE TABLE IF NOT EXISTS __terse_fields (name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))")?;
-            let check: String = db.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
-            ensure!(check == "ok", "invalid actor SQLite database");
             Ok(())
         }).await??;
-        capture
+        let position = capture
             .replication
-            .register(&capture.path(), &capture.replica())
+            .register(
+                &capture.path(),
+                &capture.replica(),
+                full_snapshots,
+                resume_at,
+            )
             .await?;
-        capture.txid = capture.replication.sync(&capture.path()).await?;
-        ensure!(
-            capture.txid > 0,
-            "Litestream did not capture the actor database"
-        );
+        capture.txid = position;
+        capture.published = position;
         Ok(capture)
     }
 }
@@ -217,17 +256,11 @@ async fn read_ltx_files(path: &Path, after: u64, level: u8, through: u64) -> Res
 
 async fn read_ltx(level: u8, first: u64, last: u64, path: PathBuf) -> Result<LtxFile> {
     tokio::task::spawn_blocking(move || {
-        let mut input = std::fs::File::open(path)?;
-        let mut spool = crate::payload::Spool::new();
-        let mut encoder = base64::write::EncoderWriter::new(&mut spool, &STANDARD);
-        std::io::copy(&mut input, &mut encoder)?;
-        encoder.finish()?;
-        drop(encoder);
         Ok(LtxFile {
             level,
             first,
             last,
-            data: crate::payload::Text::from_bytes(spool.finish()?)?,
+            data: crate::payload::copy(std::fs::File::open(path)?)?,
         })
     })
     .await?
@@ -263,28 +296,9 @@ async fn restore_database(
     files: &[LtxFile],
     txid: u64,
 ) -> Result<()> {
-    let recovery = directory.join("recovery");
-    for file in files {
-        file.validate()?;
-        let path = file.path(&recovery);
-        tokio::fs::create_dir_all(path.parent().context("LTX directory missing")?).await?;
-        let file = file.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut output = BufWriter::with_capacity(
-                crate::payload::IO_BUFFER_BYTES,
-                std::fs::File::create(path)?,
-            );
-            std::io::copy(&mut file.reader(), &mut output)?;
-            output.flush()?;
-            Ok(())
-        })
-        .await??;
-    }
     restore
-        .restore(&recovery, &directory.join("actor.sqlite"), txid)
-        .await?;
-    tokio::fs::remove_dir_all(recovery).await?;
-    Ok(())
+        .restore(files, &directory.join("actor.sqlite"), txid)
+        .await
 }
 
 pub(crate) fn read_fields(db: &rusqlite::Connection) -> Result<serde_json::Value> {

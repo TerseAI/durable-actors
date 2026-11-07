@@ -18,9 +18,8 @@ pub(crate) enum ControlPlaneCommand {
     UpdateAlarm {
         timestamp_ms: Option<i64>,
     },
-    RequestTraces {
-        traces: Vec<crate::request_traces::RequestTrace>,
-        dropped: u64,
+    InvokeActor {
+        call: crate::actor::ActorCall,
     },
 }
 
@@ -36,6 +35,9 @@ pub(crate) enum ControlPlaneCommandReply {
     },
     Alarm {
         timestamp_ms: Option<i64>,
+    },
+    Invocation {
+        outcome: serde_json::Value,
     },
     Unit,
 }

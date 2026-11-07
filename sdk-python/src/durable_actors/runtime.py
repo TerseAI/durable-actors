@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import traceback
 from collections import OrderedDict
 from collections.abc import Callable
 from functools import partial
@@ -35,6 +36,8 @@ class ActorRuntime:
         self.instance: ActorBase[Any, Any, Any, Any] | None = None
         self.sequence = 0
         self.last_state: Document = {}
+        # The fields the database holds, so a commit sends only what changed.
+        self.stored: Document = {}
 
     async def handle(self, command: Document) -> Document:
         if command["type"] == "evict":
@@ -52,6 +55,7 @@ class ActorRuntime:
                 return self.fatal
             return await self.execute(command, admit)
         except Exception as error:
+            traceback.print_exc()
             self.instance = None
             failure = failed("invalid_actor_state", str(error))
             if self.definition.reentrant_methods:
@@ -70,8 +74,11 @@ class ActorRuntime:
     async def execute(self, command: Document, admit: Any) -> Document:
         if self.instance is None:
             try:
-                self.restore(await self.database.fields())
+                stored = await self.database.fields()
+                self.restore(stored)
+                self.stored = stored
             except Exception as error:
+                traceback.print_exc()
                 return failed("invalid_actor_state", str(error))
         if command["type"] == "hydrate":
             return {"type": "hydrated"}
@@ -132,15 +139,17 @@ class ActorRuntime:
                 if self.definition.reentrant_methods:
                     await self.database.begin()
                 try:
-                    await self.database.replace_fields(state)
+                    await self.database.update_fields(self.stored, state)
                     await self.database.commit()
                 except DatabaseCommitError as error:
+                    traceback.print_exc()
                     self.fatal = failed("actor_database_failed", str(error))
                     return self.fatal
                 except BaseException:
                     await self.database.rollback()
                     raise
                 self.last_state = state
+                self.stored = state
                 reply: Document = {"type": "websocket_handled" if socket_event else "invoked"}
                 if not socket_event:
                     reply["result"] = result
@@ -156,6 +165,7 @@ class ActorRuntime:
                 await self.database.rollback()
             raise
         except Exception as error:
+            traceback.print_exc()
             if not self.definition.reentrant_methods:
                 await self.database.rollback()
                 self.restore(before)

@@ -16,6 +16,8 @@ pub(super) struct Session {
     retirement_error: Option<String>,
     latest: Option<(String, Bytes)>,
     version: u64,
+    /// The version the current segment opened after; equal to `version` while it holds no frames.
+    installed_at: u64,
     standard: bool,
     healthy: bool,
     rotated: Instant,
@@ -41,6 +43,7 @@ impl Session {
             retirement_error: None,
             latest: None,
             version,
+            installed_at: version,
             standard: false,
             healthy: true,
             rotated: Instant::now(),
@@ -103,6 +106,7 @@ impl Session {
                 .append(frame, reference.state_version);
         }
         self.version = reference.state_version;
+        self.checkpoint.logged(self.version, bytes.len() as u64);
         self.latest = Some((object.into(), bytes));
         self.healthy = true;
         self.checkpoint
@@ -127,7 +131,7 @@ impl Session {
         storage: Arc<LogStorage>,
         object: &str,
         bytes: Bytes,
-        checkpoint_version: u64,
+        restored: &crate::bucket::recovery::ResolvedSqlite,
     ) -> Result<()> {
         let snapshot = crate::state_log::StateSnapshot::decode(&bytes)?;
         if self.latest.is_some()
@@ -138,7 +142,7 @@ impl Session {
             return Ok(());
         }
         self.latest = Some((object.into(), bytes));
-        self.checkpoint.restored(checkpoint_version);
+        self.checkpoint.restored(restored, self.version);
         self.checkpoint
             .schedule(storage, self.latest.as_ref(), self.version)
             .await;
@@ -147,6 +151,7 @@ impl Session {
 
     fn install(&mut self, storage: Arc<LogStorage>, segment: Option<Segment>) {
         self.standard = segment.is_none();
+        self.installed_at = self.version;
         self.archive = segment
             .as_ref()
             .map(|s| Archiver::new(storage, s.manifest.clone(), self.version));
@@ -164,7 +169,7 @@ impl Session {
             || self.standard
             || self.retired.is_some()
             || self.rotated.elapsed() < ROTATION_INTERVAL
-            || self.latest.is_none()
+            || self.version == self.installed_at
         {
             return;
         }

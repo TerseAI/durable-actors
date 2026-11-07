@@ -4,13 +4,7 @@ use crate::actor_lifecycle::{LifecycleEvent, LifecyclePersistence};
 #[async_trait]
 impl LifecyclePersistence for ClickHouseTracePersistence {
     async fn record(&self, event: &LifecycleEvent) -> Result<()> {
-        self.sender
-            .try_send(Report {
-                events: Vec::new(),
-                status: None,
-                lifecycle: Some(event.clone()),
-            })
-            .map_err(|_| anyhow::anyhow!("ClickHouse lifecycle queue unavailable"))
+        self.send(event.clone())
     }
 
     async fn latest(&self, project: &str) -> Result<Vec<LifecycleEvent>> {

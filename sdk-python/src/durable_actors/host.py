@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import signal
 import socket
 import sys
+import threading
 import traceback
 from collections.abc import Collection
 from contextlib import suppress
@@ -16,10 +18,12 @@ from .build import load_artifact
 from .client import component
 from .contract import Document
 from .executor_wire import Channel, serialize
+from .host_transport import route_through_host
 from .runtime import ActorRuntime
 from .sqlite import DatabaseProxy
 
 message_id: ContextVar[int] = ContextVar("actor_message_id")
+LOG_LIMIT_BYTES = 256 * 1024
 
 
 class Session(Channel):
@@ -29,11 +33,14 @@ class Session(Channel):
         self.tasks: set[asyncio.Task[None]] = set()
         self.residency: asyncio.Task[None] | None = None
         self.database_calls = asyncio.Lock()
+        self.actor_calls: dict[int, asyncio.Future[Document]] = {}
+        self.next_actor_call = 0
+        self.loop = asyncio.get_running_loop()
 
     async def run(self, entrypoint: str | None, generic: bool) -> None:
         try:
             if generic:
-                await self.send({"type": "warm", "protocol": 30})
+                await self.send({"type": "warm", "protocol": 32})
                 assignment = await self.read()
                 if (
                     assignment.get("type") != "load"
@@ -48,10 +55,12 @@ class Session(Channel):
                 while not path.is_file():
                     await asyncio.sleep(0.01)
             actors = {actor.__name__: actor for actor in load_artifact(path)}
-            await self.send({"type": "attach", "protocol": 30, "actor_names": sorted(actors)})
+            await self.send({"type": "attach", "protocol": 32, "actor_names": sorted(actors)})
             identity = attached_actor(await self.read(), actors)
+            capture_output(self)
             database = DatabaseProxy(self.call_database, asyncio.get_running_loop())
             runtime = ActorRuntime(actors[identity["actor_name"]], identity, self, database)
+            route_through_host(self.call_actor, asyncio.get_running_loop())
             self.residency = asyncio.create_task(self.report_residency(runtime))
             while True:
                 message = await self.read()
@@ -60,6 +69,10 @@ class Session(Channel):
                     task = asyncio.create_task(self.execute(runtime, message))
                     self.tasks.add(task)
                     task.add_done_callback(self.completed)
+                elif message["type"] == "actor_result":
+                    call = self.actor_calls.pop(message["call_id"], None)
+                    if call is not None and not call.done():
+                        call.set_result(message["outcome"])
                 elif message["type"] in {"socket_connections", "database_result"}:
                     pending = self.pending.pop((message["type"], reply_id(message)))
                     if pending.cancelled():
@@ -101,6 +114,17 @@ class Session(Channel):
                 ),
             )
 
+    async def call_actor(self, call: Document) -> Document:
+        self.next_actor_call += 1
+        call_id = self.next_actor_call
+        future: asyncio.Future[Document] = asyncio.get_running_loop().create_future()
+        self.actor_calls[call_id] = future
+        try:
+            await self.send({"type": "actor_call", "call_id": call_id, "call": call})
+            return await future
+        finally:
+            self.actor_calls.pop(call_id, None)
+
     def publish(self, effects: list[Document]) -> None:
         message = {"type": "socket_effects", "message_id": message_id.get(), "effects": effects}
         self.writer.write(serialize(message))
@@ -114,6 +138,20 @@ class Session(Channel):
                 "get_connections", "socket_connections", query={"tag": tag, "countOnly": count_only}
             ),
         )
+
+    def log(self, level: str, message: str) -> None:
+        data = serialize(
+            {
+                "type": "log",
+                "message_id": message_id.get(None),
+                "level": level,
+                "message": truncate_log(message),
+            }
+        )
+        if running_loop() is self.loop:
+            self.writer.write(data)
+        else:
+            self.loop.call_soon_threadsafe(self.writer.write, data)
 
     def admit(self) -> None:
         data = serialize({"type": "ready_for_invocation", "message_id": message_id.get()})
@@ -141,7 +179,7 @@ class Session(Channel):
     async def close(self) -> None:
         if self.residency:
             self.residency.cancel()
-        for future in self.pending.values():
+        for future in [*self.pending.values(), *self.actor_calls.values()]:
             if not future.done():
                 future.cancel()
         tasks = list(self.tasks)
@@ -151,13 +189,61 @@ class Session(Channel):
         await self.writer.wait_closed()
 
 
+class HostLog(io.TextIOBase):
+    """Sends each complete line to the host, tagged with the invocation that wrote it."""
+
+    def __init__(self, session: Session, level: str) -> None:
+        self.session = session
+        self.level = level
+        self.pending = ""
+        self.lock = threading.Lock()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        with self.lock:
+            lines = (self.pending + text).split("\n")
+            self.pending = lines.pop()
+        for line in lines:
+            self.session.log(self.level, line)
+        return len(text)
+
+    def flush(self) -> None:
+        with self.lock:
+            line, self.pending = self.pending, ""
+        if line:
+            self.session.log(self.level, line)
+
+
+def capture_output(session: Session) -> None:
+    sys.stdout.flush()
+    sys.stderr.flush()
+    sys.stdout = HostLog(session, "info")
+    sys.stderr = HostLog(session, "error")
+
+
+def truncate_log(message: str) -> str:
+    encoded = message.encode()
+    if len(encoded) <= LOG_LIMIT_BYTES:
+        return message
+    return encoded[:LOG_LIMIT_BYTES].decode(errors="ignore")
+
+
+def running_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 def reply_id(message: Document) -> int:
     # Python reuses each command's message ID as the ID of its database call.
     return cast(int, message["call_id" if message["type"] == "database_result" else "message_id"])
 
 
 def attached_actor(message: Document, actor_names: Collection[str]) -> Document:
-    if message.get("type") != "attached" or message.get("protocol") != 30:
+    if message.get("type") != "attached" or message.get("protocol") != 32:
         raise ValueError("unsupported executor protocol")
     actor = cast(Document, message["actor"])
     for field, size in (("project_id", 64), ("actor_name", 255), ("actor_id", 128)):

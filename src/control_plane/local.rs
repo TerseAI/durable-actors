@@ -144,6 +144,7 @@ pub async fn serve_local(
         stop.clone(),
     )
     .await?;
+    reload.deploy_initial(watcher.is_some()).await?;
     let server = LocalServer::start(listener, routes, provider, stop);
     let ready = notify_launcher(
         &origin,
@@ -168,10 +169,7 @@ pub async fn serve_local(
             if let Some(watcher) = watcher {
                 watcher
                     .watch(|| async {
-                        reload
-                            .service
-                            .deploy_source(&reload.admin, &reload.spec, None)
-                            .await?;
+                        reload.deploy().await?;
                         anstream::println!("Updated local actors.");
                         Ok(())
                     })
@@ -279,6 +277,10 @@ fn prepare_directory(directory: &Path) -> Result<File> {
 
 struct LocalState {
     traces: crate::request_traces::TraceStore,
+    telemetry: (
+        Arc<crate::request_traces::persistence::sqlite::SqliteTracePersistence>,
+        crate::request_traces::live::InProcessFeed,
+    ),
     runtime: Arc<RuntimeStorage>,
     access: Arc<RuntimeAccess>,
     region: String,
@@ -302,13 +304,15 @@ async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalSt
     };
     let runtime = Arc::new(RuntimeStorage::new(bucket, Arc::new(SystemClock))?);
     let bootstrap = Arc::new(RuntimeAccess::new(location, runtime.persistence.clone())?);
+    let telemetry = Arc::new(
+        crate::request_traces::persistence::sqlite::SqliteTracePersistence::new(
+            directory.join("request-traces.sqlite3"),
+        ),
+    );
+    let live = crate::request_traces::live::InProcessFeed::default();
     Ok(LocalState {
-        traces: crate::request_traces::TraceStore::open(Arc::new(
-            crate::request_traces::persistence::sqlite::SqliteTracePersistence::new(
-                directory.join("request-traces.sqlite3"),
-            ),
-        ))
-        .await?,
+        traces: crate::request_traces::TraceStore::new(telemetry.clone(), Arc::new(live.clone())),
+        telemetry: (telemetry, live),
         runtime,
         access: bootstrap,
         region: "north-america-east".into(),
@@ -347,6 +351,7 @@ async fn local_routes(
     let registry = Arc::new(LocalAdminRegistry::default());
     let runtime = HostSandboxRuntimeConfig {
         control_plane_url: origin.to_owned(),
+        otlp_endpoint: Some(origin.to_owned()),
         jwt_issuer: "durable-actors-control-plane".into(),
         invocation_jwt_audience: "durable-actors-invoke".into(),
         host_idle_timeout_ms: crate::host::host_idle_timeout_ms(&mut |name| {
@@ -377,22 +382,23 @@ async fn local_routes(
         Arc::new(provisioner),
     )
     .with_runtime_access(storage.access.clone())
+    .with_alarm_store(Arc::new(
+        super::alarms::SqliteAlarmStore::open(directory.join("alarms.sqlite3")).await?,
+    ))
     .with_local_builds(Arc::new(super::local_build::LocalBuilds::new(
         project.to_owned(),
         directory.canonicalize()?.join("code"),
         Arc::new(super::local_build::ActorCodeCompiler::new(
             options.sdk_host.clone(),
         )),
-    )))
-    .with_traces(storage.traces.clone());
+    )));
     if let Some(admission) = admission {
         service.lifecycle = service.lifecycle.with_observer(admission);
     }
     service.gateway = Some(gateway);
     service.start_access_reconciliation(stop.clone());
-    service.start_alarm_scheduler(super::alarms::DEFAULT_POLL_INTERVAL, stop);
+    let telemetry_keys = issuer.verifier_keys_json()?;
     let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
-    service.deploy_source(&admin, &spec, None).await?;
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
         Arc::new(service.lifecycle.clone()),
         service.gateway.as_ref().unwrap().connections.clone(),
@@ -402,16 +408,31 @@ async fn local_routes(
         storage.runtime.clone(),
         service.changes.clone(),
     )
-    .with_traces(service.traces.clone());
+    .with_traces(storage.traces.clone());
     let reload = LocalReload {
         service: service.clone(),
         admin: admin.clone(),
         spec,
+        stop,
+        alarms: std::sync::Once::new(),
     };
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::local_router(inspector, admin));
+    let telemetry = super::local_telemetry::LocalTelemetrySink::new(
+        ActorJwtVerifier::for_scope(
+            telemetry_keys,
+            "durable-actors-control-plane",
+            super::issuer::TELEMETRY_AUDIENCE,
+            ActorTokenPurpose::ControlPlane,
+            Duration::from_secs(86_400),
+        )?,
+        storage.telemetry.0.clone(),
+        storage.telemetry.1.clone(),
+    );
     Ok((
-        tonic::service::Routes::from(public).add_service(service.into_internal_service()),
+        telemetry.add_to(
+            tonic::service::Routes::from(public).add_service(service.into_internal_service()),
+        ),
         reload,
     ))
 }
@@ -420,6 +441,33 @@ struct LocalReload {
     service: ControlPlaneService,
     admin: AdminService,
     spec: HostLaunchSpec,
+    stop: CancellationToken,
+    alarms: std::sync::Once,
+}
+
+impl LocalReload {
+    /// While watching, a failed first build waits for the next source change instead of exiting.
+    async fn deploy_initial(&self, watching: bool) -> Result<()> {
+        match self.deploy().await {
+            Err(error) if watching => {
+                anstream::eprintln!("Actor build failed: {error:#}");
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
+    async fn deploy(&self) -> Result<()> {
+        self.service
+            .deploy_source(&self.admin, &self.spec, None)
+            .await?;
+        // Restored alarms would exhaust their retries and be dropped before the code is deployed.
+        self.alarms.call_once(|| {
+            self.service
+                .start_alarm_scheduler(super::alarms::DEFAULT_POLL_INTERVAL, self.stop.clone())
+        });
+        Ok(())
+    }
 }
 
 fn local_issuer() -> Result<ActorJwtIssuer> {

@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 import type { SocketEffect } from "../../src/actor/socketProtocol.js"
 import { buildActor } from "../../src/compiler/actor-build.js"
+import type { ActorLog } from "../../src/host/protocol.js"
 import { ActorWorker, ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
 import { assertReply } from "../fixtures/reply.js"
 import { execute, handle, hostDatabase, seed } from "../fixtures/worker-supervisor.js"
@@ -219,6 +220,44 @@ test("worker eviction restores fields and SQL from the host database", { timeout
     }
 })
 
+test("console output reaches the host tagged with the invocation that wrote it", { timeout: 30000 }, async () => {
+    const root = await createTypeScriptConsumer("LoggingCounter")
+    await writeFile(
+        path.join(root, "src/actors.ts"),
+        `import { Actor } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        console.info("loaded", { ready: true })
+        export class LoggingCounter extends Actor {
+            async increment(): Promise<number> {
+                console.warn("inside %s", "increment")
+                return 1
+            }
+        }`
+    )
+    const logs: ActorLog[] = []
+    const worker = new ActorWorker(
+        { moduleUrl: await buildConsumer(root) },
+        () => {},
+        noDatabase,
+        noActorCalls,
+        log => logs.push(log)
+    )
+    try {
+        await worker.ready()
+        const reply = await execute(worker, { ...invokeCommand(), actor: identity("LoggingCounter") }, () => {})
+        assert.equal(reply.type, "invoked")
+        assert.deepEqual(
+            logs.map(({ messageId, level, message }) => ({ tagged: messageId !== undefined, level, message })),
+            [
+                { tagged: false, level: "info", message: "loaded { ready: true }" },
+                { tagged: true, level: "warn", message: "inside increment" }
+            ]
+        )
+    } finally {
+        worker.terminate("test finished")
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("keeps actor state resident between requests until the host closes", async context => {
     context.mock.timers.enable({ apis: ["setTimeout"] })
     let created = 0
@@ -350,9 +389,14 @@ test("a generic Bun worker is warm before customer code is assigned", async () =
         )
         try {
             const moduleUrl = await buildConsumer(root)
-            worker.load({ moduleUrl, environment: { TEST_WARM_SECRET: "warm-secret" } }, () => {}, noDatabase)
+            worker.load(
+                { moduleUrl, environment: { TEST_WARM_SECRET: "warm-secret" } },
+                () => {},
+                noDatabase,
+                noActorCalls
+            )
             assert.deepEqual(await worker.ready(), ["WarmCounter"])
-            assert.throws(() => worker.load({ moduleUrl }, () => {}, noDatabase), /already assigned/)
+            assert.throws(() => worker.load({ moduleUrl }, () => {}, noDatabase, noActorCalls), /already assigned/)
             const actor = identity("WarmCounter")
             seed(worker, { count: 41 })
             assert.deepEqual(await execute(worker, { type: "hydrate", actor }, () => {}), {
@@ -382,7 +426,10 @@ test("rejects an assigned actor that the entrypoint does not export", async () =
     })
     try {
         await supervisor.ready()
-        assert.throws(() => supervisor.assign(identity("OtherCounter"), noDatabase), /OtherCounter is not loaded/)
+        assert.throws(
+            () => supervisor.assign(identity("OtherCounter"), noDatabase, noActorCalls),
+            /OtherCounter is not loaded/
+        )
     } finally {
         supervisor.close()
     }
@@ -693,7 +740,7 @@ async function exerciseActiveActors(entrypoint: string): Promise<void> {
         actorEntrypointUrl: entrypoint
     })
     assert.deepEqual(await runtime.ready(), ["SessionCounter"])
-    runtime.assign(actorIdentity, noDatabase)
+    runtime.assign(actorIdentity, noDatabase, noActorCalls)
 
     assertReply(
         await handle(
@@ -861,11 +908,15 @@ export class ${actorName} extends Actor<{ userId: string }, { text: string }> {
 
 async function assign(supervisor: ActorWorkerSupervisor, actor = actorIdentity): Promise<void> {
     await supervisor.ready()
-    supervisor.assign(actor, noDatabase)
+    supervisor.assign(actor, noDatabase, noActorCalls)
 }
 
 async function noDatabase(): Promise<never> {
     throw new Error("unexpected activation database call")
+}
+
+async function noActorCalls(): Promise<never> {
+    throw new Error("unexpected actor call")
 }
 
 function identity(actorName: string) {
