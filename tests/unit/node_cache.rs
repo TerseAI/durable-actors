@@ -118,7 +118,8 @@ struct NodeCache {
 impl NodeCache {
     async fn start(issuer: &ActorJwtIssuer) -> Result<Self> {
         let directory = tempfile::tempdir()?;
-        let store = Arc::new(store::DiskStore::open(directory.path().into(), 1 << 20).await?);
+        let store =
+            Arc::new(store::DiskStore::open(directory.path().into(), 1 << 20, 1 << 10).await?);
         let tokens = keys::HostTokens::fixed(ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
             "issuer",

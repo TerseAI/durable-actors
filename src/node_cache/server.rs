@@ -172,6 +172,8 @@ impl NodeCache {
             digest.is_none_or(|digest| URL_SAFE_NO_PAD.encode(hash.finish().as_ref()) == digest),
             "content digest mismatch"
         );
+        // Entries outlive this process, so one must be on disk before its name is.
+        file.sync_all().await?;
         drop(file);
         self.store.insert(key, staged, size).await
     }

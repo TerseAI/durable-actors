@@ -1,25 +1,26 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::SystemTime};
 
 use anyhow::{Context, Result};
 use moka::{future::Cache, notification::RemovalCause, policy::EvictionPolicy};
 
 const STAGING: &str = "staging";
 
-/// Files on local disk, evicted least-recently-used once their total size passes the capacity.
+/// Files on local disk, evicted least-recently-used once their total size passes the capacity or
+/// their count passes `max_entries`.
 pub(super) struct DiskStore {
     root: PathBuf,
     entries: Cache<String, u64>,
 }
 
 impl DiskStore {
-    pub async fn open(root: PathBuf, capacity_bytes: u64) -> Result<Self> {
+    pub async fn open(root: PathBuf, capacity_bytes: u64, max_entries: u64) -> Result<Self> {
         let staging = root.join(STAGING);
         if tokio::fs::try_exists(&staging).await? {
             tokio::fs::remove_dir_all(&staging).await?;
         }
         tokio::fs::create_dir_all(&staging).await?;
         let store = Self {
-            entries: entries(root.clone(), capacity_bytes),
+            entries: entries(root.clone(), capacity_bytes, max_entries),
             root,
         };
         for (key, size) in store.existing().await? {
@@ -56,6 +57,7 @@ impl DiskStore {
         Ok(())
     }
 
+    /// Files a previous process left, oldest first so the newest survive any eviction on reopen.
     async fn existing(&self) -> Result<Vec<(String, u64)>> {
         let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
@@ -65,19 +67,29 @@ impl DiskStore {
                 let key = entry.path().strip_prefix(&root)?;
                 if entry.file_type().is_file() && !key.starts_with(STAGING) {
                     let key = key.to_str().context("cache key is not UTF-8")?.to_owned();
-                    found.push((key, entry.metadata()?.len()));
+                    let metadata = entry.metadata()?;
+                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    found.push((modified, key, metadata.len()));
                 }
             }
-            anyhow::Ok(found)
+            found.sort_unstable();
+            anyhow::Ok(
+                found
+                    .into_iter()
+                    .map(|(_, key, size)| (key, size))
+                    .collect(),
+            )
         })
         .await?
     }
 }
 
-fn entries(root: PathBuf, capacity_bytes: u64) -> Cache<String, u64> {
+fn entries(root: PathBuf, capacity_bytes: u64, max_entries: u64) -> Cache<String, u64> {
+    // Every entry costs index memory, so small ones are weighed as a share of the capacity.
+    let min_weight = capacity_bytes.div_ceil(max_entries.max(1));
     Cache::builder()
         .max_capacity(capacity_bytes)
-        .weigher(|_, size: &u64| u32::try_from(*size).unwrap_or(u32::MAX))
+        .weigher(move |_, size: &u64| u32::try_from((*size).max(min_weight)).unwrap_or(u32::MAX))
         .eviction_policy(EvictionPolicy::lru())
         .eviction_listener(move |key: Arc<String>, _, cause| {
             // A replacement has already renamed its own file over this one.

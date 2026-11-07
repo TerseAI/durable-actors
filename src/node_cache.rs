@@ -11,13 +11,17 @@ mod store;
 pub(crate) use client::{DatabaseDownload, NodeCacheClient, NodeCacheConnection};
 
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+/// Each indexed entry holds about 350 bytes of memory, so this default fits a 256 MiB cache pod.
+const DEFAULT_MAX_ENTRIES: u64 = 500_000;
 /// Larger databases take longer to export at shutdown than they save at the next activation.
 pub(crate) const MAX_DATABASE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Serves actor code and databases from this node's disk to the sandboxes scheduled on it.
 pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     let config = NodeCacheConfig::from_lookup(|name| std::env::var(name).ok())?;
-    let store = Arc::new(store::DiskStore::open(config.directory, config.capacity_bytes).await?);
+    let store = Arc::new(
+        store::DiskStore::open(config.directory, config.capacity_bytes, config.max_entries).await?,
+    );
     let tokens = keys::HostTokens::load(config.verifier);
     let listener = TcpListener::bind(config.bind).await?;
     tracing::info!(bind = %config.bind, "node cache is ready");
@@ -31,6 +35,7 @@ struct NodeCacheConfig {
     bind: SocketAddr,
     directory: PathBuf,
     capacity_bytes: u64,
+    max_entries: u64,
     verifier: keys::VerifierConfig,
 }
 
@@ -44,6 +49,15 @@ impl NodeCacheConfig {
             capacity_bytes > 0,
             "DURABLE_ACTORS_NODE_CACHE_CAPACITY_BYTES must be positive"
         );
+        let max_entries = get("DURABLE_ACTORS_NODE_CACHE_MAX_ENTRIES")
+            .map(|value| value.parse())
+            .transpose()
+            .context("DURABLE_ACTORS_NODE_CACHE_MAX_ENTRIES must be an integer")?
+            .unwrap_or(DEFAULT_MAX_ENTRIES);
+        ensure!(
+            max_entries > 0,
+            "DURABLE_ACTORS_NODE_CACHE_MAX_ENTRIES must be positive"
+        );
         Ok(Self {
             bind: get("DURABLE_ACTORS_NODE_CACHE_BIND")
                 .unwrap_or_else(|| "0.0.0.0:7103".into())
@@ -53,6 +67,7 @@ impl NodeCacheConfig {
                 .unwrap_or_else(|| "/cache".into())
                 .into(),
             capacity_bytes,
+            max_entries,
             verifier: keys::VerifierConfig {
                 jwks_url: format!(
                     "{}{}",

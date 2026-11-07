@@ -14,7 +14,11 @@ spec:
     spec:
       automountServiceAccountToken: false
       # Runs beside the sandboxes but outside gVisor, so customer code never shares its pod.
-      nodeSelector: {sandbox.gke.io/runtime: gvisor}
+      nodeSelector:
+        sandbox.gke.io/runtime: gvisor
+        {{- with .Values.nodeCache.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       tolerations:
         - {key: sandbox.gke.io/runtime, operator: Equal, value: gvisor, effect: NoSchedule}
       securityContext:
@@ -22,6 +26,24 @@ spec:
         runAsUser: 10000
         runAsGroup: 10000
         fsGroup: 10000
+      {{- if .Values.nodeCache.hostPath }}
+      initContainers:
+        # The kubelet creates a missing node directory as root, and fsGroup does not apply to it.
+        - name: cache-owner
+          image: {{ include "actors.image" .Values.images.controlPlane | quote }}
+          command: [chown, "10000:10000", /cache]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL], add: [CHOWN]}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 32Mi}
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
+      {{- end }}
       containers:
         - name: node-cache
           image: {{ include "actors.image" .Values.images.controlPlane | quote }}
@@ -39,13 +61,18 @@ spec:
           env:
             - {name: DURABLE_ACTORS_PROCESS_ROLE, value: node_cache}
             - {name: DURABLE_ACTORS_NODE_CACHE_CAPACITY_BYTES, value: {{ mul .Values.nodeCache.capacityGiB 1073741824 | quote }}}
+            - {name: DURABLE_ACTORS_NODE_CACHE_MAX_ENTRIES, value: {{ int64 .Values.nodeCache.maxEntries | quote }}}
             - name: DURABLE_ACTORS_CONTROL_PLANE_URL
               value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "actors.name" .) .Release.Namespace | quote }}
           volumeMounts:
             - {name: cache, mountPath: /cache}
       volumes:
         - name: cache
+          {{- if .Values.nodeCache.hostPath }}
+          hostPath: {path: {{ .Values.nodeCache.hostPath | quote }}, type: DirectoryOrCreate}
+          {{- else }}
           emptyDir: {sizeLimit: {{ printf "%dGi" (add .Values.nodeCache.capacityGiB 1) }}}
+          {{- end }}
 ---
 apiVersion: v1
 kind: Service
