@@ -17,7 +17,8 @@ use super::{
 use crate::{
     actor::ActorKey,
     bucket::{
-        BucketSnapshots, GcsBucket, RapidSnapshots, RuntimeStorage, SnapshotStore, WarmStorage,
+        BucketSnapshots, GcsBucket, OwnershipLocation, RapidSnapshots, RuntimeStorage,
+        SnapshotStore, WarmStorage,
         access::{HostStorageConfig, StorageToken, StorageTokens},
     },
     clock::{Clock, SystemClock},
@@ -83,6 +84,10 @@ impl HostStorage {
                 let authority = Arc::new(crate::bucket::FileBucket::new(directory)?);
                 (RuntimeStorage::new(authority, Arc::new(SystemClock))?, None)
             }
+        };
+        let runtime = match config.ownership {
+            OwnershipLocation::Bucket => runtime,
+            OwnershipLocation::ControlPlane => runtime.with_ownership(client.clone()),
         };
         Ok(Self {
             objects,

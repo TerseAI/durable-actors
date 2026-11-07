@@ -25,6 +25,7 @@ pub(crate) use process::{
     DEFAULT_AUTHORITY_AUDIENCE, DEFAULT_JWT_ISSUER, DEFAULT_JWT_TTL_SECONDS, RuntimeImages,
 };
 mod organization_limits;
+mod ownership;
 mod protocol;
 mod public_api;
 mod regions;

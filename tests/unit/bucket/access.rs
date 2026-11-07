@@ -145,6 +145,7 @@ async fn every_request_mints_its_own_token() -> Result<()> {
         },
         token_source: Some(Box::new(Numbered(Default::default()))),
         persistence: super::super::SnapshotStoreConfig::Local,
+        ownership: Default::default(),
     };
     let first = access.issue(&actor(), None).await?.context("token")?;
     let second = access.issue(&actor(), None).await?.context("token")?;

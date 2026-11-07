@@ -18,7 +18,7 @@ use crate::{
     storage::{SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name},
 };
 
-use super::{Bucket, replace};
+use super::{Bucket, OwnershipStore, replace};
 
 mod activation;
 pub(crate) use activation::CachedBase;
@@ -39,6 +39,7 @@ pub struct RuntimeStorageReader {
     restore: Arc<dyn crate::litestream::DatabaseRestore>,
     clock: Arc<dyn crate::clock::Clock>,
     authority: Arc<dyn Bucket>,
+    ownership: Arc<dyn OwnershipStore>,
     snapshots: Arc<dyn super::SnapshotStore>,
     pub(crate) persistence: super::SnapshotStoreConfig,
 }
@@ -139,6 +140,11 @@ impl RuntimeStorage {
         self.reader = self.reader.with_persistence(config, snapshots)?;
         Ok(self)
     }
+
+    pub(crate) fn with_ownership(mut self, ownership: Arc<dyn OwnershipStore>) -> Self {
+        self.reader = self.reader.with_ownership(ownership);
+        self
+    }
 }
 
 impl std::ops::Deref for RuntimeStorage {
@@ -178,6 +184,7 @@ impl RuntimeStorageReader {
             clock,
             snapshots: Arc::new(super::BucketSnapshots(authority.clone())),
             persistence: super::SnapshotStoreConfig::Local,
+            ownership: Arc::new(super::BucketOwnership(authority.clone())),
             authority,
         })
     }
@@ -191,6 +198,11 @@ impl RuntimeStorageReader {
         self.persistence = config;
         self.snapshots = snapshots;
         Ok(self)
+    }
+
+    pub(crate) fn with_ownership(mut self, ownership: Arc<dyn OwnershipStore>) -> Self {
+        self.ownership = ownership;
+        self
     }
 }
 
@@ -396,7 +408,7 @@ impl RuntimeStorageReader {
     }
 
     async fn load(&self, object: &ActorStorageKey) -> Result<Option<(i64, Ownership)>> {
-        self.authority
+        self.ownership
             .get(&ownership_key(object)?)
             .await?
             .map(|value| {

@@ -1,6 +1,8 @@
 pub(crate) mod access;
 mod file;
 mod gcs;
+mod ownership;
+pub(crate) use ownership::{BucketOwnership, OwnershipLocation, OwnershipStore, confirm_replace};
 mod rapid;
 pub(crate) use rapid::{RAPID_OPERATION_TIMEOUT, RapidSnapshots};
 pub(crate) mod recovery;

@@ -301,6 +301,41 @@ impl crate::actor::ActorCaller for ControlPlaneClient {
 }
 
 #[async_trait::async_trait]
+impl crate::bucket::OwnershipStore for ControlPlaneClient {
+    async fn get(&self, key: &str) -> Result<Option<crate::bucket::BucketObject>> {
+        let command = ControlPlaneCommand::LoadOwnership { key: key.into() };
+        match self.execute(command).await? {
+            ControlPlaneCommandReply::Ownership { record } => {
+                Ok(record.map(|record| crate::bucket::BucketObject {
+                    generation: record.generation,
+                    bytes: record.bytes.into(),
+                }))
+            }
+            _ => anyhow::bail!("unexpected ownership reply"),
+        }
+    }
+
+    async fn replace(
+        &self,
+        key: &str,
+        generation: Option<i64>,
+        bytes: bytes::Bytes,
+    ) -> Result<bool> {
+        let command = ControlPlaneCommand::ReplaceOwnership {
+            key: key.into(),
+            generation,
+            bytes: bytes.to_vec(),
+        };
+        let replaced = match self.execute(command).await {
+            Ok(ControlPlaneCommandReply::OwnershipReplaced { replaced }) => Ok(replaced),
+            Ok(_) => Err(anyhow::anyhow!("unexpected ownership replace reply")),
+            Err(error) => Err(error),
+        };
+        crate::bucket::confirm_replace(self, key, &bytes, replaced).await
+    }
+}
+
+#[async_trait::async_trait]
 impl crate::sockets::operations::SocketOperations for ControlPlaneClient {
     async fn execute(
         &self,

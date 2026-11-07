@@ -429,12 +429,12 @@ impl RuntimeStorage {
         generation: Option<i64>,
     ) -> Result<bool> {
         record.mutation = uuid::Uuid::new_v4().to_string();
-        replace(
-            self.authority.as_ref(),
-            &ownership_key(&record.actor.storage_key())?,
-            generation,
-            crate::payload::encode(record)?,
-        )
-        .await
+        self.ownership
+            .replace(
+                &ownership_key(&record.actor.storage_key())?,
+                generation,
+                crate::payload::encode(record)?,
+            )
+            .await
     }
 }

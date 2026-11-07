@@ -53,10 +53,19 @@ pub struct ControlPlaneService {
     alarms: Arc<dyn super::alarms::AlarmStore>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
+    ownership: Option<Arc<dyn crate::bucket::OwnershipStore>>,
     hosts: reqwest::Client,
 }
 
 impl ControlPlaneService {
+    pub(super) fn with_ownership_store(
+        mut self,
+        ownership: Option<Arc<dyn crate::bucket::OwnershipStore>>,
+    ) -> Self {
+        self.ownership = ownership;
+        self
+    }
+
     pub(super) fn with_local_builds(
         mut self,
         builds: Arc<super::local_build::LocalBuilds>,
@@ -95,6 +104,7 @@ impl ControlPlaneService {
             alarms: Arc::new(super::alarms::MemoryAlarmStore::default()),
             socket_events: None,
             local_builds: None,
+            ownership: None,
             hosts: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(std::time::Duration::from_secs(5))
@@ -543,6 +553,26 @@ impl ControlPlaneService {
                 let outcome = super::invocation::invoke_from_host(self, &invocation).await;
                 Ok(ControlPlaneCommandReply::Invocation { outcome })
             }
+            ControlPlaneCommand::LoadOwnership { key } => {
+                let record = self.host_ownership(principal, &key)?.get(&key).await?;
+                Ok(ControlPlaneCommandReply::Ownership {
+                    record: record.map(|record| super::protocol::OwnershipRecord {
+                        generation: record.generation,
+                        bytes: record.bytes.to_vec(),
+                    }),
+                })
+            }
+            ControlPlaneCommand::ReplaceOwnership {
+                key,
+                generation,
+                bytes,
+            } => {
+                let replaced = self
+                    .host_ownership(principal, &key)?
+                    .replace(&key, generation, bytes.into())
+                    .await?;
+                Ok(ControlPlaneCommandReply::OwnershipReplaced { replaced })
+            }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
                 let spec = self
@@ -601,6 +631,20 @@ impl ControlPlaneService {
             LifecycleKind::Draining => self.routes.put(actor, RouteEntry::Draining(identity)).await,
             LifecycleKind::Stopped => self.routes.put(actor, RouteEntry::Stopped(identity)).await,
         }
+    }
+
+    fn host_ownership(
+        &self,
+        principal: &ActorPrincipal,
+        key: &str,
+    ) -> Result<&dyn crate::bucket::OwnershipStore> {
+        ensure!(
+            key == crate::storage_paths::owner(&principal.actor.storage_key())?,
+            "host actor scope mismatch"
+        );
+        self.ownership
+            .as_deref()
+            .context("ownership store is not configured")
     }
 
     pub(super) fn authorize_socket_host(

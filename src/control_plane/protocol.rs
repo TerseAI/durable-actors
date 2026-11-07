@@ -21,6 +21,22 @@ pub(crate) enum ControlPlaneCommand {
     InvokeActor {
         call: crate::actor::ActorCall,
     },
+    LoadOwnership {
+        key: String,
+    },
+    ReplaceOwnership {
+        key: String,
+        generation: Option<i64>,
+        #[serde(with = "base64_bytes")]
+        bytes: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct OwnershipRecord {
+    pub generation: i64,
+    #[serde(with = "base64_bytes")]
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,7 +55,28 @@ pub(crate) enum ControlPlaneCommandReply {
     Invocation {
         outcome: serde_json::Value,
     },
+    Ownership {
+        record: Option<OwnershipRecord>,
+    },
+    OwnershipReplaced {
+        replaced: bool,
+    },
     Unit,
+}
+
+mod base64_bytes {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        STANDARD
+            .decode(String::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 pub(crate) fn encode_command(command: ControlPlaneCommand) -> Result<ControlPlaneRequest> {

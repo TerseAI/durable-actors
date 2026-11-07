@@ -48,6 +48,7 @@ pub struct ControlPlaneProcessConfig {
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
     pub postgres_max_connections: usize,
+    pub(crate) ownership: crate::bucket::OwnershipLocation,
     pub trace_retention: Duration,
     pub analytics: AnalyticsBackend,
     pub bucket: String,
@@ -225,21 +226,27 @@ async fn control_plane_routes(
     ));
     let snapshots =
         snapshot_store(authority.clone(), &config.storage.persistence, stop.clone()).await?;
-    let storage = Arc::new(
-        RuntimeStorageReader::new(
-            authority,
-            Arc::new(crate::clock::SystemClock),
-            Arc::new(crate::litestream::EmbeddedRestore),
+    let ownership = ownership_store(config.storage.ownership, &database, authority.clone());
+    let mut reader = RuntimeStorageReader::new(
+        authority,
+        Arc::new(crate::clock::SystemClock),
+        Arc::new(crate::litestream::EmbeddedRestore),
+    )?
+    .with_persistence(config.storage.persistence, snapshots)?;
+    if let Some(ownership) = &ownership {
+        reader = reader.with_ownership(ownership.clone());
+    }
+    let storage = Arc::new(reader);
+    let runtime_access = Arc::new(
+        crate::bucket::access::RuntimeAccess::new(
+            crate::bucket::access::BucketLocation::Gcs {
+                artifact_bucket: config.storage.artifact_bucket.clone(),
+                bucket: config.storage.bucket.clone(),
+            },
+            storage.persistence.clone(),
         )?
-        .with_persistence(config.storage.persistence, snapshots)?,
+        .with_ownership(config.storage.ownership),
     );
-    let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
-        crate::bucket::access::BucketLocation::Gcs {
-            artifact_bucket: config.storage.artifact_bucket.clone(),
-            bucket: config.storage.bucket.clone(),
-        },
-        storage.persistence.clone(),
-    )?);
     let placements = storage.clone();
     let connections = crate::sandbox::connections::HostConnections::new()?;
     let socket_bus = match &redis {
@@ -289,7 +296,8 @@ async fn control_plane_routes(
     )
     .with_runtime_access(runtime_access)
     .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
-    .with_socket_event_sink(socket_events);
+    .with_socket_event_sink(socket_events)
+    .with_ownership_store(ownership);
     if let Some(redis) = redis {
         service.routes = Arc::new(super::routes::RedisRoutes::new(
             redis,
@@ -317,6 +325,23 @@ async fn control_plane_routes(
         .merge(discovery);
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
+}
+
+fn ownership_store(
+    location: crate::bucket::OwnershipLocation,
+    database: &PostgresDatabase,
+    authority: Arc<GcsBucket>,
+) -> Option<Arc<dyn crate::bucket::OwnershipStore>> {
+    match location {
+        crate::bucket::OwnershipLocation::Bucket => None,
+        crate::bucket::OwnershipLocation::ControlPlane => {
+            Some(Arc::new(super::ownership::PostgresOwnership::new(
+                database.clone(),
+                authority,
+                Arc::new(crate::clock::SystemClock),
+            )))
+        }
+    }
 }
 
 async fn snapshot_store(
@@ -524,6 +549,7 @@ impl ControlPlaneProcessConfig {
             artifact_bucket,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
             postgres_max_connections: postgres_max_connections(&mut get)?,
+            ownership: ownership_location(&mut get)?,
             trace_retention: trace_retention(&mut get)?,
             analytics: analytics_backend(&mut get)?,
             bucket,
@@ -651,6 +677,19 @@ fn analytics_backend(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Ana
             password: required(get, "DURABLE_ACTORS_CLICKHOUSE_PASSWORD")?,
         })),
         _ => anyhow::bail!("DURABLE_ACTORS_ANALYTICS_BACKEND must be none or clickhouse"),
+    }
+}
+
+fn ownership_location(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<crate::bucket::OwnershipLocation> {
+    match get("DURABLE_ACTORS_OWNERSHIP_STORE")
+        .as_deref()
+        .unwrap_or("bucket")
+    {
+        "bucket" => Ok(crate::bucket::OwnershipLocation::Bucket),
+        "postgres" => Ok(crate::bucket::OwnershipLocation::ControlPlane),
+        _ => anyhow::bail!("DURABLE_ACTORS_OWNERSHIP_STORE must be bucket or postgres"),
     }
 }
 

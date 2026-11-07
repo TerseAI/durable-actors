@@ -26,6 +26,8 @@ pub(crate) struct HostStorageConfig {
     pub persistence: super::SnapshotStoreConfig,
     pub region: String,
     pub tokens: Option<StorageTokens>,
+    #[serde(default)]
+    pub ownership: super::OwnershipLocation,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -71,6 +73,7 @@ pub(crate) struct RuntimeAccess {
     location: BucketLocation,
     token_source: Option<Box<dyn StorageTokenSource>>,
     persistence: super::SnapshotStoreConfig,
+    ownership: super::OwnershipLocation,
 }
 
 impl RuntimeAccess {
@@ -82,7 +85,13 @@ impl RuntimeAccess {
             },
             location,
             persistence,
+            ownership: super::OwnershipLocation::Bucket,
         })
+    }
+
+    pub(crate) fn with_ownership(mut self, ownership: super::OwnershipLocation) -> Self {
+        self.ownership = ownership;
+        self
     }
 
     pub(crate) fn validate_code(&self, code: &crate::bundle::ActorBundle) -> Result<()> {
@@ -111,6 +120,7 @@ impl RuntimeAccess {
             persistence: self.persistence.clone(),
             region: region.into(),
             tokens: self.issue(actor, code_snapshot).await?,
+            ownership: self.ownership,
         })?)
     }
 
