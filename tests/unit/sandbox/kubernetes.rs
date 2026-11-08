@@ -106,6 +106,7 @@ async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -
     let (cluster, _server) = fake_cluster(routes).await?;
     cluster
         .retire_spare(&SpareHandle {
+            node: String::new(),
             name: "reserved-pod".into(),
             resource_id: String::new(),
             route: String::new(),
@@ -223,6 +224,7 @@ async fn stopped_spares_reads_the_watch_and_confirms_pods_it_has_not_seen() -> R
     ]
     .into_iter()
     .map(|name| SpareHandle {
+        node: String::new(),
         name: name.into(),
         resource_id: format!(
             "sandboxes/{name}/{}-uid",

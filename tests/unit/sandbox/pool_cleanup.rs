@@ -74,6 +74,7 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
         for name in ["done", "live"] {
             pool.reserve_host(name, name, "revision").await?;
             let spare = SpareHandle {
+                node: String::new(),
                 name: format!("do-actor-{name}"),
                 resource_id: format!("sandboxes/do-actor-{name}/{name}-uid"),
                 route: "http://host:7101".into(),
@@ -152,6 +153,7 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
             },
         );
         let mut spare = SpareHandle {
+            node: String::new(),
             name: "do-actor-done".into(),
             resource_id: "sandboxes/do-actor-done/old-uid".into(),
             route: "http://host:7101".into(),
@@ -197,7 +199,7 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
             resources: ResourceLimits::default(),
         });
         for name in ["evicted", "warm"] {
-            let spare = SpareHandle {
+            let spare = SpareHandle { node: String::new(),
                 name: format!("do-actor-{name}"),
                 resource_id: format!("sandboxes/do-actor-{name}/{name}-uid"),
                 route: "http://host:7101".into(),
@@ -208,8 +210,8 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
             pool.store.0.execute("INSERT INTO durable_actors_spares (name, pool_key, status, handle, expires_at) VALUES ($1, 'warm', 'ready', $2, clock_timestamp() + interval '10 minutes')", &[&spare.name, &serde_json::to_string(&spare)?]).await?;
         }
         pool.forget_stopped().await?;
-        assert_eq!(pool.store.claim("warm", "next", "revision").await?.unwrap().name, "do-actor-warm");
-        assert!(pool.store.claim("warm", "another", "revision").await?.is_none());
+        assert_eq!(pool.store.claim("warm", "next", "revision", None).await?.unwrap().name, "do-actor-warm");
+        assert!(pool.store.claim("warm", "another", "revision", None).await?.is_none());
         Ok(())
     }).await
 }

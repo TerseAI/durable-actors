@@ -143,6 +143,11 @@ impl SandboxCluster for Kubernetes {
             control_token: token,
             route: format!("http://{authority}:7101"),
             canonical_region: request.canonical_region.clone(),
+            node: ready
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.node_name.clone())
+                .unwrap_or_default(),
         })
     }
 

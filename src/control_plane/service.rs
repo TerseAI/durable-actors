@@ -601,20 +601,24 @@ impl ControlPlaneService {
             LifecycleKind::Draining => self.routes.put(actor, RouteEntry::Draining(identity)).await,
             LifecycleKind::Stopped => {
                 self.routes.put(actor, RouteEntry::Stopped(identity)).await;
-                self.keep_sealed_owner(actor).await;
+                self.keep_sealed_owner(principal).await;
             }
         }
     }
 
     /// Hosts report `Stopped` after sealing, so this read replaces the next activation's.
-    async fn keep_sealed_owner(&self, actor: &ActorKey) {
+    async fn keep_sealed_owner(&self, principal: &ActorPrincipal) {
+        let actor = &principal.actor;
         match self
             .placements
             .get_owner_with_hint(&actor.storage_key())
             .await
         {
             Ok((_, Some(owner))) if owner.sealed() => {
-                self.routes.keep_sealed_owner(actor, &owner).await
+                let node = self.provisioner.host_node(&principal.host_id).await;
+                self.routes
+                    .keep_sealed_owner(actor, &owner.on_node(node))
+                    .await
             }
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "sealed ownership read failed"),
@@ -998,6 +1002,10 @@ pub(crate) trait HostProvisioner: Send + Sync {
         Ok(())
     }
 
+    async fn host_node(&self, _host: &HostId) -> Option<String> {
+        None
+    }
+
     async fn ensure_actor_host(
         &self,
         spec: &HostLaunchSpec,
@@ -1120,6 +1128,15 @@ impl HostProvisioner for SandboxHostProvisioner {
         }
     }
 
+    async fn host_node(&self, host: &HostId) -> Option<String> {
+        let pool = self.pool.as_ref()?;
+        pool.host_node(host.as_str())
+            .await
+            .inspect_err(|error| tracing::warn!(%error, "host node lookup failed"))
+            .ok()
+            .flatten()
+    }
+
     async fn ensure_actor_host(
         &self,
         spec: &HostLaunchSpec,
@@ -1168,9 +1185,10 @@ impl SandboxHostProvisioner {
         request.initial_operation = operation.cloned();
         request.actor_is_new = new_actor;
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
+        let node = owner_hint.and_then(OwnershipHint::node);
         let Some(admission) = &self.admission else {
             return self
-                .provision(spec, region, actor, request, started_at)
+                .provision(spec, region, actor, request, node, started_at)
                 .await;
         };
         let (host, session) = (request.host_id.clone(), request.session_id.clone());
@@ -1179,7 +1197,7 @@ impl SandboxHostProvisioner {
             .reserve(organization, actor, &host, &session)
             .await?;
         let launched = self
-            .provision(spec, region, actor, request, started_at)
+            .provision(spec, region, actor, request, node, started_at)
             .await;
         if launched.is_err() {
             admission
@@ -1195,6 +1213,7 @@ impl SandboxHostProvisioner {
         region: &str,
         actor: &ActorKey,
         mut request: EnsureHostRequest,
+        node: Option<&str>,
         started_at: Instant,
     ) -> Result<(HostLease, u64, Option<Value>)> {
         let token = async {
@@ -1210,8 +1229,14 @@ impl SandboxHostProvisioner {
         let spare = async {
             match &self.pool {
                 Some(pool) => {
-                    pool.claim(spec, region, request.host_id.as_str(), &request.resources)
-                        .await
+                    pool.claim(
+                        spec,
+                        region,
+                        request.host_id.as_str(),
+                        &request.resources,
+                        node,
+                    )
+                    .await
                 }
                 None => Ok(None),
             }
@@ -1282,6 +1307,11 @@ impl SandboxHostProvisioner {
                     lease.id.as_str(),
                     &spec.host_config_key(),
                     &crate::sandbox::SpareHandle {
+                        node: request
+                            .spare
+                            .as_ref()
+                            .map(|spare| spare.node.clone())
+                            .unwrap_or_default(),
                         control_route: String::new(),
                         control_token: String::new(),
                         name: request

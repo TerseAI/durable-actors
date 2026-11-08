@@ -60,6 +60,9 @@ struct Ownership {
 pub struct OwnershipHint {
     generation: i64,
     record: Ownership,
+    /// The node the previous owner ran on, whose disk cache may hold the state it sealed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    node: Option<String>,
 }
 
 impl OwnershipHint {
@@ -74,6 +77,14 @@ impl OwnershipHint {
 
     pub(crate) fn placement(&self) -> ObjectPlacement {
         self.record.placement()
+    }
+
+    pub(crate) fn node(&self) -> Option<&str> {
+        self.node.as_deref()
+    }
+
+    pub(crate) fn on_node(self, node: Option<String>) -> Self {
+        Self { node, ..self }
     }
 }
 
@@ -211,7 +222,11 @@ impl ObjectPlacementStore for RuntimeStorageReader {
         Ok(match self.load(object).await? {
             Some((generation, record)) => (
                 Some(record.placement()),
-                Some(OwnershipHint { generation, record }),
+                Some(OwnershipHint {
+                    generation,
+                    record,
+                    node: None,
+                }),
             ),
             None => (None, None),
         })

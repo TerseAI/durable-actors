@@ -70,6 +70,9 @@ pub struct SpareHandle {
     pub resource_id: String,
     pub route: String,
     pub canonical_region: String,
+    /// The Kubernetes node a spare runs on, whose disk cache keeps the state its actors leave.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
