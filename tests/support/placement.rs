@@ -75,3 +75,26 @@ impl LocalObjectPlacementStore {
         Ok(owner_epoch)
     }
 }
+
+/// The record a host leaves after sealing `actor` at epoch 3.
+pub fn sealed_owner(actor: &crate::actor::ActorKey, region: &str) -> crate::bucket::OwnershipHint {
+    serde_json::from_value(serde_json::json!({
+        "generation": 7,
+        "record": {
+            "persistence": {"type": "local"},
+            "sealed": true,
+            "lease": {
+                "id": "host.v3.revision.sealed",
+                "session_id": "sealed-session",
+                "route": "http://127.0.0.1:1",
+                "expires_at_ms": 0
+            },
+            "mutation": "sealed",
+            "actor": actor,
+            "epoch": 3,
+            "region": region,
+            "base": null
+        }
+    }))
+    .expect("sealed ownership record")
+}

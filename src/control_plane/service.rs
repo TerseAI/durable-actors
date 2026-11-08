@@ -599,7 +599,25 @@ impl ControlPlaneService {
                 self.routes.renew(actor, &identity).await
             }
             LifecycleKind::Draining => self.routes.put(actor, RouteEntry::Draining(identity)).await,
-            LifecycleKind::Stopped => self.routes.put(actor, RouteEntry::Stopped(identity)).await,
+            LifecycleKind::Stopped => {
+                self.routes.put(actor, RouteEntry::Stopped(identity)).await;
+                self.keep_sealed_owner(actor).await;
+            }
+        }
+    }
+
+    /// Hosts report `Stopped` after sealing, so this read replaces the next activation's.
+    async fn keep_sealed_owner(&self, actor: &ActorKey) {
+        match self
+            .placements
+            .get_owner_with_hint(&actor.storage_key())
+            .await
+        {
+            Ok((_, Some(owner))) if owner.sealed() => {
+                self.routes.keep_sealed_owner(actor, &owner).await
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "sealed ownership read failed"),
         }
     }
 
@@ -683,10 +701,7 @@ impl ControlPlaneService {
         if let Some(timings) = timings.as_deref_mut() {
             timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
         }
-        let (current, owner_hint) = self
-            .placements
-            .get_owner_with_hint(&actor.storage_key())
-            .await?;
+        let (current, owner_hint) = self.current_owner(actor).await?;
         if let (Some(assigned), Some(placement)) = (home_region, current.as_ref())
             && assigned != placement.home_region
         {
@@ -730,6 +745,18 @@ impl ControlPlaneService {
             .remember(actor, target.cached(overrides_regions), generation)
             .await;
         Ok(target)
+    }
+
+    async fn current_owner(
+        &self,
+        actor: &ActorKey,
+    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
+        if let Some(owner) = self.routes.take_sealed_owner(actor).await {
+            return Ok((Some(owner.placement()), Some(owner)));
+        }
+        self.placements
+            .get_owner_with_hint(&actor.storage_key())
+            .await
     }
 
     async fn provision_in_regions(

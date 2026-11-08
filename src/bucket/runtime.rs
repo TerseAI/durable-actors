@@ -67,6 +67,14 @@ impl OwnershipHint {
     pub(crate) fn sealed_base(&self) -> Option<&SnapshotRef> {
         self.record.base.as_ref().filter(|_| self.record.sealed)
     }
+
+    pub(crate) fn sealed(&self) -> bool {
+        self.record.sealed
+    }
+
+    pub(crate) fn placement(&self) -> ObjectPlacement {
+        self.record.placement()
+    }
 }
 
 pub struct LoadedActor {
