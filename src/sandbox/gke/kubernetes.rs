@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use futures_util::StreamExt;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Pod, PodSpec};
 use kube::{
     Api, Client, ResourceExt,
     api::{DeleteParams, PostParams, Preconditions},
@@ -220,7 +220,10 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
         .default_backoff()
         .modify(|pod| {
             pod.managed_fields_mut().clear();
-            pod.spec = None;
+            pod.spec = pod.spec.take().map(|spec| PodSpec {
+                node_name: spec.node_name,
+                ..PodSpec::default()
+            });
         })
         .reflect(writer)
         .for_each(|event| {
