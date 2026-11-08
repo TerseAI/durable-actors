@@ -295,7 +295,7 @@ export class Wire extends Actor {
 
 `getStatus` can run while `submit` waits on the clearing network.
 
-Interleaving changes failure handling for the whole class. A failed call normally rolls back its field and SQLite changes. Once any method in a class uses `@Interleave`, no call in that class rolls back, because overlapping calls may already have used the changes. For the same reason, `this.db.transaction` throws in that class.
+Once any method in a class uses `@Interleave`, `this.db.transaction` throws in that class, because overlapping calls may already have used the changes it would roll back.
 
 ## Using SQLite
 
@@ -317,8 +317,7 @@ export class BankAccount extends Actor {
 ```
 
 - Each SQL write and each `@Persisted` assignment is saved as it happens, so progress survives a crash mid-method. If the method throws, writes made before the error stay saved.
-- Mark a method `@Atomic` to save all of its writes together when it succeeds, or none if it throws.
-- `await this.db.transaction(async () => { ... })` rolls back only the SQL and `@Persisted` writes inside it when it throws, and rethrows; the method can catch the error and continue. Transactions nest. Without `@Atomic`, writes inside a transaction are saved together when it completes.
+- `await this.db.transaction(async () => { ... })` rolls back only the SQL and `@Persisted` writes inside it when it throws, and rethrows; the method can catch the error and continue. Transactions nest. Writes inside a transaction are saved together when it completes.
 - Assigning a `@Persisted` field writes its JSON value through the same SQL execution path as `this.db.exec()`.
 - Reassign objects and arrays to persist changes: `this.messages = [...this.messages, message]`. Nested mutations such as `this.messages.push(message)` only change memory; they are not saved, even at method completion. Assign `undefined` to remove a saved field value rather than using `delete`.
 - Saved fields are restored before persistence tracking begins. Defaults are inserted only for fields missing from SQLite, so adding a persisted property initializes existing actors without replacing their saved values. Initialization does not delete existing rows.
