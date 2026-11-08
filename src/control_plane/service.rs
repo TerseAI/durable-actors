@@ -1351,6 +1351,8 @@ impl SandboxHostProvisioner {
             provider = provisioning.as_ref().map(|value| value.provider.as_str()).unwrap_or("unknown"),
             provider_resource_id = provisioning.as_ref().map(|value| value.resource_id.as_str()).unwrap_or(""),
             provider_reused = provisioning.as_ref().is_some_and(|value| value.reused),
+            preferred_node = node.unwrap_or(""),
+            spare_node = request.spare.as_ref().map(|spare| spare.node.as_str()).unwrap_or(""),
             started_at_ms = 0,
             provider_process_spawned_at_ms = provisioning.as_ref().and_then(|value| value.command_spawned_at_ms),
             provider_request_written_at_ms = provisioning.as_ref().and_then(|value| value.request_written_at_ms),
