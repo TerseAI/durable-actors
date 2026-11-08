@@ -30,6 +30,14 @@ def test_gateway_calls_retry_only_explicit_non_execution():
     assert calls[1].content == calls[2].content
 
 
+def test_client_sends_the_invoke_api_key_when_no_secret_is_set(monkeypatch):
+    monkeypatch.delenv("DURABLE_ACTORS_SECRET", raising=False)
+    monkeypatch.delenv("DURABLE_ACTORS_API_KEY", raising=False)
+    monkeypatch.setenv("DURABLE_ACTORS_INVOKE_API_KEY", "invoke-key")
+    with Client("http://control.test", project_id="test") as client:
+        assert client.headers == {"authorization": "Bearer invoke-key"}
+
+
 def refused():
     error = httpx.ConnectError("[Errno 61] Connection refused")
     error.__cause__ = ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")

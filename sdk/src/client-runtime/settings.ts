@@ -34,7 +34,10 @@ export function configuredSettings(value: unknown) {
 export function environmentSettings(environment: Environment = runtimeEnvironment()): DurableActorsClientOptions {
     return {
         projectId: environment.DURABLE_ACTORS_PROJECT_ID,
-        apiKey: environment.DURABLE_ACTORS_SECRET ?? environment.DURABLE_ACTORS_API_KEY,
+        apiKey:
+            environment.DURABLE_ACTORS_SECRET ??
+            environment.DURABLE_ACTORS_API_KEY ??
+            environment.DURABLE_ACTORS_INVOKE_API_KEY,
         homeRegion: environment.DURABLE_ACTORS_HOME_REGION,
         controlPlaneUrl: environment.DURABLE_ACTORS_CONTROL_PLANE_URL ?? "http://127.0.0.1:7100"
     }
