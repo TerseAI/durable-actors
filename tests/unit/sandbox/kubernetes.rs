@@ -373,3 +373,25 @@ fn temporary_storage_is_disk_backed_and_bounded() {
         assert!(volume["emptyDir"]["sizeLimit"].is_string());
     }
 }
+
+#[test]
+fn runtime_binaries_run_from_a_read_only_copy() {
+    let pod = base_pod(
+        "actor",
+        "image",
+        &["us-west4-a".into()],
+        &ResourceLimits::default(),
+    );
+    let runtime = &pod["spec"]["containers"][0];
+    assert_eq!(runtime["command"][0], "/runtime/durable-actors");
+    assert!(
+        runtime["volumeMounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mount| mount["mountPath"] == "/runtime" && mount["readOnly"] == true)
+    );
+    let copy = &pod["spec"]["initContainers"][0];
+    assert_eq!(copy["volumeMounts"][0]["mountPath"], "/runtime");
+    assert_eq!(copy["resources"], runtime["resources"]);
+}

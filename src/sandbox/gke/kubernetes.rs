@@ -238,11 +238,16 @@ fn spare_pod(request: &CreateSpareRequest, zones: &[String], token: &str) -> Res
             .expect("env list")
             .push(json!({"name":"OTEL_EXPORTER_OTLP_ENDPOINT", "value":endpoint}));
     }
-    pod["spec"]["containers"][0]["env"] = env;
+    pod["spec"]["containers"][0]["env"]
+        .as_array_mut()
+        .expect("runtime env")
+        .append(env.as_array_mut().expect("spare env"));
     pod["spec"]["containers"][0]["readinessProbe"] = json!({"exec":{"command":["/usr/bin/test", "-f", "/tmp/durable-actors-spare-ready"]}, "periodSeconds":1, "failureThreshold":3});
     Ok(serde_json::from_value(pod)?)
 }
 
+/// Under gVisor a file in the image is cached whole in the sandbox's own memory, while a file on a
+/// volume is mapped lazily from the node's page cache, so the runtime binaries run from a copy.
 fn base_pod(
     name: &str,
     image: &str,
@@ -258,11 +263,18 @@ fn base_pod(
             "affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"topology.kubernetes.io/zone","operator":"In","values":zones}]}]}}},
             "topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"ScheduleAnyway","labelSelector":{"matchLabels":{"terse.ai/purpose":"actor"}}}],
             "securityContext":{"runAsNonRoot":true, "runAsUser":10000, "runAsGroup":10000, "fsGroup":10000},
-            "containers":[{"name":"runtime", "image":image, "imagePullPolicy":"IfNotPresent", "command":["/usr/local/bin/durable-actors"],
+            "initContainers":[{"name":"runtime-files", "image":image, "imagePullPolicy":"IfNotPresent",
+                "command":["/bin/sh", "-ec", "cp /usr/local/bin/durable-actors /runtime/ && if [ -x /usr/local/bin/bun ]; then cp /usr/local/bin/bun /runtime/; fi"],
                 "securityContext":{"allowPrivilegeEscalation":false, "readOnlyRootFilesystem":true, "capabilities":{"drop":["ALL"]}},
                 "resources":container_resources(resources),
-                "volumeMounts":[{"name":"tmp","mountPath":"/tmp"},{"name":"customer","mountPath":"/customer"}]
-            }], "volumes":[{"name":"tmp","emptyDir":{"sizeLimit":"7Gi"}},{"name":"customer","emptyDir":{"sizeLimit":"1Gi"}}]
+                "volumeMounts":[{"name":"runtime","mountPath":"/runtime"}]
+            }],
+            "containers":[{"name":"runtime", "image":image, "imagePullPolicy":"IfNotPresent", "command":["/runtime/durable-actors"],
+                "env":[{"name":"DURABLE_ACTORS_BUN", "value":"/runtime/bun"}],
+                "securityContext":{"allowPrivilegeEscalation":false, "readOnlyRootFilesystem":true, "capabilities":{"drop":["ALL"]}},
+                "resources":container_resources(resources),
+                "volumeMounts":[{"name":"tmp","mountPath":"/tmp"},{"name":"customer","mountPath":"/customer"},{"name":"runtime","mountPath":"/runtime","readOnly":true}]
+            }], "volumes":[{"name":"tmp","emptyDir":{"sizeLimit":"7Gi"}},{"name":"customer","emptyDir":{"sizeLimit":"1Gi"}},{"name":"runtime","emptyDir":{"sizeLimit":"256Mi"}}]
         }
     })
 }
