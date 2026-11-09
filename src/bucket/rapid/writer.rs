@@ -159,6 +159,7 @@ impl Session {
     }
 
     pub async fn rotate(&mut self, storage: Arc<LogStorage>) {
+        self.install_prepared(storage.clone()).await;
         if self.retired.as_ref().is_some_and(Archiver::is_finished)
             && let Err(error) = self.retired.take().unwrap().finish().await
         {
@@ -167,9 +168,10 @@ impl Session {
         }
         if !self.healthy
             || self.standard
+            || self.segment.is_none()
             || self.retired.is_some()
             || self.rotated.elapsed() < ROTATION_INTERVAL
-            || self.version == self.installed_at
+            || (self.version == self.installed_at && self.rotated.elapsed() < IDLE_SEGMENT_REFRESH)
         {
             return;
         }
@@ -198,6 +200,21 @@ impl Session {
             Err(error) => tracing::warn!(%error, "Rapid rotation preparation failed"),
         }
         self.rotated = Instant::now();
+    }
+
+    /// Installs a finished preparation before the first write, so an idle session's segment
+    /// ages, and rotates, like any other.
+    async fn install_prepared(&mut self, storage: Arc<LogStorage>) {
+        if !self.preparing.as_ref().is_some_and(|p| p.is_finished()) {
+            return;
+        }
+        let error = match self.preparing.take().unwrap().await {
+            Ok(Ok(segment)) => return self.install(storage, segment),
+            Ok(Err(error)) => error,
+            Err(error) => error.into(),
+        };
+        tracing::warn!(error = %format!("{error:#}"), "Rapid preparation failed");
+        self.healthy = false;
     }
 
     pub async fn finish(&mut self, storage: Arc<LogStorage>, deadline: Instant) -> Result<()> {
