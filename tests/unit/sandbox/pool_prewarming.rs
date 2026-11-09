@@ -50,7 +50,7 @@ async fn every_replica_warms_ready_spares_without_claiming_them() -> Result<()> 
         let stop = CancellationToken::new();
         let first = tokio::spawn(pool.clone().prewarm(stop.child_token()));
         let second = tokio::spawn(other.prewarm(stop.child_token()));
-        let handle = SpareHandle {
+        let handle = SpareHandle { node: String::new(),
             name: "spare".into(),
             resource_id: "sandbox".into(),
             route: "https://invoke.test".into(),

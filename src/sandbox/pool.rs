@@ -70,6 +70,7 @@ impl SparePool {
         region: &str,
         host: &str,
         resources: &ResourceLimits,
+        node: Option<&str>,
     ) -> Result<Option<SpareHandle>> {
         if spec.code_snapshot.is_none() || resources != &self.config.resources {
             return Ok(None);
@@ -80,9 +81,22 @@ impl SparePool {
                 &self.key(self.image(spec)?, region),
                 host,
                 &spec.host_config_key(),
+                node,
             )
             .await?;
         Ok(result)
+    }
+
+    pub async fn host_node(&self, host: &str) -> Result<Option<String>> {
+        Ok(self
+            .store
+            .0
+            .query_opt(
+                "SELECT handle::jsonb ->> 'node' FROM durable_actors_spares WHERE host_id = $1",
+                &[&host],
+            )
+            .await?
+            .and_then(|row| row.get::<_, Option<String>>(0)))
     }
 
     pub async fn reserve_host(&self, session: &str, host: &str, config_key: &str) -> Result<()> {
@@ -420,11 +434,19 @@ impl PoolStore {
         Ok(published)
     }
 
-    async fn claim(&self, key: &str, host: &str, config_key: &str) -> Result<Option<SpareHandle>> {
+    // Prefers a spare on `node`, whose disk may still hold the actor's state.
+    async fn claim(
+        &self,
+        key: &str,
+        host: &str,
+        config_key: &str,
+        node: Option<&str>,
+    ) -> Result<Option<SpareHandle>> {
         self.0.query_opt(
             "UPDATE durable_actors_spares SET status = 'claimed', host_id = $2, host_config_key = $3, expires_at = clock_timestamp() + interval '120 seconds' \
-             WHERE name = (SELECT name FROM durable_actors_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > statement_timestamp() AND expires_at > clock_timestamp() ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING handle",
-            &[&key, &host, &config_key],
+             WHERE name = (SELECT name FROM durable_actors_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > statement_timestamp() AND expires_at > clock_timestamp() \
+             ORDER BY (handle::jsonb ->> 'node' = $4::text) IS TRUE DESC, expires_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING handle",
+            &[&key, &host, &config_key, &node],
         ).await?.map(|row| serde_json::from_str(row.get::<_, &str>(0)).context("decode spare handle")).transpose()
     }
 
@@ -457,6 +479,7 @@ fn decode_handle(row: &tokio_postgres::Row) -> Result<SpareHandle> {
     match row.get::<_, Option<&str>>("handle") {
         Some(handle) => Ok(serde_json::from_str(handle)?),
         None => Ok(SpareHandle {
+            node: String::new(),
             name: row.get("name"),
             resource_id: String::new(),
             route: String::new(),

@@ -107,6 +107,7 @@ fn request() -> Result<EnsureHostRequest> {
         }),
         code_snapshot: Some(manifest.encode()?),
         spare: Some(SpareHandle {
+            node: String::new(),
             control_route: "http://10.0.0.1:7102".into(),
             control_token: "token".into(),
             name: "warm".into(),

@@ -255,7 +255,7 @@ async fn a_stopped_hosts_sealed_record_replaces_the_next_ownership_read() -> Res
     }
     struct Provisioner {
         lease: HostLease,
-        hinted: Mutex<Vec<bool>>,
+        hinted: Mutex<Vec<Option<String>>>,
     }
     #[async_trait]
     impl HostProvisioner for Provisioner {
@@ -280,8 +280,15 @@ async fn a_stopped_hosts_sealed_record_replaces_the_next_ownership_read() -> Res
             owner_hint: Option<&OwnershipHint>,
             _: Option<&crate::sandbox::assignment::InitialOperation>,
         ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
-            self.hinted.lock().unwrap().push(owner_hint.is_some());
+            self.hinted
+                .lock()
+                .unwrap()
+                .push(owner_hint.and_then(|owner| owner.node().map(str::to_owned)));
             Ok((self.lease.clone(), 4, None))
+        }
+
+        async fn host_node(&self, _: &HostId) -> Option<String> {
+            Some("node-a".into())
         }
 
         async fn terminate_hosts(
@@ -377,7 +384,10 @@ async fn a_stopped_hosts_sealed_record_replaces_the_next_ownership_read() -> Res
         placements.reads.load(std::sync::atomic::Ordering::SeqCst),
         1
     );
-    assert_eq!(*provisioner.hinted.lock().unwrap(), vec![true]);
+    assert_eq!(
+        *provisioner.hinted.lock().unwrap(),
+        vec![Some("node-a".to_owned())]
+    );
     Ok(())
 }
 
