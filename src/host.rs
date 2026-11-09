@@ -24,6 +24,17 @@ pub(crate) use self::{
     lease_maintenance::{HostLeaseMaintainer, LeaseRenewalTask},
 };
 
+pub async fn serve_role(
+    role: &str,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    match role {
+        "spare" => serve_spare(shutdown).await,
+        "host" => serve_actor_host(shutdown).await,
+        role => anyhow::bail!("unsupported DURABLE_ACTORS_PROCESS_ROLE {role:?}"),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct HostId(String);
 
