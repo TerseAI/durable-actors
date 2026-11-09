@@ -102,7 +102,6 @@ async fn run(
     wake: Arc<Notify>,
 ) -> Result<()> {
     let mut through = 0;
-    let mut closed_published = false;
     let mut retry = false;
     let interval = Duration::from_millis(storage.batch.interval_ms);
     loop {
@@ -110,31 +109,21 @@ async fn run(
             let p = pending.lock().unwrap();
             (p.end, p.closed, p.since.map(|at| at + interval), p.version)
         };
-        if closed && !closed_published {
-            storage
-                .close_segment(
-                    &manifest,
-                    &ClosedSegment {
-                        last_version,
-                        end_offset: end,
-                    },
-                )
-                .await?;
-            closed_published = true;
-        }
         if through == end && closed {
-            storage
-                .mark_replicated(
-                    &manifest,
-                    &ClosedSegment {
-                        last_version,
-                        end_offset: end,
-                    },
-                )
-                .await?;
+            let coverage = ClosedSegment {
+                last_version,
+                end_offset: end,
+            };
+            // Readers need the Rapid copy until this marker lands, and the lifecycle rule
+            // eventually deletes that copy.
+            if let Err(error) = storage.mark_replicated(&manifest, &coverage).await {
+                tracing::warn!(%error, "Rapid replication marker deferred");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
             tokio::spawn(async move {
-                if let Err(error) = storage.cleanup_segment(&manifest).await {
-                    tracing::warn!(%error, "Rapid cleanup deferred");
+                if let Err(error) = storage.delete_replicas(&manifest).await {
+                    tracing::warn!(%error, "Rapid replicas left to the lifecycle rule");
                 }
             });
             return Ok(());
@@ -301,20 +290,6 @@ impl LogStorage {
         anyhow::bail!("all Rapid archive sources unavailable")
     }
 
-    pub async fn close_segment(&self, manifest: &Manifest, closed: &ClosedSegment) -> Result<()> {
-        ensure!(
-            bounded(replace(
-                self.archive.as_ref(),
-                &manifest.marker("closed")?,
-                None,
-                crate::payload::encode(closed)?
-            ))
-            .await?,
-            "conflicting closed segment"
-        );
-        Ok(())
-    }
-
     pub async fn mark_replicated(&self, manifest: &Manifest, closed: &ClosedSegment) -> Result<()> {
         ensure!(
             bounded(replace(
@@ -329,93 +304,12 @@ impl LogStorage {
         Ok(())
     }
 
-    pub async fn complete_segment(
-        &self,
-        manifest: &Manifest,
-        closed: &ClosedSegment,
-    ) -> Result<()> {
-        let (mut through, _) = self.archived(manifest).await?;
-        ensure!(
-            through <= closed.end_offset,
-            "archive exceeds closed segment"
-        );
-        while through < closed.end_offset {
-            through = upload(self, manifest, through, closed.end_offset, None).await?;
-        }
-        let (end, records) = self.archived(manifest).await?;
-        closed.validate(manifest, end, &records)?;
-        self.mark_replicated(manifest, closed).await
-    }
-
-    pub async fn cleanup_segment(&self, manifest: &Manifest) -> Result<()> {
-        ensure!(
-            self.archive
-                .get(&manifest.marker("replicated")?)
-                .await?
-                .is_some(),
-            "cannot delete unreplicated segment"
-        );
+    /// Only called once the segment is replicated; a copy left behind expires under the Rapid
+    /// lifecycle rule.
+    async fn delete_replicas(&self, manifest: &Manifest) -> Result<()> {
         for replica in &manifest.replicas {
             bounded(self.zone(replica)?.delete(replica)).await?;
         }
-        ensure!(
-            bounded(replace(
-                self.archive.as_ref(),
-                &manifest.marker("cleaned")?,
-                None,
-                Bytes::from_static(b"{}")
-            ))
-            .await?,
-            "conflicting cleanup marker"
-        );
         Ok(())
-    }
-
-    pub async fn sweep(&self, prefix: &str) -> Result<()> {
-        let keys: std::collections::BTreeSet<_> =
-            self.archive.list(prefix).await?.into_iter().collect();
-        for key in keys
-            .iter()
-            .filter(|k| k.ends_with(".closed") && !keys.contains(&k.replace(".closed", ".cleaned")))
-        {
-            if let Err(error) = self.sweep_segment(key).await {
-                tracing::warn!(%error, key, "Rapid segment cleanup deferred");
-            }
-        }
-        Ok(())
-    }
-
-    async fn sweep_segment(&self, key: &str) -> Result<()> {
-        if self
-            .archive
-            .get(&key.replace(".closed", ".cleaned"))
-            .await?
-            .is_some()
-        {
-            return Ok(());
-        }
-        let manifest_key = key.replace(".closed", ".manifest");
-        let bytes = self
-            .archive
-            .get(&manifest_key)
-            .await?
-            .context("closed segment manifest missing")?;
-        let manifest: Manifest = serde_json::from_slice(&bytes.bytes)?;
-        manifest.validate(&manifest_key, &manifest.stream.prefix, &self.zones)?;
-        let bytes = self
-            .archive
-            .get(key)
-            .await?
-            .context("closed segment marker missing")?;
-        let closed: ClosedSegment = serde_json::from_slice(&bytes.bytes)?;
-        if self
-            .archive
-            .get(&manifest.marker("replicated")?)
-            .await?
-            .is_none()
-        {
-            self.complete_segment(&manifest, &closed).await?;
-        }
-        self.cleanup_segment(&manifest).await
     }
 }

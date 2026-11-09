@@ -470,6 +470,122 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
 }
 
 #[tokio::test]
+async fn control_plane_archives_and_seals_an_abandoned_activation() -> Result<()> {
+    use crate::{
+        bucket::{RapidBucket, RuntimeStorage, RuntimeStorageReader, SnapshotStoreConfig},
+        clock::Clock,
+        host::HostId,
+        host_leases::HostLeaseRequest,
+        state_transport::SnapshotWriter,
+    };
+    struct TestClock(AtomicU64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> Result<u64> {
+            Ok(self.0.load(Ordering::SeqCst))
+        }
+    }
+    let f = Fixture::new()?;
+    let clock = Arc::new(TestClock(AtomicU64::new(1)));
+    let config = SnapshotStoreConfig::Rapid {
+        archive_batch: Default::default(),
+        placement: Default::default(),
+        archive_bucket: "archive".into(),
+        buckets: vec![
+            RapidBucket {
+                bucket: "a".into(),
+                zone: "us-west4-a".into(),
+            },
+            RapidBucket {
+                bucket: "b".into(),
+                zone: "us-west4-b".into(),
+            },
+        ],
+    };
+    let actor = crate::storage_paths::actor_from_snapshot(&f.stream.object(1))?;
+    let runtime = || {
+        RuntimeStorage::new(f.archive.clone(), clock.clone())?
+            .with_persistence(config.clone(), Arc::new(f.store()?))
+    };
+    let request = |name: &str| HostLeaseRequest {
+        id: HostId::new(name),
+        session_id: name.into(),
+        route: format!("http://{name}"),
+        duration_ms: 1000,
+    };
+    let control_plane = RuntimeStorageReader::new(
+        f.archive.clone(),
+        clock.clone(),
+        Arc::new(crate::litestream::EmbeddedRestore),
+    )?
+    .with_persistence(config.clone(), Arc::new(f.store()?))?;
+    let host = runtime()?;
+    let active = host
+        .register_activation(&actor, &request("crashed"), "us-west", true, None)
+        .await?;
+    let lease = &active.placement.lease;
+    host.write_snapshot(
+        &host.prepare_actor_write(&actor, lease, 1, 1).await?,
+        state(1, 1)?,
+    )
+    .await?;
+    control_plane.seal_abandoned().await?;
+    host.write_snapshot(
+        &host.prepare_actor_write(&actor, lease, 1, 2).await?,
+        state(2, 1)?,
+    )
+    .await?;
+
+    clock.0.store(1_000_000, Ordering::SeqCst);
+    control_plane.seal_abandoned().await?;
+    let fenced = host
+        .write_snapshot(
+            &host.prepare_actor_write(&actor, lease, 1, 3).await?,
+            state(3, 1)?,
+        )
+        .await;
+    assert!(fenced.is_err());
+    for zone in &f.zones {
+        zone.objects.lock().unwrap().clear();
+    }
+    let next = runtime()?
+        .register_activation(&actor, &request("next"), "us-west", false, None)
+        .await?;
+    assert_eq!(next.placement.owner_epoch, 2);
+    assert_eq!(next.state, Some(state(2, 1)?));
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_sessions_replace_their_rapid_segment_daily() -> Result<()> {
+    let f = Fixture::new()?;
+    let store = f.store()?;
+    store.start(&f.stream).await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while manifests(&f).await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await?;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(25 * 60 * 60)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let keys = f.archive.list("").await.unwrap();
+            let replicated = keys.iter().filter(|k| k.ends_with(".replicated")).count();
+            let live = f.zones.iter().map(|z| z.objects.lock().unwrap().len());
+            if replicated == 1 && manifests(&f).await.len() == 2 && live.sum::<usize>() == 2 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn large_segments_reuse_streams_and_preserve_batched_history() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
@@ -520,7 +636,7 @@ fn large_snapshots() -> Result<BTreeMap<u64, Bytes>> {
 }
 
 #[test]
-fn lifecycle_rules_must_exclude_unarchived_logs() -> Result<()> {
+fn lifecycle_rules_keep_logs_for_a_week() -> Result<()> {
     use google_cloud_storage::model::bucket::{
         Lifecycle,
         lifecycle::{
@@ -528,26 +644,23 @@ fn lifecycle_rules_must_exclude_unarchived_logs() -> Result<()> {
             rule::{Action, Condition},
         },
     };
-    let bucket = |prefixes: Vec<&str>| {
+    let bucket = |prefixes: Vec<&str>, age: Option<i32>| {
         google_cloud_storage::model::Bucket::new().set_lifecycle(
             Lifecycle::new().set_rule([Rule::new()
                 .set_action(Action::new().set_type("Delete"))
                 .set_condition(
                     Condition::new()
-                        .set_age_days(7)
+                        .set_or_clear_age_days(age)
                         .set_matches_prefix(prefixes),
                 )]),
         )
     };
-    super::gcs::validate_retention(&bucket(vec![
-        "durable-actors-v3-snapshots-",
-        "durable-actors-v3-uploads-",
-    ]))?;
-    assert!(super::gcs::validate_retention(&bucket(vec![])).is_err());
-    assert!(super::gcs::validate_retention(&bucket(vec!["durable-actors-v3-"])).is_err());
-    assert!(
-        super::gcs::validate_retention(&bucket(vec!["durable-actors-v3-logs-tenant"])).is_err()
-    );
+    let validate = super::gcs::validate_retention;
+    validate(&bucket(vec!["durable-actors-v3-snapshots-"], Some(1)))?;
+    validate(&bucket(vec![], Some(7)))?;
+    validate(&bucket(vec!["durable-actors-v3-logs-"], Some(30)))?;
+    assert!(validate(&bucket(vec!["durable-actors-v3-"], Some(6))).is_err());
+    assert!(validate(&bucket(vec!["durable-actors-v3-logs-tenant"], None)).is_err());
     Ok(())
 }
 
@@ -649,7 +762,7 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
         store
             .finish(
                 &f.stream,
-                tokio::time::Instant::now() + Duration::from_secs(30)
+                tokio::time::Instant::now() + Duration::from_secs(1)
             )
             .await
             .is_err()

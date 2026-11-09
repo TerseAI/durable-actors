@@ -20,6 +20,7 @@ use crate::{
 
 use super::{Bucket, replace};
 
+mod abandoned;
 mod activation;
 mod history;
 pub(crate) use history::ActorStateReader;

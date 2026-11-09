@@ -234,6 +234,9 @@ async fn control_plane_routes(
         )?
         .with_persistence(config.storage.persistence, snapshots)?,
     );
+    if storage.persistence.rapid_settings().is_some() {
+        storage.clone().start_abandoned_recovery(stop.child_token());
+    }
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::Gcs {
             artifact_bucket: config.storage.artifact_bucket.clone(),

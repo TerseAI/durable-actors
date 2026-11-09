@@ -100,7 +100,7 @@ Verify an actor write and read, restart its sandbox, and read the value again. A
 
 Rapid stores the hot write log in one or two zones and keeps permanent history in the Standard bucket. Each acknowledged write has durably flushed to every configured Rapid copy. A single zone has no second Rapid copy if that zone is lost before archival. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.
 
-Choose a region with Rapid availability and use Google Cloud CLI 553 or newer. Create two distinct buckets once, then grant object access and bucket-metadata access to the controller identity. The following placements are examples; verify current [Rapid availability and requirements](https://docs.cloud.google.com/storage/docs/rapid-bucket).
+Choose a region with Rapid availability and use Google Cloud CLI 553 or newer. Create two distinct buckets once, grant object access and bucket-metadata access to the controller identity, and expire Rapid objects after seven days. The controller archives every log to the Standard bucket well before then and refuses to start if a delete rule would remove log objects sooner. The following placements are examples; verify current [Rapid availability and requirements](https://docs.cloud.google.com/storage/docs/rapid-bucket).
 
 ```sh
 export RAPID_A=my-unique-actor-rapid-a
@@ -112,9 +112,11 @@ gcloud storage buckets create "gs://${RAPID_A}" --project="$PROJECT" \
 gcloud storage buckets create "gs://${RAPID_B}" --project="$PROJECT" \
   --location=us-west4 --placement=us-west4-b --default-storage-class=RAPID \
   --enable-hierarchical-namespace --uniform-bucket-level-access --public-access-prevention
+echo '{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 7}}]}' > rapid-lifecycle.json
 for bucket in "$RAPID_A" "$RAPID_B"; do
   gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
     --member="serviceAccount:${GSA}" --role=roles/storage.objectUser
+  gcloud storage buckets update "gs://${bucket}" --lifecycle-file=rapid-lifecycle.json
 done
 for bucket in "$BUCKET" "$RAPID_A" "$RAPID_B"; do
   gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
