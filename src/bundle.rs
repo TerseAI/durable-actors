@@ -85,14 +85,16 @@ impl ActorBundle {
         let hits = AtomicUsize::new(0);
         futures_util::stream::iter(self.files.iter().map(Ok))
             .try_for_each_concurrent(MAX_CONCURRENT_DOWNLOADS, |file| async {
-                if let Some(cache) = cache
-                    && install_cached(root, file, cache).await
-                {
+                let cached = match cache {
+                    Some(cache) => install_cached(root, file, cache).await,
+                    None => Cached::Unreachable,
+                };
+                if cached == Cached::Installed {
                     hits.fetch_add(1, Ordering::Relaxed);
                     return Ok(());
                 }
                 download(root, file, storage, &bucket).await?;
-                if let Some(cache) = cache {
+                if let (Some(cache), Cached::Missing) = (cache, cached) {
                     fill_cache(cache.clone(), file.sha256.clone(), root.join(&file.path));
                 }
                 anyhow::Ok(())
@@ -132,17 +134,31 @@ impl ActorBundle {
     }
 }
 
-async fn install_cached(root: &Path, file: &BundleFile, cache: &NodeCacheClient) -> bool {
+#[derive(Clone, Copy, PartialEq)]
+enum Cached {
+    Installed,
+    Missing,
+    Unreachable,
+}
+
+async fn install_cached(root: &Path, file: &BundleFile, cache: &NodeCacheClient) -> Cached {
     let installed = async {
         let Some(chunks) = cache.code(&file.sha256).await? else {
-            return Ok(false);
+            return Ok(Cached::Missing);
         };
         install_file(root, file, chunks).await?;
-        anyhow::Ok(true)
+        anyhow::Ok(Cached::Installed)
     };
     installed.await.unwrap_or_else(|error| {
         tracing::warn!(error = %format!("{error:#}"), path = %file.path, "node cache read failed");
-        false
+        let unreachable = error
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_connect);
+        if unreachable {
+            Cached::Unreachable
+        } else {
+            Cached::Missing
+        }
     })
 }
 
