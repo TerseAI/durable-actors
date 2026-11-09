@@ -49,7 +49,6 @@ pub(crate) trait ActorStorage: Send + Sync {
     ) -> Result<Option<crate::storage::SnapshotRef>> {
         Ok(None)
     }
-    /// The database this node saved at the snapshot with `digest`, already downloaded.
     fn take_saved_database(&self, _digest: &str) -> Option<tempfile::NamedTempFile> {
         None
     }

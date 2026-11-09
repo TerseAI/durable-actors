@@ -58,8 +58,6 @@ impl NodeCacheConnection {
         }
     }
 
-    /// Keeps the pooled connections open while the spare waits, and replaces any a cache restart
-    /// closed.
     pub(crate) async fn keep_warm(&self) {
         let period = Duration::from_secs(20);
         let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
@@ -114,7 +112,6 @@ impl NodeCacheClient {
             .await
     }
 
-    /// The actor state snapshot with this digest, as this node last saw it published.
     pub(crate) async fn snapshot(&self, digest: &str) -> Result<Option<Bytes>> {
         let Some(chunks) = self.read(&format!("snapshot/{digest}")).await? else {
             return Ok(None);

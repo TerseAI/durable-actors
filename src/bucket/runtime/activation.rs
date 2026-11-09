@@ -12,7 +12,6 @@ struct ActivationRecovery {
     snapshot_ms: Option<f64>,
 }
 
-/// What a host already holds for the sealed base it expects to activate from.
 #[derive(Default)]
 pub(crate) struct CachedBase {
     /// The base's SQLite database: its checkpoint is left for SQLite recovery to fetch.

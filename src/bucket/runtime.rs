@@ -60,13 +60,11 @@ struct Ownership {
 pub struct OwnershipHint {
     generation: i64,
     record: Ownership,
-    /// The node the previous owner ran on, whose disk cache may hold the state it sealed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     node: Option<String>,
 }
 
 impl OwnershipHint {
-    /// The snapshot the previous owner sealed, which a new activation loads unchanged.
     pub(crate) fn sealed_base(&self) -> Option<&SnapshotRef> {
         self.record.base.as_ref().filter(|_| self.record.sealed)
     }

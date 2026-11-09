@@ -74,7 +74,6 @@ impl ActorBundle {
         Ok(value)
     }
 
-    /// Returns how many files came from the node cache rather than GCS.
     pub async fn install(
         &self,
         root: &Path,

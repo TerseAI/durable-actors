@@ -154,7 +154,6 @@ impl NodeCache {
         }
     }
 
-    /// Stores the body under `key`, first checking it hashes to `digest` when one is given.
     async fn store_body(&self, key: &str, body: Body, digest: Option<&str>) -> Result<()> {
         let staged = self.store.stage()?;
         let mut file = tokio::fs::File::from_std(staged.reopen()?);

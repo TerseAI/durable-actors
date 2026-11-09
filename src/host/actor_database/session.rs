@@ -290,8 +290,6 @@ impl DatabaseSession {
         Ok(version)
     }
 
-    /// Saves the last published snapshot, and the database when it matches that snapshot, for the
-    /// next activation on this node. Returns the database bytes saved.
     pub(super) async fn save_to_node_cache(&self) -> Result<Option<u64>> {
         let (Some(cache), Some(cached)) = (&self.node_cache, &self.cached_state) else {
             return Ok(None);
@@ -391,7 +389,6 @@ impl DatabaseSession {
         Ok(cached)
     }
 
-    /// Prefers the copy this node saved at the loaded snapshot over replaying its history.
     async fn open_sqlite(
         &self,
         snapshot: &StateSnapshot,
@@ -654,7 +651,6 @@ struct ResidentDatabase {
     database: SqliteDatabase,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
-    /// The published snapshot this database matches.
     snapshot: Option<PublishedSnapshot>,
     owner_epoch: u64,
     state_version: u64,

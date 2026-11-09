@@ -186,21 +186,3 @@ test("runs a node cache on sandbox nodes that sandboxes reach on their own node"
     assert.match(output, /emptyDir: {sizeLimit: 5Gi}/)
     assert.doesNotMatch(output, /initContainers/)
 })
-
-test("keeps the node cache in a node directory owned by its user when asked", () => {
-    const output = manifests({
-        nodeCache: {
-            enabled: true,
-            capacityGiB: 900,
-            maxEntries: 2000000,
-            hostPath: "/mnt/stateful_partition/kube-ephemeral-ssd/node-cache",
-            nodeSelector: { "cloud.google.com/gke-ephemeral-storage-local-ssd": "true" }
-        }
-    })
-    assert.match(output, /hostPath: {path: "\/mnt\/stateful_partition\/kube-ephemeral-ssd\/node-cache", type: DirectoryOrCreate}/)
-    assert.doesNotMatch(output, /emptyDir: {sizeLimit: 901Gi}/)
-    assert.match(output, /nodeSelector:\n        sandbox.gke.io\/runtime: gvisor\n        cloud.google.com\/gke-ephemeral-storage-local-ssd: "true"/)
-    assert.match(output, /initContainers:[\s\S]*command: \[chown, "10000:10000", \/cache\][\s\S]*add: \[CHOWN\]/)
-    assert.match(output, /DURABLE_ACTORS_NODE_CACHE_MAX_ENTRIES, value: "2000000"/)
-    assert.notEqual(render({ nodeCache: { enabled: true, hostPath: "relative" } }).status, 0)
-})

@@ -16,7 +16,6 @@ const DEFAULT_MAX_ENTRIES: u64 = 500_000;
 /// Larger databases take longer to export at shutdown than they save at the next activation.
 pub(crate) const MAX_DATABASE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Serves actor code and databases from this node's disk to the sandboxes scheduled on it.
 pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     let config = NodeCacheConfig::from_lookup(|name| std::env::var(name).ok())?;
     let store = Arc::new(

@@ -94,7 +94,6 @@ impl SqliteCapture {
         .await
     }
 
-    /// Opens a database another session exported at `txid`, as `restore` opens its history.
     pub(crate) async fn adopt(
         replication: Arc<dyn Replicator>,
         database: tempfile::NamedTempFile,
@@ -227,7 +226,6 @@ impl Drop for SqliteCapture {
     }
 }
 
-/// Moves every committed WAL frame into the database file, so the copy opens without a WAL.
 fn fold_wal(path: &Path) -> Result<()> {
     let db = rusqlite::Connection::open(path)?;
     let busy: i64 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;

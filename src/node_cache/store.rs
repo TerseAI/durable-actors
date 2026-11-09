@@ -5,8 +5,6 @@ use moka::{future::Cache, notification::RemovalCause, policy::EvictionPolicy};
 
 const STAGING: &str = "staging";
 
-/// Files on local disk, evicted least-recently-used once their total size passes the capacity or
-/// their count passes `max_entries`.
 pub(super) struct DiskStore {
     root: PathBuf,
     entries: Cache<String, u64>,

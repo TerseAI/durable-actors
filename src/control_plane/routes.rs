@@ -29,7 +29,6 @@ pub(super) trait RouteStore: Send + Sync {
     async fn renew(&self, actor: &ActorKey, identity: &RouteIdentity);
     async fn remove(&self, actor: &ActorKey, identity: &RouteIdentity);
     async fn remove_project(&self, project: &str);
-    // The record a stopped host sealed, which the actor's next activation claims from once.
     async fn keep_sealed_owner(&self, actor: &ActorKey, owner: &OwnershipHint);
     async fn take_sealed_owner(&self, actor: &ActorKey) -> Option<OwnershipHint>;
 }

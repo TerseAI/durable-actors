@@ -67,7 +67,7 @@ telemetry:
     resources:
       requests: {cpu: 250m, memory: 512Mi}
       limits: {memory: 1Gi}
-# Serves actor code from each sandbox node's disk so cold starts skip GCS.
+# Caches actor code and state on each sandbox node's disk so cold starts skip GCS.
 nodeCache:
   enabled: false
   capacityGiB: 20
