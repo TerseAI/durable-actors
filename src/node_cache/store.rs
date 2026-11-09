@@ -55,6 +55,29 @@ impl DiskStore {
         Ok(())
     }
 
+    /// Inserts `key` and drops the other entries in its directory, the versions it supersedes.
+    pub async fn insert_latest(
+        &self,
+        key: &str,
+        staged: tempfile::NamedTempFile,
+        size: u64,
+    ) -> Result<()> {
+        self.insert(key, staged, size).await?;
+        let path = self.root.join(key);
+        let mut siblings =
+            tokio::fs::read_dir(path.parent().context("cache entry has no parent")?).await?;
+        while let Some(sibling) = siblings.next_entry().await? {
+            if sibling.path() != path {
+                let older = sibling.path();
+                let older = older.strip_prefix(&self.root)?.to_str();
+                self.entries
+                    .invalidate(older.context("cache key is not UTF-8")?)
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
     /// Files a previous process left, oldest first so the newest survive any eviction on reopen.
     async fn existing(&self) -> Result<Vec<(String, u64)>> {
         let root = self.root.clone();
