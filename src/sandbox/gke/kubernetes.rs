@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use futures_util::StreamExt;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::{
+    api::core::v1::{Container, EnvVar, NodeSelectorRequirement, Pod, PodSpec},
+    apimachinery::pkg::api::resource::Quantity,
+};
 use kube::{
     Api, Client, ResourceExt,
     api::{DeleteParams, PostParams, Preconditions},
@@ -11,7 +14,6 @@ use kube::{
         watcher,
     },
 };
-use serde_json::json;
 use tokio::sync::watch;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -224,73 +226,85 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
         .await;
 }
 
+/// The spare sandbox manifest, kept as YAML so its isolation settings read like any other.
+const SPARE_POD: &str = include_str!("spare-pod.yaml");
+
 fn spare_pod(request: &CreateSpareRequest, zones: &[String], token: &str) -> Result<Pod> {
-    let mut pod = base_pod(&request.name, &request.image_ref, zones, &request.resources);
-    pod["metadata"]["annotations"] =
-        json!({"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"});
-    let mut env = json!([
-        {"name":"DURABLE_ACTORS_PROCESS_ROLE", "value":"spare"},
-        {"name":"DURABLE_ACTORS_SPARE_TOKEN", "value":token},
-        {"name":"DURABLE_ACTORS_CONTROL_PLANE_URL", "value":request.control_plane_url.as_ref().context("spare control plane URL required")?}
-    ]);
-    if let Some(endpoint) = &request.otlp_endpoint {
-        env.as_array_mut()
-            .expect("env list")
-            .push(json!({"name":"OTEL_EXPORTER_OTLP_ENDPOINT", "value":endpoint}));
+    let mut pod: Pod = serde_yaml::from_str(SPARE_POD).context("spare pod manifest")?;
+    pod.metadata.name = Some(request.name.clone());
+    let spec = pod
+        .spec
+        .as_mut()
+        .context("spare pod manifest has no spec")?;
+    zone_requirement(spec)?.values = Some(zones.to_vec());
+    for container in spec
+        .init_containers
+        .iter_mut()
+        .flatten()
+        .chain(&mut spec.containers)
+    {
+        container.image = Some(request.image_ref.clone());
+        add_compute(container, &request.resources);
     }
-    pod["spec"]["containers"][0]["env"]
-        .as_array_mut()
-        .expect("runtime env")
-        .append(env.as_array_mut().expect("spare env"));
-    pod["spec"]["containers"][0]["readinessProbe"] = json!({"exec":{"command":["/usr/bin/test", "-f", "/tmp/durable-actors-spare-ready"]}, "periodSeconds":1, "failureThreshold":3});
-    Ok(serde_json::from_value(pod)?)
+    spec.containers[0]
+        .env
+        .get_or_insert_with(Vec::new)
+        .extend(spare_env(request, token)?);
+    Ok(pod)
 }
 
-/// Under gVisor a file in the image is cached whole in the sandbox's own memory, while a file on a
-/// volume is mapped lazily from the node's page cache, so the runtime binaries run from a copy.
-fn base_pod(
-    name: &str,
-    image: &str,
-    zones: &[String],
-    resources: &ResourceLimits,
-) -> serde_json::Value {
-    json!({
-        "apiVersion":"v1", "kind":"Pod", "metadata":{"name":name, "labels":{"app.kubernetes.io/managed-by":"terse", "terse.ai/purpose":"actor"}},
-        "spec":{
-            "runtimeClassName":"gvisor", "automountServiceAccountToken":false, "serviceAccountName":"sandbox",
-            "restartPolicy":"Never", "terminationGracePeriodSeconds":45,
-            "nodeSelector":{"sandbox.gke.io/runtime":"gvisor"},
-            "affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"topology.kubernetes.io/zone","operator":"In","values":zones}]}]}}},
-            "topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"ScheduleAnyway","labelSelector":{"matchLabels":{"terse.ai/purpose":"actor"}}}],
-            "securityContext":{"runAsNonRoot":true, "runAsUser":10000, "runAsGroup":10000, "fsGroup":10000},
-            "initContainers":[{"name":"runtime-files", "image":image, "imagePullPolicy":"IfNotPresent",
-                "command":["/bin/sh", "-ec", "cp /usr/local/bin/durable-actors /runtime/ && if [ -x /usr/local/bin/bun ]; then cp /usr/local/bin/bun /runtime/; fi"],
-                "securityContext":{"allowPrivilegeEscalation":false, "readOnlyRootFilesystem":true, "capabilities":{"drop":["ALL"]}},
-                "resources":container_resources(resources),
-                "volumeMounts":[{"name":"runtime","mountPath":"/runtime"}]
-            }],
-            "containers":[{"name":"runtime", "image":image, "imagePullPolicy":"IfNotPresent", "command":["/runtime/durable-actors"],
-                "env":[{"name":"DURABLE_ACTORS_BUN", "value":"/runtime/bun"}],
-                "securityContext":{"allowPrivilegeEscalation":false, "readOnlyRootFilesystem":true, "capabilities":{"drop":["ALL"]}},
-                "resources":container_resources(resources),
-                "volumeMounts":[{"name":"tmp","mountPath":"/tmp"},{"name":"customer","mountPath":"/customer"},{"name":"runtime","mountPath":"/runtime","readOnly":true}]
-            }], "volumes":[{"name":"tmp","emptyDir":{"sizeLimit":"7Gi"}},{"name":"customer","emptyDir":{"sizeLimit":"1Gi"}},{"name":"runtime","emptyDir":{"sizeLimit":"256Mi"}}]
-        }
-    })
+fn zone_requirement(spec: &mut PodSpec) -> Result<&mut NodeSelectorRequirement> {
+    spec.affinity
+        .as_mut()
+        .and_then(|affinity| affinity.node_affinity.as_mut())
+        .and_then(|node| {
+            node.required_during_scheduling_ignored_during_execution
+                .as_mut()
+        })
+        .and_then(|required| required.node_selector_terms.first_mut())
+        .and_then(|term| term.match_expressions.as_mut())
+        .and_then(|requirements| requirements.first_mut())
+        .context("spare pod manifest has no zone affinity")
 }
 
-fn container_resources(resources: &ResourceLimits) -> serde_json::Value {
-    let mut limits = json!({"ephemeral-storage":"8Gi"});
+fn add_compute(container: &mut Container, resources: &ResourceLimits) {
+    let requirements = container.resources.get_or_insert_with(Default::default);
+    let requests = requirements.requests.get_or_insert_with(Default::default);
+    requests.insert("cpu".into(), Quantity(format!("{}m", resources.cpu_millis)));
+    requests.insert(
+        "memory".into(),
+        Quantity(format!("{}Mi", resources.memory_mib)),
+    );
+    let limits = requirements.limits.get_or_insert_with(Default::default);
     if let Some(cpu) = resources.cpu_limit_millis {
-        limits["cpu"] = json!(format!("{cpu}m"));
+        limits.insert("cpu".into(), Quantity(format!("{cpu}m")));
     }
     if let Some(memory) = resources.memory_limit_mib {
-        limits["memory"] = json!(format!("{memory}Mi"));
+        limits.insert("memory".into(), Quantity(format!("{memory}Mi")));
     }
-    json!({
-        "requests":{"ephemeral-storage":"256Mi","cpu":format!("{}m", resources.cpu_millis),"memory":format!("{}Mi", resources.memory_mib)},
-        "limits":limits
-    })
+}
+
+fn spare_env(request: &CreateSpareRequest, token: &str) -> Result<Vec<EnvVar>> {
+    let control_plane = request
+        .control_plane_url
+        .as_deref()
+        .context("spare control plane URL required")?;
+    let mut env = vec![
+        env_var("DURABLE_ACTORS_SPARE_TOKEN", token),
+        env_var("DURABLE_ACTORS_CONTROL_PLANE_URL", control_plane),
+    ];
+    if let Some(endpoint) = &request.otlp_endpoint {
+        env.push(env_var("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint));
+    }
+    Ok(env)
+}
+
+fn env_var(name: &str, value: &str) -> EnvVar {
+    EnvVar {
+        name: name.into(),
+        value: Some(value.into()),
+        ..Default::default()
+    }
 }
 
 fn terminal_or_ready(pod: &Pod) -> bool {
