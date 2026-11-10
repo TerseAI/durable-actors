@@ -318,8 +318,11 @@ async fn control_plane_routes(
         super::inspection::ActorInspector::new(inventory, storage.clone(), service.changes.clone())
             .with_traces(traces);
     let public_api = super::public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::router(inspector, admin))
+        .merge(super::inspection::router(inspector, admin.clone()))
         .merge(discovery);
+    let public_api = public_api
+        .clone()
+        .merge(super::mcp::router(public_api, admin));
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }

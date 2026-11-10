@@ -1,7 +1,8 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, Path, Request, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
@@ -524,6 +525,15 @@ pub(super) fn project_id(path: Path<ProjectPath>) -> Result<String, ApiError> {
     }) = path;
     super::admin::validate_component("project ID", &project, 64).map_err(ApiError::bad_request)?;
     Ok(project)
+}
+
+pub(super) async fn require_admin(
+    State(admin): State<AdminService>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authorized_admin(&admin, request.headers())?;
+    Ok(next.run(request).await)
 }
 
 pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Result<(), ApiError> {

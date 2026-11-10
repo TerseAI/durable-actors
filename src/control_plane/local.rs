@@ -422,6 +422,7 @@ async fn local_routes(
     };
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::local_router(inspector, admin));
+    let public = public.clone().merge(super::mcp::local_router(public));
     let telemetry = super::local_telemetry::LocalTelemetrySink::new(
         ActorJwtVerifier::for_scope(
             telemetry_keys,

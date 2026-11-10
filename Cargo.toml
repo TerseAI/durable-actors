@@ -71,6 +71,10 @@ reqsign-core = "3.3.2"
 reqsign-http-send-reqwest = "4.0.7"
 reqsign-file-read-tokio = "3.0.7"
 reqsign-google = { version = "3.2.0", features = ["credential-access-boundary-client-side"] }
+rmcp = { version = "3.9.0", features = ["transport-streamable-http-server"] }
+tower = { version = "0.5", features = ["util"] }
+serde_urlencoded = "0.7"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"
