@@ -1,0 +1,102 @@
+# A spare actor sandbox. spare_pod in kubernetes.rs sets what varies per request: the name, both
+# images, the zones, CPU and memory, and the spare's token and endpoints.
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: terse
+    terse.ai/purpose: actor
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+spec:
+  runtimeClassName: gvisor
+  automountServiceAccountToken: false
+  serviceAccountName: sandbox
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 45
+  nodeSelector:
+    sandbox.gke.io/runtime: gvisor
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: []
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          terse.ai/purpose: actor
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10000
+    runAsGroup: 10000
+    fsGroup: 10000
+  # Under gVisor a file in the image is cached whole in the sandbox's own memory, while a file on a
+  # volume is mapped lazily from the node's page cache, so the runtime binaries run from a copy.
+  initContainers:
+    - name: runtime-files
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -ec
+        - cp /usr/local/bin/durable-actors /runtime/ && if [ -x /usr/local/bin/bun ]; then cp /usr/local/bin/bun /runtime/; fi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          ephemeral-storage: 256Mi
+        limits:
+          ephemeral-storage: 8Gi
+      volumeMounts:
+        - name: runtime
+          mountPath: /runtime
+  containers:
+    - name: runtime
+      imagePullPolicy: IfNotPresent
+      command: [/runtime/durable-actors]
+      env:
+        - name: DURABLE_ACTORS_BUN
+          value: /runtime/bun
+        - name: DURABLE_ACTORS_PROCESS_ROLE
+          value: spare
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          ephemeral-storage: 256Mi
+        limits:
+          ephemeral-storage: 8Gi
+      readinessProbe:
+        exec:
+          command: [/usr/bin/test, -f, /tmp/durable-actors-spare-ready]
+        periodSeconds: 1
+        failureThreshold: 3
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: customer
+          mountPath: /customer
+        - name: runtime
+          mountPath: /runtime
+          readOnly: true
+  volumes:
+    - name: tmp
+      emptyDir:
+        sizeLimit: 7Gi
+    - name: customer
+      emptyDir:
+        sizeLimit: 1Gi
+    - name: runtime
+      emptyDir:
+        sizeLimit: 256Mi

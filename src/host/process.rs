@@ -643,7 +643,8 @@ fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Comma
         }
         command
     } else {
-        let mut command = Command::new("bun");
+        let mut command =
+            Command::new(std::env::var("DURABLE_ACTORS_BUN").unwrap_or_else(|_| "bun".into()));
         command.args([
             "--eval",
             "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runActorHost\"]())",
