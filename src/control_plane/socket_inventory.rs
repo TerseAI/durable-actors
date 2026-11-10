@@ -77,6 +77,7 @@ fn merge_rooms(
                 actor_id: room.actor.actor_id,
                 status: ActorResidency::Dormant,
                 last_active_at_ms: None,
+                database_bytes: None,
                 connections: vec![],
                 waiting: None,
             });

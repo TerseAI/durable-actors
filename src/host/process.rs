@@ -157,6 +157,7 @@ pub(super) async fn serve_assigned_host(
         config.resources.clone(),
         executor_connection.executor(),
         host.status(),
+        database.clone(),
     )?;
     if let Some(readiness) = readiness {
         let _ = readiness.send(Ok(ready));

@@ -31,6 +31,16 @@ impl LifecycleTransport for ControlPlaneClient {
     }
 }
 
+pub(super) trait DatabaseSize: Send + Sync {
+    fn database_bytes(&self) -> Option<u64>;
+}
+
+impl DatabaseSize for super::HostDatabase {
+    fn database_bytes(&self) -> Option<u64> {
+        super::HostDatabase::database_bytes(self)
+    }
+}
+
 pub(super) struct HostLifecycle {
     commands: mpsc::Sender<LifecycleKind>,
     task: JoinHandle<()>,
@@ -43,12 +53,14 @@ impl HostLifecycle {
         resources: ResourceLimits,
         executor: Arc<dyn ActorExecutor>,
         status: watch::Receiver<ActorStatus>,
+        database: Arc<dyn DatabaseSize>,
     ) -> Result<Self> {
         let (commands, receiver) = mpsc::channel(2);
         let reporter = Reporter {
             transport,
             executor,
             status,
+            database,
             report: LifecycleReport {
                 kind: LifecycleKind::Started,
                 owner_epoch,
@@ -59,6 +71,7 @@ impl HostLifecycle {
                 resident: None,
                 last_active_at_ms: None,
                 waiting: Vec::new(),
+                database_bytes: None,
             },
         };
         let task = tokio::spawn(reporter.run(receiver));
@@ -85,6 +98,7 @@ struct Reporter {
     transport: Arc<dyn LifecycleTransport>,
     executor: Arc<dyn ActorExecutor>,
     status: watch::Receiver<ActorStatus>,
+    database: Arc<dyn DatabaseSize>,
     report: LifecycleReport,
 }
 
@@ -132,6 +146,7 @@ impl Reporter {
         let status = self.status.borrow_and_update().clone();
         self.report.waiting = status.waiting;
         self.report.last_active_at_ms = status.last_active_at_ms;
+        self.report.database_bytes = self.database.database_bytes();
         if kind == LifecycleKind::Stopped {
             self.report.resident = Some(false);
             self.report.waiting.clear();

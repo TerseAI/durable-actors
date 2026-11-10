@@ -10,6 +10,14 @@ impl LifecycleTransport for Transport {
     }
 }
 
+struct Database;
+
+impl DatabaseSize for Database {
+    fn database_bytes(&self) -> Option<u64> {
+        Some(8192)
+    }
+}
+
 struct Executor;
 
 #[async_trait]
@@ -39,6 +47,7 @@ async fn reports_activation_heartbeat_and_graceful_shutdown() -> Result<()> {
         ResourceLimits::default(),
         Arc::new(Executor),
         observed,
+        Arc::new(Database),
     )?;
     let started = received.recv().await.unwrap();
     assert_eq!(started.kind, LifecycleKind::Started);
@@ -60,6 +69,7 @@ async fn reports_activation_heartbeat_and_graceful_shutdown() -> Result<()> {
     assert_eq!(heartbeat.resident, Some(true));
     assert_eq!(heartbeat.waiting[0].operation, "increment");
     assert_eq!(heartbeat.last_active_at_ms, Some(started.occurred_at_ms));
+    assert_eq!(heartbeat.database_bytes, Some(8192));
     drop(status);
     tokio::task::yield_now().await;
     lifecycle.draining();

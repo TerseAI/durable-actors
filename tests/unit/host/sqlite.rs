@@ -355,3 +355,20 @@ async fn fields_preserve_json_text_and_replacement_removes_missing_names() -> Re
     assert_eq!(fields(&database).await?, json!({"count": 3}));
     Ok(())
 }
+
+#[tokio::test]
+async fn measures_the_database_after_each_commit() -> Result<()> {
+    let (_directory, database) = database().await?;
+    let opened = database.bytes();
+    assert!(opened > 0);
+    exec(&database, "CREATE TABLE blobs (value BLOB)", vec![], false).await?;
+    exec(
+        &database,
+        "INSERT INTO blobs VALUES (?)",
+        vec![SqlValue::Blob(vec![7; 64 * 1024])],
+        false,
+    )
+    .await?;
+    assert!(database.bytes() >= opened + 64 * 1024);
+    Ok(())
+}

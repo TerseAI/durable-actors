@@ -45,6 +45,8 @@ pub(crate) struct LifecycleReport {
     #[serde(default)]
     pub last_active_at_ms: Option<u64>,
     pub waiting: Vec<WaitingOperation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -289,6 +291,7 @@ impl ActorInventoryReader for LifecycleStore {
                 actor_id: event.actor.actor_id,
                 status,
                 last_active_at_ms: event.report.last_active_at_ms,
+                database_bytes: event.report.database_bytes,
                 connections: Vec::new(),
                 waiting: match status {
                     ActorResidency::Unknown => None,

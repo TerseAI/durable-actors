@@ -85,6 +85,7 @@ impl CommitOrigin {
 pub(crate) struct HostDatabase {
     commands: mpsc::Sender<Command>,
     version: Arc<AtomicU64>,
+    bytes: Arc<AtomicU64>,
     pub(super) stopped: CancellationToken,
     storage: Arc<dyn ActorStorage>,
 }
@@ -99,6 +100,7 @@ impl HostDatabase {
     ) -> Arc<Self> {
         let (commands, incoming) = mpsc::channel(64);
         let version = Arc::new(AtomicU64::new(0));
+        let bytes = Arc::new(AtomicU64::new(0));
         let stopped = CancellationToken::new();
         let service = DatabaseService {
             session: DatabaseSession::new(
@@ -109,6 +111,7 @@ impl HostDatabase {
                 node_cache,
             ),
             version: version.clone(),
+            bytes: bytes.clone(),
             stopped: stopped.clone(),
             ready: BTreeMap::new(),
             next_sequence: 1,
@@ -117,6 +120,7 @@ impl HostDatabase {
         Arc::new(Self {
             commands,
             version,
+            bytes,
             stopped,
             storage,
         })
@@ -166,6 +170,12 @@ impl HostDatabase {
     pub(super) fn state_version(&self) -> Option<u64> {
         let version = self.version.load(Ordering::Acquire);
         (version > 0).then_some(version)
+    }
+
+    /// The last measured database size, kept after eviction so a dormant actor still reports it.
+    pub(super) fn database_bytes(&self) -> Option<u64> {
+        let bytes = self.bytes.load(Ordering::Relaxed);
+        (bytes > 0).then_some(bytes)
     }
 
     pub(super) fn ensure_authority(&self) -> Result<()> {
@@ -390,6 +400,7 @@ struct PendingCompletion {
 struct DatabaseService {
     session: DatabaseSession,
     version: Arc<AtomicU64>,
+    bytes: Arc<AtomicU64>,
     stopped: CancellationToken,
     ready: BTreeMap<u64, PendingCompletion>,
     next_sequence: u64,
@@ -407,8 +418,15 @@ impl DatabaseService {
             if !self.handle(command).await {
                 return;
             }
-            self.version
-                .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+            self.publish_state();
+        }
+    }
+
+    fn publish_state(&self) {
+        self.version
+            .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+        if let Some(bytes) = self.session.database_bytes() {
+            self.bytes.store(bytes, Ordering::Relaxed);
         }
     }
 
@@ -475,8 +493,7 @@ impl DatabaseService {
                 if let Some(txid) = committed {
                     scope.committed.store(txid, Ordering::Release);
                 }
-                self.version
-                    .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+                self.publish_state();
                 let _ = reply.send(Ok(result));
                 true
             }
@@ -532,8 +549,7 @@ impl DatabaseService {
             )
             .await;
         let success = result.is_ok();
-        self.version
-            .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+        self.publish_state();
         let _ = completion.reply.send(result);
         success
     }

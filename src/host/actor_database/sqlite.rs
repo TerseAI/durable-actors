@@ -11,7 +11,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -33,6 +33,7 @@ const ALLOWED_PRAGMAS: [&str; 10] = [
 
 pub(crate) struct SqliteDatabase {
     engine: Arc<Mutex<Engine>>,
+    bytes: Arc<AtomicU64>,
 }
 
 #[derive(Debug)]
@@ -43,10 +44,18 @@ pub(crate) struct Executed {
 
 impl SqliteDatabase {
     pub(crate) async fn open(path: PathBuf) -> Result<Self> {
-        let engine = tokio::task::spawn_blocking(move || Engine::open(path)).await??;
+        let bytes = Arc::new(AtomicU64::new(0));
+        let measured = bytes.clone();
+        let engine = tokio::task::spawn_blocking(move || Engine::open(path, measured)).await??;
         Ok(Self {
             engine: Arc::new(Mutex::new(engine)),
+            bytes,
         })
+    }
+
+    /// The logical database size after the last commit: page count × page size, without the WAL.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
     }
 
     pub(crate) async fn call(&self, call: DatabaseCall) -> Result<Executed> {
@@ -64,10 +73,11 @@ impl SqliteDatabase {
 struct Engine {
     connection: Connection,
     committed: Arc<AtomicBool>,
+    bytes: Arc<AtomicU64>,
 }
 
 impl Engine {
-    fn open(path: PathBuf) -> Result<Self> {
+    fn open(path: PathBuf, bytes: Arc<AtomicU64>) -> Result<Self> {
         let connection = Connection::open(path)?;
         // Commits are durable once replicated, so the local WAL need not fsync each one.
         connection.execute_batch(
@@ -82,10 +92,13 @@ impl Engine {
         }))?;
         let rollback = committed.clone();
         connection.rollback_hook(Some(move || rollback.store(false, Ordering::Relaxed)))?;
-        Ok(Self {
+        let engine = Self {
             connection,
             committed,
-        })
+            bytes,
+        };
+        engine.measure();
+        Ok(engine)
     }
 
     fn call(&mut self, call: DatabaseCall) -> Result<Executed> {
@@ -103,7 +116,25 @@ impl Engine {
         // A statement such as INSERT OR FAIL can commit rows even when it returns an error.
         let committed =
             self.committed.swap(false, Ordering::Relaxed) && self.connection.is_autocommit();
+        if committed {
+            self.measure();
+        }
         Ok(Executed { result, committed })
+    }
+
+    /// The size only feeds observability, so a failed measurement never fails the call.
+    fn measure(&self) {
+        let measured = self.connection.query_row(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |row| row.get::<_, i64>(0),
+        );
+        match measured {
+            Ok(bytes) => self
+                .bytes
+                .store(u64::try_from(bytes).unwrap_or_default(), Ordering::Relaxed),
+            Err(error) => tracing::warn!(%error, "actor database size measurement failed"),
+        }
     }
 
     fn write(&self, call: DatabaseCall) -> Result<DatabaseResult> {

@@ -55,6 +55,12 @@ impl DatabaseSession {
             .filter(|version| *version > 0)
     }
 
+    pub(super) fn database_bytes(&self) -> Option<u64> {
+        self.cached_state
+            .as_ref()
+            .map(|state| state.database.bytes())
+    }
+
     pub(super) async fn prepare_invocation(
         &mut self,
         invocation: &ActorInvocation,

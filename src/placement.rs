@@ -65,6 +65,7 @@ pub struct ActorInstanceOverview {
     pub actor_id: String,
     pub status: ActorResidency,
     pub last_active_at_ms: Option<u64>,
+    pub database_bytes: Option<u64>,
     pub connections: Vec<ActorConnectionInventory>,
     pub waiting: Option<Vec<crate::host_leases::WaitingOperation>>,
 }

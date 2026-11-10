@@ -49,6 +49,7 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
             resources: Default::default(),
             resident: Some(true),
             last_active_at_ms: None,
+            database_bytes: None,
             waiting: Vec::new(),
         },
     };
@@ -338,6 +339,7 @@ async fn unavailable_clickhouse_cannot_block_lifecycle_reports_and_the_queue_is_
             resources: Default::default(),
             resident: None,
             last_active_at_ms: None,
+            database_bytes: None,
             waiting: Vec::new(),
         },
     };
