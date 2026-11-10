@@ -6,18 +6,60 @@ The control plane serves an [MCP](https://modelcontextprotocol.io) endpoint so c
 <control-plane-url>/v1/projects/<project-id>/mcp
 ```
 
-With `durable-actors dev`, connect Claude Code to the local project:
+With `durable-actors dev`, the local project is at `http://127.0.0.1:7100/v1/projects/local/mcp` and needs no credential. When `DURABLE_ACTORS_SECRET` is set on the server, agents send it as a bearer token.
+
+## Claude Code
 
 ```sh
 claude mcp add --transport http durable-actors http://127.0.0.1:7100/v1/projects/local/mcp
 ```
 
-When `DURABLE_ACTORS_SECRET` is set on the server, send it as a bearer token:
+With a secret:
 
 ```sh
 claude mcp add --transport http durable-actors https://actors.example.com/v1/projects/<project-id>/mcp \
   --header "Authorization: Bearer $DURABLE_ACTORS_SECRET"
 ```
+
+## Codex
+
+```sh
+codex mcp add durable-actors --url http://127.0.0.1:7100/v1/projects/local/mcp
+```
+
+With a secret, which Codex reads from the environment when it starts:
+
+```sh
+codex mcp add durable-actors --url https://actors.example.com/v1/projects/<project-id>/mcp \
+  --bearer-token-env-var DURABLE_ACTORS_SECRET
+```
+
+## Cursor
+
+Add the server to `~/.cursor/mcp.json`, or to `.cursor/mcp.json` in one repository:
+
+```json
+{
+  "mcpServers": {
+    "durable-actors": { "url": "http://127.0.0.1:7100/v1/projects/local/mcp" }
+  }
+}
+```
+
+With a secret, which Cursor reads from the environment it starts in:
+
+```json
+{
+  "mcpServers": {
+    "durable-actors": {
+      "url": "https://actors.example.com/v1/projects/<project-id>/mcp",
+      "headers": { "Authorization": "Bearer ${env:DURABLE_ACTORS_SECRET}" }
+    }
+  }
+}
+```
+
+## Tools
 
 | Tool | Description |
 | --- | --- |
