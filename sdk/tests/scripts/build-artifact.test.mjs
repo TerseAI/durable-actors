@@ -91,6 +91,52 @@ test("local bundles resolve the same SDK even outside the project directory", as
     ])
 })
 
+test("bundles skip Bun's runtime transpiler and keep CommonJS globals", async t => {
+    const root = await project(t)
+    const dependency = path.join(root, "node_modules/commonjs-dependency")
+    await mkdir(path.join(dependency, "lib"), { recursive: true })
+    await writeFile(path.join(dependency, "package.json"), JSON.stringify({ name: "commonjs-dependency", main: "index.js", types: "index.d.ts" }))
+    await writeFile(path.join(dependency, "index.d.ts"), "declare const dependency: Record<string, string>\nexport = dependency\n")
+    await writeFile(path.join(dependency, "lib/value.js"), 'module.exports = "bundled"\n')
+    await writeFile(
+        path.join(dependency, "index.js"),
+        `module.exports = {
+            events: typeof require("node:events").EventEmitter,
+            value: require("./lib/value.js"),
+            dirname: __dirname,
+            filename: __filename
+        }`
+    )
+    await writeFile(
+        path.join(root, "src/actors.ts"),
+        'import { Actor } from "durable-actors"; import dependency from "commonjs-dependency"; export class Counter extends Actor { static readonly dependency = dependency }'
+    )
+    const artifact = path.join(root, "dist/actors.mjs")
+    await buildActor(path.join(root, "src/actors.ts"), artifact)
+    assert.equal((await readFile(artifact, "utf8")).split("\n")[0], "// @bun")
+    const { stdout } = await run("bun", ["--eval", `const { actors } = await import(${JSON.stringify(artifact)}); console.log(JSON.stringify(actors.Counter.dependency))`])
+    const { dirname, filename, ...values } = JSON.parse(stdout)
+    assert.deepEqual(values, { events: "function", value: "bundled" })
+    assert.equal(path.basename(filename), "actors.mjs")
+    assert.equal(path.dirname(filename), dirname)
+})
+
+test("actors keep their class names when a dependency declares the same name", async t => {
+    const root = await project(t)
+    const dependency = path.join(root, "node_modules/tally")
+    await mkdir(dependency)
+    await writeFile(path.join(dependency, "package.json"), JSON.stringify({ name: "tally", version: "1.0.0", type: "module", main: "index.js", types: "index.d.ts" }))
+    await writeFile(path.join(dependency, "index.d.ts"), "export declare class Counter {}\n")
+    await writeFile(path.join(dependency, "index.js"), "export class Counter {}\n")
+    await writeFile(
+        path.join(root, "src/actors.ts"),
+        'import { Actor } from "durable-actors"; import { Counter as Tally } from "tally"; export class Counter extends Actor { static readonly tally = Tally }'
+    )
+    const artifact = path.join(root, "dist/actors.mjs")
+    await buildActor(path.join(root, "src/actors.ts"), artifact)
+    await run("bun", [path.join(sdk, "dist/host/validate-artifact.js"), artifact], { timeout: 30_000 })
+})
+
 test("built actors run without source, compiler, or TypeScript loader", { timeout: 30_000 }, async t => {
     const root = await project(t)
     await writeFile(path.join(root, "src/increment.ts"), "export const increment = (amount: number) => amount + 1\n")

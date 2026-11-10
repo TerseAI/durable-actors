@@ -29,7 +29,7 @@ test("actors bundle durable-actors/drizzle with their own drizzle-orm and drizzl
     const bundle = await readFile(artifact, "utf8")
     assert.deepEqual(bundle.match(/^import .* from "[^"]+";$/gm), [
         'import { Actor } from "durable-actors";',
-        'import { createHash } from "node:crypto";'
+        'import { createHash } from "crypto";'
     ])
     assert.match(bundle, /CREATE TABLE `authors`/)
 
