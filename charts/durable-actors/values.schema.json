@@ -266,6 +266,18 @@
         }
       }
     },
+    "nodeCache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "capacityGiB": {"type": "integer", "minimum": 1},
+        "maxEntries": {"type": "integer", "minimum": 1},
+        "hostPath": {"type": "string", "pattern": "^(/.+)?$"},
+        "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+        "resources": {"type": "object"}
+      }
+    },
     "redis": {
       "type": "object",
       "additionalProperties": false,

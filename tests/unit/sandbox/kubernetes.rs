@@ -26,6 +26,7 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
             "us-west4-c".into(),
         ],
         "test-token",
+        Some("http://node-cache:7103"),
     )?;
     assert_eq!(
         pod.metadata
@@ -82,6 +83,10 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
             .allow_privilege_escalation,
         Some(false)
     );
+    assert!(spec.containers[0].env.as_ref().unwrap().iter().any(|var| {
+        var.name == "DURABLE_ACTORS_NODE_CACHE_URL"
+            && var.value.as_deref() == Some("http://node-cache:7103")
+    }));
     Ok(())
 }
 
@@ -103,6 +108,7 @@ async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -
     let (cluster, _server) = fake_cluster(routes).await?;
     cluster
         .retire_spare(&SpareHandle {
+            node: String::new(),
             name: "reserved-pod".into(),
             resource_id: String::new(),
             route: String::new(),
@@ -170,6 +176,7 @@ async fn spares_start_from_one_shared_watch_and_retry_throttled_creates() -> Res
     .await?;
     assert_eq!(first.resource_id, "sandboxes/warm-a/warm-a-uid");
     assert_eq!(first.route, "http://10.0.0.1:7101");
+    assert_eq!(first.node, "sandbox-node-1");
     assert_eq!(second.control_route, "http://10.0.0.2:7102");
     let mut requests = requests.lock().unwrap().clone();
     requests.sort();
@@ -220,6 +227,7 @@ async fn stopped_spares_reads_the_watch_and_confirms_pods_it_has_not_seen() -> R
     ]
     .into_iter()
     .map(|name| SpareHandle {
+        node: String::new(),
         name: name.into(),
         resource_id: format!(
             "sandboxes/{name}/{}-uid",
@@ -308,6 +316,7 @@ async fn fake_cluster(
             namespace: "sandboxes".into(),
             zones: BTreeMap::from([("north-america-west".into(), vec!["us-west4-a".into()])]),
             reap_concurrency: 4,
+            node_cache_url: None,
         },
     );
     Ok((cluster, server))
@@ -339,6 +348,7 @@ fn ready_event(name: &str, ip: &str) -> serde_json::Value {
     let mut pod = pod(name, "Running");
     pod["status"]["podIP"] = json!(ip);
     pod["status"]["conditions"] = json!([{"type":"Ready","status":"True"}]);
+    pod["spec"] = json!({"nodeName":"sandbox-node-1","containers":[]});
     json!({"type":"ADDED","object":pod})
 }
 
@@ -391,6 +401,12 @@ fn spare_pod_manifest_only_uses_fields_kubernetes_knows() {
 }
 
 fn spare_json() -> serde_json::Value {
-    let pod = spare_pod(&spare_request("actor"), &["us-west4-a".into()], "token").unwrap();
+    let pod = spare_pod(
+        &spare_request("actor"),
+        &["us-west4-a".into()],
+        "token",
+        None,
+    )
+    .unwrap();
     serde_json::to_value(pod).unwrap()
 }

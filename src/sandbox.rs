@@ -70,6 +70,8 @@ pub struct SpareHandle {
     pub resource_id: String,
     pub route: String,
     pub canonical_region: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

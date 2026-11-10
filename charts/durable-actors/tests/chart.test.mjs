@@ -180,3 +180,15 @@ test("replicas reach each other's sockets through Redis, which several replicas 
     assert.match(shared.stdout, /name: DURABLE_ACTORS_REDIS_CA_CERT\n\s+valueFrom:\n\s+secretKeyRef: \{name: "actors-credentials", key: "redis-ca"\}/)
     assert.notEqual(render({ redis: { url: "redis://inline" } }).status, 0)
 })
+
+test("runs a node cache on sandbox nodes that sandboxes reach on their own node", () => {
+    assert.doesNotMatch(manifests(), /node-cache/)
+    const output = manifests({ nodeCache: { enabled: true, capacityGiB: 4 } })
+    assert.match(output, /kind: DaemonSet[\s\S]*DURABLE_ACTORS_PROCESS_ROLE, value: node_cache/)
+    assert.match(output, /DURABLE_ACTORS_NODE_CACHE_CAPACITY_BYTES, value: "4294967296"/)
+    assert.match(output, /internalTrafficPolicy: Local/)
+    assert.match(output, /app.kubernetes.io\/name: actors-durable-actors-node-cache}\n      ports:\n        - {protocol: TCP, port: 7103}/)
+    assert.match(output, /DURABLE_ACTORS_GKE_NODE_CACHE_URL\n\s+value: "http:\/\/actors-durable-actors-node-cache.actors.svc.cluster.local:7103"/)
+    assert.match(output, /emptyDir: {sizeLimit: 5Gi}/)
+    assert.doesNotMatch(output, /initContainers/)
+})

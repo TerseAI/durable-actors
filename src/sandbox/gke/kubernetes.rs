@@ -27,6 +27,7 @@ pub(crate) struct GkeConfig {
     pub namespace: String,
     pub zones: BTreeMap<String, Vec<String>>,
     pub reap_concurrency: usize,
+    pub node_cache_url: Option<String>,
 }
 
 /// Reads pod state from one shared watch so provisioning costs a single API call per pod.
@@ -114,7 +115,12 @@ impl SandboxCluster for Kubernetes {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let pod = spare_pod(request, self.zones(&request.canonical_region)?, &token)?;
+        let pod = spare_pod(
+            request,
+            self.zones(&request.canonical_region)?,
+            &token,
+            self.config.node_cache_url.as_deref(),
+        )?;
         let ready = self.start(pod).await?;
         let ip: std::net::IpAddr = ready
             .status
@@ -139,6 +145,11 @@ impl SandboxCluster for Kubernetes {
             control_token: token,
             route: format!("http://{authority}:7101"),
             canonical_region: request.canonical_region.clone(),
+            node: ready
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.node_name.clone())
+                .unwrap_or_default(),
         })
     }
 
@@ -211,7 +222,10 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
         .default_backoff()
         .modify(|pod| {
             pod.managed_fields_mut().clear();
-            pod.spec = None;
+            pod.spec = pod.spec.take().map(|spec| PodSpec {
+                node_name: spec.node_name,
+                ..PodSpec::default()
+            });
         })
         .reflect(writer)
         .for_each(|event| {
@@ -229,7 +243,12 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
 /// The spare sandbox manifest, kept as YAML so its isolation settings read like any other.
 const SPARE_POD: &str = include_str!("spare-pod.yaml");
 
-fn spare_pod(request: &CreateSpareRequest, zones: &[String], token: &str) -> Result<Pod> {
+fn spare_pod(
+    request: &CreateSpareRequest,
+    zones: &[String],
+    token: &str,
+    node_cache_url: Option<&str>,
+) -> Result<Pod> {
     let mut pod: Pod = serde_yaml::from_str(SPARE_POD).context("spare pod manifest")?;
     pod.metadata.name = Some(request.name.clone());
     let spec = pod
@@ -249,7 +268,7 @@ fn spare_pod(request: &CreateSpareRequest, zones: &[String], token: &str) -> Res
     spec.containers[0]
         .env
         .get_or_insert_with(Vec::new)
-        .extend(spare_env(request, token)?);
+        .extend(spare_env(request, token, node_cache_url)?);
     Ok(pod)
 }
 
@@ -284,7 +303,11 @@ fn add_compute(container: &mut Container, resources: &ResourceLimits) {
     }
 }
 
-fn spare_env(request: &CreateSpareRequest, token: &str) -> Result<Vec<EnvVar>> {
+fn spare_env(
+    request: &CreateSpareRequest,
+    token: &str,
+    node_cache_url: Option<&str>,
+) -> Result<Vec<EnvVar>> {
     let control_plane = request
         .control_plane_url
         .as_deref()
@@ -295,6 +318,9 @@ fn spare_env(request: &CreateSpareRequest, token: &str) -> Result<Vec<EnvVar>> {
     ];
     if let Some(endpoint) = &request.otlp_endpoint {
         env.push(env_var("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint));
+    }
+    if let Some(url) = node_cache_url {
+        env.push(env_var("DURABLE_ACTORS_NODE_CACHE_URL", url));
     }
     Ok(env)
 }

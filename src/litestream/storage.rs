@@ -94,6 +94,45 @@ impl SqliteCapture {
         .await
     }
 
+    pub(crate) async fn adopt(
+        replication: Arc<dyn Replicator>,
+        database: tempfile::NamedTempFile,
+        txid: u64,
+        full_snapshots: Option<Duration>,
+        resume: bool,
+    ) -> Result<Self> {
+        let directory = tempfile::tempdir()?;
+        database.persist(directory.path().join("actor.sqlite"))?;
+        Self::open(
+            replication,
+            directory,
+            full_snapshots,
+            resume.then_some(txid),
+        )
+        .await
+    }
+
+    /// A page-for-page copy of the committed database, or `None` when it is larger than
+    /// `max_bytes`. A resumed capture appends page deltas to the history the copy was saved at,
+    /// so unlike `VACUUM INTO` the copy keeps every page where that history put it.
+    pub(crate) async fn export(&self, max_bytes: u64) -> Result<Option<tempfile::NamedTempFile>> {
+        let source = self.path();
+        tokio::task::spawn_blocking(move || {
+            let source_wal = wal_path(&source);
+            if file_size(&source)? + file_size(&source_wal)? > max_bytes {
+                return Ok(None);
+            }
+            let output = tempfile::NamedTempFile::new()?;
+            std::fs::copy(&source, output.path())?;
+            if file_size(&source_wal)? > 0 {
+                std::fs::copy(&source_wal, wal_path(output.path()))?;
+            }
+            fold_wal(output.path())?;
+            Ok(Some(output))
+        })
+        .await?
+    }
+
     pub(crate) fn path(&self) -> PathBuf {
         self.directory
             .as_ref()
@@ -184,6 +223,32 @@ impl Drop for SqliteCapture {
                 drop(directory);
             });
         }
+    }
+}
+
+fn fold_wal(path: &Path) -> Result<()> {
+    let db = rusqlite::Connection::open(path)?;
+    let busy: i64 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    ensure!(busy == 0, "exported database checkpoint was blocked");
+    db.close().map_err(|(_, error)| error)?;
+    ensure!(
+        file_size(&wal_path(path))? == 0,
+        "exported database kept its WAL"
+    );
+    Ok(())
+}
+
+fn wal_path(path: &Path) -> PathBuf {
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    wal.into()
+}
+
+fn file_size(path: &Path) -> Result<u64> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.into()),
     }
 }
 

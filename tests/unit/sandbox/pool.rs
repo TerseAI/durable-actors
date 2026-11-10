@@ -53,7 +53,7 @@ async fn platform_spares_follow_current_images_while_custom_spares_remain_pinned
         registry.register_test_deployment(&custom).await?;
         let old_key = pool.key("im-a", "region");
         let old_name = reserve(&pool.store, &old_key, 1).await?.unwrap();
-        let handle = SpareHandle {
+        let handle = SpareHandle { node: String::new(),
             name: old_name,
             resource_id: "sb-old".into(),
             route: "https://host.test".into(),
@@ -71,7 +71,7 @@ async fn platform_spares_follow_current_images_while_custom_spares_remain_pinned
             pool.store
                 .publish(
                     &build.key,
-                    &SpareHandle {
+                    &SpareHandle { node: String::new(),
                         name: build.name,
                         resource_id: build.image,
                         ..handle.clone()
@@ -81,14 +81,14 @@ async fn platform_spares_follow_current_images_while_custom_spares_remain_pinned
                 .await?;
         }
         assert_eq!(
-            pool.claim(&platform, "region", "platform-host", &pool.config.resources)
+            pool.claim(&platform, "region", "platform-host", &pool.config.resources, None)
                 .await?
                 .unwrap()
                 .resource_id,
             "im-b"
         );
         assert_eq!(
-            pool.claim(&custom, "region", "custom-host", &pool.config.resources)
+            pool.claim(&custom, "region", "custom-host", &pool.config.resources, None)
                 .await?
                 .unwrap()
                 .resource_id,
@@ -109,11 +109,11 @@ async fn custom_resources_cannot_claim_default_sized_spares() -> Result<()> {
         }))?;
         let key = pool.key("im-runtime", "canada");
         let name = reserve(&pool.store, &key, 1).await?.unwrap();
-        let spare = SpareHandle {name, resource_id:"sb-test".into(), route:"https://host.test".into(), canonical_region:"canada".into(), control_route:String::new(), control_token:String::new()};
+        let spare = SpareHandle { node: String::new(),name, resource_id:"sb-test".into(), route:"https://host.test".into(), canonical_region:"canada".into(), control_route:String::new(), control_token:String::new()};
         pool.store.publish(&key, &spare, 600).await?;
         let larger = ResourceLimits {cpu_millis:2000, cpu_limit_millis:None, memory_mib:4096, memory_limit_mib:Some(4096)};
-        assert!(pool.claim(&spec, "canada", "custom", &larger).await?.is_none());
-        assert!(pool.claim(&spec, "canada", "default", &pool.config.resources).await?.is_some());
+        assert!(pool.claim(&spec, "canada", "custom", &larger, None).await?.is_none());
+        assert!(pool.claim(&spec, "canada", "default", &pool.config.resources, None).await?.is_some());
         Ok(())
     }).await
 }
@@ -124,6 +124,7 @@ async fn only_live_claims_can_become_routable() -> Result<()> {
         let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
         pool.reserve_host("session", "host", "revision").await?;
         let spare = SpareHandle {
+            node: String::new(),
             control_route: String::new(),
             control_token: String::new(),
             name: "do-actor-session".into(),
@@ -156,7 +157,7 @@ async fn expired_claims_and_outdated_runtime_spares_cannot_be_reused() -> Result
            pool.reserve_host("expired", "host", "revision").await?;
            let abandoned = reserve(&pool.store, "abandoned-runtime", 1).await?.unwrap();
            pool.store.0.execute("UPDATE durable_actors_spares SET expires_at = clock_timestamp() - interval '1 second'", &[]).await?;
-           let spare = SpareHandle {
+           let spare = SpareHandle { node: String::new(),
 control_route: String::new(),
 control_token: String::new(), name: "do-actor-expired".into(), resource_id: "sb-expired".into(), route: "https://spare.test".into(), canonical_region: "region".into() };
            assert!(pool.remember("host", "revision", &spare).await.is_err());
@@ -185,13 +186,19 @@ async fn concurrent_pool_claims_are_exclusive_and_never_return_assigned_sandboxe
             futures_util::future::try_join_all((0..8).map(|_| reserve(&store, key, 2))).await?;
         let names = names.into_iter().flatten().collect::<Vec<_>>();
         assert_eq!(names.len(), 2);
-        assert!(store.claim(key, "host-early", "revision").await?.is_none());
+        assert!(
+            store
+                .claim(key, "host-early", "revision", None)
+                .await?
+                .is_none()
+        );
         for name in &names {
             assert!(
                 store
                     .publish(
                         key,
                         &SpareHandle {
+                            node: String::new(),
                             control_route: String::new(),
                             control_token: String::new(),
                             name: name.clone(),
@@ -206,13 +213,17 @@ async fn concurrent_pool_claims_are_exclusive_and_never_return_assigned_sandboxe
         }
         assert!(
             store
-                .claim("other-runtime", "host-wrong", "revision")
+                .claim("other-runtime", "host-wrong", "revision", None)
                 .await?
                 .is_none()
         );
         let claims = futures_util::future::try_join_all((0..8).map(|i| {
             let store = &store;
-            async move { store.claim(key, &format!("host-{i}"), "revision").await }
+            async move {
+                store
+                    .claim(key, &format!("host-{i}"), "revision", None)
+                    .await
+            }
         }))
         .await?
         .into_iter()
@@ -220,7 +231,46 @@ async fn concurrent_pool_claims_are_exclusive_and_never_return_assigned_sandboxe
         .collect::<Vec<_>>();
         assert_eq!(claims.len(), 2);
         assert_ne!(claims[0].resource_id, claims[1].resource_id);
-        assert!(store.claim(key, "host-retry", "revision").await?.is_none());
+        assert!(
+            store
+                .claim(key, "host-retry", "revision", None)
+                .await?
+                .is_none()
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn claims_prefer_a_spare_on_the_actors_last_node() -> Result<()> {
+    with_postgres(async |fixture| {
+        let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
+        let key = "runtime-a/region-a/1000/1024";
+        for node in ["node-a", "node-b"] {
+            let name = reserve(&pool.store, key, 2).await?.unwrap();
+            let spare = SpareHandle {
+                node: node.into(),
+                name,
+                resource_id: format!("sb-{node}"),
+                route: "https://spare.test".into(),
+                canonical_region: "region-a".into(),
+                control_route: String::new(),
+                control_token: String::new(),
+            };
+            assert!(pool.store.publish(key, &spare, 600).await?);
+        }
+        let home = pool
+            .store
+            .claim(key, "host-b", "revision", Some("node-b"))
+            .await?;
+        assert_eq!(home.unwrap().node, "node-b");
+        assert_eq!(pool.host_node("host-b").await?.as_deref(), Some("node-b"));
+        let elsewhere = pool
+            .store
+            .claim(key, "host-z", "revision", Some("node-z"))
+            .await?;
+        assert_eq!(elsewhere.unwrap().node, "node-a");
         Ok(())
     })
     .await
@@ -236,6 +286,7 @@ async fn zero_capacity_and_runtime_changes_retire_only_unassigned_spares() -> Re
         assert!(reserve(&store, "runtime", 0).await?.is_none());
         let name = reserve(&store, "runtime", 1).await?.unwrap();
         let spare = SpareHandle {
+            node: String::new(),
             control_route: String::new(),
             control_token: String::new(),
             name,
@@ -245,7 +296,7 @@ async fn zero_capacity_and_runtime_changes_retire_only_unassigned_spares() -> Re
         };
         store.publish("runtime", &spare, 600).await?;
         store.retire_unwanted(&[], false).await?;
-        assert!(store.claim("runtime", "host", "rev").await?.is_none());
+        assert!(store.claim("runtime", "host", "rev", None).await?.is_none());
         assert_eq!(store.retiring().await?.len(), 1);
         assert!(!store.publish("runtime", &spare, 600).await?);
         Ok(())
@@ -281,6 +332,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
                 .publish(
                     &key,
                     &SpareHandle {
+                        node: String::new(),
                         name: name.clone(),
                         resource_id: format!("sb-{project}"),
                         route: format!("https://{project}.test"),

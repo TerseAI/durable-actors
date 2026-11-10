@@ -39,6 +39,7 @@ async fn run(cli: Cli) -> Result<()> {
         "pool_manager" => {
             serve_pool_manager(ControlPlaneProcessConfig::from_env()?, shutdown).await
         }
+        "node_cache" => durable_actors::node_cache::serve_node_cache(shutdown).await,
         role => durable_actors::host::serve_role(role, shutdown).await,
     }
 }

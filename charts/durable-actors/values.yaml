@@ -67,6 +67,20 @@ telemetry:
     resources:
       requests: {cpu: 250m, memory: 512Mi}
       limits: {memory: 1Gi}
+# Caches actor code and state on each sandbox node's disk so cold starts skip GCS.
+nodeCache:
+  enabled: false
+  capacityGiB: 20
+  # Each entry holds about 350 bytes of the cache's memory, whatever its size on disk.
+  maxEntries: 500000
+  # A node directory keeps the cache through restarts and upgrades of the cache itself; empty
+  # keeps it in a volume that lives and dies with each cache pod.
+  hostPath: ""
+  # Node labels the cache also requires, such as local SSD when hostPath must land on it.
+  nodeSelector: {}
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 256Mi}
 resources:
   requests: {cpu: 250m, memory: 512Mi}
   limits: {memory: 1Gi}

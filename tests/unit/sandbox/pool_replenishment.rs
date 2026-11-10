@@ -5,6 +5,7 @@ use crate::sandbox::{
 
 fn handle(name: String) -> SpareHandle {
     SpareHandle {
+        node: String::new(),
         resource_id: format!("sb-{name}"),
         name,
         route: "https://host.test".into(),
@@ -24,7 +25,7 @@ async fn fixed_capacity_is_replenished_after_claims_across_controllers() -> Resu
             for _ in 0..2 {
                 assert!(
                     first
-                        .claim("busy", &format!("host-{index}"), "revision")
+                        .claim("busy", &format!("host-{index}"), "revision", None)
                         .await?
                         .is_none()
                 );
@@ -40,7 +41,7 @@ async fn fixed_capacity_is_replenished_after_claims_across_controllers() -> Resu
         for index in 0..3 {
             assert!(
                 first
-                    .claim("busy", &format!("assigned-{index}"), "revision")
+                    .claim("busy", &format!("assigned-{index}"), "revision", None)
                     .await?
                     .is_some()
             );
@@ -101,7 +102,7 @@ async fn expiring_spares_stay_claimable_until_a_replacement_is_ready() -> Result
         store.publish("pool", &handle(new.clone()), 600).await?;
         store.replenish("pool", &config, 8).await?;
         assert_eq!(database.query_one("SELECT status FROM durable_actors_spares WHERE name = $1", &[&old]).await?.get::<_, &str>(0), "retiring");
-        assert_eq!(store.claim("pool", "host", "rev").await?.unwrap().name, new);
+        assert_eq!(store.claim("pool", "host", "rev", None).await?.unwrap().name, new);
         Ok(())
     }).await
 }
@@ -203,7 +204,7 @@ async fn a_stalled_region_does_not_block_claim_replenishment_in_another_region()
         let guard = stop.clone().drop_guard();
         let key = pool.key("im-runtime", "fast");
         wait_for_ready(&database, &key).await?;
-        assert!(pool.claim(&spec, "fast", "host", &pool.config.resources).await?.is_some());
+        assert!(pool.claim(&spec, "fast", "host", &pool.config.resources, None).await?.is_some());
         wait_for_ready(&database, &key).await?;
         assert_eq!(database.query_one("SELECT count(*) FROM durable_actors_spares WHERE pool_key = $1 AND status = 'starting'", &[&pool.key("im-runtime", "slow")]).await?.get::<_, i64>(0), 1);
         drop(guard);
@@ -237,6 +238,7 @@ impl SandboxProvider for RegionalProvider {
             std::future::pending::<()>().await;
         }
         Ok(SpareHandle {
+            node: String::new(),
             canonical_region: request.canonical_region.clone(),
             ..handle(request.name.clone())
         })

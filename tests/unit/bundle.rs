@@ -49,7 +49,7 @@ async fn bundle_downloads_are_bounded_until_their_bodies_finish() -> Result<()> 
     let root = tempfile::tempdir()?;
     let directory = root.path().to_owned();
     let install = AbortOnDropHandle::new(tokio::spawn(async move {
-        bundle.install(&directory, &storage).await
+        bundle.install(&directory, &storage, None).await
     }));
     tokio::time::timeout(Duration::from_secs(5), async {
         while requests.load(Ordering::SeqCst) < MAX_CONCURRENT_DOWNLOADS {
@@ -179,4 +179,95 @@ fn python_code_manifests_include_the_entrypoint_and_installed_dependencies() -> 
     assert_eq!(decoded.entrypoint()?, "actors.pyz");
     assert_eq!(decoded.files.len(), 2);
     Ok(())
+}
+
+#[tokio::test]
+async fn node_cache_hits_skip_gcs_and_misses_fill_the_cache() -> Result<()> {
+    use axum::{Router, extract::Path as UrlPath, http::StatusCode, routing::get};
+    use google_cloud_auth::credentials::anonymous;
+
+    let cached = artifact("actors.mjs", b"cached");
+    let missing = artifact("python/1.py", b"code");
+    let gcs_requests = Arc::new(AtomicUsize::new(0));
+    let gcs = Router::new().fallback({
+        let gcs_requests = gcs_requests.clone();
+        move || {
+            gcs_requests.fetch_add(1, Ordering::SeqCst);
+            async { ([("x-goog-generation", "123")], "code") }
+        }
+    });
+    let uploads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let hit = cached.sha256.clone();
+    let cache = Router::new().route(
+        "/code/{digest}",
+        get(move |UrlPath(digest): UrlPath<String>| {
+            let found = digest == hit;
+            async move {
+                if found {
+                    Ok("cached")
+                } else {
+                    Err(StatusCode::NOT_FOUND)
+                }
+            }
+        })
+        .put({
+            let uploads = uploads.clone();
+            move |UrlPath(digest): UrlPath<String>, body: Bytes| {
+                uploads.lock().unwrap().push((digest, body));
+                async { StatusCode::CREATED }
+            }
+        }),
+    );
+    let (gcs_url, _gcs) = serve(gcs).await?;
+    let (cache_url, _cache) = serve(cache).await?;
+    let storage = Storage::builder()
+        .with_endpoint(gcs_url)
+        .with_credentials(anonymous::Builder::new().build())
+        .build()
+        .await?;
+    let client = crate::node_cache::NodeCacheConnection::new(&cache_url)?
+        .authorize(crate::control_plane::HostAuthorization::fixed("token")?);
+    let bundle = ActorBundle {
+        bucket: "code-bucket".into(),
+        files: vec![cached, missing.clone()],
+    };
+    let root = tempfile::tempdir()?;
+
+    assert_eq!(
+        bundle.install(root.path(), &storage, Some(&client)).await?,
+        1
+    );
+
+    assert_eq!(gcs_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        tokio::fs::read(root.path().join("actors.mjs")).await?,
+        b"cached"
+    );
+    assert_eq!(
+        tokio::fs::read(root.path().join("python/1.py")).await?,
+        b"code"
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while uploads.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    assert_eq!(
+        *uploads.lock().unwrap(),
+        vec![(missing.sha256, Bytes::from_static(b"code"))]
+    );
+    Ok(())
+}
+
+async fn serve(
+    routes: axum::Router,
+) -> Result<(
+    String,
+    tokio_util::task::AbortOnDropHandle<std::io::Result<()>>,
+)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move { axum::serve(listener, routes).await });
+    Ok((url, tokio_util::task::AbortOnDropHandle::new(server)))
 }

@@ -8,7 +8,7 @@ use moka::{Expiry, future::Cache, ops::compute::Op};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    actor::ActorKey, actor_lifecycle::HEARTBEAT_INTERVAL, host::HostId,
+    actor::ActorKey, actor_lifecycle::HEARTBEAT_INTERVAL, bucket::OwnershipHint, host::HostId,
     host_leases::MAX_HOST_LEASE_DURATION_MS, placement::ObjectPlacement, redis_client::Redis,
 };
 
@@ -16,6 +16,8 @@ use crate::{
 const LIVENESS: Duration = Duration::from_secs(3 * HEARTBEAT_INTERVAL.as_secs());
 // Outlives any lease the host renewed while draining, so discovery never trusts that lease.
 const SHUTDOWN_RETENTION: Duration = Duration::from_millis(2 * MAX_HOST_LEASE_DURATION_MS);
+// Only bounds the store: the ownership CAS rejects a sealed record that changed since.
+const SEALED_OWNER_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[async_trait]
 pub(super) trait RouteStore: Send + Sync {
@@ -27,6 +29,8 @@ pub(super) trait RouteStore: Send + Sync {
     async fn renew(&self, actor: &ActorKey, identity: &RouteIdentity);
     async fn remove(&self, actor: &ActorKey, identity: &RouteIdentity);
     async fn remove_project(&self, project: &str);
+    async fn keep_sealed_owner(&self, actor: &ActorKey, owner: &OwnershipHint);
+    async fn take_sealed_owner(&self, actor: &ActorKey) -> Option<OwnershipHint>;
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -81,6 +85,7 @@ impl RouteEntry {
 // One generation covers every project; a deployment only costs other projects a cache miss.
 pub(super) struct MemoryRoutes {
     entries: Cache<ActorKey, Stamped>,
+    sealed: Cache<ActorKey, OwnershipHint>,
     generation: AtomicU64,
 }
 
@@ -90,6 +95,10 @@ impl Default for MemoryRoutes {
             entries: Cache::builder()
                 .max_capacity(100_000)
                 .expire_after(EntryLifetime)
+                .build(),
+            sealed: Cache::builder()
+                .max_capacity(100_000)
+                .time_to_live(SEALED_OWNER_RETENTION)
                 .build(),
             generation: AtomicU64::new(0),
         }
@@ -128,6 +137,14 @@ impl RouteStore for MemoryRoutes {
 
     async fn remove_project(&self, _: &str) {
         self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    async fn keep_sealed_owner(&self, actor: &ActorKey, owner: &OwnershipHint) {
+        self.sealed.insert(actor.clone(), owner.clone()).await;
+    }
+
+    async fn take_sealed_owner(&self, actor: &ActorKey) -> Option<OwnershipHint> {
+        self.sealed.remove(actor).await
     }
 }
 
@@ -292,6 +309,23 @@ impl RouteStore for RedisRoutes {
         command.arg(self.generation_key(project));
         self.run::<()>(command).await;
     }
+
+    async fn keep_sealed_owner(&self, actor: &ActorKey, owner: &OwnershipHint) {
+        let mut command = redis::cmd("SET");
+        command
+            .arg(self.sealed_owner_key(actor))
+            .arg(serde_json::to_string(owner).expect("ownership hint is serializable"))
+            .arg("PX")
+            .arg(SEALED_OWNER_RETENTION.as_millis() as u64);
+        self.run::<()>(command).await;
+    }
+
+    async fn take_sealed_owner(&self, actor: &ActorKey) -> Option<OwnershipHint> {
+        let mut command = redis::cmd("GETDEL");
+        command.arg(self.sealed_owner_key(actor));
+        let owner: Option<String> = self.run(command).await.flatten();
+        serde_json::from_str(&owner?).ok()
+    }
 }
 
 impl RedisRoutes {
@@ -341,6 +375,14 @@ impl RedisRoutes {
 
     fn generation_key(&self, project: &str) -> String {
         format!("{}:generation:{project}", self.namespace)
+    }
+
+    fn sealed_owner_key(&self, actor: &ActorKey) -> String {
+        format!(
+            "{}:sealed-owner:{}",
+            self.namespace,
+            serde_json::to_string(actor).expect("actor key is serializable")
+        )
     }
 }
 

@@ -56,7 +56,7 @@ fn create_host(
     publisher: Arc<dyn ActorSocketPublisher>,
     replication: Arc<dyn crate::litestream::Replicator>,
 ) -> ActorHost {
-    let database = HostDatabase::new(endpoint.clone(), storage, writer, replication);
+    let database = HostDatabase::new(endpoint.clone(), storage, writer, replication, None);
     ActorHost::new(endpoint, counter(), executor, database, publisher)
 }
 
@@ -1481,6 +1481,7 @@ async fn early_database_preparation_restores_once_without_hydrating_customer_cod
         authority.clone(),
         Arc::new(FakeStateTransport::default()),
         replication().await,
+        None,
     );
     let executor = Arc::new(Executor(AtomicUsize::new(0)));
     for _ in 0..2 {
@@ -1504,6 +1505,35 @@ async fn early_database_preparation_restores_once_without_hydrating_customer_cod
     Ok(())
 }
 
+#[tokio::test]
+async fn unreadable_cached_database_falls_back_to_history() -> Result<()> {
+    let sqlite = crate::test_sqlite::snapshot(json!({"count": 41}))?;
+    let snapshot = StateSnapshot::new(3, 6, "previous".into(), sqlite, json!(41))?.encode()?;
+    let cached = tempfile::NamedTempFile::new()?;
+    std::fs::write(cached.path(), b"not a database")?;
+    let authority = Arc::new(FakeAuthority {
+        activation_state: Some(snapshot),
+        saved_database: Mutex::new(Some(cached)),
+        ..Default::default()
+    });
+    let database = HostDatabase::new(
+        HostEndpoint {
+            id: super::super::HostId::new("cached-host"),
+            route: "http://host".into(),
+        },
+        authority.clone(),
+        Arc::new(FakeStateTransport::default()),
+        replication().await,
+        None,
+    );
+    assert!(matches!(
+        database.activate().await?,
+        PreparedActivation::Hydrate { .. }
+    ));
+    assert_eq!(authority.sqlite_reads.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
 #[derive(Default)]
 struct FakeAuthority {
     persisted: Option<Arc<FakeStateTransport>>,
@@ -1514,6 +1544,7 @@ struct FakeAuthority {
     initial_state: Option<(u64, bytes::Bytes)>,
     activation_state: Option<bytes::Bytes>,
     preparations: Mutex<Vec<u64>>,
+    saved_database: Mutex<Option<tempfile::NamedTempFile>>,
 }
 
 #[async_trait]
@@ -1553,6 +1584,9 @@ impl ActorStorage for FakeAuthority {
             return Ok((StateSnapshot::decode(&bytes)?.state_version, bytes.into()));
         }
         Ok(self.initial_state.clone().unwrap_or_default())
+    }
+    fn take_saved_database(&self, _digest: &str) -> Option<tempfile::NamedTempFile> {
+        self.saved_database.lock().unwrap().take()
     }
     async fn read_sqlite(&self, bytes: &[u8]) -> Result<crate::state_log::SqliteSnapshot> {
         self.sqlite_reads.fetch_add(1, Ordering::SeqCst);
@@ -2457,6 +2491,7 @@ async fn background_database_writes_outlive_invocations() -> Result<()> {
         Arc::new(FakeAuthority::default()),
         writes.clone(),
         replication().await,
+        None,
     );
     let background = database.background(counter());
     let host = ActorHost::new(
@@ -2519,6 +2554,7 @@ async fn background_database_follows_the_owner_epoch_across_activations() -> Res
         Arc::new(FakeAuthority::default()),
         Arc::new(FakeStateTransport::default()),
         replication().await,
+        None,
     );
     let background = database.background(counter());
     let host = ActorHost::new(

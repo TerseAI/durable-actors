@@ -3,6 +3,7 @@ use super::{
     PreparedActivation, PreparedInvocation, sqlite::SqliteDatabase,
 };
 use crate::host::HostEndpoint;
+use crate::node_cache::NodeCacheClient;
 use crate::{
     actor::{
         ActorExecutionResult, ActorInvocation, ActorInvocationFailure, DatabaseCall, DatabaseResult,
@@ -22,6 +23,7 @@ pub(super) struct DatabaseSession {
     storage: Arc<dyn ActorStorage>,
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
     replication: Arc<dyn Replicator>,
+    node_cache: Option<NodeCacheClient>,
     cached_state: Option<ResidentDatabase>,
     prepared_activation: Option<ActorActivation>,
     activation: Option<ActorActivation>,
@@ -33,12 +35,14 @@ impl DatabaseSession {
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         replication: Arc<dyn Replicator>,
+        node_cache: Option<NodeCacheClient>,
     ) -> Self {
         Self {
             endpoint,
             storage,
             state,
             replication,
+            node_cache,
             cached_state: None,
             prepared_activation: None,
             activation: None,
@@ -286,6 +290,36 @@ impl DatabaseSession {
         Ok(version)
     }
 
+    pub(super) async fn save_to_node_cache(&self) -> Result<Option<u64>> {
+        let (Some(cache), Some(cached)) = (&self.node_cache, &self.cached_state) else {
+            return Ok(None);
+        };
+        let Some(snapshot) = cached.published_snapshot() else {
+            return Ok(None);
+        };
+        let database = async {
+            let Some(database) = cached
+                .sqlite
+                .export(crate::node_cache::MAX_DATABASE_BYTES)
+                .await?
+            else {
+                return Ok(None);
+            };
+            cache
+                .store_database(&snapshot.digest, database.path())
+                .await?;
+            Ok(Some(database.as_file().metadata()?.len()))
+        };
+        let (stored, database) = tokio::join!(
+            cache.store_snapshot(&snapshot.digest, snapshot.bytes.clone()),
+            database
+        );
+        if let Err(error) = stored {
+            warn!(error = %format!("{error:#}"), "node cache snapshot save failed");
+        }
+        database
+    }
+
     pub(super) fn reset(&mut self) {
         self.cached_state = None;
         self.prepared_activation = None;
@@ -324,7 +358,7 @@ impl DatabaseSession {
         &self,
         owner_epoch: u64,
         state_version: u64,
-        loaded: &[u8],
+        loaded: &bytes::Bytes,
     ) -> Result<ResidentDatabase> {
         let snapshot = StateSnapshot::decode(loaded)?;
         ensure!(
@@ -336,27 +370,60 @@ impl DatabaseSession {
             "actor snapshot belongs to a newer owner epoch"
         );
         let started = std::time::Instant::now();
-        let sqlite = self.storage.read_sqlite(loaded).await?;
-        let history_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let apply_started = std::time::Instant::now();
+        let digest = SnapshotRef::digest_of(loaded);
         let parent = self.storage.resume_parent(&snapshot, loaded)?;
-        let capture = SqliteCapture::restore(
-            self.replication.clone(),
-            &sqlite.files,
-            sqlite.txid,
-            self.storage.full_snapshots(),
-            parent.is_some(),
-        )
-        .await?;
+        let (capture, source) = self
+            .open_sqlite(&snapshot, loaded, &digest, parent.is_some())
+            .await?;
         tracing::info!(event = "actor_sqlite_restored", host_id = %self.endpoint.id, state_version,
-            history_ms, apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0,
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0);
+            source, duration_ms = started.elapsed().as_secs_f64() * 1000.0);
         let mut cached = ResidentDatabase::open(owner_epoch, capture).await?;
         cached.sqlite_head = parent.filter(|_| cached.synced > 0);
         cached.state_version = state_version;
         cached.published = Some(cached.synced);
+        cached.snapshot = Some(PublishedSnapshot {
+            digest,
+            bytes: loaded.clone(),
+        });
         cached.set_completion(snapshot.request_id, snapshot.completion);
         Ok(cached)
+    }
+
+    async fn open_sqlite(
+        &self,
+        snapshot: &StateSnapshot,
+        loaded: &[u8],
+        digest: &str,
+        resume: bool,
+    ) -> Result<(SqliteCapture, &'static str)> {
+        let full_snapshots = self.storage.full_snapshots();
+        if let Some(database) = self.storage.take_saved_database(digest) {
+            match SqliteCapture::adopt(
+                self.replication.clone(),
+                database,
+                snapshot.sqlite.txid,
+                full_snapshots,
+                resume,
+            )
+            .await
+            {
+                Ok(capture) => return Ok((capture, "node_cache")),
+                Err(error) => tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "cached database could not be opened, restoring from history"
+                ),
+            }
+        }
+        let sqlite = self.storage.read_sqlite(loaded).await?;
+        let capture = SqliteCapture::restore(
+            self.replication.clone(),
+            &sqlite.files,
+            sqlite.txid,
+            full_snapshots,
+            resume,
+        )
+        .await?;
+        Ok((capture, "history"))
     }
 
     async fn publish_result(
@@ -567,11 +634,17 @@ impl DatabaseSession {
             .context("state version overflow")?;
         next_write.object_name = stream.object(next_write.state_version);
         let pending = cached.pending.take().expect("pending commit checked above");
-        cached.sqlite_head = Some(SnapshotRef::new(
+        let bytes = pending.snapshot.encode()?;
+        let head = SnapshotRef::new(
             pending.ticket.object_name.clone(),
             &pending.snapshot,
-            &pending.snapshot.encode()?,
-        ));
+            &bytes,
+        );
+        cached.snapshot = Some(PublishedSnapshot {
+            digest: head.digest.clone(),
+            bytes,
+        });
+        cached.sqlite_head = Some(head);
         cached.state_version = pending.snapshot.state_version;
         cached.published = Some(pending.txid);
         cached.set_completion(pending.snapshot.request_id, pending.snapshot.completion);
@@ -584,6 +657,7 @@ struct ResidentDatabase {
     database: SqliteDatabase,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
+    snapshot: Option<PublishedSnapshot>,
     owner_epoch: u64,
     state_version: u64,
     published: Option<u64>,
@@ -592,6 +666,11 @@ struct ResidentDatabase {
     last_result: Option<Value>,
     next_write: Option<WritePlan>,
     pending: Option<PendingStateCommit>,
+}
+
+struct PublishedSnapshot {
+    digest: String,
+    bytes: bytes::Bytes,
 }
 
 struct PendingStateCommit {
@@ -608,6 +687,7 @@ impl ResidentDatabase {
             synced: sqlite.txid(),
             sqlite,
             sqlite_head: None,
+            snapshot: None,
             owner_epoch,
             state_version: 0,
             published: None,
@@ -616,6 +696,13 @@ impl ResidentDatabase {
             next_write: None,
             pending: None,
         })
+    }
+
+    fn published_snapshot(&self) -> Option<&PublishedSnapshot> {
+        if self.pending.is_some() || self.published != Some(self.synced) {
+            return None;
+        }
+        self.snapshot.as_ref()
     }
 
     fn unpublished(&self, committed: Option<u64>) -> Option<u64> {

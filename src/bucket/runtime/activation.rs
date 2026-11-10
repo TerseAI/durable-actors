@@ -12,6 +12,14 @@ struct ActivationRecovery {
     snapshot_ms: Option<f64>,
 }
 
+#[derive(Default)]
+pub(crate) struct CachedBase {
+    /// The base's SQLite database: its checkpoint is left for SQLite recovery to fetch.
+    pub database: bool,
+    /// The base snapshot, used only when it matches the digest the ownership record names.
+    pub snapshot: Option<Bytes>,
+}
+
 impl RuntimeStorage {
     pub async fn register_activation(
         &self,
@@ -20,6 +28,26 @@ impl RuntimeStorage {
         region: &str,
         new_actor: bool,
         owner_hint: Option<&OwnershipHint>,
+    ) -> Result<LoadedActor> {
+        self.register_activation_with(
+            actor,
+            request,
+            region,
+            new_actor,
+            owner_hint,
+            &CachedBase::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn register_activation_with(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+        region: &str,
+        new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
+        cached: &CachedBase,
     ) -> Result<LoadedActor> {
         actor.validate()?;
         crate::placement::validate_region(region)?;
@@ -53,7 +81,7 @@ impl RuntimeStorage {
                 if previous.is_none_or(|record| record.sealed) {
                     // A sealed base is immutable; only the CAS winner may adopt the downloaded state.
                     let (recovery, replaced) = tokio::join!(
-                        self.recover_activation(previous),
+                        self.recover_activation(previous, cached),
                         self.claim_activation(
                             &mut record,
                             current.as_ref().map(|(generation, _)| *generation)
@@ -62,7 +90,7 @@ impl RuntimeStorage {
                     let (replaced, elapsed) = replaced?;
                     (recovery, replaced, elapsed)
                 } else {
-                    let recovery = self.recover_activation(previous).await?;
+                    let recovery = self.recover_activation(previous, cached).await?;
                     record.base = recovery
                         .snapshot
                         .as_ref()
@@ -267,12 +295,23 @@ impl RuntimeStorage {
         Ok((replaced, started.elapsed().as_secs_f64() * 1_000.0))
     }
 
-    async fn recover_activation(&self, current: Option<&Ownership>) -> Result<ActivationRecovery> {
+    async fn recover_activation(
+        &self,
+        current: Option<&Ownership>,
+        cached: &CachedBase,
+    ) -> Result<ActivationRecovery> {
         let Some(record) = current else {
             return Ok(ActivationRecovery::default());
         };
+        if record.sealed && cached.database {
+            return self
+                .load_activation_snapshot(record, cached.snapshot.as_ref())
+                .await;
+        }
         if record.sealed {
-            return self.recover_sealed_activation(record).await;
+            return self
+                .recover_sealed_activation(record, cached.snapshot.as_ref())
+                .await;
         }
         let started = Instant::now();
         let recovered = self
@@ -289,8 +328,12 @@ impl RuntimeStorage {
         })
     }
 
-    async fn recover_sealed_activation(&self, record: &Ownership) -> Result<ActivationRecovery> {
-        let snapshot = self.load_activation_snapshot(record);
+    async fn recover_sealed_activation(
+        &self,
+        record: &Ownership,
+        cached: Option<&Bytes>,
+    ) -> Result<ActivationRecovery> {
+        let snapshot = self.load_activation_snapshot(record, cached);
         let checkpoint = self.prefetch_activation_checkpoint(record);
         tokio::pin!(snapshot, checkpoint);
         let (mut recovery, (checkpoint, checkpoint_ms)) = tokio::select! {
@@ -312,9 +355,22 @@ impl RuntimeStorage {
         Ok(recovery)
     }
 
-    async fn load_activation_snapshot(&self, record: &Ownership) -> Result<ActivationRecovery> {
+    async fn load_activation_snapshot(
+        &self,
+        record: &Ownership,
+        cached: Option<&Bytes>,
+    ) -> Result<ActivationRecovery> {
         let started = Instant::now();
-        let snapshot = self.load_latest(record, None).await?;
+        let cached = record
+            .base
+            .as_ref()
+            .zip(cached)
+            .filter(|(base, bytes)| base.verify(bytes).is_ok())
+            .map(|(base, bytes)| LoadedSnapshot {
+                reference: base.clone(),
+                bytes: bytes.clone(),
+            });
+        let snapshot = self.load_latest(record, cached).await?;
         Ok(ActivationRecovery {
             snapshot,
             snapshot_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),

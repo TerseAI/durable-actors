@@ -143,6 +143,7 @@ async fn run_activation(
             routing_ms: 0.0,
         }),
         control_plane: None,
+        node_cache: None,
         readiness: Some(readiness),
         listener,
         executor,

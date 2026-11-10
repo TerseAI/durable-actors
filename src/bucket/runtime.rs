@@ -22,6 +22,7 @@ use super::{Bucket, replace};
 
 mod abandoned;
 mod activation;
+pub(crate) use activation::CachedBase;
 mod history;
 pub(crate) use history::ActorStateReader;
 mod session;
@@ -60,6 +61,30 @@ struct Ownership {
 pub struct OwnershipHint {
     generation: i64,
     record: Ownership,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    node: Option<String>,
+}
+
+impl OwnershipHint {
+    pub(crate) fn sealed_base(&self) -> Option<&SnapshotRef> {
+        self.record.base.as_ref().filter(|_| self.record.sealed)
+    }
+
+    pub(crate) fn sealed(&self) -> bool {
+        self.record.sealed
+    }
+
+    pub(crate) fn placement(&self) -> ObjectPlacement {
+        self.record.placement()
+    }
+
+    pub(crate) fn node(&self) -> Option<&str> {
+        self.node.as_deref()
+    }
+
+    pub(crate) fn on_node(self, node: Option<String>) -> Self {
+        Self { node, ..self }
+    }
 }
 
 pub struct LoadedActor {
@@ -196,7 +221,11 @@ impl ObjectPlacementStore for RuntimeStorageReader {
         Ok(match self.load(object).await? {
             Some((generation, record)) => (
                 Some(record.placement()),
-                Some(OwnershipHint { generation, record }),
+                Some(OwnershipHint {
+                    generation,
+                    record,
+                    node: None,
+                }),
             ),
             None => (None, None),
         })

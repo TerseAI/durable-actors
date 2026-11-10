@@ -1,7 +1,10 @@
 #[cfg(test)]
 #[path = "../tests/unit/bundle.rs"]
 mod tests;
-use std::path::{Component, Path};
+use std::{
+    path::{Component, Path},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use anyhow::{Context, Result, ensure};
 use aws_lc_rs::digest::{Context as Digest, SHA256};
@@ -11,6 +14,8 @@ use futures_util::{Stream, TryStreamExt};
 use google_cloud_storage::client::Storage;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
+
+use crate::node_cache::NodeCacheClient;
 
 const MAX_CONCURRENT_DOWNLOADS: usize = 4;
 
@@ -69,25 +74,33 @@ impl ActorBundle {
         Ok(value)
     }
 
-    pub async fn install(&self, root: &Path, storage: &Storage) -> Result<()> {
+    pub async fn install(
+        &self,
+        root: &Path,
+        storage: &Storage,
+        cache: Option<&NodeCacheClient>,
+    ) -> Result<usize> {
         self.validate()?;
         let bucket = format!("projects/_/buckets/{}", self.bucket);
+        let hits = AtomicUsize::new(0);
         futures_util::stream::iter(self.files.iter().map(Ok))
             .try_for_each_concurrent(MAX_CONCURRENT_DOWNLOADS, |file| async {
-                let response = storage
-                    .read_object(&bucket, &file.object)
-                    .set_generation(file.generation)
-                    .send()
-                    .await?;
-                let chunks = futures_util::stream::try_unfold(response, |mut response| async {
-                    match response.next().await {
-                        Some(chunk) => Ok(Some((chunk?, response))),
-                        None => anyhow::Ok(None),
-                    }
-                });
-                install_file(root, file, chunks).await
+                let cached = match cache {
+                    Some(cache) => install_cached(root, file, cache).await,
+                    None => Cached::Unreachable,
+                };
+                if cached == Cached::Installed {
+                    hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                }
+                download(root, file, storage, &bucket).await?;
+                if let (Some(cache), Cached::Missing) = (cache, cached) {
+                    fill_cache(cache.clone(), file.sha256.clone(), root.join(&file.path));
+                }
+                anyhow::Ok(())
             })
-            .await
+            .await?;
+        Ok(hits.into_inner())
     }
 
     pub fn entrypoint(&self) -> Result<&str> {
@@ -119,6 +132,57 @@ impl ActorBundle {
         self.entrypoint()?;
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Cached {
+    Installed,
+    Missing,
+    Unreachable,
+}
+
+async fn install_cached(root: &Path, file: &BundleFile, cache: &NodeCacheClient) -> Cached {
+    let installed = async {
+        let Some(chunks) = cache.code(&file.sha256).await? else {
+            return Ok(Cached::Missing);
+        };
+        install_file(root, file, chunks).await?;
+        anyhow::Ok(Cached::Installed)
+    };
+    installed.await.unwrap_or_else(|error| {
+        tracing::warn!(error = %format!("{error:#}"), path = %file.path, "node cache read failed");
+        let unreachable = error
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_connect);
+        if unreachable {
+            Cached::Unreachable
+        } else {
+            Cached::Missing
+        }
+    })
+}
+
+async fn download(root: &Path, file: &BundleFile, storage: &Storage, bucket: &str) -> Result<()> {
+    let response = storage
+        .read_object(bucket, &file.object)
+        .set_generation(file.generation)
+        .send()
+        .await?;
+    let chunks = futures_util::stream::try_unfold(response, |mut response| async {
+        match response.next().await {
+            Some(chunk) => Ok(Some((chunk?, response))),
+            None => anyhow::Ok(None),
+        }
+    });
+    install_file(root, file, chunks).await
+}
+
+fn fill_cache(cache: NodeCacheClient, digest: String, path: std::path::PathBuf) {
+    tokio::spawn(async move {
+        if let Err(error) = cache.store_code(&digest, &path).await {
+            tracing::warn!(error = %format!("{error:#}"), "node cache fill failed");
+        }
+    });
 }
 
 async fn install_file(

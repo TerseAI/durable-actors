@@ -17,6 +17,7 @@ pub(super) struct WarmHost {
     pub javascript: tokio::process::Child,
     pub storage: WarmStorage,
     pub control_plane: Option<WarmControlPlane>,
+    pub node_cache: Option<crate::node_cache::NodeCacheConnection>,
     pub replication: Arc<dyn Replicator>,
 }
 
@@ -51,7 +52,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let configured_runtime = std::env::var("DURABLE_ACTORS_EXECUTOR_RUNTIME").ok();
     let runtime = executor_runtime(None, configured_runtime.as_deref())?;
     let mut javascript = spawn_executor_process(true, &socket, runtime)?;
-    let (warmed, control_plane) = tokio::join!(
+    let (warmed, control_plane, node_cache) = tokio::join!(
         async {
             tokio::try_join!(
                 async { tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await? },
@@ -63,9 +64,11 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
             )
         },
         prewarm_control_plane(std::env::var("DURABLE_ACTORS_CONTROL_PLANE_URL").ok()),
+        crate::node_cache::NodeCacheConnection::warm_from_env(),
     );
     let (executor, storage) = warmed?;
     let control_plane = Some(control_plane?);
+    let node_cache = node_cache?;
     tokio::fs::write(&ready, b"ready\n").await?;
     tokio::pin!(shutdown);
     let assigned = tokio::select! {
@@ -74,6 +77,12 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         status = javascript.wait() => anyhow::bail!("generic actor executor exited: {}", status?),
         () = &mut shutdown => return Ok(()),
         () = storage.keep_warm() => unreachable!("storage warmup stopped"),
+        () = async {
+            match &node_cache {
+                Some(cache) => cache.keep_warm().await,
+                None => std::future::pending().await,
+            }
+        } => unreachable!("node cache warmup stopped"),
     };
     tokio::fs::remove_file(&ready).await?;
     let timings = HostStartupTimings::start();
@@ -87,6 +96,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
                 javascript,
                 storage,
                 control_plane,
+                node_cache,
                 replication,
             };
             let timings = timings.configuration_loaded();

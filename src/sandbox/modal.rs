@@ -239,6 +239,7 @@ async fn ready_handle(
         sandbox.tunnels(STARTUP_TIMEOUT)
     )?;
     Ok(SpareHandle {
+        node: String::new(),
         name: request.name.clone(),
         resource_id: sandbox.id().into(),
         route: tunnels
