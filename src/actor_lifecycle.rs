@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     actor::ActorKey,
+    actor_resources::DatabasePoint,
     clock::{Clock, SystemClock},
     host_leases::WaitingOperation,
     placement::{
@@ -122,6 +123,16 @@ pub(crate) trait LifecyclePersistence: Send + Sync {
             })
             .collect())
     }
+
+    /// The database sizes one actor's hosts reported between `from` and `to`, oldest first.
+    async fn database_sizes(
+        &self,
+        _actor: &ActorKey,
+        _from: u64,
+        _to: u64,
+    ) -> Result<Vec<DatabasePoint>> {
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait]
@@ -181,6 +192,15 @@ impl LifecycleStore {
             self = self.with_publisher(Arc::new(pubsub::PubSubPublisher::connect(topic).await?));
         }
         Ok(self)
+    }
+
+    pub(crate) async fn database_sizes(
+        &self,
+        actor: &ActorKey,
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<DatabasePoint>> {
+        self.persistence.database_sizes(actor, from, to).await
     }
 
     pub(crate) async fn record(&self, event: LifecycleEvent) -> Result<()> {
@@ -435,6 +455,29 @@ impl LifecyclePersistence for MemoryLifecyclePersistence {
         events.dedup_by(|a, b| a.actor == b.actor && a.event_id == b.event_id);
         events.truncate(residency::EVENT_LIMIT + 1);
         Ok(events)
+    }
+
+    async fn database_sizes(
+        &self,
+        actor: &ActorKey,
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<DatabasePoint>> {
+        let mut points: Vec<_> = self
+            .1
+            .iter()
+            .filter(|(key, event)| {
+                key.0 == *actor && (from..=to).contains(&event.report.occurred_at_ms)
+            })
+            .filter_map(|(_, event)| {
+                Some(DatabasePoint {
+                    at_ms: event.report.occurred_at_ms,
+                    bytes: event.report.database_bytes?,
+                })
+            })
+            .collect();
+        points.sort_by_key(|point| point.at_ms);
+        Ok(points)
     }
 }
 

@@ -1,10 +1,14 @@
 use super::*;
-use crate::actor_lifecycle::{LifecycleEvent, LifecyclePersistence};
+use crate::{
+    actor::ActorKey,
+    actor_lifecycle::{LifecycleEvent, LifecyclePersistence},
+    actor_resources::{DatabasePoint, bucket_ms},
+};
 
 #[async_trait]
 impl LifecyclePersistence for ClickHouseTracePersistence {
     async fn record(&self, event: &LifecycleEvent) -> Result<()> {
-        self.send(event.clone())
+        self.send(QueuedRow::Lifecycle(event.clone()))
     }
 
     async fn latest(&self, project: &str) -> Result<Vec<LifecycleEvent>> {
@@ -47,6 +51,34 @@ impl LifecyclePersistence for ClickHouseTracePersistence {
             .map(|row| Ok(serde_json::from_str(&row.event_json)?))
             .collect()
     }
+
+    async fn database_sizes(
+        &self,
+        actor: &ActorKey,
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<DatabasePoint>> {
+        let rows = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.actor_query(include_str!("database_sizes.sql"), actor, from, to)
+                .param("bucket", bucket_ms(from, to))
+                .fetch_all::<DatabaseSizeRow>(),
+        )
+        .await??;
+        Ok(rows
+            .into_iter()
+            .map(|row| DatabasePoint {
+                at_ms: row.at_ms,
+                bytes: row.bytes,
+            })
+            .collect())
+    }
+}
+
+#[derive(Row, Deserialize)]
+struct DatabaseSizeRow {
+    at_ms: u64,
+    bytes: u64,
 }
 
 #[derive(Row, Deserialize)]

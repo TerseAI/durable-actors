@@ -403,6 +403,37 @@ paths:
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/observe/resources:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: getActorResources
+            tags: [Observability]
+            summary: Get one actor's CPU, memory, database size and kills
+            description: Usage is measured outside the actor about every 5 seconds and includes sandbox overhead, which is what counts against the limits. Samples start when the actor is assigned its sandbox. Database sizes come from lifecycle reports. Series are bucketed to at most 500 points (average CPU, peak memory and size per bucket). The range defaults to the last hour.
+            parameters:
+                - name: actorName
+                  in: query
+                  required: true
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
+                - name: actorId
+                  in: query
+                  required: true
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Usage samples, database sizes and kills, oldest first.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/ActorResources" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
     /v1/projects/{project_id}/observe/events:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -1380,6 +1411,42 @@ components:
                                                 properties:
                                                     id: { type: string }
                                                     operation: { type: string }
+        ActorResources:
+            type: object
+            required: [samples, database, kills]
+            properties:
+                samples:
+                    type: array
+                    items:
+                        type: object
+                        required: [atMs, cpuMillicores, memoryBytes, memoryLimitBytes]
+                        properties:
+                            atMs: { type: integer, minimum: 0 }
+                            cpuMillicores: { type: [integer, "null"], minimum: 0, description: Average over the bucket. Null for a sandbox's first sample. }
+                            memoryBytes: { type: integer, minimum: 0, description: Peak working-set memory in the bucket. }
+                            memoryLimitBytes: { type: [integer, "null"], minimum: 0 }
+                database:
+                    type: array
+                    items:
+                        type: object
+                        required: [atMs, bytes]
+                        properties:
+                            atMs: { type: integer, minimum: 0 }
+                            bytes: { type: integer, minimum: 0, description: SQLite page count × page size. }
+                kills:
+                    type: array
+                    items:
+                        type: object
+                        required: [atMs, reason, message, memoryBytes, memoryLimitBytes]
+                        properties:
+                            atMs: { type: integer, minimum: 0 }
+                            reason:
+                                type: string
+                                enum: [out_of_memory, evicted, killed]
+                                description: out_of_memory when the actor reached its memory limit, evicted when it exceeded its temporary storage limit, killed for other forced stops.
+                            message: { type: [string, "null"] }
+                            memoryBytes: { type: [integer, "null"], minimum: 0, description: The last sample before the kill. }
+                            memoryLimitBytes: { type: [integer, "null"], minimum: 0 }
         ResidencyHistory:
             type: object
             required: [periods, truncated]

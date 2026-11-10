@@ -28,6 +28,13 @@ impl RemoteSandboxProvider {
         })
     }
 
+    /// Sandboxes the platform killed, for the one process that records them.
+    pub(crate) fn kill_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::actor_resources::SandboxKill>> {
+        self.cluster.kill_events()
+    }
+
     async fn assign(
         &self,
         request: &EnsureHostRequest,
@@ -261,6 +268,11 @@ pub(super) trait SandboxCluster: Send + Sync {
     }
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()>;
+    fn kill_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::actor_resources::SandboxKill>> {
+        None
+    }
 }
 
 #[async_trait]

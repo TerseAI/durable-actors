@@ -401,3 +401,132 @@ fn config(url: String) -> ClickHouseConfig {
         password: "local-test-only".into(),
     }
 }
+
+#[tokio::test]
+async fn resources_join_node_collector_usage_to_assigned_actors() -> Result<()> {
+    use crate::{
+        actor_lifecycle::{LifecycleEvent, LifecycleKind, LifecyclePersistence, LifecycleReport},
+        actor_resources::{
+            KillReason, ResourcePersistence, SamplePoint, SandboxAssignment, SandboxKill,
+        },
+    };
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    ingestion::initialize(&store.client, 86400).await?;
+    let actor = crate::actor::ActorKey {
+        project_id: format!("resources-{}", uuid::Uuid::new_v4()),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let uid = uuid::Uuid::new_v4().to_string();
+    let sandbox = format!("sandboxes/do-actor-one/{uid}");
+    // As the node collector writes them; the first scrape predates the assignment.
+    for (seconds, cpu_seconds, memory) in [
+        (95u64, 0.5, 1u64 << 20),
+        (100, 1.0, 2 << 20),
+        (105, 2.0, 3 << 20),
+    ] {
+        for (table, metric, value) in [
+            (
+                "otel_metrics_gauge",
+                "k8s.pod.memory.working_set",
+                memory as f64,
+            ),
+            ("otel_metrics_sum", "k8s.pod.cpu.time", cpu_seconds),
+        ] {
+            store
+                .client
+                .query(&format!(
+                    "INSERT INTO {table} (ResourceAttributes, MetricName, TimeUnix, Value) VALUES \
+                     (map('k8s.namespace.name', 'sandboxes', 'k8s.pod.name', 'do-actor-one', \
+                     'k8s.pod.uid', ?), ?, toDateTime(?), ?)"
+                ))
+                .bind(&uid)
+                .bind(metric)
+                .bind(seconds)
+                .bind(value)
+                .execute()
+                .await?;
+        }
+    }
+    store
+        .record_assignment(SandboxAssignment {
+            actor: actor.clone(),
+            sandbox_id: sandbox.clone(),
+            assigned_at_ms: 97_000,
+            memory_limit_bytes: Some(256 << 20),
+        })
+        .await?;
+    for sandbox_id in [sandbox.clone(), "sandboxes/spare/other".into()] {
+        store
+            .record_kill(SandboxKill {
+                sandbox_id,
+                killed_at_ms: 106_000,
+                reason: KillReason::Killed,
+                message: None,
+            })
+            .await?;
+    }
+    store
+        .record(&LifecycleEvent {
+            organization_id: None,
+            event_id: "session:1".into(),
+            actor: actor.clone(),
+            host_id: "host".into(),
+            session_id: "session".into(),
+            region: "us-east".into(),
+            received_at_ms: 100_000,
+            report: LifecycleReport {
+                kind: LifecycleKind::Heartbeat,
+                owner_epoch: 1,
+                sequence: 1,
+                started_at_ms: 1,
+                occurred_at_ms: 100_000,
+                resources: Default::default(),
+                resident: Some(true),
+                last_active_at_ms: None,
+                database_bytes: Some(8192),
+                waiting: Vec::new(),
+            },
+        })
+        .await?;
+    // The writer inserts each table in turn, so wait until the last one is readable.
+    let history = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let history = ResourcePersistence::history(&store, &actor, 0, 200_000).await?;
+            if !history.kills.is_empty() {
+                return anyhow::Ok(history);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await??;
+    let limit = Some(256 << 20);
+    assert_eq!(
+        history.samples,
+        vec![
+            SamplePoint {
+                at_ms: 100_000,
+                cpu_millicores: Some(100),
+                memory_bytes: 2 << 20,
+                memory_limit_bytes: limit
+            },
+            SamplePoint {
+                at_ms: 105_000,
+                cpu_millicores: Some(200),
+                memory_bytes: 3 << 20,
+                memory_limit_bytes: limit
+            },
+        ]
+    );
+    assert_eq!(history.kills.len(), 1);
+    assert_eq!(history.kills[0].memory_limit_bytes, limit);
+    let sizes = store.database_sizes(&actor, 0, 200_000).await?;
+    assert_eq!(sizes.len(), 1);
+    assert_eq!(sizes[0].bytes, 8192);
+    Ok(())
+}

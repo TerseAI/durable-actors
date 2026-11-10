@@ -105,3 +105,103 @@ FROM actor_lifecycle
 GROUP BY project_id, actor_name, actor_id;
 
 ALTER TABLE actor_lifecycle MODIFY TTL received_at + INTERVAL RETENTION_SECONDS SECOND;
+
+-- Pod usage from the node collector's kubeletstats receiver. Columns match the exporter (v0.163.0),
+-- which inserts by name. SandboxId matches the control plane's pod identity (namespace/name/UID).
+CREATE TABLE IF NOT EXISTS otel_metrics_gauge (
+    ResourceAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    ResourceSchemaUrl String CODEC(ZSTD(1)),
+    ScopeName String CODEC(ZSTD(1)),
+    ScopeVersion String CODEC(ZSTD(1)),
+    ScopeAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    ScopeDroppedAttrCount UInt32 CODEC(ZSTD(1)),
+    ScopeSchemaUrl String CODEC(ZSTD(1)),
+    ServiceName LowCardinality(String) CODEC(ZSTD(1)),
+    MetricName LowCardinality(String) CODEC(ZSTD(1)),
+    MetricDescription String CODEC(ZSTD(1)),
+    MetricUnit String CODEC(ZSTD(1)),
+    Attributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    StartTimeUnix DateTime CODEC(Delta, ZSTD(1)),
+    TimeUnix DateTime CODEC(Delta, ZSTD(1)),
+    Value Float64 CODEC(ZSTD(1)),
+    Flags UInt32 CODEC(ZSTD(1)),
+    Exemplars Nested (
+        FilteredAttributes Map(LowCardinality(String), String),
+        TimeUnix DateTime,
+        Value Float64,
+        SpanId String,
+        TraceId String
+    ) CODEC(ZSTD(1)),
+    SandboxId String MATERIALIZED concat(ResourceAttributes['k8s.namespace.name'], '/',
+        ResourceAttributes['k8s.pod.name'], '/', ResourceAttributes['k8s.pod.uid']),
+    ReceivedAt DateTime64(3) DEFAULT now64(3)
+) ENGINE = MergeTree
+PARTITION BY toDate(ReceivedAt)
+ORDER BY (SandboxId, MetricName, TimeUnix)
+TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
+
+CREATE TABLE IF NOT EXISTS otel_metrics_sum (
+    ResourceAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    ResourceSchemaUrl String CODEC(ZSTD(1)),
+    ScopeName String CODEC(ZSTD(1)),
+    ScopeVersion String CODEC(ZSTD(1)),
+    ScopeAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    ScopeDroppedAttrCount UInt32 CODEC(ZSTD(1)),
+    ScopeSchemaUrl String CODEC(ZSTD(1)),
+    ServiceName LowCardinality(String) CODEC(ZSTD(1)),
+    MetricName LowCardinality(String) CODEC(ZSTD(1)),
+    MetricDescription String CODEC(ZSTD(1)),
+    MetricUnit String CODEC(ZSTD(1)),
+    Attributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    StartTimeUnix DateTime CODEC(Delta, ZSTD(1)),
+    TimeUnix DateTime CODEC(Delta, ZSTD(1)),
+    Value Float64 CODEC(ZSTD(1)),
+    Flags UInt32 CODEC(ZSTD(1)),
+    Exemplars Nested (
+        FilteredAttributes Map(LowCardinality(String), String),
+        TimeUnix DateTime,
+        Value Float64,
+        SpanId String,
+        TraceId String
+    ) CODEC(ZSTD(1)),
+    AggregationTemporality Int32 CODEC(ZSTD(1)),
+    IsMonotonic Boolean CODEC(Delta, ZSTD(1)),
+    SandboxId String MATERIALIZED concat(ResourceAttributes['k8s.namespace.name'], '/',
+        ResourceAttributes['k8s.pod.name'], '/', ResourceAttributes['k8s.pod.uid']),
+    ReceivedAt DateTime64(3) DEFAULT now64(3)
+) ENGINE = MergeTree
+PARTITION BY toDate(ReceivedAt)
+ORDER BY (SandboxId, MetricName, TimeUnix)
+TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
+
+ALTER TABLE otel_metrics_gauge MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
+ALTER TABLE otel_metrics_sum MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
+
+-- Which actor ran in each sandbox, recorded by the control plane when it assigns one.
+CREATE TABLE IF NOT EXISTS actor_sandboxes (
+    project_id String,
+    actor_name String,
+    actor_id String,
+    sandbox_id String,
+    assigned_at_ms UInt64,
+    memory_limit_bytes Nullable(UInt64),
+    received_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree
+ORDER BY (project_id, actor_name, actor_id, sandbox_id)
+TTL received_at + INTERVAL RETENTION_SECONDS SECOND;
+
+ALTER TABLE actor_sandboxes MODIFY TTL received_at + INTERVAL RETENTION_SECONDS SECOND;
+
+CREATE TABLE IF NOT EXISTS sandbox_kills (
+    sandbox_id String,
+    killed_at_ms UInt64,
+    reason LowCardinality(String),
+    message String,
+    received_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree
+ORDER BY sandbox_id
+TTL received_at + INTERVAL RETENTION_SECONDS SECOND;
+
+ALTER TABLE sandbox_kills MODIFY TTL received_at + INTERVAL RETENTION_SECONDS SECOND;

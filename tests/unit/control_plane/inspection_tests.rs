@@ -205,6 +205,7 @@ async fn observability_requires_admin_credentials() -> Result<()> {
 
 struct Fixture {
     lifecycle: LifecycleStore,
+    resources: Arc<crate::actor_resources::MemoryResourcePersistence>,
     traces: crate::request_traces::TraceStore,
     telemetry: Arc<SqliteTracePersistence>,
     live: InProcessFeed,
@@ -250,14 +251,20 @@ impl Fixture {
         .with_invoke_api_key(Some("invoke-key".into()))?;
         let changes = crate::postgres::notifications::ChangeFeed::default();
         let lifecycle = LifecycleStore::default();
+        let resources = Arc::new(crate::actor_resources::MemoryResourcePersistence::default());
         let inspector =
             ActorInspector::new(Arc::new(lifecycle.clone()), store.clone(), changes.clone())
-                .with_traces(traces.clone());
+                .with_traces(traces.clone())
+                .with_resources(crate::actor_resources::ResourceReader::new(
+                    resources.clone(),
+                    lifecycle.clone(),
+                ));
         let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
         Ok(Self {
             lifecycle,
+            resources,
             traces,
             telemetry,
             live,
@@ -1084,5 +1091,102 @@ async fn residency_api_filters_projects_and_actors_and_validates_ranges() -> Res
             .status(),
         StatusCode::UNAUTHORIZED
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resources_api_serves_one_actors_usage_database_and_kills() -> Result<()> {
+    use crate::actor_resources::{
+        KillReason, ResourcePersistence, ResourceSample, SampleSink, SandboxAssignment, SandboxKill,
+    };
+    let fixture = Fixture::start().await?;
+    let now = SystemClock.now_ms()?;
+    let actor = ActorKey {
+        project_id: "alpha".into(),
+        ..fixture.actor("one")
+    };
+    fixture
+        .resources
+        .record_samples(vec![ResourceSample {
+            actor: actor.clone(),
+            sampled_at_ms: now - 1_000,
+            cpu_millicores: 250,
+            memory_bytes: 250 << 20,
+            memory_limit_bytes: Some(256 << 20),
+        }])
+        .await?;
+    fixture
+        .resources
+        .record_assignment(SandboxAssignment {
+            actor: actor.clone(),
+            sandbox_id: "sandboxes/pod/uid".into(),
+            assigned_at_ms: now - 2_000,
+            memory_limit_bytes: Some(256 << 20),
+        })
+        .await?;
+    fixture
+        .resources
+        .record_kill(SandboxKill {
+            sandbox_id: "sandboxes/pod/uid".into(),
+            killed_at_ms: now - 500,
+            reason: KillReason::Killed,
+            message: None,
+        })
+        .await?;
+    fixture
+        .lifecycle
+        .record(LifecycleEvent {
+            organization_id: None,
+            event_id: "session:1".into(),
+            actor,
+            host_id: fixture.host.to_string(),
+            session_id: "session".into(),
+            region: "north-america-east".into(),
+            received_at_ms: now,
+            report: LifecycleReport {
+                kind: LifecycleKind::Heartbeat,
+                owner_epoch: 1,
+                sequence: 1,
+                started_at_ms: 1,
+                occurred_at_ms: now - 200,
+                resources: Default::default(),
+                resident: Some(true),
+                last_active_at_ms: None,
+                waiting: vec![],
+                database_bytes: Some(8192),
+            },
+        })
+        .await?;
+    let base = "/v1/projects/alpha/observe/resources";
+    let resources: Value = fixture
+        .get(&format!("{base}?actorName=Room.with.dots&actorId=one"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(resources["samples"][0]["cpuMillicores"], 250);
+    assert_eq!(resources["samples"][0]["memoryLimitBytes"], 256 << 20);
+    assert_eq!(
+        resources["database"],
+        json!([{"atMs": now - 200, "bytes": 8192}])
+    );
+    assert_eq!(resources["kills"][0]["reason"], "out_of_memory");
+    assert_eq!(resources["kills"][0]["memoryBytes"], 250 << 20);
+    assert!(resources["kills"][0].get("sandboxId").is_none());
+    let other: Value = fixture
+        .get("/v1/projects/beta/observe/resources?actorName=Room.with.dots&actorId=one")
+        .await?
+        .json()
+        .await?;
+    assert_eq!(other, json!({"samples": [], "database": [], "kills": []}));
+    for query in [
+        "?actorName=Room",
+        "?actorName=Room&actorId=one&fromMs=20&toMs=10",
+    ] {
+        assert_eq!(
+            fixture.get(&format!("{base}{query}")).await?.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
     Ok(())
 }

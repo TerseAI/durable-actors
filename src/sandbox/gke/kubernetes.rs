@@ -14,11 +14,11 @@ use kube::{
         watcher,
     },
 };
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tokio_util::task::AbortOnDropHandle;
 
-use super::*;
-use crate::sandbox::kube_retry::retry_throttled;
+use super::{resources, *};
+use crate::{actor_resources::SandboxKill, sandbox::kube_retry::retry_throttled};
 
 const MANAGED: &str = "app.kubernetes.io/managed-by=terse";
 
@@ -35,6 +35,7 @@ pub(super) struct Kubernetes {
     pods: Api<Pod>,
     observed: Store<Pod>,
     changes: watch::Receiver<()>,
+    kills: broadcast::Sender<SandboxKill>,
     config: GkeConfig,
     _watch: AbortOnDropHandle<()>,
 }
@@ -43,11 +44,18 @@ impl Kubernetes {
         let pods = Api::namespaced(client, &config.namespace);
         let (observed, writer) = reflector::store();
         let (changed, changes) = watch::channel(());
-        let watch = AbortOnDropHandle::new(tokio::spawn(observe(pods.clone(), writer, changed)));
+        let (kills, _) = broadcast::channel(64);
+        let watch = AbortOnDropHandle::new(tokio::spawn(observe(
+            pods.clone(),
+            writer,
+            changed,
+            kills.clone(),
+        )));
         Self {
             pods,
             observed,
             changes,
+            kills,
             config,
             _watch: watch,
         }
@@ -153,6 +161,10 @@ impl SandboxCluster for Kubernetes {
         })
     }
 
+    fn kill_events(&self) -> Option<broadcast::Receiver<SandboxKill>> {
+        Some(self.kills.subscribe())
+    }
+
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
         if spare.resource_id.is_empty() {
             let Some(pod) = retry_throttled(|| self.pods.get_opt(&spare.name)).await? else {
@@ -217,7 +229,12 @@ impl SandboxCluster for Kubernetes {
     }
 }
 
-async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>) {
+async fn observe(
+    pods: Api<Pod>,
+    writer: Writer<Pod>,
+    changed: watch::Sender<()>,
+    kills: broadcast::Sender<SandboxKill>,
+) {
     watcher(pods, watcher::Config::default().labels(MANAGED))
         .default_backoff()
         .modify(|pod| {
@@ -230,7 +247,13 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
         .reflect(writer)
         .for_each(|event| {
             match event {
-                Ok(_) => {
+                Ok(event) => {
+                    if let watcher::Event::Apply(pod) | watcher::Event::InitApply(pod) = &event
+                        && let Some(kill) = is_terminal(pod).then(|| resources::kill(pod)).flatten()
+                    {
+                        // Only the pool manager subscribes; elsewhere the send has no receiver.
+                        let _ = kills.send(kill);
+                    }
                     changed.send_replace(());
                 }
                 Err(error) => tracing::warn!(%error, "sandbox pod watch failed"),

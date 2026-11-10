@@ -10,6 +10,7 @@ use super::{
 };
 
 mod kubernetes;
+mod resources;
 pub(crate) use super::remote::validate_image;
 pub(crate) use kubernetes::GkeConfig;
 

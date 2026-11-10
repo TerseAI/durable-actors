@@ -67,6 +67,12 @@ telemetry:
     resources:
       requests: {cpu: 250m, memory: 512Mi}
       limits: {memory: 1Gi}
+  # Samples actor sandbox CPU and memory on each sandbox node into ClickHouse analytics.
+  nodeCollector:
+    enabled: false
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 256Mi}
 # Caches actor code and state on each sandbox node's disk so cold starts skip GCS.
 nodeCache:
   enabled: false

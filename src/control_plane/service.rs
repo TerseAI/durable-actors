@@ -1028,6 +1028,7 @@ pub(crate) struct SandboxHostProvisioner {
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     resource_bounds: Option<crate::sandbox::ResourceBounds>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
+    resources: Option<Arc<dyn crate::actor_resources::ResourcePersistence>>,
     provider: Arc<dyn SandboxProvider>,
     runtime: HostSandboxRuntimeConfig,
     issuer: ActorJwtIssuer,
@@ -1052,6 +1053,15 @@ impl SandboxHostProvisioner {
         self
     }
 
+    /// Records which actor each assigned sandbox runs, so node-collected usage names the actor.
+    pub(crate) fn with_resources(
+        mut self,
+        resources: Arc<dyn crate::actor_resources::ResourcePersistence>,
+    ) -> Self {
+        self.resources = Some(resources);
+        self
+    }
+
     pub(crate) fn with_runtime_access(
         mut self,
         access: Arc<crate::bucket::access::RuntimeAccess>,
@@ -1071,6 +1081,7 @@ impl SandboxHostProvisioner {
             pool: None,
             resource_bounds: None,
             runtime_access: None,
+            resources: None,
             provider,
             runtime,
             issuer,
@@ -1171,6 +1182,30 @@ impl HostProvisioner for SandboxHostProvisioner {
 }
 
 impl SandboxHostProvisioner {
+    /// A failure only leaves this activation's usage unattributed, so it never fails the launch.
+    async fn record_assignment(
+        &self,
+        actor: &ActorKey,
+        resources: &crate::sandbox::ResourceLimits,
+        sandbox_id: &str,
+    ) {
+        use crate::clock::Clock;
+        let Some(persistence) = &self.resources else {
+            return;
+        };
+        let assignment = crate::actor_resources::SandboxAssignment {
+            actor: actor.clone(),
+            sandbox_id: sandbox_id.into(),
+            assigned_at_ms: crate::clock::SystemClock.now_ms().unwrap_or_default(),
+            memory_limit_bytes: resources
+                .memory_limit_mib
+                .map(|mib| u64::from(mib) * 1024 * 1024),
+        };
+        if let Err(error) = persistence.record_assignment(assignment).await {
+            warn!(error = %format!("{error:#}"), sandbox_id, "sandbox assignment was not recorded");
+        }
+    }
+
     async fn launch(
         &self,
         spec: &HostLaunchSpec,
@@ -1325,6 +1360,8 @@ impl SandboxHostProvisioner {
                     },
                 )
                 .await?;
+                self.record_assignment(actor, &request.resources, &provisioning.resource_id)
+                    .await;
             }
             anyhow::Ok(lease)
         }

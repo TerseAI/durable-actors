@@ -1,0 +1,47 @@
+# Runs on each sandbox node, outside the sandboxes, so an actor that runs out of memory can't take
+# its own measurements down. It samples pod CPU time and working set from this node's kubelet and
+# writes them to ClickHouse; the control plane joins pods to actors through the assignments it
+# records. Everything else stays at component defaults.
+extensions:
+  health_check:
+    # The default binds localhost, which Kubernetes probes can't reach.
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  kubelet_stats:
+    collection_interval: 5s
+    auth_type: serviceAccount
+    # The node name is what the kubelet's serving certificate names; the receiver verifies it
+    # against the cluster CA from the service account.
+    endpoint: https://${env:K8S_NODE_NAME}:10250
+    metric_groups: [pod]
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+  # Drops every metric except actor sandboxes' CPU time and working set.
+  filter/actors:
+    error_mode: ignore
+    metric_conditions:
+      - resource.attributes["k8s.namespace.name"] != "${env:SANDBOX_NAMESPACE}"
+      - metric.name != "k8s.pod.cpu.time" and metric.name != "k8s.pod.memory.working_set"
+
+exporters:
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_URL}
+    database: ${env:CLICKHOUSE_DATABASE}
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    # The control plane owns the schema (src/request_traces/persistence/clickhouse/schema.sql).
+    create_schema: false
+    sending_queue:
+      batch: {}
+
+service:
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [kubelet_stats]
+      processors: [memory_limiter, filter/actors]
+      exporters: [clickhouse]

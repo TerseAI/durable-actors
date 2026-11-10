@@ -17,7 +17,7 @@ pub(super) async fn run(
             batch.push(first);
             let deadline = tokio::time::sleep(FLUSH_INTERVAL);
             tokio::pin!(deadline);
-            while batch.lifecycle.len() < MAX_INSERT_ROWS {
+            while batch.len() < MAX_INSERT_ROWS {
                 tokio::select! {
                     _ = &mut deadline => break,
                     report = receiver.recv() => match report {
@@ -32,7 +32,7 @@ pub(super) async fn run(
     tokio::select! {
         _ = work => {},
         _ = stop.cancelled() => {
-            tracing::info!(queued_reports = receiver.len(), "ClickHouse lifecycle writer stopped");
+            tracing::info!(queued_reports = receiver.len(), "ClickHouse writer stopped");
         },
     }
 }
@@ -69,26 +69,53 @@ where
 #[derive(Default)]
 struct Batch {
     lifecycle: Vec<crate::actor_lifecycle::LifecycleEvent>,
+    assignments: Vec<resources::AssignmentRow>,
+    kills: Vec<resources::KillRow>,
     // Released only after the batch is written, so retried rows still count against the bound.
     permits: Vec<OwnedSemaphorePermit>,
 }
 
 impl Batch {
     fn push(&mut self, report: Report) {
-        self.lifecycle.push(report.lifecycle);
+        match report.row {
+            QueuedRow::Lifecycle(event) => self.lifecycle.push(event),
+            QueuedRow::Assignment(assignment) => self
+                .assignments
+                .push(resources::AssignmentRow::from(assignment)),
+            QueuedRow::Kill(kill) => self.kills.push(resources::KillRow::from(kill)),
+        }
         self.permits.push(report.permit);
     }
 
-    async fn write(&self, client: &Client) -> Result<()> {
-        let mut insert = client
-            .insert::<lifecycle::LifecycleRow>("actor_lifecycle")
-            .await?;
-        for event in &self.lifecycle {
-            insert
-                .write(&lifecycle::LifecycleRow::from_event(event)?)
-                .await?;
-        }
-        insert.end().await?;
-        Ok(())
+    fn len(&self) -> usize {
+        self.permits.len()
     }
+
+    async fn write(&self, client: &Client) -> Result<()> {
+        if !self.lifecycle.is_empty() {
+            let rows = self
+                .lifecycle
+                .iter()
+                .map(lifecycle::LifecycleRow::from_event)
+                .collect::<Result<Vec<_>>>()?;
+            insert(client, "actor_lifecycle", &rows).await?;
+        }
+        insert(client, "actor_sandboxes", &self.assignments).await?;
+        insert(client, "sandbox_kills", &self.kills).await
+    }
+}
+
+async fn insert<T>(client: &Client, table: &str, rows: &[T]) -> Result<()>
+where
+    T: clickhouse::RowOwned + clickhouse::RowWrite,
+{
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut insert = client.insert::<T>(table).await?;
+    for row in rows {
+        insert.write(row).await?;
+    }
+    insert.end().await?;
+    Ok(())
 }

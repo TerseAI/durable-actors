@@ -19,8 +19,9 @@ use crate::request_traces::{
 mod ingestion;
 mod lifecycle;
 mod queries;
+mod resources;
 
-// Lifecycle rows stay queued while ClickHouse is slow; the bound covers memory, not report count.
+// Rows stay queued while ClickHouse is slow; the bound covers memory, not report count.
 const MAX_QUEUED_ROWS: usize = 100_000;
 
 #[derive(Clone)]
@@ -31,7 +32,8 @@ pub struct ClickHouseConfig {
     pub password: String,
 }
 
-/// Reads request spans and actor logs the collector writes, and writes actor lifecycle events.
+/// Reads request spans, actor logs and pod usage the collectors write, and writes actor lifecycle
+/// events, sandbox assignments and kills.
 pub(crate) struct ClickHouseTracePersistence {
     client: Client,
     sender: mpsc::UnboundedSender<Report>,
@@ -75,14 +77,14 @@ impl ClickHouseTracePersistence {
         })
     }
 
-    fn send(&self, lifecycle: crate::actor_lifecycle::LifecycleEvent) -> Result<()> {
+    fn send(&self, row: QueuedRow) -> Result<()> {
         let permit = self
             .queued_rows
             .clone()
             .try_acquire_owned()
             .map_err(|error| {
                 anyhow::anyhow!(
-                    "ClickHouse lifecycle queue unavailable: {}",
+                    "ClickHouse write queue unavailable: {}",
                     match error {
                         TryAcquireError::NoPermits => "full",
                         TryAcquireError::Closed => "closed",
@@ -90,8 +92,8 @@ impl ClickHouseTracePersistence {
                 )
             })?;
         self.sender
-            .send(Report { lifecycle, permit })
-            .map_err(|_| anyhow::anyhow!("ClickHouse lifecycle queue unavailable: closed"))
+            .send(Report { row, permit })
+            .map_err(|_| anyhow::anyhow!("ClickHouse write queue unavailable: closed"))
     }
 }
 
@@ -147,8 +149,14 @@ impl TraceQueries for ClickHouseTracePersistence {
 }
 
 struct Report {
-    lifecycle: crate::actor_lifecycle::LifecycleEvent,
+    row: QueuedRow,
     permit: OwnedSemaphorePermit,
+}
+
+enum QueuedRow {
+    Lifecycle(crate::actor_lifecycle::LifecycleEvent),
+    Assignment(crate::actor_resources::SandboxAssignment),
+    Kill(crate::actor_resources::SandboxKill),
 }
 
 #[cfg(test)]

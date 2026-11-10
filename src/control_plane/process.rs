@@ -4,6 +4,7 @@ use anyhow::{Context, Result, ensure};
 use tracing::{info, warn};
 
 use crate::{
+    actor_resources::{MemoryResourcePersistence, ResourcePersistence, SandboxKill},
     bucket::{GcsBucket, RuntimeStorageReader},
     postgres::PostgresDatabase,
     redis_client::{Redis, RedisConfig},
@@ -186,7 +187,8 @@ async fn control_plane_routes(
         stop.clone(),
     )
     .await?;
-    let (traces, lifecycle) = telemetry_stores(&config.storage, redis.clone(), stop.clone())?;
+    let (traces, lifecycle, resources) =
+        telemetry_stores(&config.storage, redis.clone(), stop.clone())?;
     let retention = config
         .jwt_max_lifetime
         .saturating_add(Duration::from_millis(
@@ -264,6 +266,7 @@ async fn control_plane_routes(
     )?;
     let public_origin = config.sandbox_provider.public_origin.clone();
     let gateway = super::gateway::Gateway::new(&issuer, public_origin.clone(), socket_gateway)?;
+    let records_sandboxes = matches!(config.sandbox_provider.backend, SandboxBackend::Gke(_));
     let mut provisioner = sandbox_provisioner(
         config.sandbox_provider,
         &issuer,
@@ -273,6 +276,9 @@ async fn control_plane_routes(
         connections,
     )
     .await?;
+    if records_sandboxes {
+        provisioner = provisioner.with_resources(resources.clone());
+    }
     if let Some(admission) = admission {
         provisioner = provisioner.with_actor_admission(admission.clone());
         lifecycle = lifecycle.with_observer(admission);
@@ -316,7 +322,11 @@ async fn control_plane_routes(
         .with_invoke_api_key(config.invoke_api_key)?;
     let inspector =
         super::inspection::ActorInspector::new(inventory, storage.clone(), service.changes.clone())
-            .with_traces(traces);
+            .with_traces(traces)
+            .with_resources(crate::actor_resources::ResourceReader::new(
+                resources,
+                service.lifecycle.clone(),
+            ));
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin.clone()))
         .merge(discovery);
@@ -348,7 +358,11 @@ fn telemetry_stores(
     storage: &ControlPlaneStorageConfig,
     redis: Option<Redis>,
     stop: tokio_util::sync::CancellationToken,
-) -> Result<(TraceStore, crate::actor_lifecycle::LifecycleStore)> {
+) -> Result<(
+    TraceStore,
+    crate::actor_lifecycle::LifecycleStore,
+    Arc<dyn ResourcePersistence>,
+)> {
     let live: Arc<dyn LiveFeed> = match redis {
         Some(redis) => Arc::new(RedisFeed::new(redis)),
         None => Arc::new(InProcessFeed::default()),
@@ -357,6 +371,7 @@ fn telemetry_stores(
         AnalyticsBackend::None => Ok((
             TraceStore::new(Arc::new(NoTraceQueries), live),
             Default::default(),
+            Arc::new(MemoryResourcePersistence::default()),
         )),
         AnalyticsBackend::ClickHouse(config) => {
             let persistence = Arc::new(ClickHouseTracePersistence::start(
@@ -366,10 +381,33 @@ fn telemetry_stores(
             )?);
             Ok((
                 TraceStore::new(persistence.clone(), live),
-                crate::actor_lifecycle::LifecycleStore::new(persistence),
+                crate::actor_lifecycle::LifecycleStore::new(persistence.clone()),
+                persistence,
             ))
         }
     }
+}
+
+/// Records sandbox kills in ClickHouse. Without analytics there is nowhere to keep them.
+fn record_sandbox_kills(
+    storage: &ControlPlaneStorageConfig,
+    kills: Option<tokio::sync::broadcast::Receiver<SandboxKill>>,
+    stop: tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    let (Some(kills), AnalyticsBackend::ClickHouse(config)) = (kills, &storage.analytics) else {
+        return Ok(());
+    };
+    let persistence = Arc::new(ClickHouseTracePersistence::start(
+        config.clone(),
+        storage.trace_retention,
+        stop.clone(),
+    )?);
+    tokio::spawn(crate::actor_resources::record_kills(
+        kills,
+        persistence,
+        stop,
+    ));
+    Ok(())
 }
 
 async fn sandbox_provisioner(
@@ -380,7 +418,7 @@ async fn sandbox_provisioner(
     stop: tokio_util::sync::CancellationToken,
     connections: crate::sandbox::connections::HostConnections,
 ) -> Result<super::service::SandboxHostProvisioner> {
-    let provider = sandbox_provider(&config, connections).await?;
+    let (provider, _) = sandbox_provider(&config, connections).await?;
     let pool = crate::sandbox::pool::SparePool::with_runtime_images(
         database,
         provider.clone(),
@@ -402,11 +440,14 @@ async fn sandbox_provisioner(
 async fn sandbox_provider(
     config: &SandboxProviderConfig,
     connections: crate::sandbox::connections::HostConnections,
-) -> Result<Arc<dyn crate::sandbox::SandboxProvider>> {
+) -> Result<(
+    Arc<dyn crate::sandbox::SandboxProvider>,
+    Option<tokio::sync::broadcast::Receiver<SandboxKill>>,
+)> {
     let secrets = Arc::new(crate::sandbox::secrets::KubernetesSecrets::new(
         config.secret_namespace.clone(),
     ));
-    Ok(Arc::new(match &config.backend {
+    let provider = match &config.backend {
         SandboxBackend::Gke(gke) => {
             crate::sandbox::gke::provider(gke.clone(), secrets, connections).await?
         }
@@ -422,7 +463,9 @@ async fn sandbox_provider(
             )
             .await?
         }
-    }))
+    };
+    let kills = provider.kill_events();
+    Ok((Arc::new(provider), kills))
 }
 
 /// Runs the one replica that fills, trims and cleans up the warm pool for every serving replica.
@@ -437,7 +480,7 @@ pub async fn serve_pool_manager(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let provider = sandbox_provider(
+    let (provider, kills) = sandbox_provider(
         &config.sandbox_provider,
         crate::sandbox::connections::HostConnections::new()?,
     )
@@ -467,6 +510,7 @@ pub async fn serve_pool_manager(
         .await
         .context("bind durable-actors pool manager")?;
     let stop = tokio_util::sync::CancellationToken::new();
+    record_sandbox_kills(&config.storage, kills, stop.clone())?;
     let housekeeping = tokio::spawn(pool.run(registry, stop.clone()));
     info!(bind = %config.bind, "durable-actors pool manager is ready");
     axum::serve(listener, routes)

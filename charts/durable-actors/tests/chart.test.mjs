@@ -192,3 +192,22 @@ test("runs a node cache on sandbox nodes that sandboxes reach on their own node"
     assert.match(output, /emptyDir: {sizeLimit: 5Gi}/)
     assert.doesNotMatch(output, /initContainers/)
 })
+
+test("samples actor pods on each sandbox node with read-only kubelet stats access", () => {
+    assert.doesNotMatch(manifests({ telemetry: { nodeCollector: { enabled: true } } }), /node-collector/)
+    const output = manifests({
+        telemetry: { nodeCollector: { enabled: true } },
+        analytics: { backend: "clickhouse", clickhouse: {
+            url: "https://clickhouse.example.com:8443", database: "actors", user: "writer",
+            passwordSecretKey: "clickhouse-password"
+        } }
+    })
+    assert.match(output, /kind: DaemonSet\nmetadata:\n  name: \S+-node-collector/)
+    assert.match(output, /kind: ClusterRole\nmetadata:\n  name: actors-\S+-node-collector\n/)
+    assert.match(output, /resources: \[nodes\/stats\]\n\s+verbs: \[get\]/)
+    assert.doesNotMatch(output, /nodes\/proxy/)
+    assert.match(output, /kubelet_stats:/)
+    assert.match(output, /name: SANDBOX_NAMESPACE, value: "actors-actors"/)
+    assert.match(output, /fieldPath: spec.nodeName/)
+    assert.doesNotMatch(output, /insecure_skip_verify/)
+})

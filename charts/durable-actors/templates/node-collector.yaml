@@ -1,0 +1,97 @@
+{{- if and .Values.telemetry.nodeCollector.enabled (eq .Values.analytics.backend "clickhouse") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "actors.nodeCollectorName" . }}
+data:
+  collector.yaml: |
+    {{- .Files.Get "files/node-collector.yaml" | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "actors.nodeCollectorName" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "actors.nodeCollectorClusterName" . }}
+rules:
+  # The kubelet's stats summary only: no pods, logs, exec or kubelet proxy.
+  - apiGroups: [""]
+    resources: [nodes/stats]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "actors.nodeCollectorClusterName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "actors.nodeCollectorName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "actors.nodeCollectorClusterName" . }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "actors.nodeCollectorName" . }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "actors.nodeCollectorName" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "actors.nodeCollectorName" . }}
+      annotations:
+        checksum/config: {{ .Files.Get "files/node-collector.yaml" | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "actors.nodeCollectorName" . }}
+      nodeSelector:
+        sandbox.gke.io/runtime: gvisor
+      tolerations:
+        - {key: sandbox.gke.io/runtime, operator: Equal, value: gvisor, effect: NoSchedule}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: collector
+          image: {{ include "actors.image" .Values.images.collector | quote }}
+          args: ["--config=/etc/otelcol/collector.yaml"]
+          ports:
+            - {name: health, containerPort: 13133}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            {{- toYaml .Values.telemetry.nodeCollector.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 10
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef: {fieldPath: spec.nodeName}
+            - {name: SANDBOX_NAMESPACE, value: {{ include "actors.sandboxNamespace" . | quote }}}
+            - {name: CLICKHOUSE_URL, value: {{ .Values.analytics.clickhouse.url | quote }}}
+            - {name: CLICKHOUSE_DATABASE, value: {{ .Values.analytics.clickhouse.database | quote }}}
+            - {name: CLICKHOUSE_USER, value: {{ .Values.analytics.clickhouse.user | quote }}}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: {{ .Values.analytics.clickhouse.passwordSecretKey | quote }}}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: {{ include "actors.nodeCollectorName" . }}}
+{{- end }}

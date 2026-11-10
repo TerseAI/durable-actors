@@ -4,6 +4,12 @@
 {{- define "actors.collectorName" -}}
 {{- printf "%s-collector" (include "actors.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
+{{- define "actors.nodeCollectorName" -}}
+{{- printf "%s-node-collector" (include "actors.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- define "actors.nodeCollectorClusterName" -}}
+{{- printf "%s-%s" .Release.Namespace (include "actors.nodeCollectorName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
 {{- define "actors.nodeCacheName" -}}
 {{- printf "%s-node-cache" (include "actors.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

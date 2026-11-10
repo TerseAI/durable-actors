@@ -39,6 +39,10 @@ pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Ro
             get(residency_history),
         )
         .route(
+            "/v1/projects/{project_id}/observe/resources",
+            get(actor_resources),
+        )
+        .route(
             "/v1/projects/{project_id}/observe/events",
             get(actor_events),
         )
@@ -83,6 +87,7 @@ struct InspectionApi {
 #[derive(Clone)]
 pub(super) struct ActorInspector {
     traces: crate::request_traces::TraceStore,
+    resources: crate::actor_resources::ResourceReader,
     state: Arc<dyn crate::bucket::ActorStateReader>,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
     changes: crate::postgres::notifications::ChangeFeed,
@@ -96,6 +101,7 @@ impl ActorInspector {
     ) -> Self {
         Self {
             traces: crate::request_traces::TraceStore::default(),
+            resources: Default::default(),
             inventory,
             state,
             changes,
@@ -104,6 +110,14 @@ impl ActorInspector {
 
     pub(super) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
         self.traces = traces;
+        self
+    }
+
+    pub(super) fn with_resources(
+        mut self,
+        resources: crate::actor_resources::ResourceReader,
+    ) -> Self {
+        self.resources = resources;
         self
     }
 }
@@ -248,6 +262,55 @@ async fn residency_history(
     .map_err(|_| ApiError::unavailable("Residency history timed out"))?
     .map_err(ApiError::internal)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(history)).into_response())
+}
+
+const RESOURCE_WINDOW_MS: u64 = 3_600_000;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResourcesQuery {
+    actor_name: String,
+    actor_id: String,
+    from_ms: Option<u64>,
+    to_ms: Option<u64>,
+}
+
+async fn actor_resources(
+    State(state): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<ResourcesQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    use crate::clock::{Clock, SystemClock};
+    let project = project_id(path)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    crate::request_traces::history::HistoryQuery {
+        actor_name: Some(query.actor_name.clone()),
+        actor_id: Some(query.actor_id.clone()),
+        from_ms: query.from_ms,
+        to_ms: query.to_ms,
+        ..Default::default()
+    }
+    .validate()
+    .map_err(ApiError::bad_request)?;
+    let to = query
+        .to_ms
+        .unwrap_or(SystemClock.now_ms().map_err(ApiError::internal)?);
+    let from = query
+        .from_ms
+        .unwrap_or(to.saturating_sub(RESOURCE_WINDOW_MS));
+    let actor = crate::actor::ActorKey {
+        project_id: project,
+        actor_name: query.actor_name,
+        actor_id: query.actor_id,
+    };
+    let resources = tokio::time::timeout(
+        Duration::from_secs(25),
+        state.inspector.resources.actor(&actor, from, to),
+    )
+    .await
+    .map_err(|_| ApiError::unavailable("Actor resources timed out"))?
+    .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(resources)).into_response())
 }
 
 async fn overview_metrics(

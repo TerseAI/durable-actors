@@ -263,6 +263,14 @@
             "replicas": {"type": "integer", "minimum": 1},
             "resources": {"type": "object"}
           }
+        },
+        "nodeCollector": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "resources": {"type": "object"}
+          }
         }
       }
     },
