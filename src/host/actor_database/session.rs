@@ -398,15 +398,21 @@ impl DatabaseSession {
     ) -> Result<(SqliteCapture, &'static str)> {
         let full_snapshots = self.storage.full_snapshots();
         if let Some(database) = self.storage.take_saved_database(digest) {
-            let capture = SqliteCapture::adopt(
+            match SqliteCapture::adopt(
                 self.replication.clone(),
                 database,
                 snapshot.sqlite.txid,
                 full_snapshots,
                 resume,
             )
-            .await?;
-            return Ok((capture, "node_cache"));
+            .await
+            {
+                Ok(capture) => return Ok((capture, "node_cache")),
+                Err(error) => tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "cached database could not be opened, restoring from history"
+                ),
+            }
         }
         let sqlite = self.storage.read_sqlite(loaded).await?;
         let capture = SqliteCapture::restore(
