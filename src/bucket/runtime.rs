@@ -20,6 +20,7 @@ use crate::{
 
 use super::{Bucket, replace};
 
+mod abandoned;
 mod activation;
 pub(crate) use activation::CachedBase;
 mod history;

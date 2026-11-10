@@ -10,9 +10,9 @@ COPY docs/reference/openapi.yaml ./docs/reference/openapi.yaml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --locked --release \
+    cargo build --locked --release --bin durable-actors --bin durable-actors-host \
     && mkdir -p /out \
-    && cp target/release/durable-actors /out/durable-actors
+    && cp target/release/durable-actors target/release/durable-actors-host /out/
 
 FROM oven/bun:1.4.2 AS sdk-builder
 WORKDIR /build
@@ -48,7 +48,6 @@ RUN apt-get update -qq \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /customer \
     && useradd --uid 10000 --create-home --home-dir /home/runtime runtime
-COPY --from=builder /out/durable-actors /usr/local/bin/durable-actors
 COPY LICENSE.md /usr/share/licenses/durable-actors/
 COPY third_party/terse-ltx/LICENSE /usr/share/licenses/terse-ltx/
 COPY third_party/terse-litestream/LICENSE third_party/terse-litestream/NOTICE /usr/share/licenses/terse-litestream/
@@ -57,6 +56,7 @@ ENV RUST_LOG=warn,durable_actors=info
 ENTRYPOINT ["/usr/local/bin/durable-actors"]
 
 FROM runtime-base AS typescript
+COPY --from=builder /out/durable-actors-host /usr/local/bin/durable-actors
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=sdk-builder /out/sdk /node_modules/durable-actors
 ENV DURABLE_ACTORS_SDK_HOST=/node_modules/durable-actors/host.js
@@ -69,7 +69,7 @@ RUN apt-get update -qq \
     && mkdir /customer \
     && useradd --uid 10000 --create-home --home-dir /home/runtime runtime
 COPY --from=python-sdk /usr/local /usr/local
-COPY --from=runtime-base /usr/local/bin/durable-actors /usr/local/bin/durable-actors
+COPY --from=builder /out/durable-actors-host /usr/local/bin/durable-actors
 COPY --from=runtime-base /usr/share/licenses /usr/share/licenses
 USER 10000:10000
 ENV RUST_LOG=warn,durable_actors=info
@@ -85,4 +85,5 @@ USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/otelcol"]
 
 FROM runtime-base AS control-plane
+COPY --from=builder /out/durable-actors /usr/local/bin/durable-actors
 ENV DURABLE_ACTORS_PROCESS_ROLE=control_plane

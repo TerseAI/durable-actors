@@ -6,7 +6,6 @@ struct ArchiveBucket {
     stalled: AtomicBool,
     fail_batch: AtomicBool,
     batches: AtomicU64,
-    cleaned_reads: AtomicU64,
     read_requests: AtomicU64,
     read_batches: AtomicU64,
     range_bytes: AtomicU64,
@@ -40,9 +39,6 @@ impl Bucket for ArchiveBucket {
         self.read_requests.fetch_add(1, Ordering::SeqCst);
         if key.ends_with(".batch") {
             self.read_batches.fetch_add(1, Ordering::SeqCst);
-        }
-        if key.ends_with(".cleaned") {
-            self.cleaned_reads.fetch_add(1, Ordering::SeqCst);
         }
         self.inner.get(key).await
     }
@@ -94,7 +90,6 @@ fn controlled(
         stalled: AtomicBool::new(false),
         fail_batch: AtomicBool::new(false),
         batches: AtomicU64::new(0),
-        cleaned_reads: AtomicU64::new(0),
         read_requests: AtomicU64::new(0),
         read_batches: AtomicU64::new(0),
         range_bytes: AtomicU64::new(0),
@@ -745,40 +740,6 @@ async fn rapid_rotation_continues_writing_while_old_archive_is_stalled() -> Resu
 }
 
 #[tokio::test]
-async fn cleanup_retries_partial_deletion_and_skips_completed_segments() -> Result<()> {
-    let f = Fixture::new()?;
-    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
-    store.start(&f.stream).await?;
-    store.put(&f.stream.object(1), state(1, 1)?).await?;
-    f.zones[1].offline.store(true, Ordering::SeqCst);
-    store
-        .finish(
-            &f.stream,
-            tokio::time::Instant::now() + Duration::from_secs(30),
-        )
-        .await?;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !f.zones[0].objects.lock().unwrap().is_empty() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
-    assert!(!f.zones[1].objects.lock().unwrap().is_empty());
-    assert_eq!(
-        f.store()?.latest(&f.stream.prefix).await?,
-        Some((f.stream.object(1), state(1, 1)?))
-    );
-    f.zones[1].offline.store(false, Ordering::SeqCst);
-    let prefix = object_name(&f.stream.prefix)?;
-    store.storage.sweep(&prefix).await?;
-    f.cleaned().await?;
-    archive.cleaned_reads.store(0, Ordering::SeqCst);
-    store.storage.sweep(&prefix).await?;
-    assert_eq!(archive.cleaned_reads.load(Ordering::SeqCst), 0);
-    Ok(())
-}
-
-#[tokio::test]
 async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
@@ -811,7 +772,7 @@ async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Resu
 }
 
 #[tokio::test]
-async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog() -> Result<()> {
+async fn archiver_finishes_when_recovery_archived_its_backlog_and_rapid_expired() -> Result<()> {
     let f = Fixture::new()?;
     let threshold = state(1, 1)?.len() + frame::HEADER;
     let (store, archive) = controlled(&f, threshold, 60_000)?;
@@ -821,9 +782,7 @@ async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog(
     let manifest = segment.manifest.clone();
     let worker = archive::Archiver::new(store.storage.clone(), manifest.clone(), 0);
     archive.stalled.store(true, Ordering::SeqCst);
-    let first = segment.append(1, state(1, 1)?).await?;
-    let mut end_offset = first.len() as u64;
-    worker.append(first, 1);
+    worker.append(segment.append(1, state(1, 1)?).await?, 1);
     tokio::time::timeout(Duration::from_secs(2), async {
         while archive.batches.load(Ordering::SeqCst) == 0 {
             tokio::task::yield_now().await;
@@ -831,27 +790,14 @@ async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog(
     })
     .await?;
     for version in 2..=4 {
-        let frame = segment.append(version, state(version, 1)?).await?;
-        end_offset += frame.len() as u64;
-        worker.append(frame, version);
+        worker.append(segment.append(version, state(version, 1)?).await?, version);
     }
     worker.close();
     let rescue = f.store()?;
-    rescue
-        .storage
-        .close_segment(
-            &manifest,
-            &archive::ClosedSegment {
-                last_version: 4,
-                end_offset,
-            },
-        )
-        .await?;
-    rescue
-        .storage
-        .sweep(&object_name(&f.stream.prefix)?)
-        .await?;
-    f.cleaned().await?;
+    rescue.storage.recover_segment(&manifest).await?;
+    for zone in &f.zones {
+        zone.objects.lock().unwrap().clear();
+    }
     archive.stalled.store(false, Ordering::SeqCst);
     tokio::time::timeout(Duration::from_secs(2), worker.finish()).await??;
     assert_eq!(

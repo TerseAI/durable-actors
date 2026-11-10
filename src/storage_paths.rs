@@ -9,6 +9,10 @@ pub fn snapshots(actor: &ActorKey) -> Result<String> {
     Ok(format!("{ROOT}snapshots/{}/", actor_path(actor)))
 }
 
+pub fn owners() -> String {
+    format!("{ROOT}owners/")
+}
+
 pub fn owner(object: &ActorStorageKey) -> Result<String> {
     let actor = actor_from_key(object)?;
     Ok(format!("{ROOT}owners/{}.json", actor_path(&actor)))

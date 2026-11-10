@@ -1,3 +1,5 @@
+use serde_json::json;
+
 use super::*;
 
 #[test]
@@ -364,17 +366,7 @@ fn spare_request(name: &str) -> CreateSpareRequest {
 
 #[test]
 fn temporary_storage_is_disk_backed_and_bounded() {
-    let pod = base_pod(
-        "actor",
-        "image",
-        &["us-west4-a".into()],
-        &ResourceLimits {
-            cpu_millis: 500,
-            cpu_limit_millis: None,
-            memory_mib: 143,
-            memory_limit_mib: Some(143),
-        },
-    );
+    let pod = spare_json();
     let resources = &pod["spec"]["containers"][0]["resources"];
     assert_eq!(resources["requests"]["ephemeral-storage"], "256Mi");
     assert_eq!(resources["limits"]["ephemeral-storage"], "8Gi");
@@ -382,4 +374,39 @@ fn temporary_storage_is_disk_backed_and_bounded() {
         assert!(volume["emptyDir"]["medium"].is_null());
         assert!(volume["emptyDir"]["sizeLimit"].is_string());
     }
+}
+
+#[test]
+fn runtime_binaries_run_from_a_read_only_copy() {
+    let pod = spare_json();
+    let runtime = &pod["spec"]["containers"][0];
+    assert_eq!(runtime["command"][0], "/runtime/durable-actors");
+    assert!(
+        runtime["volumeMounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mount| mount["mountPath"] == "/runtime" && mount["readOnly"] == true)
+    );
+    let copy = &pod["spec"]["initContainers"][0];
+    assert_eq!(copy["volumeMounts"][0]["mountPath"], "/runtime");
+    assert_eq!(copy["resources"], runtime["resources"]);
+}
+
+#[test]
+fn spare_pod_manifest_only_uses_fields_kubernetes_knows() {
+    let written: serde_json::Value = serde_yaml::from_str(SPARE_POD).unwrap();
+    let parsed: Pod = serde_yaml::from_str(SPARE_POD).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), written);
+}
+
+fn spare_json() -> serde_json::Value {
+    let pod = spare_pod(
+        &spare_request("actor"),
+        &["us-west4-a".into()],
+        "token",
+        None,
+    )
+    .unwrap();
+    serde_json::to_value(pod).unwrap()
 }

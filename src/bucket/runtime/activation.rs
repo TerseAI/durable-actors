@@ -421,8 +421,10 @@ impl RuntimeStorage {
         );
         Ok(())
     }
+}
 
-    async fn replace_activation(
+impl RuntimeStorageReader {
+    pub(super) async fn replace_activation(
         &self,
         record: &mut Ownership,
         generation: Option<i64>,

@@ -1,0 +1,65 @@
+use std::io::IsTerminal;
+
+use tokio::sync::oneshot;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
+
+pub fn init_logging(development: bool) {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(if development {
+            "durable_actors=error,durable_actors::dev=info"
+        } else {
+            "info"
+        })
+    });
+    if development {
+        tracing_subscriber::fmt()
+            .compact()
+            .without_time()
+            .with_target(false)
+            .with_ansi(std::io::stdout().is_terminal())
+            .with_env_filter(filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_env_filter(filter)
+            .init();
+    }
+}
+
+pub async fn shutdown_signal() {
+    if std::env::var_os("DURABLE_ACTORS_PARENT_LIFETIME_STDIN").is_none() {
+        wait_for_signal().await;
+        info!("shutdown signal received");
+        return;
+    }
+    tokio::select! {
+        _ = wait_for_signal() => info!("shutdown signal received"),
+        _ = wait_for_parent_stdin_close() => info!("parent process exited"),
+    }
+}
+
+async fn wait_for_signal() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut terminate) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+async fn wait_for_parent_stdin_close() {
+    let (closed, receiver) = oneshot::channel();
+    // Tokio's stdin read cannot be cancelled and would block runtime shutdown after a signal.
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+        let _ = closed.send(());
+    });
+    let _ = receiver.await;
+}
