@@ -28,6 +28,7 @@ test("actors bundle durable-actors/drizzle with their own drizzle-orm and drizzl
     const artifact = path.join(project, "build/actors.mjs")
     const bundle = await readFile(artifact, "utf8")
     assert.deepEqual(bundle.match(/^import .* from "[^"]+";$/gm), [
+        'import { createRequire as __durableActorsCreateRequire } from "node:module";',
         'import { Actor } from "durable-actors";',
         'import { createHash } from "node:crypto";'
     ])

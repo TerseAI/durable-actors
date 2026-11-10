@@ -48,12 +48,21 @@ async function bundleActor(
         format: "esm",
         target: "es2022",
         keepNames: true,
+        banner: { js: BUN_PREBUILT_BANNER },
+        define: { __dirname: "import.meta.dirname", __filename: "import.meta.filename" },
         write: false,
         logLevel: "silent"
     })
     await mkdir(path.dirname(outfile), { recursive: true })
     await writeFile(outfile, result.outputFiles[0]!.contents)
 }
+
+// Without `// @bun`, Bun re-transpiles the whole bundle on load, briefly using several times its size in memory. That
+// pass is also what gives ES modules `require`, `__dirname`, and `__filename`. esbuild renames bundled modules' own
+// top-level `require` but not `__dirname`, so only `require` is declared here and the others go through `define`.
+const BUN_PREBUILT_BANNER = `// @bun
+import { createRequire as __durableActorsCreateRequire } from "node:module";
+const require = __durableActorsCreateRequire(import.meta.url);`
 
 function analyzedSources(sources: ReadonlyMap<string, string>): Plugin {
     const files = new Map([...sources].map(([file, contents]) => [realpathSync(file), contents]))
