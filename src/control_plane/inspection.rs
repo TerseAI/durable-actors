@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use futures_util::{FutureExt, StreamExt};
 use serde::Deserialize;
 
 mod live;
@@ -149,6 +150,30 @@ async fn read_inventory(
     Ok(inventory)
 }
 
+/// How long the inventory stream waits after a lifecycle report before re-reading the inventory.
+const REPORT_SETTLE: Duration = Duration::from_secs(1);
+
+/// The project's lifecycle reports as they are recorded. Without a live feed, the stream's periodic
+/// re-read still keeps the inventory current.
+async fn lifecycle_reports(
+    state: &InspectionApi,
+    project: &str,
+) -> crate::request_traces::live::LiveStream {
+    use crate::request_traces::otlp::Signal;
+    match state
+        .inspector
+        .traces
+        .subscribe(project, Signal::Lifecycle)
+        .await
+    {
+        Ok(reports) => reports,
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "inventory stream reads periodically");
+            Box::pin(futures_util::stream::pending())
+        }
+    }
+}
+
 async fn actor_events(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
@@ -159,6 +184,7 @@ async fn actor_events(
 
     let project = project_id(path)?;
     let mut changes = state.inspector.changes.subscribe();
+    let mut reports = lifecycle_reports(&state, &project).await;
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
     tokio::spawn(async move {
         let mut previous = None;
@@ -194,6 +220,15 @@ async fn actor_events(
                 _ = sender.closed() => return,
                 _ = tokio::time::sleep(Duration::from_secs(15)) => {},
                 _ = changes.changed() => {},
+                report = reports.next() => {
+                    if report.is_none() {
+                        reports = Box::pin(futures_util::stream::pending());
+                    }
+                    // A report reaches the live feed before its store write lands; read after it,
+                    // once for any reports that arrive meanwhile.
+                    tokio::time::sleep(REPORT_SETTLE).await;
+                    while let Some(Some(_)) = reports.next().now_or_never() {}
+                },
             }
         }
     });

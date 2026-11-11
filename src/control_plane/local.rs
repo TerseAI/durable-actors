@@ -395,6 +395,9 @@ async fn local_routes(
             options.sdk_host.clone(),
         )),
     )));
+    service.lifecycle = service
+        .lifecycle
+        .with_live(Arc::new(storage.telemetry.1.clone()));
     if let Some(admission) = admission {
         service.lifecycle = service.lifecycle.with_observer(admission);
     }

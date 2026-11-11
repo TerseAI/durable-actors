@@ -355,8 +355,8 @@ fn telemetry_stores(
     };
     match &storage.analytics {
         AnalyticsBackend::None => Ok((
-            TraceStore::new(Arc::new(NoTraceQueries), live),
-            Default::default(),
+            TraceStore::new(Arc::new(NoTraceQueries), live.clone()),
+            crate::actor_lifecycle::LifecycleStore::default().with_live(live),
         )),
         AnalyticsBackend::ClickHouse(config) => {
             let persistence = Arc::new(ClickHouseTracePersistence::start(
@@ -365,8 +365,8 @@ fn telemetry_stores(
                 stop,
             )?);
             Ok((
-                TraceStore::new(persistence.clone(), live),
-                crate::actor_lifecycle::LifecycleStore::new(persistence),
+                TraceStore::new(persistence.clone(), live.clone()),
+                crate::actor_lifecycle::LifecycleStore::new(persistence).with_live(live),
             ))
         }
     }

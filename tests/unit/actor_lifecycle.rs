@@ -4,6 +4,49 @@ use super::*;
 mod usage_reconciliation;
 
 #[tokio::test]
+async fn recorded_reports_are_published_on_the_project_live_channel() -> Result<()> {
+    use futures_util::StreamExt;
+    let live = crate::request_traces::live::InProcessFeed::default();
+    let store = LifecycleStore::default().with_live(Arc::new(live.clone()));
+    let mut reports = live
+        .subscribe(live_channel("first", Signal::Lifecycle))
+        .await?;
+    store
+        .record(LifecycleEvent {
+            organization_id: Some("org-test".into()),
+            event_id: "session:1".into(),
+            actor: ActorKey {
+                project_id: "first".into(),
+                actor_name: "Counter".into(),
+                actor_id: "one".into(),
+            },
+            host_id: "host".into(),
+            session_id: "session".into(),
+            region: "us-east".into(),
+            received_at_ms: 1000,
+            report: LifecycleReport {
+                kind: LifecycleKind::Started,
+                owner_epoch: 1,
+                sequence: 1,
+                started_at_ms: 1000,
+                occurred_at_ms: 1000,
+                resources: ResourceLimits::default(),
+                resident: Some(true),
+                last_active_at_ms: None,
+                waiting: Vec::new(),
+            },
+        })
+        .await?;
+    let payload = tokio::time::timeout(Duration::from_secs(1), reports.next())
+        .await?
+        .expect("a published report");
+    let published: LifecycleEvent = serde_json::from_slice(&payload)?;
+    assert_eq!(published.actor.actor_id, "one");
+    assert_eq!(published.report.kind, LifecycleKind::Started);
+    Ok(())
+}
+
+#[tokio::test]
 async fn usage_publishes_activation_boundaries_for_each_project() -> Result<()> {
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
     let store = LifecycleStore::default().with_publisher(Arc::new(Publisher(sent)));

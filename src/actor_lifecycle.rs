@@ -1,3 +1,7 @@
+use crate::request_traces::{
+    live::LiveFeed,
+    otlp::{Signal, live_channel},
+};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use anyhow::{Result, ensure};
@@ -138,6 +142,7 @@ pub(crate) struct LifecycleStore {
     usage: Option<Arc<dyn UsagePublisher>>,
     usage_sessions: Arc<dyn reconciliation::UsageSessions>,
     observer: Option<Arc<dyn LifecycleObserver>>,
+    live: Option<Arc<dyn LiveFeed>>,
 }
 
 impl Default for LifecycleStore {
@@ -152,8 +157,16 @@ impl LifecycleStore {
             persistence,
             usage: None,
             observer: None,
+            live: None,
             usage_sessions: Arc::new(reconciliation::MemoryUsageSessions::default()),
         }
+    }
+
+    /// Publishes each recorded report on its project's live channel, so observers update
+    /// without polling.
+    pub(crate) fn with_live(mut self, live: Arc<dyn LiveFeed>) -> Self {
+        self.live = Some(live);
+        self
     }
 
     pub(crate) fn with_observer(mut self, observer: Arc<dyn LifecycleObserver>) -> Self {
@@ -191,7 +204,7 @@ impl LifecycleStore {
             event.report.occurred_at_ms >= event.report.started_at_ms,
             "invalid lifecycle time range"
         );
-        let (persisted, (), observed) = tokio::join!(
+        let (persisted, (), observed, ()) = tokio::join!(
             self.persistence.record(&event),
             self.record_usage(&event),
             async {
@@ -199,9 +212,24 @@ impl LifecycleStore {
                     Some(observer) => observer.observe(&event).await,
                     None => Ok(()),
                 }
-            }
+            },
+            self.publish_live(&event),
         );
         persisted.and(observed)
+    }
+
+    async fn publish_live(&self, event: &LifecycleEvent) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let channel = live_channel(&event.actor.project_id, Signal::Lifecycle);
+        let published = match serde_json::to_vec(event) {
+            Ok(payload) => live.publish(channel, payload).await,
+            Err(error) => Err(error.into()),
+        };
+        if let Err(error) = published {
+            tracing::warn!(error = %format!("{error:#}"), "lifecycle report was not published live");
+        }
     }
 
     pub(crate) fn start_reconciliation(&self, stop: tokio_util::sync::CancellationToken) {

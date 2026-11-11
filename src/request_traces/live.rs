@@ -7,12 +7,15 @@ use tokio::sync::broadcast;
 
 use crate::redis_client::Redis;
 
-/// Each item is one OTLP export request (traces or logs) for the subscribed channel.
+/// Each item is one message for the subscribed channel: an OTLP export request (traces, logs)
+/// or a JSON lifecycle report.
 pub(crate) type LiveStream = Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>;
 
 #[async_trait]
 pub(crate) trait LiveFeed: Send + Sync {
     async fn subscribe(&self, channel: String) -> Result<LiveStream>;
+    /// Best effort: an observer that misses a message still reads it from the store.
+    async fn publish(&self, channel: String, payload: Vec<u8>) -> Result<()>;
 }
 
 /// Receives what the collector's Redis exporter publishes.
@@ -37,6 +40,13 @@ impl LiveFeed for RedisFeed {
                 .map(|message| message.get_payload_bytes().to_vec()),
         ))
     }
+
+    async fn publish(&self, channel: String, payload: Vec<u8>) -> Result<()> {
+        let mut command = redis::cmd("PUBLISH");
+        command.arg(channel).arg(payload);
+        self.redis.run::<i64>(command).await?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -53,7 +63,7 @@ impl Default for InProcessFeed {
 }
 
 impl InProcessFeed {
-    pub(crate) fn publish(&self, channel: String, payload: Vec<u8>) {
+    pub(crate) fn send(&self, channel: String, payload: Vec<u8>) {
         let _ = self.updates.send(Arc::new((channel, payload)));
     }
 }
@@ -77,5 +87,10 @@ impl LiveFeed for InProcessFeed {
                 }
             },
         )))
+    }
+
+    async fn publish(&self, channel: String, payload: Vec<u8>) -> Result<()> {
+        self.send(channel, payload);
+        Ok(())
     }
 }

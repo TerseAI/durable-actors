@@ -249,7 +249,7 @@ impl Fixture {
         )?
         .with_invoke_api_key(Some("invoke-key".into()))?;
         let changes = crate::postgres::notifications::ChangeFeed::default();
-        let lifecycle = LifecycleStore::default();
+        let lifecycle = LifecycleStore::default().with_live(Arc::new(live.clone()));
         let inspector =
             ActorInspector::new(Arc::new(lifecycle.clone()), store.clone(), changes.clone())
                 .with_traces(traces.clone());
@@ -321,7 +321,7 @@ impl Fixture {
             trace,
         };
         self.telemetry.append(std::slice::from_ref(&event)).await?;
-        self.live.publish(
+        self.live.send(
             otlp::live_channel(&event.trace.project_id, Signal::Requests),
             span_request(&event).encode_to_vec(),
         );
@@ -342,6 +342,24 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.server.abort();
     }
+}
+
+#[tokio::test]
+async fn inventory_stream_pushes_reports_as_they_are_recorded() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    let mut stream = fixture
+        .get("/v1/projects/default/observe/events")
+        .await?
+        .error_for_status()?;
+    stream_inventory(&mut stream).await?;
+    fixture
+        .report_lifecycle(fixture.actor("pushed"), LifecycleKind::Started, 1, vec![])
+        .await?;
+    // No change notification: the published report alone triggers the push, well before the
+    // stream's 15 s re-read.
+    let pushed = stream_inventory(&mut stream).await?;
+    assert_eq!(pushed["actors"][0]["live"], 1);
+    Ok(())
 }
 
 #[tokio::test]
@@ -582,7 +600,7 @@ async fn log_filters_apply_to_history_live_tail_and_histogram() -> Result<()> {
         .await?
         .error_for_status()?;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    fixture.live.publish(
+    fixture.live.send(
         otlp::live_channel("default", Signal::Logs),
         log_request(&[
             log("c", Some("request-1"), "error"),

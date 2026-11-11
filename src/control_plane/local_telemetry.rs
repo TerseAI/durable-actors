@@ -72,7 +72,7 @@ impl TraceService for LocalTelemetrySink {
             .append(&otlp::trace_events(request.clone()))
             .await
             .map_err(|error| Status::internal(format!("{error:#}")))?;
-        self.live.publish(
+        self.live.send(
             otlp::live_channel(&identity.project_id, Signal::Requests),
             request.encode_to_vec(),
         );
@@ -95,7 +95,7 @@ impl LogsService for LocalTelemetrySink {
             .append_logs(otlp::actor_logs(request.clone()))
             .await
             .map_err(|error| Status::internal(format!("{error:#}")))?;
-        self.live.publish(
+        self.live.send(
             otlp::live_channel(&identity.project_id, Signal::Logs),
             request.encode_to_vec(),
         );

@@ -32,12 +32,15 @@ const TENANT_PREFIX: &str = "durable_actors.";
 pub(crate) enum Signal {
     Requests,
     Logs,
+    /// Lifecycle reports, which the control plane publishes as it records them.
+    Lifecycle,
 }
 
 pub(crate) fn live_channel(project_id: &str, signal: Signal) -> String {
     let signal = match signal {
         Signal::Requests => "traces",
         Signal::Logs => "logs",
+        Signal::Lifecycle => "lifecycle",
     };
     format!("durable-actors:v1:live:{project_id}:{signal}")
 }
