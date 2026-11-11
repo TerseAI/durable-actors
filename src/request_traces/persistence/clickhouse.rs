@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use clickhouse::{Client, Row};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::TraceQueries;

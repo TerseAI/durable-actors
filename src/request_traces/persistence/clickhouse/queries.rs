@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-
-use super::*;
+use super::{
+    super::cursor::{Cursor, page},
+    *,
+};
 use crate::request_traces::{
-    InvalidTraceQuery, RequestTrace, TraceEvent, TraceRecord,
+    RequestTrace, TraceEvent, TraceRecord,
     logs::{ActorLog, LogHistogram, LogHistogramQuery},
     metrics::ClassMetrics,
     sockets::SocketRecord,
@@ -48,43 +49,15 @@ impl ClickHouseTracePersistence {
                 .fetch_all::<SpanRow>(),
         )
         .await??;
-        let more = rows.len() > query.limit;
-        let records: Vec<_> = rows
+        let records = rows
             .into_iter()
-            .take(query.limit)
             .filter_map(SpanRow::into_event)
             .map(|event| TraceRecord {
                 sequence: event.trace.started_at_ms,
                 event,
             })
             .collect();
-        let filters = query.filter_key()?;
-        let next_cursor = if more {
-            records
-                .last()
-                .map(|last| {
-                    Cursor {
-                        project: project.into(),
-                        filters,
-                        time: last.event.trace.started_at_ms,
-                        event_id: last.event.event_id.clone(),
-                    }
-                    .encode()
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        Ok(TracePage {
-            epoch: "clickhouse-v2".into(),
-            cursor: records.first().map_or(0, |record| record.sequence),
-            capacity: query.limit,
-            records,
-            next_cursor,
-            resume_cursor: "snapshot".into(),
-            reset: false,
-            snapshot: false,
-        })
+        page(project, query, records)
     }
 
     pub(super) async fn read_logs(&self, project: &str, query: &LogQuery) -> Result<LogPage> {
@@ -260,36 +233,6 @@ impl ClickHouseTracePersistence {
             .query(sql)
             .param("project", project)
             .param("retention", self.retention_seconds)
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    project: String,
-    filters: String,
-    time: u64,
-    event_id: String,
-}
-
-impl Cursor {
-    fn decode(value: &str, project: &str, query: &HistoryQuery) -> Result<Self> {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(value)
-            .map_err(|_| InvalidTraceQuery)?;
-        let cursor: Self = serde_json::from_slice(&bytes).map_err(|_| InvalidTraceQuery)?;
-        ensure!(
-            cursor.project == project
-                && cursor.filters == query.filter_key()?
-                && !cursor.event_id.is_empty()
-                && cursor.event_id.len() <= 256,
-            InvalidTraceQuery
-        );
-        Ok(cursor)
-    }
-
-    fn encode(&self) -> Result<String> {
-        Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(self)?))
     }
 }
 

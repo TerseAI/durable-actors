@@ -52,7 +52,11 @@ pub(crate) struct NoTraceQueries;
 #[async_trait]
 impl TraceQueries for NoTraceQueries {
     async fn history(&self, _: &str, query: &HistoryQuery) -> Result<TracePage> {
-        Ok(TracePage::empty(query.limit))
+        let _ = query;
+        Ok(TracePage {
+            records: Vec::new(),
+            next_cursor: None,
+        })
     }
 
     async fn logs(&self, _: &str, _: &LogQuery) -> Result<LogPage> {

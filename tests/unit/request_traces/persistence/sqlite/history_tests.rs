@@ -33,40 +33,6 @@ async fn history_pages_survive_restart_and_exclude_late_arrivals() -> Result<()>
         .await?;
     assert_eq!(ids(&next), ["a"]);
     assert!(next.next_cursor.is_none());
-    assert!(!next.reset);
-    Ok(())
-}
-
-#[tokio::test]
-async fn history_resets_when_retention_or_generation_changes() -> Result<()> {
-    let store = SqliteTracePersistence {
-        retention: 3,
-        ..SqliteTracePersistence::in_memory()
-    };
-    store.append(&[event("a"), event("b"), event("c")]).await?;
-    let first = store
-        .history(
-            "default",
-            &HistoryQuery {
-                limit: 1,
-                ..Default::default()
-            },
-        )
-        .await?;
-    store.append(&[event("d")]).await?;
-    let query = HistoryQuery {
-        limit: 2,
-        cursor: first.next_cursor,
-        ..Default::default()
-    };
-    let reset = store.history("default", &query).await?;
-    assert!(reset.reset);
-    assert_eq!(ids(&reset), ["d", "c"]);
-    let fresh = SqliteTracePersistence::in_memory();
-    fresh.append(&[event("fresh")]).await?;
-    let reset = fresh.history("default", &query).await?;
-    assert!(reset.reset);
-    assert_eq!(ids(&reset), ["fresh"]);
     Ok(())
 }
 
@@ -117,10 +83,6 @@ async fn history_is_bounded_and_rejects_live_or_incompatible_cursors() -> Result
             ..Default::default()
         },
         HistoryQuery {
-            cursor: Some(first.resume_cursor),
-            ..Default::default()
-        },
-        HistoryQuery {
             cursor: first.next_cursor,
             actor_id: Some("other".into()),
             ..Default::default()
@@ -136,7 +98,7 @@ async fn history_is_bounded_and_rejects_live_or_incompatible_cursors() -> Result
 }
 
 #[tokio::test]
-async fn history_orders_by_event_time_then_sequence() -> Result<()> {
+async fn history_orders_by_event_time_then_event_id() -> Result<()> {
     let store = SqliteTracePersistence::in_memory();
     let mut early = event("early");
     early.trace.started_at_ms = 0;

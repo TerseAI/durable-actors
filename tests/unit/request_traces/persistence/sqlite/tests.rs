@@ -44,35 +44,6 @@ async fn failed_batches_do_not_partially_commit() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn existing_sqlite_events_survive_the_query_schema_migration() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("traces.sqlite3");
-    {
-        let connection = Connection::open(&path)?;
-        connection.execute_batch("CREATE TABLE traces (position INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, event TEXT NOT NULL); PRAGMA user_version = 1;")?;
-        let mut unscoped = serde_json::to_value(event("unscoped"))?;
-        unscoped.as_object_mut().unwrap().remove("projectId");
-        connection.execute(
-            "INSERT INTO traces (position, event_id, event) VALUES (41, 'unscoped', ?1)",
-            [serde_json::to_string(&unscoped)?],
-        )?;
-        connection.execute(
-            "INSERT INTO traces (position, event_id, event) VALUES (42, ?1, ?2)",
-            params!["saved", serde_json::to_string(&event("saved"))?],
-        )?;
-    }
-    let store = SqliteTracePersistence::new(path);
-    let page = store.history("default", &HistoryQuery::default()).await?;
-    assert_eq!(page.records.len(), 1);
-    assert_eq!(page.records[0].sequence, 42);
-    assert_eq!(page.records[0].event.event_id, "saved");
-    store.append(&[event("new")]).await?;
-    let page = store.history("default", &HistoryQuery::default()).await?;
-    assert_eq!(page.records.iter().map(|r| r.sequence).max(), Some(43));
-    Ok(())
-}
-
 fn ids(events: Vec<TraceEvent>) -> Vec<String> {
     events.into_iter().map(|event| event.event_id).collect()
 }

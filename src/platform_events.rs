@@ -35,6 +35,7 @@ impl<E> PlatformEvents<E> for NoPlatformEvents {
 }
 
 /// One event as an OTLP log record.
+#[derive(Clone)]
 pub(crate) struct PlatformRecord {
     pub name: &'static str,
     pub at_ms: u64,

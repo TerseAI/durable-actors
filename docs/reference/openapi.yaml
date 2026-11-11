@@ -554,16 +554,7 @@ paths:
                             schema: { $ref: "#/components/schemas/TracePage" }
                             examples:
                                 empty:
-                                    value:
-                                        {
-                                            epoch: "history-1",
-                                            cursor: 0,
-                                            capacity: 100,
-                                            records: [],
-                                            nextCursor: null,
-                                            resumeCursor: "opaque-cursor",
-                                            reset: false
-                                        }
+                                    value: { records: [], nextCursor: null }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -1391,16 +1382,10 @@ components:
                             toMs: { type: integer, minimum: 0 }
         TracePage:
             type: object
-            required: [epoch, cursor, capacity, records, nextCursor, resumeCursor, reset]
+            required: [records, nextCursor]
             properties:
-                epoch: { type: string }
-                cursor: { type: integer, minimum: 0 }
-                capacity: { type: integer, minimum: 0 }
                 records: { type: array, items: { $ref: "#/components/schemas/TraceRecord" } }
                 nextCursor: { type: [string, "null"] }
-                resumeCursor: { type: string }
-                reset: { type: boolean }
-                snapshot: { type: boolean, description: "Replace the live list with this page. Used for ClickHouse initial history and reconciliation." }
         ActorLog:
             type: object
             required: [logId, actorName, actorId, hostId, requestId, timestampMs, level, message]

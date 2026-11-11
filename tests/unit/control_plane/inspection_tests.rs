@@ -120,14 +120,17 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
     };
     fixture
         .telemetry
-        .append_socket_events(
+        .append_platform(
             "gateway".into(),
-            vec![
+            [
                 opened("alpha"),
                 opened("beta"),
                 alive("alpha"),
                 alive("beta"),
-            ],
+            ]
+            .iter()
+            .map(crate::platform_events::PlatformEvent::to_record)
+            .collect(),
         )
         .await?;
     let sockets: Value = fixture
@@ -332,7 +335,7 @@ impl Fixture {
 
     async fn record(&self, trace: RequestTrace) -> Result<()> {
         let event = TraceEvent {
-            event_id: uuid::Uuid::new_v4().to_string(),
+            event_id: trace.request_id.clone(),
             host_id: "host".into(),
             session_id: "session".into(),
             trace,
@@ -633,7 +636,6 @@ async fn request_history_validates_filters_and_returns_empty_pages() -> Result<(
     let page: Value = response.json().await?;
     assert_eq!(page["records"], json!([]));
     assert_eq!(page["nextCursor"], Value::Null);
-    assert_eq!(page["capacity"], 100);
     for query in [
         "limit=0",
         "limit=501",
@@ -661,7 +663,7 @@ async fn request_history_validates_filters_and_returns_empty_pages() -> Result<(
 }
 
 #[tokio::test]
-async fn request_history_filters_and_pages_without_including_later_appends() -> Result<()> {
+async fn request_history_filters_and_pages() -> Result<()> {
     let fixture = Fixture::start().await?;
     for (id, name, actor, time, outcome) in [
         (
@@ -726,15 +728,6 @@ async fn request_history_filters_and_pages_without_including_later_appends() -> 
     assert_eq!(first["records"].as_array().unwrap().len(), 1);
     assert_eq!(first["records"][0]["requestId"], "second");
     let cursor = first["nextCursor"].as_str().unwrap();
-    record_request(
-        &fixture,
-        "late",
-        "Room",
-        "one",
-        1000,
-        crate::request_traces::RequestOutcome::Failed,
-    )
-    .await?;
     let next: Value = fixture
         .get(&format!(
             "/v1/projects/default/observe/requests?{filters}&cursor={cursor}"
@@ -746,7 +739,6 @@ async fn request_history_filters_and_pages_without_including_later_appends() -> 
     assert_eq!(next["records"].as_array().unwrap().len(), 1);
     assert_eq!(next["records"][0]["requestId"], "first");
     assert_eq!(next["nextCursor"], Value::Null);
-    assert_eq!(next["reset"], false);
     assert_eq!(
         fixture
             .get(&format!(

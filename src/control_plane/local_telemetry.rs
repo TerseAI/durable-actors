@@ -15,14 +15,12 @@ use tonic::{Request, Response, Status};
 
 use super::ActorJwtVerifier;
 use crate::{
-    actor_lifecycle::LifecycleEvent,
-    platform_events::{PlatformEvent, PlatformEvents, deployments::DeploymentEvent},
+    platform_events::{PlatformEvent, PlatformEvents},
     request_traces::{
         live::InProcessFeed,
         otlp::{self, Identity, Signal},
         persistence::sqlite::SqliteTracePersistence,
     },
-    sockets::events::SocketEvent,
 };
 
 /// The local stand-in for the OpenTelemetry Collector: it authenticates hosts the same way,
@@ -112,9 +110,8 @@ impl LogsService for LocalTelemetrySink {
 #[path = "../../tests/unit/control_plane/local_telemetry.rs"]
 mod tests;
 
-/// Local development has no collector, so platform events go straight to the local store and
-/// feed, in the same OTLP form the collector publishes. Lifecycle reports are only published:
-/// local inventory reads the lifecycle store's own cache.
+/// Local development has no collector, so this stands in for it: each platform event goes to the
+/// local store and the live feed, in the form the collector stores and publishes.
 pub(super) struct LocalPlatformEvents {
     store: Arc<SqliteTracePersistence>,
     live: InProcessFeed,
@@ -129,44 +126,23 @@ impl LocalPlatformEvents {
             gateway_id: uuid::Uuid::new_v4().to_string(),
         }
     }
+}
 
-    fn publish(&self, event: &impl PlatformEvent) {
+impl<E: PlatformEvent> PlatformEvents<E> for LocalPlatformEvents {
+    fn record(&self, event: E) {
+        let record = event.to_record();
         self.live.send(
             otlp::live_channel(event.project_id(), Signal::Platform),
-            event
-                .to_record()
+            record
+                .clone()
                 .export_request(&self.gateway_id)
                 .encode_to_vec(),
         );
-    }
-}
-
-impl PlatformEvents<SocketEvent> for LocalPlatformEvents {
-    fn record(&self, event: SocketEvent) {
-        self.publish(&event);
         let (store, gateway_id) = (self.store.clone(), self.gateway_id.clone());
         tokio::spawn(async move {
-            if let Err(error) = store.append_socket_events(gateway_id, vec![event]).await {
-                tracing::warn!(error = %format!("{error:#}"), "socket event was not stored");
+            if let Err(error) = store.append_platform(gateway_id, vec![record]).await {
+                tracing::warn!(error = %format!("{error:#}"), "platform event was not stored");
             }
         });
-    }
-}
-
-impl PlatformEvents<DeploymentEvent> for LocalPlatformEvents {
-    fn record(&self, event: DeploymentEvent) {
-        self.publish(&event);
-        let store = self.store.clone();
-        tokio::spawn(async move {
-            if let Err(error) = store.append_deployment(event).await {
-                tracing::warn!(error = %format!("{error:#}"), "deployment was not stored");
-            }
-        });
-    }
-}
-
-impl PlatformEvents<LifecycleEvent> for LocalPlatformEvents {
-    fn record(&self, event: LifecycleEvent) {
-        self.publish(&event);
     }
 }

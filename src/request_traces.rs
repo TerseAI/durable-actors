@@ -94,30 +94,8 @@ pub(crate) struct TraceRecord {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TracePage {
-    pub epoch: String,
-    pub cursor: u64,
-    pub capacity: usize,
     pub records: Vec<TraceRecord>,
     pub next_cursor: Option<String>,
-    pub resume_cursor: String,
-    pub reset: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub snapshot: bool,
-}
-
-impl TracePage {
-    pub(crate) fn empty(capacity: usize) -> Self {
-        Self {
-            epoch: "none".into(),
-            cursor: 0,
-            capacity,
-            records: Vec::new(),
-            next_cursor: None,
-            resume_cursor: "snapshot".into(),
-            reset: false,
-            snapshot: false,
-        }
-    }
 }
 
 #[derive(Debug)]

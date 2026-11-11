@@ -1,31 +1,32 @@
 use std::{
-    fs::File,
-    io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use rusqlite::{Connection, Transaction, params};
-use serde::Deserialize;
 
 use super::TraceQueries;
-use crate::request_traces::{
-    TraceEvent, TracePage,
-    history::HistoryQuery,
-    logs::{ActorLog, LogHistogram, LogHistogramQuery, LogPage, LogQuery},
-    metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, TimeRange},
+use crate::{
+    platform_events::PlatformRecord,
+    request_traces::{
+        TraceEvent, TracePage,
+        history::HistoryQuery,
+        logs::{ActorLog, LogHistogram, LogHistogramQuery, LogPage, LogQuery},
+        metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, TimeRange},
+    },
 };
 
-mod deployments;
 mod history;
 mod logs;
 mod metrics;
-mod sockets;
+mod platform;
 
 const LOCAL_RETENTION: usize = 10_000;
+// Local data is disposable: a database written by another version starts over.
+const SCHEMA_VERSION: u32 = 6;
 
 pub(crate) struct SqliteTracePersistence {
     path: PathBuf,
@@ -55,15 +56,7 @@ impl SqliteTracePersistence {
         tokio::task::spawn_blocking(move || {
             let mut shared = shared.lock().unwrap();
             if shared.is_none() {
-                let mut connection =
-                    Connection::open(&path).context("open request trace database")?;
-                connection.busy_timeout(Duration::from_secs(5))?;
-                initialize(&mut connection, &path)?;
-                logs::initialize(&connection)?;
-                sockets::initialize(&connection)?;
-                deployments::initialize(&connection)?;
-                connection.execute_batch("DROP TABLE IF EXISTS trace_status")?;
-                *shared = Some(connection);
+                *shared = Some(open(&path)?);
             }
             operation(shared.as_mut().unwrap())
         })
@@ -77,16 +70,16 @@ impl SqliteTracePersistence {
         let retention = self.retention;
         self.run(move |connection| {
             let transaction = connection.transaction()?;
-            let inserted = insert_events(&transaction, &events)?;
-            transaction.execute("UPDATE trace_meta SET total = total + ?1", [inserted as i64])?;
+            insert_events(&transaction, &events)?;
             transaction.execute(
-                "UPDATE trace_meta SET pruned = MAX(pruned, COALESCE((SELECT position FROM traces ORDER BY position DESC LIMIT 1 OFFSET ?1), 0))",
+                "DELETE FROM traces WHERE event_id IN (
+                    SELECT event_id FROM traces ORDER BY started_at_ms DESC, event_id DESC LIMIT -1 OFFSET ?1)",
                 [retention as i64],
             )?;
-            transaction.execute("DELETE FROM traces WHERE position <= (SELECT pruned FROM trace_meta)", [])?;
             transaction.commit()?;
             Ok(())
-        }).await
+        })
+        .await
     }
 
     pub(crate) async fn append_logs(&self, records: Vec<ActorLog>) -> Result<()> {
@@ -95,21 +88,14 @@ impl SqliteTracePersistence {
             .await
     }
 
-    pub(crate) async fn append_socket_events(
+    /// Stores platform events as the collector would, for local development.
+    pub(crate) async fn append_platform(
         &self,
         gateway_id: String,
-        events: Vec<crate::sockets::events::SocketEvent>,
+        records: Vec<PlatformRecord>,
     ) -> Result<()> {
         let retention = self.retention;
-        self.run(move |connection| sockets::append(connection, &gateway_id, &events, retention))
-            .await
-    }
-
-    pub(crate) async fn append_deployment(
-        &self,
-        event: crate::platform_events::deployments::DeploymentEvent,
-    ) -> Result<()> {
-        self.run(move |connection| deployments::record(connection, &event))
+        self.run(move |connection| platform::append(connection, &gateway_id, &records, retention))
             .await
     }
 }
@@ -143,7 +129,7 @@ impl TraceQueries for SqliteTracePersistence {
     ) -> Result<Vec<crate::request_traces::sockets::SocketRecord>> {
         let project_id = project_id.to_owned();
         self.run(move |connection| {
-            sockets::records(connection, &project_id, to_ms, open_only, limit)
+            platform::socket_records(connection, &project_id, to_ms, open_only, limit)
         })
         .await
     }
@@ -153,13 +139,13 @@ impl TraceQueries for SqliteTracePersistence {
         project_id: &str,
     ) -> Result<std::collections::HashMap<String, u64>> {
         let project_id = project_id.to_owned();
-        self.run(move |connection| sockets::heartbeats(connection, &project_id))
+        self.run(move |connection| platform::heartbeats(connection, &project_id))
             .await
     }
 
     async fn deployed_contract(&self, project_id: &str) -> Result<Option<serde_json::Value>> {
         let project_id = project_id.to_owned();
-        self.run(move |connection| deployments::contract(connection, &project_id))
+        self.run(move |connection| platform::deployed_contract(connection, &project_id))
             .await
     }
 
@@ -189,64 +175,31 @@ impl TraceQueries for SqliteTracePersistence {
     }
 }
 
-fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
+fn open(path: &Path) -> Result<Connection> {
+    let connection = Connection::open(path).context("open request trace database")?;
+    connection.busy_timeout(Duration::from_secs(5))?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    ensure!(version <= 5, "unsupported request trace database version");
-    if version == 5 {
-        return Ok(());
+    if version == SCHEMA_VERSION {
+        return Ok(connection);
     }
-    let transaction = connection.transaction()?;
-    if version == 0 {
-        transaction.execute_batch("CREATE TABLE traces (position INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, event TEXT NOT NULL);")?;
-        if path != Path::new(":memory:") {
-            import_snapshot(&transaction, &path.with_extension("json"))?;
-        }
+    let empty: bool =
+        connection.query_row("SELECT COUNT(*) = 0 FROM sqlite_master", [], |row| {
+            row.get(0)
+        })?;
+    if !empty {
+        drop(connection);
+        std::fs::remove_file(path).context("remove an outdated request trace database")?;
+        return open(path);
     }
-    if version < 2 {
-        transaction.execute_batch("
-        ALTER TABLE traces ADD COLUMN started_at_ms INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE traces ADD COLUMN actor_name TEXT NOT NULL DEFAULT '';
-        ALTER TABLE traces ADD COLUMN actor_id TEXT NOT NULL DEFAULT '';
-        ALTER TABLE traces ADD COLUMN outcome TEXT NOT NULL DEFAULT '';
-        UPDATE traces SET started_at_ms = json_extract(event, '$.startedAtMs'), actor_name = json_extract(event, '$.actorName'), actor_id = json_extract(event, '$.actorId'), outcome = json_extract(event, '$.outcome');
-        CREATE INDEX traces_time ON traces(started_at_ms DESC, position DESC);
-        CREATE INDEX traces_actor ON traces(actor_name, actor_id, started_at_ms DESC, position DESC);
-        CREATE INDEX traces_outcome ON traces(outcome, started_at_ms DESC, position DESC);
-        CREATE TABLE trace_meta (generation TEXT NOT NULL, pruned INTEGER NOT NULL, total INTEGER NOT NULL);
-    ")?;
-        transaction.execute(
-            "INSERT INTO trace_meta VALUES (?1, 0, (SELECT COUNT(*) FROM traces))",
-            [uuid::Uuid::new_v4().to_string()],
-        )?;
-    }
-    transaction.execute_batch(
-        "DROP VIEW IF EXISTS request_events; DROP VIEW IF EXISTS request_history;",
-    )?;
-    transaction.execute_batch(
-        "ALTER TABLE traces ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
-        UPDATE traces SET project_id = COALESCE(json_extract(event, '$.projectId'), '');
-        CREATE INDEX traces_project_time ON traces(project_id, started_at_ms DESC, position DESC);
-        CREATE INDEX traces_project_position ON traces(project_id, position);
-        CREATE TABLE trace_projects (project_id TEXT PRIMARY KEY, total INTEGER NOT NULL, head INTEGER NOT NULL, pruned INTEGER NOT NULL);
-        INSERT INTO trace_projects SELECT project_id, COUNT(*), MAX(position), 0 FROM traces WHERE project_id <> '' GROUP BY project_id;
-        CREATE TRIGGER traces_project_insert AFTER INSERT ON traces WHEN NEW.project_id <> '' BEGIN
-            INSERT INTO trace_projects VALUES (NEW.project_id, 1, NEW.position, 0)
-            ON CONFLICT(project_id) DO UPDATE SET total = total + 1, head = NEW.position;
-        END;
-        CREATE TRIGGER traces_project_delete AFTER DELETE ON traces BEGIN
-            UPDATE trace_projects SET pruned = MAX(pruned, OLD.position) WHERE project_id = OLD.project_id;
-        END;",
-    )?;
-    transaction.pragma_update(None, "user_version", 5)?;
-    transaction.commit()?;
-    Ok(())
+    connection.execute_batch(include_str!("sqlite/schema.sql"))?;
+    connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(connection)
 }
 
-fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result<usize> {
+fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result<()> {
     let mut statement = transaction.prepare("INSERT INTO traces (event_id, event, started_at_ms, actor_name, actor_id, outcome, project_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (event_id) DO NOTHING")?;
-    let mut inserted = 0;
     for event in events {
-        inserted += statement.execute(params![
+        statement.execute(params![
             event.event_id,
             serde_json::to_string(event)?,
             i64::try_from(event.trace.started_at_ms)?,
@@ -256,48 +209,7 @@ fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result
             event.trace.project_id
         ])?;
     }
-    Ok(inserted)
-}
-
-fn import_snapshot(transaction: &Transaction<'_>, path: &Path) -> Result<()> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error).context("open legacy request history"),
-    };
-    let saved: LegacySnapshot =
-        serde_json::from_reader(file).context("parse legacy request history")?;
-    ensure!(
-        saved.version == 1,
-        "unsupported legacy request history version"
-    );
-    for mut event in saved.history.records {
-        let id = event
-            .get("eventId")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        event
-            .as_object_mut()
-            .context("invalid legacy trace record")?
-            .insert("eventId".into(), id.clone().into());
-        transaction.execute(
-            "INSERT INTO traces (event_id, event) VALUES (?1, ?2)",
-            params![id, serde_json::to_string(&event)?],
-        )?;
-    }
     Ok(())
-}
-
-#[derive(Deserialize)]
-struct LegacySnapshot {
-    version: u32,
-    history: LegacyHistory,
-}
-
-#[derive(Deserialize)]
-struct LegacyHistory {
-    records: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]
