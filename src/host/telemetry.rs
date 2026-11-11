@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, LoggerProvider, Severity};
@@ -7,7 +7,7 @@ use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig, WithTonicC
 use opentelemetry_sdk::{
     Resource,
     logs::{SdkLogger, SdkLoggerProvider},
-    trace::{SdkTracer, SdkTracerProvider},
+    trace::{BatchConfigBuilder, BatchSpanProcessor, SdkTracer, SdkTracerProvider},
 };
 use tonic::transport::ClientTlsConfig;
 
@@ -19,6 +19,9 @@ use crate::{
 
 const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const SCOPE: &str = "durable-actors-host";
+// The SDK default holds request spans for 5 s; observers should see a request about a second
+// after it finishes, as they do logs.
+const SPAN_EXPORT_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) struct HostTelemetry {
     traces: SdkTracerProvider,
@@ -71,7 +74,15 @@ impl HostTelemetry {
         Ok(Self {
             traces: SdkTracerProvider::builder()
                 .with_resource(resource.clone())
-                .with_batch_exporter(spans)
+                .with_span_processor(
+                    BatchSpanProcessor::builder(spans)
+                        .with_batch_config(
+                            BatchConfigBuilder::default()
+                                .with_scheduled_delay(SPAN_EXPORT_DELAY)
+                                .build(),
+                        )
+                        .build(),
+                )
                 .build(),
             logs: SdkLoggerProvider::builder()
                 .with_resource(resource)
