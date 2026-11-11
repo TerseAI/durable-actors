@@ -125,7 +125,6 @@ struct KillPointRow {
     killed_at_ms: u64,
     reason: String,
     message: String,
-    memory_limit_bytes: Option<u64>,
 }
 
 impl TryFrom<KillPointRow> for KillPoint {
@@ -136,8 +135,6 @@ impl TryFrom<KillPointRow> for KillPoint {
             at_ms: row.killed_at_ms,
             reason: KillReason::parse(&row.reason)?,
             message: (!row.message.is_empty()).then_some(row.message),
-            memory_bytes: None,
-            memory_limit_bytes: row.memory_limit_bytes,
         })
     }
 }

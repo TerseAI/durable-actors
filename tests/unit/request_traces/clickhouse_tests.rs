@@ -524,7 +524,6 @@ async fn resources_join_node_collector_usage_to_assigned_actors() -> Result<()> 
         ]
     );
     assert_eq!(history.kills.len(), 1);
-    assert_eq!(history.kills[0].memory_limit_bytes, limit);
     let sizes = store.database_sizes(&actor, 0, 200_000).await?;
     assert_eq!(sizes.len(), 1);
     assert_eq!(sizes[0].bytes, 8192);

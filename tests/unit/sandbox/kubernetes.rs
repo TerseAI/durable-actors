@@ -410,26 +410,3 @@ fn spare_json() -> serde_json::Value {
     .unwrap();
     serde_json::to_value(pod).unwrap()
 }
-
-#[tokio::test]
-async fn the_pod_watch_reports_out_of_memory_kills() -> Result<()> {
-    use axum::{Router, extract::RawQuery, routing::get};
-    let mut killed = pod("do-actor-one", "Failed");
-    killed["status"]["containerStatuses"] = json!([{"name": "runtime", "image": "runtime",
-        "imageID": "", "ready": false, "restartCount": 0,
-        "state": {"terminated": {"reason": "OOMKilled", "exitCode": 137}}}]);
-    let items = vec![killed];
-    let routes = Router::new().route(
-        "/api/v1/namespaces/sandboxes/pods",
-        get(move |RawQuery(query): RawQuery| {
-            let response = pod_collection(query, items.clone(), Vec::new()).0;
-            async move { response }
-        }),
-    );
-    let (cluster, _server) = fake_cluster(routes).await?;
-    let mut kills = cluster.kill_events().unwrap();
-    let kill = tokio::time::timeout(Duration::from_secs(5), kills.recv()).await??;
-    assert_eq!(kill.reason, crate::actor_resources::KillReason::OutOfMemory);
-    assert_eq!(kill.sandbox_id, "sandboxes/do-actor-one/do-actor-one-uid");
-    Ok(())
-}

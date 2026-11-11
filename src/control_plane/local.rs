@@ -331,14 +331,6 @@ async fn local_routes(
     directory: &Path,
     stop: CancellationToken,
 ) -> Result<(tonic::service::Routes, LocalReload)> {
-    let resources = Arc::new(crate::actor_resources::MemoryResourcePersistence::default());
-    tokio::spawn(
-        crate::actor_resources::ResourceMonitor::new(
-            provider.resource_sampler(),
-            resources.clone(),
-        )
-        .run(stop.child_token()),
-    );
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -422,7 +414,7 @@ async fn local_routes(
     )
     .with_traces(storage.traces.clone())
     .with_resources(crate::actor_resources::ResourceReader::new(
-        resources,
+        Arc::new(crate::actor_resources::NoResources),
         service.lifecycle.clone(),
     ));
     let reload = LocalReload {

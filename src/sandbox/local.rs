@@ -13,8 +13,6 @@ use tokio_util::{
 };
 use tracing::warn;
 
-mod resources;
-
 use super::local_store::{HostRecord, LocalHostStore};
 use super::{
     ActorHostHandle, EnsureHostRequest, HostTermination, SandboxProvider, TerminateHostsRequest,
@@ -48,17 +46,10 @@ impl LocalSandboxProvider {
                 tasks: TaskTracker::new(),
                 changes: watch::channel(()).0,
                 stop: stop.clone(),
-                processes: resources::LocalProcesses::default(),
             }),
             placements,
             _stop: stop.drop_guard(),
         })
-    }
-
-    pub(crate) fn resource_sampler(&self) -> Arc<dyn crate::actor_resources::ResourceSampler> {
-        Arc::new(resources::LocalResources::new(
-            self.runtime.processes.clone(),
-        ))
     }
 
     pub(crate) async fn shutdown(&self) {
@@ -213,7 +204,6 @@ struct LocalRuntime {
     tasks: TaskTracker,
     changes: watch::Sender<()>,
     stop: CancellationToken,
-    processes: resources::LocalProcesses,
 }
 
 impl LocalRuntime {
@@ -298,10 +288,6 @@ impl LocalRuntime {
             .stderr(Stdio::inherit())
             .spawn()
             .context("start local actor host")?;
-        let registration = child
-            .id()
-            .zip(request.actor.clone())
-            .map(|(pid, actor)| self.processes.register(pid, actor, &request.resources));
         Ok(LocalHost {
             // Child::wait closes stdin unless the parent lifetime pipe is held separately.
             lifetime: child.stdin.take(),
@@ -309,7 +295,6 @@ impl LocalRuntime {
             directory,
             owner_epoch: 0,
             lease: None,
-            _registration: registration,
         })
     }
 
@@ -346,7 +331,6 @@ struct LocalHost {
     child: Child,
     directory: TempDir,
     owner_epoch: u64,
-    _registration: Option<resources::ProcessRegistration>,
 }
 
 impl LocalHost {

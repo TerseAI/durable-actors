@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use tracing::{info, warn};
 
 use crate::{
-    actor_resources::{MemoryResourcePersistence, ResourcePersistence, SandboxKill},
+    actor_resources::{NoResources, ResourcePersistence, SandboxKill},
     bucket::{GcsBucket, RuntimeStorageReader},
     postgres::PostgresDatabase,
     redis_client::{Redis, RedisConfig},
@@ -371,7 +371,7 @@ fn telemetry_stores(
         AnalyticsBackend::None => Ok((
             TraceStore::new(Arc::new(NoTraceQueries), live),
             Default::default(),
-            Arc::new(MemoryResourcePersistence::default()),
+            Arc::new(NoResources),
         )),
         AnalyticsBackend::ClickHouse(config) => {
             let persistence = Arc::new(ClickHouseTracePersistence::start(

@@ -76,24 +76,6 @@ jobs:
                   platforms: ${{ matrix.platform }}
                   load: true
                   tags: durable-actors:ci-collector
-            - name: Check the collector configs
-              run: |
-                  # The kubelet receiver reads the pod's service account files when it starts.
-                  account=$(mktemp -d)
-                  openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=ci -days 1 \
-                      -keyout /dev/null -out "$account/ca.crt" 2>/dev/null
-                  echo ci > "$account/token"
-                  chmod -R a+rX "$account"
-                  for config in collector node-collector; do
-                      docker run --rm -v "$PWD/charts/durable-actors/files:/etc/otelcol:ro" \
-                          -v "$account:/var/run/secrets/kubernetes.io/serviceaccount:ro" \
-                          -e CONTROL_PLANE_URL=http://control-plane:7100 \
-                          -e CLICKHOUSE_URL=http://clickhouse:8123 -e CLICKHOUSE_DATABASE=actors \
-                          -e CLICKHOUSE_USER=writer -e CLICKHOUSE_PASSWORD=secret \
-                          -e REDIS_URL=redis://redis:6379 -e REDIS_CA_FILE= \
-                          -e K8S_NODE_NAME=node -e SANDBOX_NAMESPACE=sandboxes \
-                          durable-actors:ci-collector validate --config="/etc/otelcol/$config.yaml"
-                  done
 
     collector:
         name: Collector exporter

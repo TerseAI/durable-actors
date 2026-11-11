@@ -410,7 +410,7 @@ paths:
             operationId: getActorResources
             tags: [Observability]
             summary: Get one actor's CPU, memory, database size and kills
-            description: Usage is measured outside the actor about every 5 seconds and includes sandbox overhead, which is what counts against the limits. Samples start when the actor is assigned its sandbox. Database sizes come from lifecycle reports. Series are bucketed to at most 500 points (average CPU, peak memory and size per bucket). The range defaults to the last hour.
+            description: Usage is measured outside the actor about every 5 seconds and includes sandbox overhead, which is what counts against the limits. Samples start when the actor is assigned its sandbox. Database sizes come from lifecycle reports. Series are bucketed to at most 500 points (average CPU, peak memory and size per bucket). The range defaults to the last hour. Local development reports database sizes only.
             parameters:
                 - name: actorName
                   in: query
@@ -1437,7 +1437,7 @@ components:
                     type: array
                     items:
                         type: object
-                        required: [atMs, reason, message, memoryBytes, memoryLimitBytes]
+                        required: [atMs, reason, message]
                         properties:
                             atMs: { type: integer, minimum: 0 }
                             reason:
@@ -1445,8 +1445,6 @@ components:
                                 enum: [out_of_memory, evicted, killed]
                                 description: out_of_memory when the actor reached its memory limit, evicted when it exceeded its temporary storage limit, killed for other forced stops.
                             message: { type: [string, "null"] }
-                            memoryBytes: { type: [integer, "null"], minimum: 0, description: The last sample before the kill. }
-                            memoryLimitBytes: { type: [integer, "null"], minimum: 0 }
         ResidencyHistory:
             type: object
             required: [periods, truncated]
