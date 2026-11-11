@@ -21,7 +21,8 @@ memory AS (
     WHERE m.at_ms >= s.assigned_at_ms
     GROUP BY bucket
 ),
--- CPU time is cumulative, so each sample's rate comes from the previous sample of the same pod.
+-- CPU time is cumulative, so each sample's rate comes from the previous sample of the same pod,
+-- read from a minute before the range so the first sample in it has one.
 cpu AS (
     SELECT intDiv(c.at_ms, {bucket:UInt64}) * {bucket:UInt64} AS bucket,
            toNullable(toUInt64(greatest(avg(c.millicores), 0))) AS cpu_millicores
@@ -36,13 +37,14 @@ cpu AS (
             FROM otel_metrics_sum
             WHERE MetricName = 'k8s.pod.cpu.time'
               AND SandboxId IN (SELECT sandbox_id FROM sandboxes)
-              AND TimeUnix BETWEEN toDateTime(intDiv({from:UInt64}, 1000))
+              AND TimeUnix BETWEEN toDateTime(intDiv(greatest({from:UInt64}, 60000) - 60000, 1000))
                                AND toDateTime(intDiv({to:UInt64}, 1000))
         )
         WINDOW pod AS (PARTITION BY sandbox_id ORDER BY at_ms ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
     ) AS c
     INNER JOIN sandboxes AS s USING sandbox_id
     WHERE c.previous_ms > 0 AND c.at_ms > c.previous_ms AND c.at_ms >= s.assigned_at_ms
+      AND c.at_ms >= {from:UInt64}
     GROUP BY bucket
 )
 SELECT memory.bucket AS at_ms, cpu.cpu_millicores AS cpu_millicores,

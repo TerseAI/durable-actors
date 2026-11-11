@@ -497,7 +497,7 @@ async fn resources_join_node_collector_usage_to_assigned_actors() -> Result<()> 
     // The writer inserts each table in turn, so wait until the last one is readable.
     let history = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let history = ResourcePersistence::history(&store, &actor, 0, 200_000).await?;
+            let history = ResourcePersistence::history(&store, &actor, 100_000, 200_000).await?;
             if !history.kills.is_empty() {
                 return anyhow::Ok(history);
             }

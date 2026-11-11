@@ -1,6 +1,9 @@
 //! Turns pod terminations into sandbox kills. Usage comes from the node collector instead.
 
-use k8s_openapi::api::core::v1::{ContainerStateTerminated, Pod};
+use k8s_openapi::{
+    api::core::v1::{ContainerStateTerminated, Pod, PodStatus},
+    apimachinery::pkg::apis::meta::v1::Time,
+};
 use kube::ResourceExt;
 
 use crate::{
@@ -33,11 +36,23 @@ pub(super) fn kill(pod: &Pod) -> Option<SandboxKill> {
         sandbox_id: format!("{}/{}/{}", pod.namespace()?, pod.name_any(), pod.uid()?),
         killed_at_ms: terminated
             .and_then(|state| state.finished_at.as_ref())
-            .and_then(|finished| u64::try_from(finished.0.timestamp_millis()).ok())
+            .or_else(|| stopped_at(status))
+            .and_then(|time| u64::try_from(time.0.timestamp_millis()).ok())
             .or_else(|| SystemClock.now_ms().ok())?,
         reason,
         message: (evicted && storage).then(|| "exceeded its temporary storage limit".into()),
     })
+}
+
+/// Evicted pods have no finished container. Their last condition change marks the stop and stays
+/// the same when the watch replays the pod, so a replay doesn't move the kill.
+fn stopped_at(status: &PodStatus) -> Option<&Time> {
+    status
+        .conditions
+        .iter()
+        .flatten()
+        .filter_map(|condition| condition.last_transition_time.as_ref())
+        .max_by_key(|time| time.0)
 }
 
 fn terminated(pod: &Pod) -> Option<&ContainerStateTerminated> {

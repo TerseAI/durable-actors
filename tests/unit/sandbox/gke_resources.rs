@@ -40,9 +40,12 @@ fn finished_pods_become_kills_only_when_the_platform_killed_them() {
         "phase": "Failed",
         "reason": "Evicted",
         "message": "Pod ephemeral local storage usage exceeds the total limit of containers 8Gi.",
+        "conditions": [{"type": "Ready", "status": "False",
+                        "lastTransitionTime": "2026-11-10T12:00:00Z"}],
     })))
     .unwrap();
     assert_eq!(evicted.reason, KillReason::Evicted);
+    assert_eq!(evicted.killed_at_ms, 1_794_312_000_000);
     assert_eq!(
         evicted.message.as_deref(),
         Some("exceeded its temporary storage limit")
