@@ -1,4 +1,4 @@
-import { formatClock, formatDecimal } from "../../format.js"
+import { formatClock, formatRate } from "../../format.js"
 import { average, requestRates } from "../../lib/requestStats.js"
 import { bucketCount, bucketEnd, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import type { RequestRateMetrics } from "../../types/Overview.js"
@@ -17,7 +17,7 @@ export type RequestRateTrendProps = {
 export function RequestRateTrend({ requests, failed, timeWindow, color }: RequestRateTrendProps) {
     const metrics = requests && getMetrics(requests, timeWindow)
     const loading = !metrics && !failed
-    const value = metrics ? formatDecimal(metrics.current) : loading ? <Skeleton className="h-11 w-28" /> : "—"
+    const value = metrics ? formatRate(metrics.current) : loading ? <Skeleton className="h-11 w-28" /> : "—"
     const window = describeWindow(timeWindow)
     const series = metrics?.series ?? Array<number>(bucketCount(timeWindow)).fill(0)
     return (
@@ -30,8 +30,8 @@ export function RequestRateTrend({ requests, failed, timeWindow, color }: Reques
             series={series}
             axis={windowTicks(timeWindow, 2)}
             color={color}
-            chartLabel={metrics ? `Requests per second, ${window}, peaking at ${formatDecimal(metrics.peak)}` : `Requests per second, ${window}`}
-            describePoint={index => ({ at: bucketLabel(timeWindow, index), value: `${formatDecimal(series[index] ?? 0)} req/s` })}
+            chartLabel={metrics ? `Requests per second, ${window}, peaking at ${formatRate(metrics.peak)}` : `Requests per second, ${window}`}
+            describePoint={index => ({ at: bucketLabel(timeWindow, index), value: `${formatRate(series[index] ?? 0)} req/s` })}
         >
             {metrics ? <RateStats {...metrics} /> : <TrendStatsSkeleton failed={failed} />}
         </TrendCard>
@@ -53,8 +53,8 @@ function getMetrics(requests: RequestTrace[], timeWindow: TimeWindow): RequestRa
 function RateStats({ average, peak, peakAt }: RequestRateMetrics) {
     return (
         <>
-            <TrendStat label="Avg" value={formatDecimal(average)} />
-            <TrendStat label="Peak" value={formatDecimal(peak)} suffix={`at ${peakAt}`} />
+            <TrendStat label="Avg" value={formatRate(average)} />
+            <TrendStat label="Peak" value={formatRate(peak)} suffix={`at ${peakAt}`} />
         </>
     )
 }

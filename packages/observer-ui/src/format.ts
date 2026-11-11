@@ -22,6 +22,8 @@ export const formatPreciseTimeSpan = timeSpan(preciseDateTime, preciseClock)
 export const formatLogClock = (ms: number) => logClock.format(ms)
 export const formatCount = (value: number) => count.format(value)
 export const formatDecimal = (value: number) => decimal.format(value)
+/** Keeps low rates readable: 0.033, not 0. */
+export const formatRate = (value: number) => (value < 10 ? fine : decimal).format(value)
 export const formatPercent = (ratio: number) => percent.format(ratio)
 export const formatSignedPercent = (ratio: number) => signedPercent.format(ratio)
 export const formatMsValue = (ms: number) => (ms < 10 ? fine.format(ms) : count.format(Math.round(ms)))

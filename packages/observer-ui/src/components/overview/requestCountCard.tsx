@@ -1,6 +1,6 @@
 import { useData } from "../../client/DatatContext.js"
 import { useTimeWindow } from "../../client/TimeRangeContext.js"
-import { formatClock, formatCount, formatDecimal, formatPlural } from "../../format.js"
+import { formatClock, formatCount, formatPlural, formatRate } from "../../format.js"
 import { requestCounts } from "../../lib/requestStats.js"
 import { bucketCount, bucketEnd, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import type { RequestCountMetrics } from "../../types/Overview.js"
@@ -57,7 +57,7 @@ function getMetrics(requests: RequestTrace[], timeWindow: TimeWindow): RequestCo
 function CountStats({ perSecond, peak, peakAt }: RequestCountMetrics) {
     return (
         <>
-            <TrendStat label="Avg" value={formatDecimal(perSecond)} suffix="req/s" />
+            <TrendStat label="Avg" value={formatRate(perSecond)} suffix="req/s" />
             <TrendStat label="Peak" value={formatCount(peak)} suffix={`at ${peakAt}`} />
         </>
     )
