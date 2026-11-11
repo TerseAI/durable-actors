@@ -3,9 +3,9 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::{Path, Query, Request, State, rejection::QueryRejection},
+    extract::{Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, header},
-    middleware::{self, Next},
+    middleware,
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -15,7 +15,7 @@ mod live;
 
 use super::{
     admin::AdminService,
-    public_api::{ApiError, ProjectPath, authorized_admin, project_id},
+    public_api::{ApiError, ProjectPath, project_id, require_admin},
 };
 
 pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
@@ -72,15 +72,6 @@ pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Ro
             get(log_histogram),
         )
         .with_state(InspectionApi { inspector, admin })
-}
-
-async fn require_admin(
-    State(admin): State<AdminService>,
-    request: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
-    authorized_admin(&admin, request.headers())?;
-    Ok(next.run(request).await)
 }
 
 #[derive(Clone)]
