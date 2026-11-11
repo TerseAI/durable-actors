@@ -1,5 +1,5 @@
 use crate::{
-    host_leases::ActorSocketInventory,
+    actor::ActorKey,
     placement::{
         ActorConnectionInventory, ActorInstanceOverview, ActorInventory, ActorInventoryReader,
         ActorInventorySnapshot, ActorResidency,
@@ -28,13 +28,14 @@ impl ConnectionInventoryReader {
 #[async_trait]
 impl ActorInventoryReader for ConnectionInventoryReader {
     async fn actor_inventory(&self, project: &str) -> Result<ActorInventorySnapshot> {
-        let (actors, rooms) = tokio::try_join!(
+        let (actors, open) = tokio::try_join!(
             self.actors.actor_inventory(project),
             self.sockets.open_connections(project)
         )?;
         Ok(ActorInventorySnapshot {
-            actors: merge_rooms(actors.actors, rooms),
+            actors: merge_rooms(actors.actors, open.rooms),
             connections_complete: actors.connections_complete,
+            gateways: open.gateways,
         })
     }
 
@@ -53,7 +54,7 @@ impl ActorInventoryReader for ConnectionInventoryReader {
 
 fn merge_rooms(
     actors: Vec<ActorInventory>,
-    sockets: Vec<ActorSocketInventory>,
+    rooms: Vec<(ActorKey, Vec<ActorConnectionInventory>)>,
 ) -> Vec<ActorInventory> {
     let mut actors: std::collections::BTreeMap<_, _> = actors
         .into_iter()
@@ -67,33 +68,28 @@ fn merge_rooms(
             })
         })
         .collect();
-    for room in sockets {
-        let key = (room.actor.actor_name.clone(), room.actor.actor_id.clone());
+    for (room, connections) in rooms {
+        let key = (room.actor_name.clone(), room.actor_id.clone());
         let actor = actors
-            .entry(room.actor.actor_name.clone())
+            .entry(room.actor_name.clone())
             .or_insert_with(|| ActorInventory {
-                actor_name: room.actor.actor_name,
+                actor_name: room.actor_name,
                 ..Default::default()
             });
         let index = *instances.entry(key).or_insert_with(|| {
             actor.dormant += 1;
             actor.instances.push(ActorInstanceOverview {
-                actor_id: room.actor.actor_id,
+                actor_id: room.actor_id,
                 status: ActorResidency::Dormant,
                 last_active_at_ms: None,
+                reported_at_ms: None,
+                stale_at_ms: None,
                 connections: vec![],
                 waiting: None,
             });
             actor.instances.len() - 1
         });
-        actor.instances[index].connections = room
-            .connections
-            .into_iter()
-            .map(|connection| ActorConnectionInventory {
-                id: connection.id,
-                metadata: connection.metadata,
-            })
-            .collect();
+        actor.instances[index].connections = connections;
     }
     actors.into_values().collect()
 }

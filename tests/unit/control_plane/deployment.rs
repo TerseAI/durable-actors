@@ -247,7 +247,9 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
 #[derive(Default)]
 struct RecordedDeployments(Mutex<Vec<crate::platform_events::deployments::DeploymentEvent>>);
 
-impl crate::platform_events::deployments::DeploymentEvents for RecordedDeployments {
+impl crate::platform_events::PlatformEvents<crate::platform_events::deployments::DeploymentEvent>
+    for RecordedDeployments
+{
     fn record(&self, event: crate::platform_events::deployments::DeploymentEvent) {
         self.0.lock().unwrap().push(event);
     }
@@ -267,7 +269,10 @@ async fn deployments_are_published_when_committed_and_republished_on_startup() -
     let events = recorded.0.lock().unwrap();
     let contracts: Vec<_> = events
         .iter()
-        .map(|event| (event.project_id(), event.contract().cloned()))
+        .map(|event| {
+            use crate::platform_events::PlatformEvent;
+            (event.project_id(), event.contract().cloned())
+        })
         .collect();
     let deployed = Some(contract.document().clone());
     assert_eq!(

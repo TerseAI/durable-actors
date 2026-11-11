@@ -220,11 +220,15 @@ impl ClickHouseTracePersistence {
         Ok(rows.into_iter().map(SocketRecord::from).collect())
     }
 
-    pub(super) async fn read_gateway_heartbeats(&self) -> Result<HashMap<String, u64>> {
+    pub(super) async fn read_gateway_heartbeats(
+        &self,
+        project: &str,
+    ) -> Result<HashMap<String, u64>> {
         let rows = tokio::time::timeout(
             Duration::from_secs(15),
             self.client
                 .query(include_str!("gateway_heartbeats.sql"))
+                .param("project", project)
                 .param("retention", self.retention_seconds)
                 .fetch_all::<HeartbeatRow>(),
         )

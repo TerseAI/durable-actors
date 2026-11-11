@@ -20,6 +20,7 @@ mod local_build;
 mod local_telemetry;
 mod local_watch;
 mod mcp;
+mod observe_events;
 mod process;
 pub(crate) use issuer::JWKS_PATH;
 pub(crate) use process::{

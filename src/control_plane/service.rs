@@ -21,7 +21,7 @@ use crate::{
     host::HostId,
     host_leases::HostLease,
     placement::{ObjectPlacement, ObjectPlacementStore},
-    platform_events::deployments::{DeploymentEvent, DeploymentEvents},
+    platform_events::{NoPlatformEvents, PlatformEvents, deployments::DeploymentEvent},
     sandbox::{
         EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, SandboxProvider,
         TerminateHostsRequest,
@@ -53,7 +53,7 @@ pub struct ControlPlaneService {
     provisioner: Arc<dyn HostProvisioner>,
     alarms: Arc<dyn super::alarms::AlarmStore>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
-    deployments: Arc<dyn DeploymentEvents>,
+    deployments: Arc<dyn PlatformEvents<DeploymentEvent>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
     hosts: reqwest::Client,
 }
@@ -95,7 +95,7 @@ impl ControlPlaneService {
             provisioner,
             alarms: Arc::new(super::alarms::MemoryAlarmStore::default()),
             socket_events: None,
-            deployments: Arc::new(crate::platform_events::deployments::NoDeploymentEvents),
+            deployments: Arc::new(NoPlatformEvents),
             local_builds: None,
             hosts: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -117,7 +117,10 @@ impl ControlPlaneService {
         self
     }
 
-    pub(super) fn with_deployment_events(mut self, deployments: Arc<dyn DeploymentEvents>) -> Self {
+    pub(super) fn with_deployment_events(
+        mut self,
+        deployments: Arc<dyn PlatformEvents<DeploymentEvent>>,
+    ) -> Self {
         self.deployments = deployments;
         self
     }

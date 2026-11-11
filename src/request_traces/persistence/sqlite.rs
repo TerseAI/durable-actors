@@ -17,14 +17,12 @@ use crate::request_traces::{
     history::HistoryQuery,
     logs::{ActorLog, LogHistogram, LogHistogramQuery, LogPage, LogQuery},
     metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, TimeRange},
-    replay::ReplayQuery,
 };
 
 mod deployments;
 mod history;
 mod logs;
 mod metrics;
-mod replay;
 mod sockets;
 
 const LOCAL_RETENTION: usize = 10_000;
@@ -150,8 +148,13 @@ impl TraceQueries for SqliteTracePersistence {
         .await
     }
 
-    async fn gateway_heartbeats(&self) -> Result<std::collections::HashMap<String, u64>> {
-        self.run(sockets::heartbeats).await
+    async fn gateway_heartbeats(
+        &self,
+        project_id: &str,
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        let project_id = project_id.to_owned();
+        self.run(move |connection| sockets::heartbeats(connection, &project_id))
+            .await
     }
 
     async fn deployed_contract(&self, project_id: &str) -> Result<Option<serde_json::Value>> {
@@ -164,13 +167,6 @@ impl TraceQueries for SqliteTracePersistence {
         let project_id = project_id.to_owned();
         let query = query.clone();
         self.run(move |connection| history::query(connection, &project_id, &query))
-            .await
-    }
-
-    async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
-        let project_id = project_id.to_owned();
-        let query = query.clone();
-        self.run(move |connection| replay::query(connection, &project_id, &query))
             .await
     }
 

@@ -5,6 +5,7 @@ use tracing::{info, warn};
 
 use crate::{
     bucket::{GcsBucket, RuntimeStorageReader},
+    platform_events::{NoPlatformEvents, PlatformEvents},
     postgres::PostgresDatabase,
     redis_client::{Redis, RedisConfig},
     request_traces::{
@@ -265,10 +266,14 @@ async fn control_plane_routes(
         })
         .transpose()?
         .map(Arc::new);
-    let socket_events: Arc<dyn crate::sockets::events::SocketEvents> = match &platform_events {
-        Some(events) => events.clone(),
-        None => Arc::new(crate::sockets::events::NoSocketEvents),
-    };
+    let socket_events: Arc<dyn PlatformEvents<crate::sockets::events::SocketEvent>> =
+        match &platform_events {
+            Some(events) => events.clone(),
+            None => Arc::new(NoPlatformEvents),
+        };
+    if let Some(events) = &platform_events {
+        lifecycle = lifecycle.with_events(events.clone());
+    }
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         socket_bus,
         config.gateway_accept_connections,
@@ -371,8 +376,8 @@ fn telemetry_stores(
     };
     match &storage.analytics {
         AnalyticsBackend::None => Ok((
-            TraceStore::new(Arc::new(NoTraceQueries), live.clone()),
-            crate::actor_lifecycle::LifecycleStore::default().with_live(live),
+            TraceStore::new(Arc::new(NoTraceQueries), live),
+            crate::actor_lifecycle::LifecycleStore::default(),
         )),
         AnalyticsBackend::ClickHouse(config) => {
             let persistence = Arc::new(ClickHouseTracePersistence::start(
@@ -381,8 +386,8 @@ fn telemetry_stores(
                 stop,
             )?);
             Ok((
-                TraceStore::new(persistence.clone(), live.clone()),
-                crate::actor_lifecycle::LifecycleStore::new(persistence).with_live(live),
+                TraceStore::new(persistence.clone(), live),
+                crate::actor_lifecycle::LifecycleStore::new(persistence),
             ))
         }
     }

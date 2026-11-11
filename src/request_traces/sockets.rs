@@ -1,13 +1,14 @@
 //! WebSocket sessions as gateways reported them. Each connection has a recorded open and maybe a
 //! close; an unclosed connection is open only while its gateway keeps reporting that it is alive.
+//! The open itself counts as a report, since the gateway was alive to record it.
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
 use crate::{
-    actor::{ActorKey, ActorSocketConnection},
-    host_leases::ActorSocketInventory,
+    actor::ActorKey,
+    placement::ActorConnectionInventory,
     sockets::events::{ALIVE_INTERVAL, SocketClose},
 };
 
@@ -33,6 +34,7 @@ pub(crate) struct SocketSession {
     pub connection_id: String,
     pub actor_name: String,
     pub actor_id: String,
+    pub gateway_id: String,
     pub status: SocketStatus,
     pub opened_at_ms: u64,
     /// When it closed, or for a lost session when its gateway last reported.
@@ -72,22 +74,19 @@ pub(crate) fn sessions(
     records
         .into_iter()
         .map(|record| {
-            let alive = heartbeats.get(&record.gateway_id).copied();
+            let alive = alive_at(heartbeats, &record);
             let (status, closed_at_ms, close) = match record.closed {
                 Some((at_ms, close)) => (SocketStatus::Closed, Some(at_ms), Some(close)),
-                None if alive.is_some_and(|at| at + GATEWAY_STALE_AFTER_MS >= now_ms) => {
+                None if alive + GATEWAY_STALE_AFTER_MS >= now_ms => {
                     (SocketStatus::Open, None, None)
                 }
-                None => (
-                    SocketStatus::Lost,
-                    Some(alive.unwrap_or_default().max(record.opened_at_ms)),
-                    None,
-                ),
+                None => (SocketStatus::Lost, Some(alive), None),
             };
             SocketSession {
                 connection_id: record.connection_id,
                 actor_name: record.actor_name,
                 actor_id: record.actor_id,
+                gateway_id: record.gateway_id,
                 status,
                 opened_at_ms: record.opened_at_ms,
                 closed_at_ms,
@@ -101,43 +100,66 @@ pub(crate) fn sessions(
         .collect()
 }
 
+fn alive_at(heartbeats: &HashMap<String, u64>, record: &SocketRecord) -> u64 {
+    heartbeats
+        .get(&record.gateway_id)
+        .copied()
+        .unwrap_or_default()
+        .max(record.opened_at_ms)
+}
+
 pub(crate) fn overlaps(session: &SocketSession, from_ms: u64, to_ms: u64) -> bool {
     session.opened_at_ms <= to_ms && session.closed_at_ms.is_none_or(|closed| closed >= from_ms)
 }
 
-/// Open sessions grouped by actor, as the inventory lists them.
-pub(crate) fn open_rooms(
+/// The project's open connections by actor, and when each of their gateways last showed it was
+/// alive, so observers can tell when a silent gateway's connections are lost.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct OpenConnections {
+    pub rooms: Vec<(ActorKey, Vec<ActorConnectionInventory>)>,
+    pub gateways: BTreeMap<String, u64>,
+}
+
+pub(crate) fn open_connections(
     project_id: &str,
     sessions: Vec<SocketSession>,
-) -> Vec<ActorSocketInventory> {
-    let mut rooms = BTreeMap::<(String, String), Vec<ActorSocketConnection>>::new();
+    heartbeats: &HashMap<String, u64>,
+) -> OpenConnections {
+    let mut open = OpenConnections::default();
+    let mut rooms = BTreeMap::<(String, String), Vec<ActorConnectionInventory>>::new();
     for session in sessions
         .into_iter()
         .filter(|session| session.status == SocketStatus::Open)
     {
+        let seen = heartbeats
+            .get(&session.gateway_id)
+            .copied()
+            .unwrap_or_default()
+            .max(session.opened_at_ms);
+        let gateway = open.gateways.entry(session.gateway_id.clone()).or_default();
+        *gateway = (*gateway).max(seen);
         rooms
             .entry((session.actor_name, session.actor_id))
             .or_default()
-            .push(ActorSocketConnection {
+            .push(ActorConnectionInventory {
                 id: session.connection_id,
+                gateway_id: session.gateway_id,
                 metadata: session.metadata.unwrap_or_default(),
-                tags: vec![],
             });
     }
-    rooms
+    open.rooms = rooms
         .into_iter()
         .map(|((actor_name, actor_id), mut connections)| {
             connections.sort_by(|a, b| a.id.cmp(&b.id));
-            ActorSocketInventory {
-                actor: ActorKey {
-                    project_id: project_id.to_owned(),
-                    actor_name,
-                    actor_id,
-                },
-                connections,
-            }
+            let actor = ActorKey {
+                project_id: project_id.to_owned(),
+                actor_name,
+                actor_id,
+            };
+            (actor, connections)
         })
-        .collect()
+        .collect();
+    open
 }
 
 #[cfg(test)]

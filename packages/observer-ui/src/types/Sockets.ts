@@ -5,6 +5,7 @@ export interface SocketSession {
     connectionId: string
     actorName: string
     actorId: string
+    gatewayId: string
     status: SocketStatus
     openedAtMs: number
     /** When it closed, or for a lost session when its gateway last reported. */

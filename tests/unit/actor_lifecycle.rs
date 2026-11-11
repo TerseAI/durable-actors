@@ -3,14 +3,19 @@ use super::*;
 #[path = "usage_reconciliation.rs"]
 mod usage_reconciliation;
 
+struct RecordedReports(std::sync::Mutex<Vec<LifecycleEvent>>);
+
+impl PlatformEvents<LifecycleEvent> for RecordedReports {
+    fn record(&self, event: LifecycleEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
 #[tokio::test]
-async fn recorded_reports_are_published_on_the_project_live_channel() -> Result<()> {
-    use futures_util::StreamExt;
-    let live = crate::request_traces::live::InProcessFeed::default();
-    let store = LifecycleStore::default().with_live(Arc::new(live.clone()));
-    let mut reports = live
-        .subscribe(live_channel("first", Signal::Lifecycle))
-        .await?;
+async fn recorded_reports_go_to_observability_as_platform_events() -> Result<()> {
+    use crate::platform_events::PlatformEvent;
+    let reports = Arc::new(RecordedReports(Default::default()));
+    let store = LifecycleStore::default().with_events(reports.clone());
     store
         .record(LifecycleEvent {
             organization_id: Some("org-test".into()),
@@ -37,12 +42,12 @@ async fn recorded_reports_are_published_on_the_project_live_channel() -> Result<
             },
         })
         .await?;
-    let payload = tokio::time::timeout(Duration::from_secs(1), reports.next())
-        .await?
-        .expect("a published report");
-    let published: LifecycleEvent = serde_json::from_slice(&payload)?;
-    assert_eq!(published.actor.actor_id, "one");
-    assert_eq!(published.report.kind, LifecycleKind::Started);
+    let reported = reports.0.lock().unwrap().pop().expect("a reported event");
+    let record = reported.to_record();
+    assert_eq!(record.name, crate::platform_events::lifecycle::REPORTED);
+    let body: LifecycleEvent = serde_json::from_str(&record.body.unwrap())?;
+    assert_eq!(body.actor.actor_id, "one");
+    assert_eq!(body.report.kind, LifecycleKind::Started);
     Ok(())
 }
 

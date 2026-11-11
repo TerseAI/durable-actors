@@ -117,7 +117,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
         .await?;
     let event_id = state
         .traces
-        .replay("default", &Default::default())
+        .history("default", &Default::default())
         .await?
         .records[0]
         .event
@@ -128,7 +128,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
     assert_eq!(
         restored
             .traces
-            .replay("default", &Default::default())
+            .history("default", &Default::default())
             .await?
             .records[0]
             .event

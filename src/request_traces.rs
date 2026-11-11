@@ -23,11 +23,9 @@ pub(crate) mod logs;
 pub(crate) mod metrics;
 pub(crate) mod otlp;
 pub(crate) mod persistence;
-pub(crate) mod replay;
 pub(crate) mod sockets;
 use live::{InProcessFeed, LiveFeed, LiveStream};
 use persistence::{TraceQueries, sqlite::SqliteTracePersistence};
-use replay::ReplayQuery;
 
 pub(crate) const TRACE_CAPACITY: usize = 500;
 
@@ -85,7 +83,7 @@ fn new_event_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceRecord {
     pub sequence: u64,
@@ -163,12 +161,6 @@ impl TraceStore {
             .await
     }
 
-    pub(crate) async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
-        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
-        query.validate().context(InvalidTraceQuery)?;
-        self.queries.replay(project_id, query).await
-    }
-
     pub(crate) async fn history(
         &self,
         project_id: &str,
@@ -230,7 +222,7 @@ impl TraceStore {
         let (records, heartbeats) = tokio::try_join!(
             self.queries
                 .socket_records(project_id, to_ms, false, sockets::SESSION_LIMIT),
-            self.queries.gateway_heartbeats(),
+            self.queries.gateway_heartbeats(project_id),
         )?;
         let mut sessions = sockets::sessions(records, &heartbeats, SystemClock.now_ms()?);
         sessions.retain(|session| sockets::overlaps(session, from_ms, to_ms));
@@ -250,15 +242,15 @@ impl TraceStore {
     pub(crate) async fn open_connections(
         &self,
         project_id: &str,
-    ) -> Result<Vec<crate::host_leases::ActorSocketInventory>> {
+    ) -> Result<sockets::OpenConnections> {
         validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
         let (records, heartbeats) = tokio::try_join!(
             self.queries
                 .socket_records(project_id, u64::MAX, true, sockets::OPEN_LIMIT),
-            self.queries.gateway_heartbeats(),
+            self.queries.gateway_heartbeats(project_id),
         )?;
         let sessions = sockets::sessions(records, &heartbeats, SystemClock.now_ms()?);
-        Ok(sockets::open_rooms(project_id, sessions))
+        Ok(sockets::open_connections(project_id, sessions, &heartbeats))
     }
 }
 

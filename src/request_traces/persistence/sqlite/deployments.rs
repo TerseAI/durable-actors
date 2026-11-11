@@ -2,6 +2,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
+use crate::platform_events::PlatformEvent;
 use crate::platform_events::deployments::DeploymentEvent;
 
 /// Only each project's latest deployment, matching ClickHouse's `latest_deployments`.

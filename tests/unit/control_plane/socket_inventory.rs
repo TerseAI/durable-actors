@@ -16,6 +16,7 @@ impl ActorInventoryReader for EmptyInventory {
         Ok(ActorInventorySnapshot {
             actors: vec![],
             connections_complete: true,
+            gateways: Default::default(),
         })
     }
 
@@ -66,7 +67,10 @@ async fn instances_list_the_connections_gateways_report_open() -> Result<()> {
                     },
                     at_ms: now - 1_000,
                 },
-                SocketEvent::Alive { at_ms: now },
+                SocketEvent::Alive {
+                    project_id: "alpha".into(),
+                    at_ms: now,
+                },
             ],
         )
         .await?;

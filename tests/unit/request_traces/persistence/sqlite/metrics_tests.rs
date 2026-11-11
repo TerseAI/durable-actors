@@ -6,23 +6,6 @@ use crate::request_traces::{
 };
 
 #[tokio::test]
-async fn replay_metadata_counts_only_the_requested_project() -> Result<()> {
-    let store = SqliteTracePersistence::in_memory();
-    let mut records: Vec<_> = (0..501).map(|id| event(&id.to_string())).collect();
-    let mut isolated = event("isolated");
-    isolated.trace.project_id = "other".into();
-    records.push(isolated);
-    store.append(&records).await?;
-    let page = store.replay("other", &ReplayQuery::default()).await?;
-    assert_eq!(page.records.len(), 1);
-    assert_eq!(
-        store.replay("empty", &ReplayQuery::default()).await?.cursor,
-        0
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn overview_counts_reroutes_but_percentiles_and_success_use_attempts() -> Result<()> {
     let store = SqliteTracePersistence::in_memory();
     let mut events = Vec::new();
@@ -231,8 +214,18 @@ async fn socket_events_assemble_connections_and_the_latest_heartbeat() -> Result
                     },
                     at_ms: 5000,
                 },
-                SocketEvent::Alive { at_ms: 6000 },
-                SocketEvent::Alive { at_ms: 7000 },
+                SocketEvent::Alive {
+                    project_id: "default".into(),
+                    at_ms: 6000,
+                },
+                SocketEvent::Alive {
+                    project_id: "default".into(),
+                    at_ms: 7000,
+                },
+                SocketEvent::Alive {
+                    project_id: "other".into(),
+                    at_ms: 8000,
+                },
             ],
         )
         .await?;
@@ -269,8 +262,12 @@ async fn socket_events_assemble_connections_and_the_latest_heartbeat() -> Result
             .is_empty()
     );
     assert_eq!(
-        store.gateway_heartbeats().await?,
+        store.gateway_heartbeats("default").await?,
         std::collections::HashMap::from([("gateway".to_owned(), 7000)])
+    );
+    assert_eq!(
+        store.gateway_heartbeats("other").await?,
+        std::collections::HashMap::from([("gateway".to_owned(), 8000)])
     );
     Ok(())
 }

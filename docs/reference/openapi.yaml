@@ -407,13 +407,45 @@ paths:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
         get:
-            operationId: streamActorInventory
+            operationId: streamProjectEvents
             tags: [Observability]
-            summary: Stream actor activity
-            description: "SSE: inventory events contain Inventory JSON; error events contain text and close the stream."
+            summary: Stream observability events
+            description: |
+                SSE of the project's live channels, as the collector publishes them. Read each view
+                from its endpoint first, then apply these events; they never include history.
+                Each message names one event type, and its data is a JSON array of that type's
+                records in arrival order:
+
+                - request (signal requests): RequestTrace records, deduplicated by eventId.
+                - log (signal logs): ActorLog records matching the log filters, deduplicated by logId.
+                - instance (signal platform): an instance as its latest lifecycle report leaves it,
+                  with actorName, actorId, status, occurredAtMs, reportedAtMs, staleAtMs (when the
+                  status turns unknown without another report; null once stopped), lastActiveAtMs
+                  and waiting.
+                - connectionOpened, connectionClosed (signal platform): connectionId, actorName,
+                  actorId, gatewayId, openedAtMs, plus metadata when opened, or closedAtMs,
+                  closeCode, closeReason, messagesIn and messagesOut when closed.
+                - gatewayAlive (signal platform): gatewayId and atMs. A gateway reports every 10
+                  seconds for each project it holds connections for; after 30 seconds without a
+                  report, its open connections are lost.
+                - deployment (signal platform): atMs and actors, the deployed classes with their
+                  methods; empty once the deployment is removed.
+            parameters:
+                - name: signals
+                  in: query
+                  required: true
+                  description: Comma-separated live channels to receive.
+                  schema: { type: string, example: "requests,platform" }
+                - { $ref: "#/components/parameters/LogActorName" }
+                - { $ref: "#/components/parameters/LogActorId" }
+                - { $ref: "#/components/parameters/LogRequestId" }
+                - { $ref: "#/components/parameters/LogLevel" }
+                - { $ref: "#/components/parameters/LogSearch" }
             responses:
                 "200": { $ref: "#/components/responses/EventStream" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
+                "503": { $ref: "#/components/responses/Unavailable" }
     /v1/projects/{project_id}/observe/state:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -610,33 +642,6 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
-    /v1/projects/{project_id}/observe/requests/events:
-        parameters:
-            - { $ref: "#/components/parameters/ProjectId" }
-        get:
-            operationId: streamRequestHistory
-            tags: [Observability]
-            summary: Stream request history
-            description: |
-                SSE requests events contain TracePage JSON. Resume with resumeCursor;
-                when reset=true or snapshot=true, replace previous records. The stream sends
-                an initial snapshot followed by live batches, with reconciliation every
-                30 seconds. Live batches can arrive before storage commits them; deduplicate
-                records by eventId. Error events contain text and close the stream.
-            parameters:
-                - name: after
-                  in: query
-                  description: resumeCursor; overrides Last-Event-ID.
-                  schema: { type: string, maxLength: 4096 }
-                - name: Last-Event-ID
-                  in: header
-                  description: Previous SSE event ID.
-                  schema: { type: string, maxLength: 4096 }
-            responses:
-                "200": { $ref: "#/components/responses/EventStream" }
-                "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { $ref: "#/components/responses/Unauthenticated" }
-                "500": { $ref: "#/components/responses/Internal" }
     /v1/projects/{project_id}/observe/logs:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -698,28 +703,6 @@ paths:
                     content:
                         application/json:
                             schema: { $ref: "#/components/schemas/ActorLogHistogram" }
-                "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { $ref: "#/components/responses/Unauthenticated" }
-                "500": { $ref: "#/components/responses/Internal" }
-    /v1/projects/{project_id}/observe/logs/events:
-        parameters:
-            - { $ref: "#/components/parameters/ProjectId" }
-        get:
-            operationId: streamActorLogs
-            tags: [Observability]
-            summary: Stream actor logs
-            description: |
-                SSE logs events contain {"records": ActorLog[]} for new lines matching the filters.
-                The stream carries only live lines; read history from the logs endpoint and
-                deduplicate by logId.
-            parameters:
-                - { $ref: "#/components/parameters/LogActorName" }
-                - { $ref: "#/components/parameters/LogActorId" }
-                - { $ref: "#/components/parameters/LogRequestId" }
-                - { $ref: "#/components/parameters/LogLevel" }
-                - { $ref: "#/components/parameters/LogSearch" }
-            responses:
-                "200": { $ref: "#/components/responses/EventStream" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -998,11 +981,12 @@ components:
                 maxMs: { type: number, minimum: 0 }
         SocketSession:
             type: object
-            required: [connectionId, actorName, actorId, status, openedAtMs, closedAtMs]
+            required: [connectionId, actorName, actorId, gatewayId, status, openedAtMs, closedAtMs]
             properties:
                 connectionId: { type: string }
                 actorName: { type: string }
                 actorId: { type: string }
+                gatewayId: { type: string, description: The gateway holding the connection; matches gatewayAlive events. }
                 status: { type: string, enum: [open, closed, lost], description: "lost: the gateway stopped reporting before the connection closed." }
                 openedAtMs: { type: integer, minimum: 0 }
                 closedAtMs: { type: [integer, "null"], minimum: 0, description: When it closed, or for a lost session when its gateway last reported. }
@@ -1330,11 +1314,15 @@ components:
                 connectByMs: { type: integer, format: int64, description: Connect before this time. }
         Inventory:
             type: object
-            required: [actors, connectionsComplete]
+            required: [actors, connectionsComplete, gateways]
             properties:
                 connectionsComplete:
                     type: boolean
                     description: False when a gateway could not be queried; connection lists and counts may be incomplete.
+                gateways:
+                    type: object
+                    additionalProperties: { type: integer, minimum: 0 }
+                    description: When each gateway holding an open connection last showed it was alive, by gateway ID. Its connections are lost 30 seconds after.
                 actors:
                     type: array
                     items:
@@ -1361,13 +1349,22 @@ components:
                                             type: [integer, "null"]
                                             minimum: 0
                                             description: Most recent request admission or completion in Unix milliseconds. Null when unavailable; lifecycle heartbeats do not update it.
+                                        reportedAtMs:
+                                            type: [integer, "null"]
+                                            minimum: 0
+                                            description: When the control plane received the latest lifecycle report; null for an instance known only from its connections.
+                                        staleAtMs:
+                                            type: [integer, "null"]
+                                            minimum: 0
+                                            description: When the status turns unknown unless another report arrives; null once stopped.
                                         connections:
                                             type: array
                                             items:
                                                 type: object
-                                                required: [id, metadata]
+                                                required: [id, gatewayId, metadata]
                                                 properties:
                                                     id: { type: string }
+                                                    gatewayId: { type: string }
                                                     metadata: {}
                                         waiting:
                                             type: [array, "null"]

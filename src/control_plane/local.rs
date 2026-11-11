@@ -390,7 +390,7 @@ async fn local_routes(
         Arc::new(provisioner),
     )
     .with_runtime_access(storage.access.clone())
-    .with_deployment_events(platform_events)
+    .with_deployment_events(platform_events.clone())
     .with_alarm_store(Arc::new(
         super::alarms::SqliteAlarmStore::open(directory.join("alarms.sqlite3")).await?,
     ))
@@ -401,9 +401,7 @@ async fn local_routes(
             options.sdk_host.clone(),
         )),
     )));
-    service.lifecycle = service
-        .lifecycle
-        .with_live(Arc::new(storage.telemetry.1.clone()));
+    service.lifecycle = service.lifecycle.with_events(platform_events.clone());
     if let Some(admission) = admission {
         service.lifecycle = service.lifecycle.with_observer(admission);
     }

@@ -181,11 +181,8 @@ test("observer proxies actor inventory and hides upstream failures", async t => 
     assert.deepEqual(await response.json(), { error: "Actor inventory unavailable" })
 })
 
-for (const [method, path, event] of [
-    ["openActorStream", "/api/observe/events", "inventory"],
-    ["openRequestStream", "/api/observe/requests/events", "requests"],
-    ["openLogStream", "/api/observe/logs/events", "logs"]
-] as const) {
+{
+    const [method, path, event] = ["openEventStream", "/api/observe/events?signals=platform", "instance"] as const
     test(`observer forwards ${event} events and aborts upstream when the viewer disconnects`, async t => {
         let signal: AbortSignal | undefined
         const observer = new Observer(
@@ -223,7 +220,7 @@ for (const [method, path, event] of [
     })
 }
 
-test("observer forwards history filters and opaque replay cursors", async t => {
+test("observer forwards history filters and live event queries", async t => {
     const observer = new Observer(
         {
             ...metricsClient,
@@ -243,9 +240,9 @@ test("observer forwards history filters and opaque replay cursors", async t => {
                 assert.deepEqual(Object.fromEntries(query), { actorName: "Room", level: "warn", search: "delta" })
                 return { records: [], nextCursor: null }
             },
-            openRequestStream: async (_signal, after) => {
-                assert.equal(after, "resume+token")
-                return new Response("event: requests\ndata: {}\n\n", {
+            openEventStream: async (_signal, query) => {
+                assert.deepEqual(Object.fromEntries(query), { signals: "logs", level: "warn", search: "a+b" })
+                return new Response("event: log\ndata: []\n\n", {
                     headers: { "content-type": "text/event-stream" }
                 })
             }
@@ -262,8 +259,8 @@ test("observer forwards history filters and opaque replay cursors", async t => {
         { records: [], nextCursor: null }
     )
     assert.match(
-        await (await fetch(`${url}/api/observe/requests/events?after=resume%2Btoken`)).text(),
-        /event: requests/u
+        await (await fetch(`${url}/api/observe/events?signals=logs&level=warn&search=a%2Bb`)).text(),
+        /event: log/u
     )
     assert.deepEqual(await (await fetch(`${url}/api/observe/logs?actorName=Room&level=warn&search=delta`)).json(), {
         records: [],

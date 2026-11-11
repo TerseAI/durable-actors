@@ -1,5 +1,5 @@
 import { formatDuration, formatTick, formatTimeSpan } from "../format.js"
-import type { TimeRange, TimeWindow } from "../types/TimeRange.js"
+import type { TimeBounds, TimeRange, TimeWindow } from "../types/TimeRange.js"
 
 const second = 1000
 const minute = 60 * second
@@ -68,4 +68,16 @@ export function bucketIndex(timeWindow: TimeWindow, atMs: number): number | null
 
 function pickStep(durationMs: number): number {
     return niceSteps.find(step => durationMs / step <= targetBuckets) ?? niceSteps.at(-1)!
+}
+
+// Live keys use the duration rather than the moving bounds so the clock tick doesn't refetch.
+export function windowKey({ fromMs, toMs, live }: TimeWindow): readonly unknown[] {
+    return live ? ["live", toMs - fromMs] : [fromMs, toMs]
+}
+
+// Live fetches send the client's now explicitly; the server's default "now" can drift from the window being drawn.
+export function currentBounds({ fromMs, toMs, live }: TimeWindow): TimeBounds {
+    if (!live) return { fromMs, toMs }
+    const now = Date.now()
+    return { fromMs: now - (toMs - fromMs), toMs: now }
 }

@@ -1,10 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, Transaction, params_from_iter, types::Value};
 
-use super::{
-    super::cursor::{HistoryCursor, HistoryPage},
-    replay,
-};
+use super::super::cursor::{HistoryCursor, HistoryPage, Metadata};
 use crate::request_traces::{TracePage, TraceRecord, history::HistoryQuery};
 
 pub(super) fn query(
@@ -13,7 +10,7 @@ pub(super) fn query(
     query: &HistoryQuery,
 ) -> Result<TracePage> {
     let transaction = connection.transaction()?;
-    let metadata = replay::metadata(&transaction, project_id)?;
+    let metadata = metadata(&transaction, project_id)?;
     let page = HistoryPage::new(project_id, query, metadata)?;
     let records = select(
         &transaction,
@@ -91,4 +88,19 @@ fn select(
         })
     })
     .collect()
+}
+
+fn metadata(transaction: &Transaction<'_>, project_id: &str) -> Result<Metadata> {
+    Ok(transaction.query_row(
+        "SELECT generation, COALESCE(p.pruned, 0), COALESCE(p.head, 0)
+         FROM trace_meta LEFT JOIN trace_projects p ON p.project_id = ?1",
+        [project_id],
+        |row| {
+            Ok(Metadata {
+                generation: row.get(0)?,
+                pruned: row.get::<_, i64>(1)? as u64,
+                head: row.get::<_, i64>(2)? as u64,
+            })
+        },
+    )?)
 }

@@ -1,5 +1,6 @@
 //! What each gateway reports about its WebSocket connections for observability: every open and
-//! close, plus a heartbeat so readers can tell that a stopped gateway's connections have ended.
+//! close, plus a heartbeat for each project it holds connections for, so readers can tell that a
+//! stopped gateway's connections have ended.
 
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use serde_json::Value;
 
 use crate::{
     actor::ActorKey,
-    platform_events::{PlatformRecord, count},
+    platform_events::{PlatformEvent, PlatformRecord, count},
     request_traces::otlp,
 };
 
@@ -48,6 +49,7 @@ pub(crate) enum SocketEvent {
         at_ms: u64,
     },
     Alive {
+        project_id: String,
         at_ms: u64,
     },
 }
@@ -63,7 +65,7 @@ impl SocketEvent {
 
     pub(crate) fn at_ms(&self) -> u64 {
         match self {
-            Self::Opened { at_ms, .. } | Self::Closed { at_ms, .. } | Self::Alive { at_ms } => {
+            Self::Opened { at_ms, .. } | Self::Closed { at_ms, .. } | Self::Alive { at_ms, .. } => {
                 *at_ms
             }
         }
@@ -79,10 +81,12 @@ impl SocketEvent {
     /// The record's attributes. The project travels on each record because one gateway serves
     /// many projects.
     pub(crate) fn attributes(&self) -> Vec<(&'static str, AnyValue)> {
-        let mut attributes = Vec::new();
+        let mut attributes = vec![(
+            otlp::PROJECT_ID,
+            AnyValue::from(self.project_id().to_owned()),
+        )];
         if let (Some(actor), Some(connection_id)) = (self.actor(), self.connection_id()) {
             attributes.extend([
-                (otlp::PROJECT_ID, AnyValue::from(actor.project_id.clone())),
                 (otlp::ACTOR_NAME, AnyValue::from(actor.actor_name.clone())),
                 (otlp::ACTOR_ID, AnyValue::from(actor.actor_id.clone())),
                 (
@@ -120,8 +124,15 @@ impl SocketEvent {
     }
 }
 
-impl SocketEvent {
-    pub(crate) fn to_record(&self) -> PlatformRecord {
+impl PlatformEvent for SocketEvent {
+    fn project_id(&self) -> &str {
+        match self {
+            Self::Opened { actor, .. } | Self::Closed { actor, .. } => &actor.project_id,
+            Self::Alive { project_id, .. } => project_id,
+        }
+    }
+
+    fn to_record(&self) -> PlatformRecord {
         PlatformRecord {
             name: self.name(),
             at_ms: self.at_ms(),
@@ -129,18 +140,6 @@ impl SocketEvent {
             body: None,
         }
     }
-}
-
-/// Records connection events without blocking the connection; delivery is best effort.
-pub(crate) trait SocketEvents: Send + Sync {
-    fn record(&self, event: SocketEvent);
-}
-
-/// For gateways without platform telemetry configured.
-pub(crate) struct NoSocketEvents;
-
-impl SocketEvents for NoSocketEvents {
-    fn record(&self, _event: SocketEvent) {}
 }
 
 #[cfg(test)]

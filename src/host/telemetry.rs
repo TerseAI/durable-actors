@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::Result;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, LoggerProvider, Severity};
@@ -6,22 +6,19 @@ use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
     Resource,
-    logs::{SdkLogger, SdkLoggerProvider},
-    trace::{BatchConfigBuilder, BatchSpanProcessor, SdkTracer, SdkTracerProvider},
+    logs::{self, BatchLogProcessor, SdkLogger, SdkLoggerProvider},
+    trace::{self, BatchSpanProcessor, SdkTracer, SdkTracerProvider},
 };
 use tonic::transport::ClientTlsConfig;
 
 use crate::{
     actor::{ActorLogRecord, ActorLogSink, LogLevel, StdioLogSink},
     control_plane::HostAuthorization,
-    request_traces::otlp::{LOG_ID, REQUEST_ID},
+    request_traces::otlp::{EXPORT_DELAY, LOG_ID, REQUEST_ID},
 };
 
 const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const SCOPE: &str = "durable-actors-host";
-// The SDK default holds request spans for 5 s; observers should see a request about a second
-// after it finishes, as they do logs.
-const SPAN_EXPORT_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) struct HostTelemetry {
     traces: SdkTracerProvider,
@@ -77,8 +74,8 @@ impl HostTelemetry {
                 .with_span_processor(
                     BatchSpanProcessor::builder(spans)
                         .with_batch_config(
-                            BatchConfigBuilder::default()
-                                .with_scheduled_delay(SPAN_EXPORT_DELAY)
+                            trace::BatchConfigBuilder::default()
+                                .with_scheduled_delay(EXPORT_DELAY)
                                 .build(),
                         )
                         .build(),
@@ -86,7 +83,15 @@ impl HostTelemetry {
                 .build(),
             logs: SdkLoggerProvider::builder()
                 .with_resource(resource)
-                .with_batch_exporter(logs)
+                .with_log_processor(
+                    BatchLogProcessor::builder(logs)
+                        .with_batch_config(
+                            logs::BatchConfigBuilder::default()
+                                .with_scheduled_delay(EXPORT_DELAY)
+                                .build(),
+                        )
+                        .build(),
+                )
                 .build(),
         })
     }

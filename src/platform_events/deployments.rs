@@ -4,7 +4,7 @@
 use opentelemetry::logs::AnyValue;
 use serde_json::Value;
 
-use super::PlatformRecord;
+use super::{PlatformEvent, PlatformRecord};
 use crate::request_traces::otlp;
 
 pub(crate) const PUBLISHED: &str = "durable_actors.deployment.published";
@@ -25,12 +25,6 @@ pub(crate) enum DeploymentEvent {
 }
 
 impl DeploymentEvent {
-    pub(crate) fn project_id(&self) -> &str {
-        match self {
-            Self::Published { project_id, .. } | Self::Removed { project_id, .. } => project_id,
-        }
-    }
-
     pub(crate) fn at_ms(&self) -> u64 {
         match self {
             Self::Published { at_ms, .. } | Self::Removed { at_ms, .. } => *at_ms,
@@ -44,8 +38,16 @@ impl DeploymentEvent {
             Self::Removed { .. } => None,
         }
     }
+}
 
-    pub(crate) fn to_record(&self) -> PlatformRecord {
+impl PlatformEvent for DeploymentEvent {
+    fn project_id(&self) -> &str {
+        match self {
+            Self::Published { project_id, .. } | Self::Removed { project_id, .. } => project_id,
+        }
+    }
+
+    fn to_record(&self) -> PlatformRecord {
         PlatformRecord {
             name: match self {
                 Self::Published { .. } => PUBLISHED,
@@ -59,18 +61,6 @@ impl DeploymentEvent {
             body: self.contract().map(Value::to_string),
         }
     }
-}
-
-/// Records deployments without failing them; delivery is best effort.
-pub(crate) trait DeploymentEvents: Send + Sync {
-    fn record(&self, event: DeploymentEvent);
-}
-
-/// For control planes without platform telemetry configured.
-pub(crate) struct NoDeploymentEvents;
-
-impl DeploymentEvents for NoDeploymentEvents {
-    fn record(&self, _event: DeploymentEvent) {}
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
-//! Events the control plane reports on the collector's internal pipeline: WebSocket connections
-//! and deployments. One process reports for many projects, so each record carries its project.
+//! Events the control plane reports on the collector's internal pipeline: lifecycle reports,
+//! WebSocket connections and deployments. The collector stores each in `platform_events` and
+//! publishes it on its project's live channel. One process reports for many projects, so each
+//! record carries its project.
 
 use opentelemetry::logs::AnyValue;
 use opentelemetry_proto::tonic::{
@@ -12,6 +14,25 @@ use opentelemetry_proto::tonic::{
 use crate::request_traces::otlp;
 
 pub(crate) mod deployments;
+pub(crate) mod lifecycle;
+
+/// An event observers read from the analytics store and the live feed.
+pub(crate) trait PlatformEvent: Send + 'static {
+    fn project_id(&self) -> &str;
+    fn to_record(&self) -> PlatformRecord;
+}
+
+/// Records events without blocking or failing the caller; delivery is best effort.
+pub(crate) trait PlatformEvents<E>: Send + Sync {
+    fn record(&self, event: E);
+}
+
+/// For processes without platform telemetry configured.
+pub(crate) struct NoPlatformEvents;
+
+impl<E> PlatformEvents<E> for NoPlatformEvents {
+    fn record(&self, _event: E) {}
+}
 
 /// One event as an OTLP log record.
 pub(crate) struct PlatformRecord {

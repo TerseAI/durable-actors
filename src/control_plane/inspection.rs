@@ -4,15 +4,13 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Query, State, rejection::QueryRejection},
-    http::{HeaderMap, header},
+    http::header,
     middleware,
     response::{IntoResponse, Response},
     routing::get,
 };
-use futures_util::{FutureExt, StreamExt};
+use futures_util::StreamExt;
 use serde::Deserialize;
-
-mod live;
 
 use super::{
     admin::AdminService,
@@ -40,7 +38,7 @@ pub(super) fn local_router(inspector: ActorInspector) -> Router {
         )
         .route(
             "/v1/projects/{project_id}/observe/events",
-            get(actor_events),
+            get(project_events),
         )
         .route(
             "/v1/projects/{project_id}/observe/requests",
@@ -58,15 +56,7 @@ pub(super) fn local_router(inspector: ActorInspector) -> Router {
             "/v1/projects/{project_id}/observe/websockets",
             get(websocket_history),
         )
-        .route(
-            "/v1/projects/{project_id}/observe/requests/events",
-            get(request_events),
-        )
         .route("/v1/projects/{project_id}/observe/logs", get(log_history))
-        .route(
-            "/v1/projects/{project_id}/observe/logs/events",
-            get(log_events),
-        )
         .route(
             "/v1/projects/{project_id}/observe/logs/histogram",
             get(log_histogram),
@@ -144,101 +134,31 @@ async fn read_inventory(
     Ok(inventory)
 }
 
-/// How long the inventory stream waits after a lifecycle report or platform event before
-/// re-reading the inventory.
-const REPORT_SETTLE: Duration = Duration::from_secs(1);
-
-/// The project's lifecycle reports and platform events (connections and deployments) as they are
-/// recorded. Without a live feed, the stream's periodic re-read still keeps the inventory current.
-async fn inventory_changes(
-    state: &InspectionApi,
-    project: &str,
-) -> crate::request_traces::live::LiveStream {
-    use crate::request_traces::otlp::Signal;
-    let (reports, platform) = tokio::join!(
-        live_signal(state, project, Signal::Lifecycle),
-        live_signal(state, project, Signal::Platform),
-    );
-    Box::pin(futures_util::stream::select(reports, platform))
-}
-
-async fn live_signal(
-    state: &InspectionApi,
-    project: &str,
-    signal: crate::request_traces::otlp::Signal,
-) -> crate::request_traces::live::LiveStream {
-    match state.inspector.traces.subscribe(project, signal).await {
-        Ok(stream) => stream,
-        Err(error) => {
-            tracing::warn!(error = %format!("{error:#}"), "inventory stream reads periodically");
-            Box::pin(futures_util::stream::pending())
-        }
-    }
-}
-
-async fn actor_events(
+/// The project's events on the requested live channels. Views read the store when they open and
+/// apply these afterwards, so the stream never reads the store itself.
+async fn project_events(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
+    query: Result<Query<super::observe_events::EventsQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     use axum::response::sse::{Event, KeepAlive, Sse};
-    use std::convert::Infallible;
-    use tokio_stream::wrappers::ReceiverStream;
-
     let project = project_id(path)?;
-    let mut recorded = inventory_changes(&state, &project).await;
-    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
-    tokio::spawn(async move {
-        let mut previous = None;
-        loop {
-            let result = tokio::select! {
-                _ = sender.closed() => return,
-                result = tokio::time::timeout(Duration::from_secs(25), read_inventory(&state, &project)) => result,
-            };
-            let data = match result {
-                Ok(Ok(inventory)) => {
-                    serde_json::to_string(&inventory).expect("serializable inventory")
-                }
-                _ => {
-                    let _ = sender
-                        .send(Ok(Event::default()
-                            .event("error")
-                            .data("Inventory unavailable")))
-                        .await;
-                    return;
-                }
-            };
-            if previous.as_ref() != Some(&data) {
-                if sender
-                    .send(Ok(Event::default().event("inventory").data(data.clone())))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                previous = Some(data);
-            }
-            tokio::select! {
-                _ = sender.closed() => return,
-                _ = tokio::time::sleep(Duration::from_secs(15)) => {},
-                change = recorded.next() => {
-                    if change.is_none() {
-                        recorded = Box::pin(futures_util::stream::pending());
-                    }
-                    // A change reaches the live feed before its store write lands; read after it,
-                    // once for any changes that arrive meanwhile.
-                    tokio::time::sleep(REPORT_SETTLE).await;
-                    while let Some(Some(_)) = recorded.next().now_or_never() {}
-                },
-            }
-        }
-    });
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.signals().map_err(ApiError::bad_request)?;
+    query
+        .log_filter()
+        .validate()
+        .map_err(ApiError::bad_request)?;
+    let batches = super::observe_events::subscribe(&state.inspector.traces, &project, &query)
+        .await
+        .map_err(|_| ApiError::unavailable("Live events are unavailable"))?;
+    let events = batches.map(|batch| Event::default().event(batch.name).json_data(&batch.events));
     Ok((
         [
             (header::CACHE_CONTROL, "no-store"),
             (header::HeaderName::from_static("x-accel-buffering"), "no"),
         ],
-        Sse::new(ReceiverStream::new(receiver))
-            .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
+        Sse::new(events).keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
     )
         .into_response())
 }
@@ -357,44 +277,6 @@ fn trace_query_error(error: anyhow::Error) -> ApiError {
     }
 }
 
-#[derive(Default, Deserialize)]
-struct RequestReplay {
-    after: Option<String>,
-}
-
-async fn request_events(
-    State(state): State<InspectionApi>,
-    path: Path<ProjectPath>,
-    query: Result<Query<RequestReplay>, QueryRejection>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    use crate::request_traces::{otlp::Signal, replay::ReplayQuery};
-    let project = path.0.project_id;
-    let Query(replay) = query.map_err(ApiError::bad_request)?;
-    let cursor = replay.after.or_else(|| {
-        headers
-            .get("last-event-id")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned)
-    });
-    let query = ReplayQuery {
-        cursor,
-        ..Default::default()
-    };
-    let store = state.inspector.traces;
-    let live = store
-        .subscribe(&project, Signal::Requests)
-        .await
-        .map_err(trace_query_error)?;
-    let page = store
-        .replay(&project, &query)
-        .await
-        .map_err(trace_query_error)?;
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    tokio::spawn(live::requests(store, project, live, sender, page));
-    Ok(event_stream(receiver))
-}
-
 async fn log_history(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
@@ -424,44 +306,6 @@ async fn log_histogram(
         .await
         .map_err(trace_query_error)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(histogram)).into_response())
-}
-
-async fn log_events(
-    State(state): State<InspectionApi>,
-    path: Path<ProjectPath>,
-    query: Result<Query<crate::request_traces::logs::LogQuery>, QueryRejection>,
-) -> Result<Response, ApiError> {
-    use crate::request_traces::otlp::Signal;
-    let project = path.0.project_id;
-    let Query(filter) = query.map_err(ApiError::bad_request)?;
-    filter.validate().map_err(ApiError::bad_request)?;
-    let live = state
-        .inspector
-        .traces
-        .subscribe(&project, Signal::Logs)
-        .await
-        .map_err(trace_query_error)?;
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    tokio::spawn(live::logs(live, filter, project, sender));
-    Ok(event_stream(receiver))
-}
-
-fn event_stream(
-    receiver: tokio::sync::mpsc::Receiver<
-        Result<axum::response::sse::Event, std::convert::Infallible>,
-    >,
-) -> Response {
-    use axum::response::sse::{KeepAlive, Sse};
-    use tokio_stream::wrappers::ReceiverStream;
-    (
-        [
-            (header::CACHE_CONTROL, "no-store"),
-            (header::HeaderName::from_static("x-accel-buffering"), "no"),
-        ],
-        Sse::new(ReceiverStream::new(receiver))
-            .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
-    )
-        .into_response()
 }
 
 #[derive(Deserialize)]

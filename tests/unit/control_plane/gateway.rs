@@ -13,7 +13,7 @@ fn test_gateway(
         true,
         tokio_util::sync::CancellationToken::new(),
         crate::sandbox::connections::HostConnections::new()?.client,
-        Arc::new(crate::sockets::events::NoSocketEvents),
+        Arc::new(crate::platform_events::NoPlatformEvents),
     )?;
     Gateway::new(issuer, origin, sockets)
 }

@@ -150,3 +150,15 @@ FROM actor_lifecycle
 GROUP BY project_id, actor_name, actor_id;
 
 ALTER TABLE actor_lifecycle MODIFY TTL received_at + INTERVAL RETENTION_SECONDS SECOND;
+
+-- Lifecycle reports arrive as platform events, and the inventory view above follows from here.
+CREATE MATERIALIZED VIEW IF NOT EXISTS actor_lifecycle_reports TO actor_lifecycle AS
+SELECT LogAttributes['durable_actors.project_id'] AS project_id,
+       LogAttributes['durable_actors.actor_name'] AS actor_name,
+       LogAttributes['durable_actors.actor_id'] AS actor_id,
+       JSONExtractString(Body, 'eventId') AS event_id,
+       JSONExtractUInt(Body, 'ownerEpoch') AS owner_epoch,
+       JSONExtractUInt(Body, 'sequence') AS sequence,
+       Body AS event_json
+FROM platform_events
+WHERE EventName = 'durable_actors.actor.reported';

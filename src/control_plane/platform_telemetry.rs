@@ -1,6 +1,6 @@
-//! Exports the control plane's platform events (WebSocket connections and deployments) to the
-//! collector's internal OTLP receiver, authenticated with the pod's projected service-account
-//! token.
+//! Exports the control plane's platform events (lifecycle reports, WebSocket connections and
+//! deployments) to the collector's internal OTLP receiver, authenticated with the pod's projected
+//! service-account token.
 
 use std::{
     path::PathBuf,
@@ -15,19 +15,15 @@ use opentelemetry::{
 use opentelemetry_otlp::{LogExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
     Resource,
-    logs::{SdkLogger, SdkLoggerProvider},
+    logs::{BatchConfigBuilder, BatchLogProcessor, SdkLogger, SdkLoggerProvider},
 };
 use tonic::{
     Request, Status, metadata::MetadataValue, service::Interceptor, transport::ClientTlsConfig,
 };
 
 use crate::{
-    platform_events::{
-        PlatformRecord,
-        deployments::{DeploymentEvent, DeploymentEvents},
-    },
-    request_traces::otlp::GATEWAY_ID,
-    sockets::events::{SocketEvent, SocketEvents},
+    platform_events::{PlatformEvent, PlatformEvents, PlatformRecord},
+    request_traces::otlp::{EXPORT_DELAY, GATEWAY_ID},
 };
 
 const SCOPE: &str = "durable-actors-control-plane";
@@ -62,7 +58,15 @@ impl OtlpPlatformEvents {
             .build();
         let provider = SdkLoggerProvider::builder()
             .with_resource(resource)
-            .with_batch_exporter(exporter)
+            .with_log_processor(
+                BatchLogProcessor::builder(exporter)
+                    .with_batch_config(
+                        BatchConfigBuilder::default()
+                            .with_scheduled_delay(EXPORT_DELAY)
+                            .build(),
+                    )
+                    .build(),
+            )
             .build();
         Ok(Self {
             logger: provider.logger(SCOPE),
@@ -87,14 +91,8 @@ impl OtlpPlatformEvents {
     }
 }
 
-impl SocketEvents for OtlpPlatformEvents {
-    fn record(&self, event: SocketEvent) {
-        self.emit(event.to_record());
-    }
-}
-
-impl DeploymentEvents for OtlpPlatformEvents {
-    fn record(&self, event: DeploymentEvent) {
+impl<E: PlatformEvent> PlatformEvents<E> for OtlpPlatformEvents {
+    fn record(&self, event: E) {
         self.emit(event.to_record());
     }
 }

@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 
 use super::{
     OutboundMessage, SocketReceiver, SocketRegistry,
-    events::{SocketClose, SocketEvent, SocketEvents},
+    events::{SocketClose, SocketEvent},
     socket_channel,
 };
 use crate::actor::{
@@ -46,7 +46,7 @@ pub(crate) trait SocketDispatcher: Send + Sync {
 pub(crate) struct SocketServerState {
     pub registry: SocketRegistry,
     pub dispatcher: Arc<dyn SocketDispatcher>,
-    pub events: Arc<dyn SocketEvents>,
+    pub events: Arc<dyn crate::platform_events::PlatformEvents<SocketEvent>>,
     pub stop: CancellationToken,
 }
 

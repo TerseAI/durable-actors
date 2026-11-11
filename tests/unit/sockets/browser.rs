@@ -91,7 +91,7 @@ async fn accepted_socket_outlives_its_ticket_without_waking_the_actor() -> Resul
 #[derive(Default)]
 struct RecordedEvents(std::sync::Mutex<Vec<SocketEvent>>);
 
-impl SocketEvents for RecordedEvents {
+impl crate::platform_events::PlatformEvents<SocketEvent> for RecordedEvents {
     fn record(&self, event: SocketEvent) {
         self.0.lock().unwrap().push(event);
     }
@@ -155,7 +155,7 @@ async fn joining_broadcasts_and_close_handshakes_reach_the_actor() -> Result<()>
         let state = SocketServerState {
             registry: SocketRegistry::default(),
             dispatcher: Arc::new(Dispatcher(events)),
-            events: Arc::new(crate::sockets::events::NoSocketEvents),
+            events: Arc::new(crate::platform_events::NoPlatformEvents),
             stop: CancellationToken::new(),
         };
         let ticket = SocketTicket {
@@ -229,7 +229,7 @@ async fn sockets_accept_32_mib_and_close_oversize_with_1009() -> Result<()> {
     let state = SocketServerState {
         registry: SocketRegistry::default(),
         dispatcher: Arc::new(Dispatcher(events)),
-        events: Arc::new(crate::sockets::events::NoSocketEvents),
+        events: Arc::new(crate::platform_events::NoPlatformEvents),
         stop: CancellationToken::new(),
     };
     let now = now_ms();

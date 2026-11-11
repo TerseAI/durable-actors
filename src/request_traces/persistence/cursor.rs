@@ -2,9 +2,7 @@ use anyhow::Result;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
-use crate::request_traces::{
-    InvalidTraceQuery, TracePage, TraceRecord, history::HistoryQuery, replay::ReplayQuery,
-};
+use crate::request_traces::{InvalidTraceQuery, TracePage, TraceRecord, history::HistoryQuery};
 
 pub(super) struct Metadata {
     pub generation: String,
@@ -108,71 +106,6 @@ impl HistoryCursor {
             return Err(InvalidTraceQuery.into());
         }
         Ok(cursor)
-    }
-}
-
-pub(super) struct ReplayPage {
-    project_id: String,
-    metadata: Metadata,
-    after: Option<u64>,
-    reset: bool,
-}
-
-impl ReplayPage {
-    pub fn new(project_id: &str, query: &ReplayQuery, metadata: Metadata) -> Result<Self> {
-        let cursor = query
-            .cursor
-            .as_deref()
-            .map(|value| -> Result<ReplayCursor> {
-                let cursor: ReplayCursor = decode(value)?;
-                if cursor.project_id != project_id
-                    || cursor.position > i64::MAX as u64
-                    || (cursor.generation == metadata.generation && cursor.position > metadata.head)
-                {
-                    return Err(InvalidTraceQuery.into());
-                }
-                Ok(cursor)
-            })
-            .transpose()?;
-        let reset = cursor
-            .as_ref()
-            .is_some_and(|c| c.generation != metadata.generation || c.position < metadata.pruned);
-        let after = cursor.filter(|_| !reset).map(|c| c.position);
-        Ok(Self {
-            project_id: project_id.into(),
-            metadata,
-            after,
-            reset,
-        })
-    }
-
-    pub fn after(&self) -> Option<u64> {
-        self.after
-    }
-
-    pub fn head(&self) -> u64 {
-        self.metadata.head
-    }
-
-    pub fn finish(self, limit: usize, mut records: Vec<TraceRecord>) -> Result<TracePage> {
-        let more = self.after.is_some() && records.len() > limit;
-        records.truncate(limit);
-        let position = if more {
-            records.last().unwrap().sequence
-        } else {
-            self.metadata.head
-        };
-        let resume_cursor = resume_cursor(&self.project_id, &self.metadata.generation, position)?;
-        Ok(TracePage {
-            epoch: self.metadata.generation,
-            cursor: position,
-            capacity: limit,
-            records,
-            next_cursor: more.then(|| resume_cursor.clone()),
-            resume_cursor,
-            reset: self.reset,
-            snapshot: false,
-        })
     }
 }
 

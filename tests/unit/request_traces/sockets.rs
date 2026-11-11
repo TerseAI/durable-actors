@@ -29,12 +29,15 @@ fn record(connection_id: &str, gateway_id: &str, closed: Option<u64>) -> SocketR
 #[test]
 fn unclosed_connections_are_open_only_while_their_gateway_reports() {
     let heartbeats = HashMap::from([("live".to_owned(), 99_000), ("stopped".to_owned(), 40_000)]);
+    let mut just_opened = record("just-opened", "first-tick-pending", None);
+    just_opened.opened_at_ms = 95_000;
     let found = sessions(
         vec![
             record("closed", "live", Some(2_000)),
             record("open", "live", None),
             record("lost", "stopped", None),
             record("never-reported", "unknown", None),
+            just_opened,
         ],
         &heartbeats,
         100_000,
@@ -50,6 +53,7 @@ fn unclosed_connections_are_open_only_while_their_gateway_reports() {
             (SocketStatus::Open, None),
             (SocketStatus::Lost, Some(40_000)),
             (SocketStatus::Lost, Some(1_000)),
+            (SocketStatus::Open, None),
         ]
     );
     assert_eq!(
@@ -62,12 +66,23 @@ fn unclosed_connections_are_open_only_while_their_gateway_reports() {
     );
     assert!(overlaps(&found[0], 0, 5_000) && !overlaps(&found[0], 3_000, 5_000));
 
-    let rooms = open_rooms("alpha", found);
-    assert_eq!(rooms.len(), 1);
-    assert_eq!(rooms[0].actor.project_id, "alpha");
-    assert_eq!(rooms[0].connections[0].id, "open");
+    let open = open_connections("alpha", found, &heartbeats);
+    assert_eq!(open.rooms.len(), 1);
+    let (actor, connections) = &open.rooms[0];
+    assert_eq!(actor.project_id, "alpha");
     assert_eq!(
-        rooms[0].connections[0].metadata,
-        serde_json::json!({"user": "open"})
+        connections
+            .iter()
+            .map(|connection| (connection.id.as_str(), connection.gateway_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("just-opened", "first-tick-pending"), ("open", "live")]
+    );
+    assert_eq!(connections[1].metadata, serde_json::json!({"user": "open"}));
+    assert_eq!(
+        open.gateways,
+        BTreeMap::from([
+            ("first-tick-pending".to_owned(), 95_000),
+            ("live".to_owned(), 99_000)
+        ])
     );
 }
