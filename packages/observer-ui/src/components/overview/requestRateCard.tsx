@@ -1,11 +1,11 @@
-import { formatClock, formatRate } from "../../format.js"
-import { average, requestRates } from "../../lib/requestStats.js"
-import { bucketCount, bucketEnd, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
+import { formatRate } from "../../format.js"
+import { requestRates } from "../../lib/requestStats.js"
+import { bucketCount, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import type { RequestRateMetrics } from "../../types/Overview.js"
 import type { RequestTrace } from "../../types/Requests.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
 import { Skeleton } from "../ui/skeleton.js"
-import { TrendCard, TrendStat, TrendStatsSkeleton } from "../ui/trendCard.js"
+import { TrendCard, TrendStatsSkeleton } from "../ui/trendCard.js"
 
 export type RequestRateTrendProps = {
     requests: RequestTrace[] | null
@@ -23,38 +23,21 @@ export function RequestRateTrend({ requests, failed, timeWindow, color }: Reques
     return (
         <TrendCard
             label="Requests / Second"
-            window={window}
             value={value}
             unit="req/s"
             busy={loading}
             series={series}
             axis={windowTicks(timeWindow, 2)}
             color={color}
-            chartLabel={metrics ? `Requests per second, ${window}, peaking at ${formatRate(metrics.peak)}` : `Requests per second, ${window}`}
+            chartLabel={`Requests per second, ${window}`}
             describePoint={index => ({ at: bucketLabel(timeWindow, index), value: `${formatRate(series[index] ?? 0)} req/s` })}
         >
-            {metrics ? <RateStats {...metrics} /> : <TrendStatsSkeleton failed={failed} />}
+            {!metrics && <TrendStatsSkeleton failed={failed} />}
         </TrendCard>
     )
 }
 
 function getMetrics(requests: RequestTrace[], timeWindow: TimeWindow): RequestRateMetrics {
     const series = requestRates(requests, timeWindow)
-    const peak = Math.max(...series)
-    return {
-        current: series.at(-1) ?? 0,
-        average: average(series),
-        peak,
-        peakAt: formatClock(bucketEnd(timeWindow, series.indexOf(peak))),
-        series
-    }
-}
-
-function RateStats({ average, peak, peakAt }: RequestRateMetrics) {
-    return (
-        <>
-            <TrendStat label="Avg" value={formatRate(average)} />
-            <TrendStat label="Peak" value={formatRate(peak)} suffix={`at ${peakAt}`} />
-        </>
-    )
+    return { current: series.at(-1) ?? 0, series }
 }

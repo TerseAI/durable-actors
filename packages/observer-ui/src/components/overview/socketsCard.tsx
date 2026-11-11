@@ -20,7 +20,7 @@ export function SocketsCard() {
     return (
         <TrendCard
             label="WebSocket Connections"
-            window="open now"
+            aside="open now"
             value={value}
             unit="open"
             busy={loading}

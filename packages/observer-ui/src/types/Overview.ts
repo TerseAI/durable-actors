@@ -5,17 +5,11 @@ export interface ActorResidencyMetrics {
 
 export interface RequestRateMetrics {
     current: number
-    average: number
-    peak: number
-    peakAt: string
     series: number[]
 }
 
 export interface RequestCountMetrics {
     total: number
-    perSecond: number
-    peak: number
-    peakAt: string
     series: number[]
 }
 

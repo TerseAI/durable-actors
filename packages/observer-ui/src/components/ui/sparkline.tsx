@@ -9,19 +9,26 @@ const bottomInset = 16
 
 type Point = { x: number; y: number }
 
-export type PointDescription = { at: string; value: string }
+export type PointDescription = { at: string; value: string; details?: string[] }
+
+/** A constant drawn in grey across the chart, such as a reservation (solid) or a limit (dotted). */
+export type Reference = { value: number; dotted?: boolean }
+
+type Scale = { min: number; span: number }
 
 export type SparklineProps = {
     values: number[]
     color: string
     label: string
     describePoint?: (index: number) => PointDescription
+    references?: Reference[]
 }
 
-export function Sparkline({ values, color, label, describePoint }: SparklineProps) {
+export function Sparkline({ values, color, label, describePoint, references = [] }: SparklineProps) {
     const gradientId = useId()
     const [active, setActive] = useState<number | null>(null)
-    const points = plot(values)
+    const scale = scaleFor(values, references)
+    const points = plot(values, scale)
     const line = points.map(({ x, y }, index) => `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ")
     const activePoint = active === null ? undefined : points[active]
     return (
@@ -35,6 +42,20 @@ export function Sparkline({ values, color, label, describePoint }: SparklineProp
                 </defs>
                 <line x1="0" y1={height - 0.5} x2={width} y2={height - 0.5} className="stroke-border" vectorEffect="non-scaling-stroke" />
                 <path d={`${line} L${width},${height} L0,${height} Z`} fill={`url(#${gradientId})`} />
+                {references.map(({ value, dotted }) => (
+                    <line
+                        key={`${value}-${dotted}`}
+                        x1="0"
+                        x2={width}
+                        y1={y(value, scale)}
+                        y2={y(value, scale)}
+                        className="stroke-muted-foreground"
+                        strokeWidth={1.5}
+                        strokeDasharray={dotted ? "1 4" : undefined}
+                        strokeLinecap="round"
+                        vectorEffect="non-scaling-stroke"
+                    />
+                ))}
                 <path d={line} fill="none" style={{ stroke: color }} strokeWidth={1.75} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
                 {activePoint && <line x1={activePoint.x} x2={activePoint.x} y1={0} y2={height} className="stroke-muted-foreground/50" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
             </svg>
@@ -71,17 +92,30 @@ function PointTooltip({ style, point, onOpenChange }: { style: CSSProperties; po
             <TooltipContent className="tabular-nums">
                 <div className="opacity-80">{point.at}</div>
                 <div className="font-medium">{point.value}</div>
+                {point.details?.map(detail => (
+                    <div key={detail} className="opacity-80">
+                        {detail}
+                    </div>
+                ))}
             </TooltipContent>
         </Tooltip>
     )
 }
 
-function plot(values: number[]): Point[] {
-    const min = Math.min(...values)
-    const span = Math.max(...values) - min || 1
+// Charts with references start at 0, so usage reads against its reservation and limit.
+function scaleFor(values: number[], references: Reference[]): Scale {
+    const min = references.length ? 0 : Math.min(...values)
+    const max = Math.max(...values, ...references.map(reference => reference.value))
+    return { min, span: max - min || 1 }
+}
+
+function plot(values: number[], scale: Scale): Point[] {
     const step = width / Math.max(values.length - 1, 1)
-    const plotHeight = height - topInset - bottomInset
-    return values.map((value, index) => ({ x: index * step, y: topInset + (1 - (value - min) / span) * plotHeight }))
+    return values.map((value, index) => ({ x: index * step, y: y(value, scale) }))
+}
+
+function y(value: number, { min, span }: Scale): number {
+    return topInset + (1 - (value - min) / span) * (height - topInset - bottomInset)
 }
 
 function hoverColumn(index: number, count: number): CSSProperties {

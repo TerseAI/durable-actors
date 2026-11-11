@@ -8,7 +8,6 @@ import { TrendCard, TrendStat, TrendStatsSkeleton } from "../ui/trendCard.js"
 
 export type TimingCardProps = {
     label: string
-    window: string
     pick: TimingPick
     color: string
     chartLabel: string
@@ -17,7 +16,7 @@ export type TimingCardProps = {
     timeWindow: TimeWindow
 }
 
-export function TimingCard({ label, window, pick, color, chartLabel, requests, failed, timeWindow }: TimingCardProps) {
+export function TimingCard({ label, pick, color, chartLabel, requests, failed, timeWindow }: TimingCardProps) {
     const stats = requests && timingStats(requests, timeWindow, pick)
     const loading = !stats && !failed
     const average = stats && scaleMs(stats.average)
@@ -26,7 +25,6 @@ export function TimingCard({ label, window, pick, color, chartLabel, requests, f
     return (
         <TrendCard
             label={label}
-            window={window}
             value={value}
             unit={average?.unit ?? "ms"}
             busy={loading}

@@ -1,13 +1,13 @@
 import { useData } from "../../client/DatatContext.js"
 import { useTimeWindow } from "../../client/TimeRangeContext.js"
-import { formatClock, formatCount, formatPlural, formatRate } from "../../format.js"
+import { formatCount, formatPlural } from "../../format.js"
 import { requestCounts } from "../../lib/requestStats.js"
-import { bucketCount, bucketEnd, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
+import { bucketCount, bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import type { RequestCountMetrics } from "../../types/Overview.js"
 import type { RequestTrace } from "../../types/Requests.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
 import { Skeleton } from "../ui/skeleton.js"
-import { TrendCard, TrendStat, TrendStatsSkeleton } from "../ui/trendCard.js"
+import { TrendCard, TrendStatsSkeleton } from "../ui/trendCard.js"
 
 export function RequestCountCard() {
     const { requests, isRequestsError } = useData()
@@ -20,7 +20,6 @@ export function RequestCountCard() {
     return (
         <TrendCard
             label="Total Requests"
-            window={window}
             value={value}
             unit="requests"
             busy={loading}
@@ -30,7 +29,7 @@ export function RequestCountCard() {
             chartLabel={metrics ? `Requests, ${window}, ${formatCount(metrics.total)} in total` : `Requests, ${window}`}
             describePoint={index => ({ at: bucketLabel(timeWindow, index), value: formatPlural(series[index] ?? 0, "request") })}
         >
-            {metrics ? <CountStats {...metrics} /> : <TrendStatsSkeleton failed={isRequestsError} />}
+            {!metrics && <TrendStatsSkeleton failed={isRequestsError} />}
         </TrendCard>
     )
 }
@@ -43,22 +42,5 @@ function TotalValue({ total, loading }: { total: number | undefined; loading: bo
 
 function getMetrics(requests: RequestTrace[], timeWindow: TimeWindow): RequestCountMetrics {
     const series = requestCounts(requests, timeWindow)
-    const total = series.reduce((sum, count) => sum + count, 0)
-    const peak = Math.max(...series)
-    return {
-        total,
-        perSecond: total / ((timeWindow.toMs - timeWindow.fromMs) / 1000),
-        peak,
-        peakAt: formatClock(bucketEnd(timeWindow, series.indexOf(peak))),
-        series
-    }
-}
-
-function CountStats({ perSecond, peak, peakAt }: RequestCountMetrics) {
-    return (
-        <>
-            <TrendStat label="Avg" value={formatRate(perSecond)} suffix="req/s" />
-            <TrendStat label="Peak" value={formatCount(peak)} suffix={`at ${peakAt}`} />
-        </>
-    )
+    return { total: series.reduce((sum, count) => sum + count, 0), series }
 }
