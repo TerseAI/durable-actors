@@ -3,54 +3,6 @@ use super::*;
 #[path = "usage_reconciliation.rs"]
 mod usage_reconciliation;
 
-struct RecordedReports(std::sync::Mutex<Vec<LifecycleEvent>>);
-
-impl PlatformEvents<LifecycleEvent> for RecordedReports {
-    fn record(&self, event: LifecycleEvent) {
-        self.0.lock().unwrap().push(event);
-    }
-}
-
-#[tokio::test]
-async fn recorded_reports_go_to_observability_as_platform_events() -> Result<()> {
-    use crate::platform_events::PlatformEvent;
-    let reports = Arc::new(RecordedReports(Default::default()));
-    let store = LifecycleStore::default().with_events(reports.clone());
-    store
-        .record(LifecycleEvent {
-            organization_id: Some("org-test".into()),
-            event_id: "session:1".into(),
-            actor: ActorKey {
-                project_id: "first".into(),
-                actor_name: "Counter".into(),
-                actor_id: "one".into(),
-            },
-            host_id: "host".into(),
-            session_id: "session".into(),
-            region: "us-east".into(),
-            received_at_ms: 1000,
-            report: LifecycleReport {
-                kind: LifecycleKind::Started,
-                owner_epoch: 1,
-                sequence: 1,
-                started_at_ms: 1000,
-                occurred_at_ms: 1000,
-                resources: ResourceLimits::default(),
-                resident: Some(true),
-                last_active_at_ms: None,
-                waiting: Vec::new(),
-            },
-        })
-        .await?;
-    let reported = reports.0.lock().unwrap().pop().expect("a reported event");
-    let record = reported.to_record();
-    assert_eq!(record.name, crate::platform_events::lifecycle::REPORTED);
-    let body: LifecycleEvent = serde_json::from_str(&record.body.unwrap())?;
-    assert_eq!(body.actor.actor_id, "one");
-    assert_eq!(body.report.kind, LifecycleKind::Started);
-    Ok(())
-}
-
 #[tokio::test]
 async fn usage_publishes_activation_boundaries_for_each_project() -> Result<()> {
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();

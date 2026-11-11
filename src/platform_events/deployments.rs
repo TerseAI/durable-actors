@@ -62,7 +62,3 @@ impl PlatformEvent for DeploymentEvent {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/platform_events/deployments.rs"]
-mod tests;

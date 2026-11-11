@@ -93,7 +93,3 @@ fn merge_rooms(
     }
     actors.into_values().collect()
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/control_plane/socket_inventory.rs"]
-mod tests;

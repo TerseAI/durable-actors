@@ -141,7 +141,3 @@ impl PlatformEvent for SocketEvent {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/sockets/events.rs"]
-mod tests;

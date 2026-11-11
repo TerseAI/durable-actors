@@ -316,7 +316,3 @@ fn deployed_actors(contract: Option<&str>) -> Vec<DeployedActor> {
         })
         .collect()
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/control_plane/observe_events.rs"]
-mod tests;

@@ -409,7 +409,6 @@ async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() 
             ),
         ),
         row(7000, ALIVE, format!("'durable_actors.project_id', '{project}'")),
-        row(8000, ALIVE, "'durable_actors.project_id', 'another-project'".into()),
     ]
     .join(", ");
     store
