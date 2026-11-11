@@ -12,7 +12,7 @@ use super::*;
 async fn lists_developer_tools() {
     let reply = rpc(local_router(Router::new()), "tools/list", json!({})).await;
     let tools = reply["result"]["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 10);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     let tool = |name: &str| tools.iter().find(|tool| tool["name"] == name).expect(name);
     assert_eq!(tool("invoke_actor")["annotations"]["destructiveHint"], true);
@@ -117,6 +117,38 @@ async fn sessions_page_and_report_lost_connections() {
     assert_eq!(second["records"][0]["status"], "lost");
     assert!(second["records"][0].get("hostId").is_none());
     assert!(second.get("nextCursor").is_none());
+}
+
+#[tokio::test]
+async fn resources_read_one_instance_over_a_window() {
+    let seen = Arc::new(Mutex::new(String::new()));
+    let at = 1_794_330_000_000_u64;
+    let api = Router::new().route(
+        "/v1/projects/demo/observe/resources",
+        get({
+            let seen = seen.clone();
+            move |uri: Uri| async move {
+                *seen.lock().unwrap() = uri.query().unwrap_or_default().to_owned();
+                Json(json!({
+                    "samples": [{ "atMs": at, "cpuMillicores": null, "memoryBytes": 1024,
+                        "memoryLimitBytes": 2048 }],
+                    "database": [{ "atMs": at, "bytes": 8192 }],
+                    "kills": [{ "atMs": at, "reason": "out_of_memory", "message": null }]
+                }))
+            }
+        }),
+    );
+    let arguments = json!({ "actorName": "Counter", "actorId": "one", "sinceMinutes": 30 });
+    let reply = text(&call_tool(api, "get_actor_resources", arguments).await);
+
+    assert_eq!(reply["samples"][0]["at"], "2026-11-10T17:00:00.000Z");
+    assert_eq!(reply["database"][0]["bytes"], 8192);
+    assert_eq!(reply["kills"][0]["reason"], "out_of_memory");
+    let query = seen.lock().unwrap().clone();
+    for pair in ["actorName=Counter", "actorId=one"] {
+        assert!(query.split('&').any(|item| item == pair), "{query}");
+    }
+    assert!(query.contains("fromMs="), "{query}");
 }
 
 #[tokio::test]

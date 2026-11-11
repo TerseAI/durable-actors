@@ -541,6 +541,48 @@ pub(super) struct Log {
     message: String,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ActorResources {
+    samples: Vec<ResourceSample>,
+    database: Vec<DatabaseSize>,
+    kills: Vec<Kill>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ResourceSample {
+    #[schemars(with = "String")]
+    #[serde(rename(deserialize = "atMs"), serialize_with = "timestamp")]
+    at: u64,
+    /// Average over the sample's interval. Null for the first sample after placement.
+    cpu_millicores: Option<u64>,
+    /// Peak working-set memory over the sample's interval.
+    memory_bytes: u64,
+    memory_limit_bytes: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct DatabaseSize {
+    #[schemars(with = "String")]
+    #[serde(rename(deserialize = "atMs"), serialize_with = "timestamp")]
+    at: u64,
+    bytes: u64,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct Kill {
+    #[schemars(with = "String")]
+    #[serde(rename(deserialize = "atMs"), serialize_with = "timestamp")]
+    at: u64,
+    /// out_of_memory, evicted (temporary storage limit) or killed.
+    reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct SocketSession {

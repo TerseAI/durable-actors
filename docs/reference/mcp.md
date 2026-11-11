@@ -71,6 +71,7 @@ With a secret, which Cursor reads from the environment it starts in:
 | `list_logs` | Console output from actors |
 | `get_health` | Request counts, success rate, p95 latency, and the longest queue waits |
 | `list_websocket_sessions` | WebSocket sessions, each open, closed, or lost |
+| `get_actor_resources` | An instance's CPU, memory, and database size over time, and when the platform killed it |
 | `invoke_actor` | Call an actor method. Runs real code and can change state. |
 
 List tools return pages: pass `nextCursor` back as `cursor` for the next one.
