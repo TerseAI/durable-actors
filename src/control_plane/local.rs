@@ -375,6 +375,10 @@ async fn local_routes(
         true,
         stop.child_token(),
         crate::sandbox::connections::HostConnections::new()?.client,
+        Arc::new(super::local_telemetry::LocalSocketEvents::new(
+            storage.telemetry.0.clone(),
+            storage.telemetry.1.clone(),
+        )),
     )?;
     let gateway = super::gateway::Gateway::new(&issuer, origin.to_owned(), socket_gateway)?;
     let mut service = ControlPlaneService::new(

@@ -643,6 +643,7 @@ async fn serve_replica(
         true,
         tokio_util::sync::CancellationToken::new(),
         crate::sandbox::connections::HostConnections::new()?.client,
+        Arc::new(crate::sockets::events::NoSocketEvents),
     )?;
     let mut service = service.clone();
     service.gateway = Some(super::super::super::gateway::Gateway::new(

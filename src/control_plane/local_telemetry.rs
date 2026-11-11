@@ -106,3 +106,38 @@ impl LogsService for LocalTelemetrySink {
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/local_telemetry.rs"]
 mod tests;
+
+/// Local development has no collector, so gateway events go straight to the local store and feed,
+/// in the same OTLP form the collector publishes.
+pub(super) struct LocalSocketEvents {
+    store: Arc<SqliteTracePersistence>,
+    live: InProcessFeed,
+    gateway_id: String,
+}
+
+impl LocalSocketEvents {
+    pub(super) fn new(store: Arc<SqliteTracePersistence>, live: InProcessFeed) -> Self {
+        Self {
+            store,
+            live,
+            gateway_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+}
+
+impl crate::sockets::events::SocketEvents for LocalSocketEvents {
+    fn record(&self, event: crate::sockets::events::SocketEvent) {
+        if let Some(actor) = event.actor() {
+            self.live.send(
+                otlp::live_channel(&actor.project_id, Signal::Sockets),
+                event.export_request(&self.gateway_id).encode_to_vec(),
+            );
+        }
+        let (store, gateway_id) = (self.store.clone(), self.gateway_id.clone());
+        tokio::spawn(async move {
+            if let Err(error) = store.append_socket_events(gateway_id, vec![event]).await {
+                tracing::warn!(error = %format!("{error:#}"), "socket event was not stored");
+            }
+        });
+    }
+}

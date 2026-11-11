@@ -1840,6 +1840,7 @@ async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<Control
         true,
         tokio_util::sync::CancellationToken::new(),
         crate::sandbox::connections::HostConnections::new()?.client,
+        Arc::new(crate::sockets::events::NoSocketEvents),
     )?;
     service.gateway = Some(super::super::gateway::Gateway::new(
         &service.host_token_issuer,

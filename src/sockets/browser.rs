@@ -1,10 +1,17 @@
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::SinkExt;
 use tokio::task::JoinHandle;
 
-use super::{OutboundMessage, SocketReceiver, SocketRegistry, socket_channel};
+use super::{
+    OutboundMessage, SocketReceiver, SocketRegistry,
+    events::{SocketClose, SocketEvent, SocketEvents},
+    socket_channel,
+};
 use crate::actor::{
     ActorKey, ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
     ActorSocketMessage, validate_socket_effects,
@@ -39,6 +46,7 @@ pub(crate) trait SocketDispatcher: Send + Sync {
 pub(crate) struct SocketServerState {
     pub registry: SocketRegistry,
     pub dispatcher: Arc<dyn SocketDispatcher>,
+    pub events: Arc<dyn SocketEvents>,
     pub stop: CancellationToken,
 }
 
@@ -77,6 +85,12 @@ pub(crate) async fn run(mut socket: WebSocket, state: SocketServerState, ticket:
         .await;
         return;
     }
+    state.events.record(SocketEvent::Opened {
+        actor: ticket.actor.clone(),
+        connection_id: connection.id.clone(),
+        metadata: connection.metadata.clone(),
+        at_ms: now_ms(),
+    });
     let mut session = Session {
         state,
         ticket,
@@ -84,6 +98,8 @@ pub(crate) async fn run(mut socket: WebSocket, state: SocketServerState, ticket:
         outbound: receiver,
         pending: VecDeque::new(),
         handler: None,
+        traffic: Traffic::default(),
+        opened: Instant::now(),
     };
     session.start(ActorSocketEvent::Connect {
         connection: session.connection.clone(),
@@ -103,6 +119,17 @@ struct Session {
     outbound: SocketReceiver,
     pending: VecDeque<ActorSocketMessage>,
     handler: Option<JoinHandle<bool>>,
+    traffic: Traffic,
+    opened: Instant,
+}
+
+/// Text messages and their bytes, in each direction.
+#[derive(Default)]
+struct Traffic {
+    messages_in: u64,
+    messages_out: u64,
+    bytes_in: u64,
+    bytes_out: u64,
 }
 
 impl Session {
@@ -131,6 +158,8 @@ impl Session {
     ) -> Result<(), Closed> {
         match inbound {
             Some(Ok(Message::Text(text))) => {
+                self.traffic.messages_in += 1;
+                self.traffic.bytes_in += text.len() as u64;
                 if let Some(response) = self
                     .state
                     .registry
@@ -187,7 +216,7 @@ impl Session {
     }
 
     async fn send_outbound(
-        &self,
+        &mut self,
         socket: &mut WebSocket,
         outbound: OutboundMessage,
     ) -> Result<(), Closed> {
@@ -206,7 +235,11 @@ impl Session {
         }
     }
 
-    async fn send_frame(&self, socket: &mut WebSocket, frame: Message) -> Result<(), Closed> {
+    async fn send_frame(&mut self, socket: &mut WebSocket, frame: Message) -> Result<(), Closed> {
+        if let Message::Text(text) = &frame {
+            self.traffic.messages_out += 1;
+            self.traffic.bytes_out += text.len() as u64;
+        }
         self.state
             .dispatcher
             .ensure_authority()
@@ -226,6 +259,21 @@ impl Session {
             .remove(&self.ticket.actor, &self.connection.id)
             .await
             .unwrap_or(self.connection.clone());
+        self.state.events.record(SocketEvent::Closed {
+            actor: self.ticket.actor.clone(),
+            connection_id: connection.id.clone(),
+            close: SocketClose {
+                code: closed.code,
+                reason: closed.reason.clone(),
+                clean: was_clean,
+                messages_in: self.traffic.messages_in,
+                messages_out: self.traffic.messages_out,
+                bytes_in: self.traffic.bytes_in,
+                bytes_out: self.traffic.bytes_out,
+                duration_ms: self.opened.elapsed().as_millis() as u64,
+            },
+            at_ms: now_ms(),
+        });
         if let Some(handler) = self.handler.take() {
             let _ = tokio::time::timeout(Duration::from_secs(5), handler).await;
         }
@@ -241,6 +289,11 @@ impl Session {
         )
         .await;
     }
+}
+
+fn now_ms() -> u64 {
+    use crate::clock::{Clock, SystemClock};
+    SystemClock.now_ms().unwrap_or_default()
 }
 
 async fn close(socket: &mut WebSocket, closed: &Closed) -> bool {

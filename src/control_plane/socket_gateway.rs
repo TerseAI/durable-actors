@@ -7,7 +7,11 @@ use super::{
 use crate::request_tracking::HostState;
 use crate::{
     actor::{ActorKey, ActorSocketEffect, ActorSocketInvocation},
-    sockets::{SocketRegistry, browser::SocketDispatcher},
+    sockets::{
+        SocketRegistry,
+        browser::SocketDispatcher,
+        events::{ALIVE_INTERVAL, SocketEvent, SocketEvents},
+    },
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -41,6 +45,7 @@ pub(super) struct SocketGateway {
     pub(super) bus: Arc<dyn SocketBus>,
     pub(super) accepts_sockets: bool,
     pub(super) http: reqwest::Client,
+    pub(super) events: Arc<dyn SocketEvents>,
 }
 
 impl SocketGateway {
@@ -49,13 +54,18 @@ impl SocketGateway {
         accepts_sockets: bool,
         stop: CancellationToken,
         http: reqwest::Client,
+        events: Arc<dyn SocketEvents>,
     ) -> Result<Arc<Self>> {
+        if accepts_sockets {
+            tokio::spawn(report_alive(events.clone(), stop.clone()));
+        }
         Ok(Arc::new(Self {
             registry: bus.registry().clone(),
             bus,
             accepts_sockets,
             stop,
             http,
+            events,
         }))
     }
 
@@ -286,5 +296,20 @@ impl SocketDispatcher for GatewaySocketDispatcher {
     fn notify(&self, ticket: &SocketTicket, event: &crate::actor::ActorSocketEvent) {
         self.service
             .deliver_socket_message_event(&ticket.actor, None, event);
+    }
+}
+
+/// Readers treat a gateway's open connections as ended once these reports stop.
+async fn report_alive(events: Arc<dyn SocketEvents>, stop: CancellationToken) {
+    use crate::clock::{Clock, SystemClock};
+    let mut ticks = tokio::time::interval(ALIVE_INTERVAL);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = stop.cancelled() => return,
+            _ = ticks.tick() => events.record(SocketEvent::Alive {
+                at_ms: SystemClock.now_ms().unwrap_or_default(),
+            }),
+        }
     }
 }

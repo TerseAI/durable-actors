@@ -39,6 +39,8 @@ pub struct ControlPlaneProcessConfig {
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
+    /// Where this gateway exports its WebSocket connection events; unset turns them off.
+    pub socket_telemetry: Option<super::SocketTelemetryConfig>,
     pub usage_topic: Option<String>,
     pub region: Option<String>,
     pub alarm_poll_interval: Duration,
@@ -256,11 +258,21 @@ async fn control_plane_routes(
         ),
         None => super::socket_bus::MemorySocketHub::default().join(config.max_socket_connections),
     };
+    // A fresh ID per process: a restarted gateway must not vouch for the connections it lost.
+    let socket_events: Arc<dyn crate::sockets::events::SocketEvents> =
+        match &config.socket_telemetry {
+            Some(telemetry) => Arc::new(super::socket_telemetry::OtlpSocketEvents::connect(
+                telemetry,
+                &uuid::Uuid::new_v4().to_string(),
+            )?),
+            None => Arc::new(crate::sockets::events::NoSocketEvents),
+        };
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         socket_bus,
         config.gateway_accept_connections,
         stop.child_token(),
         connections.client.clone(),
+        socket_events,
     )?;
     let public_origin = config.sandbox_provider.public_origin.clone();
     let gateway = super::gateway::Gateway::new(&issuer, public_origin.clone(), socket_gateway)?;
@@ -585,6 +597,7 @@ impl ControlPlaneProcessConfig {
             storage,
             sandbox_provider,
             socket_event_sink,
+            socket_telemetry: socket_telemetry_config(&mut get)?,
             usage_topic: get("DURABLE_ACTORS_USAGE_TOPIC"),
             region,
             alarm_poll_interval,
@@ -728,6 +741,21 @@ fn alarm_poll_interval(get: &mut impl FnMut(&str) -> Option<String>) -> Result<D
         "DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS must be positive"
     );
     Ok(Duration::from_millis(milliseconds))
+}
+
+fn socket_telemetry_config(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<Option<super::SocketTelemetryConfig>> {
+    let Some(endpoint) = get("DURABLE_ACTORS_SOCKET_TELEMETRY_ENDPOINT") else {
+        return Ok(None);
+    };
+    let token_file = get("DURABLE_ACTORS_SOCKET_TELEMETRY_TOKEN_FILE").context(
+        "DURABLE_ACTORS_SOCKET_TELEMETRY_ENDPOINT requires DURABLE_ACTORS_SOCKET_TELEMETRY_TOKEN_FILE",
+    )?;
+    Ok(Some(super::SocketTelemetryConfig {
+        endpoint: validated_http_url(&endpoint, "DURABLE_ACTORS_SOCKET_TELEMETRY_ENDPOINT")?,
+        token_file: token_file.into(),
+    }))
 }
 
 fn socket_event_sink_config(

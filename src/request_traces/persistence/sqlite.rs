@@ -24,6 +24,7 @@ mod history;
 mod logs;
 mod metrics;
 mod replay;
+mod sockets;
 
 const LOCAL_RETENTION: usize = 10_000;
 
@@ -60,6 +61,7 @@ impl SqliteTracePersistence {
                 connection.busy_timeout(Duration::from_secs(5))?;
                 initialize(&mut connection, &path)?;
                 logs::initialize(&connection)?;
+                sockets::initialize(&connection)?;
                 connection.execute_batch("DROP TABLE IF EXISTS trace_status")?;
                 *shared = Some(connection);
             }
@@ -90,6 +92,16 @@ impl SqliteTracePersistence {
     pub(crate) async fn append_logs(&self, records: Vec<ActorLog>) -> Result<()> {
         let retention = self.retention;
         self.run(move |connection| logs::append(connection, &records, retention))
+            .await
+    }
+
+    pub(crate) async fn append_socket_events(
+        &self,
+        gateway_id: String,
+        events: Vec<crate::sockets::events::SocketEvent>,
+    ) -> Result<()> {
+        let retention = self.retention;
+        self.run(move |connection| sockets::append(connection, &gateway_id, &events, retention))
             .await
     }
 }

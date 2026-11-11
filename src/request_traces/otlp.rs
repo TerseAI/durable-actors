@@ -25,6 +25,15 @@ pub(crate) const ROUTING_MS: &str = "durable_actors.routing_ms";
 pub(crate) const HOST_STATE: &str = "durable_actors.host_state";
 pub(crate) const STATE_VERSION: &str = "durable_actors.state_version";
 pub(crate) const METADATA: &str = "durable_actors.metadata";
+pub(crate) const GATEWAY_ID: &str = "durable_actors.gateway_id";
+pub(crate) const CLOSE_CODE: &str = "durable_actors.close_code";
+pub(crate) const CLOSE_REASON: &str = "durable_actors.close_reason";
+pub(crate) const CLOSE_CLEAN: &str = "durable_actors.close_clean";
+pub(crate) const MESSAGES_IN: &str = "durable_actors.messages_in";
+pub(crate) const MESSAGES_OUT: &str = "durable_actors.messages_out";
+pub(crate) const BYTES_IN: &str = "durable_actors.bytes_in";
+pub(crate) const BYTES_OUT: &str = "durable_actors.bytes_out";
+pub(crate) const DURATION_MS: &str = "durable_actors.duration_ms";
 
 const TENANT_PREFIX: &str = "durable_actors.";
 
@@ -34,6 +43,8 @@ pub(crate) enum Signal {
     Logs,
     /// Lifecycle reports, which the control plane publishes as it records them.
     Lifecycle,
+    /// WebSocket connection events, which each gateway publishes through the collector.
+    Sockets,
 }
 
 pub(crate) fn live_channel(project_id: &str, signal: Signal) -> String {
@@ -41,6 +52,7 @@ pub(crate) fn live_channel(project_id: &str, signal: Signal) -> String {
         Signal::Requests => "traces",
         Signal::Logs => "logs",
         Signal::Lifecycle => "lifecycle",
+        Signal::Sockets => "sockets",
     };
     format!("durable-actors:v1:live:{project_id}:{signal}")
 }
