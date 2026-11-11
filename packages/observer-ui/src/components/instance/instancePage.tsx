@@ -60,7 +60,6 @@ export function InstancePage() {
                             <CpuCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
                             <StorageCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
                             <RequestRateTrend requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} color="var(--foreground)" />
-                            <ErrorsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} />
                             <TimingCard
                                 label="Avg Queue Wait"
                                 pick={queueTime}
@@ -79,6 +78,7 @@ export function InstancePage() {
                                 failed={isRequestsError}
                                 timeWindow={timeWindow}
                             />
+                            <ErrorsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} />
                         </div>
                     </SyncedHover>
                     <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} onShowLogs={showRequestLogs} />
