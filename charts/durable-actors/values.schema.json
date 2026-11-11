@@ -261,7 +261,12 @@
           "properties": {
             "enabled": {"type": "boolean"},
             "replicas": {"type": "integer", "minimum": 1},
-            "resources": {"type": "object"}
+            "resources": {"type": "object"},
+            "sockets": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {"issuer": {"type": "string"}}
+            }
           }
         }
       }

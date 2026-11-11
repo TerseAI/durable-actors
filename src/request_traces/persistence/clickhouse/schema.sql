@@ -76,6 +76,36 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
 ALTER TABLE otel_traces MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
 ALTER TABLE otel_logs MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
+CREATE TABLE IF NOT EXISTS socket_events (
+    Timestamp DateTime64(9) CODEC(Delta(8), ZSTD(1)),
+    TraceId String CODEC(ZSTD(1)),
+    SpanId String CODEC(ZSTD(1)),
+    TraceFlags UInt8,
+    SeverityText LowCardinality(String) CODEC(ZSTD(1)),
+    SeverityNumber UInt8,
+    ServiceName LowCardinality(String) CODEC(ZSTD(1)),
+    Body String CODEC(ZSTD(1)),
+    ResourceSchemaUrl LowCardinality(String) CODEC(ZSTD(1)),
+    ResourceAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    ScopeSchemaUrl LowCardinality(String) CODEC(ZSTD(1)),
+    ScopeName String CODEC(ZSTD(1)),
+    ScopeVersion LowCardinality(String) CODEC(ZSTD(1)),
+    ScopeAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    LogAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    EventName LowCardinality(String) CODEC(ZSTD(1)),
+    -- Gateways report many projects under one resource, so these come from each record.
+    ProjectId LowCardinality(String) MATERIALIZED LogAttributes['durable_actors.project_id'],
+    ActorName LowCardinality(String) MATERIALIZED LogAttributes['durable_actors.actor_name'],
+    ActorId String MATERIALIZED LogAttributes['durable_actors.actor_id'],
+    ConnectionId String MATERIALIZED LogAttributes['durable_actors.connection_id'],
+    GatewayId String MATERIALIZED ResourceAttributes['durable_actors.gateway_id'],
+    ReceivedAt DateTime64(3) DEFAULT now64(3)
+) ENGINE = MergeTree
+PARTITION BY toDate(ReceivedAt)
+ORDER BY (ProjectId, ActorName, ActorId, ConnectionId, Timestamp)
+TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
+ALTER TABLE socket_events MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
 
 CREATE TABLE IF NOT EXISTS actor_lifecycle (
     project_id String,

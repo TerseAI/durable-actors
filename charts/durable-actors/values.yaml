@@ -67,6 +67,11 @@ telemetry:
     resources:
       requests: {cpu: 250m, memory: 512Mi}
       limits: {memory: 1Gi}
+    sockets:
+      # The cluster's service-account token issuer (on GKE:
+      # https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>).
+      # Setting it makes gateways report WebSocket connection events through the collector.
+      issuer: ""
 # Caches actor code and state on each sandbox node's disk so cold starts skip GCS.
 nodeCache:
   enabled: false

@@ -13,6 +13,12 @@ type Config struct {
 	Endpoint configopaque.String `mapstructure:"endpoint"`
 	// CAFile optionally trusts a private CA for rediss:// endpoints.
 	CAFile string `mapstructure:"ca_file"`
+	// LogsChannel names the per-project channel logs publish to; it defaults to "logs".
+	LogsChannel string `mapstructure:"logs_channel"`
+	// ProjectFromRecords also takes the project from each log record when the resource has none.
+	// Only trusted senders that report for many projects may use it: host telemetry always carries
+	// the project its token proves on the resource.
+	ProjectFromRecords bool `mapstructure:"project_from_records"`
 }
 
 func (c *Config) Validate() error {

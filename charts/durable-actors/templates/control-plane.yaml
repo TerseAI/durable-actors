@@ -58,6 +58,9 @@ spec:
             {{- toYaml $.Values.resources | nindent 12 }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- if and (eq $workload.role "control_plane") $.Values.telemetry.collector.enabled $.Values.telemetry.collector.sockets.issuer }}
+            - {name: socket-telemetry, mountPath: /var/run/secrets/durable-actors/socket-telemetry, readOnly: true}
+            {{- end }}
           {{- if eq $workload.role "control_plane" }}
           startupProbe:
             httpGet: {path: /healthz, port: http}
@@ -80,6 +83,11 @@ spec:
             {{- if $.Values.telemetry.collector.enabled }}
             - name: DURABLE_ACTORS_OTLP_ENDPOINT
               value: {{ printf "http://%s.%s.svc.cluster.local:4317" (include "actors.collectorName" $) $.Release.Namespace | quote }}
+            {{- if and (eq $workload.role "control_plane") $.Values.telemetry.collector.sockets.issuer }}
+            - name: DURABLE_ACTORS_SOCKET_TELEMETRY_ENDPOINT
+              value: {{ printf "http://%s.%s.svc.cluster.local:4319" (include "actors.collectorName" $) $.Release.Namespace | quote }}
+            - {name: DURABLE_ACTORS_SOCKET_TELEMETRY_TOKEN_FILE, value: /var/run/secrets/durable-actors/socket-telemetry/token}
+            {{- end }}
             {{- end }}
             {{- with $.Values.usage.topic }}
             - {name: DURABLE_ACTORS_USAGE_TOPIC, value: {{ . | quote }}}
@@ -167,6 +175,13 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if and (eq $workload.role "control_plane") $.Values.telemetry.collector.enabled $.Values.telemetry.collector.sockets.issuer }}
+        # The collector accepts gateway connection events only with a token for this audience.
+        - name: socket-telemetry
+          projected:
+            sources:
+              - serviceAccountToken: {audience: durable-actors-socket-telemetry, expirationSeconds: 3600, path: token}
+        {{- end }}
 {{- end }}
 ---
 apiVersion: v1
