@@ -312,6 +312,7 @@ impl ActorInventoryReader for LifecycleStore {
                 status,
                 last_active_at_ms: event.report.last_active_at_ms,
                 database_bytes: event.report.database_bytes,
+                resources: Some(event.report.resources),
                 connections: Vec::new(),
                 waiting: match status {
                     ActorResidency::Unknown => None,

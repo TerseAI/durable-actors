@@ -1,3 +1,5 @@
+import type { ResourceLimits } from "./Resources.js"
+
 export interface ActorType {
     actorName: string
     methods?: string[]
@@ -19,6 +21,7 @@ export interface ActorInstance {
     lastActiveAtMs?: number | null
     connections: ActorConnection[]
     waiting?: { id: string; operation: string }[] | null
+    resources?: ResourceLimits | null
 }
 
 interface ActorConnection {

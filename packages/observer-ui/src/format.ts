@@ -26,9 +26,24 @@ export const formatPercent = (ratio: number) => percent.format(ratio)
 export const formatSignedPercent = (ratio: number) => signedPercent.format(ratio)
 export const formatMsValue = (ms: number) => (ms < 10 ? fine.format(ms) : count.format(Math.round(ms)))
 export const formatMs = (ms: number) => `${formatMsValue(ms)}\u00a0ms`
-export const formatMegabytes = (bytes: number) => decimal.format(bytes / 1_000_000)
 export const formatMebibytes = (bytes: number) => decimal.format(bytes / 1_048_576)
-export const formatCores = (millicores: number) => fine.format(millicores / 1000)
+export const formatCpu = (millicores: number) => fine.format(millicores / 1000)
+
+const byteUnits = [
+    ["bytes", 1],
+    ["KB", 1e3],
+    ["MB", 1e6],
+    ["GB", 1e9],
+    ["TB", 1e12]
+] as const
+
+/** Bytes in the largest unit that keeps the shown value under 1,000. */
+export function scaleBytes(bytes: number): { value: string; unit: string } {
+    let index = 0
+    while (index < byteUnits.length - 1 && Math.round((bytes / byteUnits[index]![1]) * 10) / 10 >= 1000) index++
+    const [unit, size] = byteUnits[index]!
+    return { value: decimal.format(bytes / size), unit }
+}
 export const formatPlural = (value: number, noun: string) => `${count.format(value)} ${value === 1 ? noun : `${noun}s`}`
 
 export function formatDuration(ms: number): string {

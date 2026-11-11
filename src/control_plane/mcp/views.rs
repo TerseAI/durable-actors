@@ -555,7 +555,8 @@ struct ResourceSample {
     #[schemars(with = "String")]
     #[serde(rename(deserialize = "atMs"), serialize_with = "timestamp")]
     at: u64,
-    /// Average over the sample's interval. Null for the first sample after placement.
+    /// Thousandths of a CPU (one CPU is one vCPU), averaged over the sample's interval. Null for
+    /// the first sample after placement.
     cpu_millicores: Option<u64>,
     /// Peak working-set memory over the sample's interval.
     memory_bytes: u64,

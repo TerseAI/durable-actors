@@ -78,6 +78,7 @@ fn merge_rooms(
                 status: ActorResidency::Dormant,
                 last_active_at_ms: None,
                 database_bytes: None,
+                resources: None,
                 connections: vec![],
                 waiting: None,
             });

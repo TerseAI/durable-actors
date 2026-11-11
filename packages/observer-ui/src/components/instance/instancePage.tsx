@@ -72,8 +72,8 @@ export function InstancePage() {
                             failed={isRequestsError}
                             timeWindow={timeWindow}
                         />
-                        <MemoryCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
-                        <CpuCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
+                        <MemoryCard resources={resources} limits={instance?.resources ?? null} failed={isResourcesError} timeWindow={timeWindow} />
+                        <CpuCard resources={resources} limits={instance?.resources ?? null} failed={isResourcesError} timeWindow={timeWindow} />
                         <StorageCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
                     </div>
                     <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} onShowLogs={showRequestLogs} />
