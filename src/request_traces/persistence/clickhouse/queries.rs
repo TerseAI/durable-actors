@@ -235,6 +235,22 @@ impl ClickHouseTracePersistence {
             .collect())
     }
 
+    pub(super) async fn read_deployed_contract(
+        &self,
+        project: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let contract = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.query(include_str!("deployed_contract.sql"), project)
+                .fetch_optional::<String>(),
+        )
+        .await??;
+        contract
+            .filter(|contract| !contract.is_empty())
+            .map(|contract| Ok(serde_json::from_str(&contract)?))
+            .transpose()
+    }
+
     fn query(&self, sql: &str, project: &str) -> clickhouse::query::Query {
         self.client
             .query(sql)

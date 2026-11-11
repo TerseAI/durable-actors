@@ -20,6 +20,7 @@ use crate::request_traces::{
     replay::ReplayQuery,
 };
 
+mod deployments;
 mod history;
 mod logs;
 mod metrics;
@@ -62,6 +63,7 @@ impl SqliteTracePersistence {
                 initialize(&mut connection, &path)?;
                 logs::initialize(&connection)?;
                 sockets::initialize(&connection)?;
+                deployments::initialize(&connection)?;
                 connection.execute_batch("DROP TABLE IF EXISTS trace_status")?;
                 *shared = Some(connection);
             }
@@ -104,6 +106,14 @@ impl SqliteTracePersistence {
         self.run(move |connection| sockets::append(connection, &gateway_id, &events, retention))
             .await
     }
+
+    pub(crate) async fn append_deployment(
+        &self,
+        event: crate::platform_events::deployments::DeploymentEvent,
+    ) -> Result<()> {
+        self.run(move |connection| deployments::record(connection, &event))
+            .await
+    }
 }
 
 #[async_trait]
@@ -142,6 +152,12 @@ impl TraceQueries for SqliteTracePersistence {
 
     async fn gateway_heartbeats(&self) -> Result<std::collections::HashMap<String, u64>> {
         self.run(sockets::heartbeats).await
+    }
+
+    async fn deployed_contract(&self, project_id: &str) -> Result<Option<serde_json::Value>> {
+        let project_id = project_id.to_owned();
+        self.run(move |connection| deployments::contract(connection, &project_id))
+            .await
     }
 
     async fn history(&self, project_id: &str, query: &HistoryQuery) -> Result<TracePage> {

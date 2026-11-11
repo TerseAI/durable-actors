@@ -439,7 +439,7 @@ async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() 
     store
         .client
         .query(&format!(
-            "INSERT INTO socket_events (Timestamp, EventName, ResourceAttributes, LogAttributes) VALUES {values}"
+            "INSERT INTO platform_events (Timestamp, EventName, ResourceAttributes, LogAttributes) VALUES {values}"
         ))
         .execute()
         .await?;
@@ -478,5 +478,39 @@ async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() 
         1
     );
     assert_eq!(store.gateway_heartbeats().await?.get(&gateway), Some(&7000));
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_latest_deployment_event_holds_the_deployed_contract() -> Result<()> {
+    use crate::platform_events::deployments::{PUBLISHED, REMOVED};
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    ingestion::initialize(&store.client, 86400).await?;
+    let project = format!("deployments-{}", uuid::Uuid::new_v4());
+    let insert = |at_ms: u64, event: &str, body: &str| {
+        store.client.query(&format!(
+            "INSERT INTO platform_events (Timestamp, EventName, LogAttributes, Body) VALUES \
+             (fromUnixTimestamp64Milli({at_ms}), '{event}', map('durable_actors.project_id', '{project}'), '{body}')"
+        ))
+    };
+    assert_eq!(store.deployed_contract(&project).await?, None);
+    // Out of order, as a startup republish and a deploy can arrive.
+    insert(2000, PUBLISHED, r#"{"version":2}"#)
+        .execute()
+        .await?;
+    insert(1000, PUBLISHED, r#"{"version":1}"#)
+        .execute()
+        .await?;
+    assert_eq!(
+        store.deployed_contract(&project).await?,
+        Some(serde_json::json!({"version": 2}))
+    );
+    insert(3000, REMOVED, "").execute().await?;
+    assert_eq!(store.deployed_contract(&project).await?, None);
     Ok(())
 }

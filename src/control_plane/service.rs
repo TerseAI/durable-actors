@@ -11,6 +11,7 @@ use tracing::{info, warn};
 use crate::{
     actor::{ActorKey, ActorSocketEvent},
     bucket::OwnershipHint,
+    clock::{Clock, SystemClock},
     grpc::proto::{
         ControlPlaneReply, ControlPlaneRequest,
         actor_control_plane_service_server::{
@@ -20,6 +21,7 @@ use crate::{
     host::HostId,
     host_leases::HostLease,
     placement::{ObjectPlacement, ObjectPlacementStore},
+    platform_events::deployments::{DeploymentEvent, DeploymentEvents},
     sandbox::{
         EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, SandboxProvider,
         TerminateHostsRequest,
@@ -40,7 +42,6 @@ const FALLBACK_REGION: &str = "north-america-central";
 #[derive(Clone)]
 pub struct ControlPlaneService {
     pub(super) lifecycle: crate::actor_lifecycle::LifecycleStore,
-    pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     pub(super) routes: Arc<dyn super::routes::RouteStore>,
@@ -52,6 +53,7 @@ pub struct ControlPlaneService {
     provisioner: Arc<dyn HostProvisioner>,
     alarms: Arc<dyn super::alarms::AlarmStore>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
+    deployments: Arc<dyn DeploymentEvents>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
     hosts: reqwest::Client,
 }
@@ -82,7 +84,6 @@ impl ControlPlaneService {
     ) -> Self {
         Self {
             lifecycle: Default::default(),
-            changes: Default::default(),
             runtime_access: None,
             gateway: None,
             routes: Arc::new(super::routes::MemoryRoutes::default()),
@@ -94,6 +95,7 @@ impl ControlPlaneService {
             provisioner,
             alarms: Arc::new(super::alarms::MemoryAlarmStore::default()),
             socket_events: None,
+            deployments: Arc::new(crate::platform_events::deployments::NoDeploymentEvents),
             local_builds: None,
             hosts: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -113,6 +115,27 @@ impl ControlPlaneService {
     pub(super) fn with_alarm_store(mut self, alarms: Arc<dyn super::alarms::AlarmStore>) -> Self {
         self.alarms = alarms;
         self
+    }
+
+    pub(super) fn with_deployment_events(mut self, deployments: Arc<dyn DeploymentEvents>) -> Self {
+        self.deployments = deployments;
+        self
+    }
+
+    /// Republishes every current deployment, covering those made before the analytics store
+    /// received deployments and any whose event was lost.
+    pub(super) async fn republish_deployments(&self) -> Result<()> {
+        // Stamped before the read, so a deploy committed after it still wins.
+        let at_ms = SystemClock.now_ms()?;
+        for spec in self.registry.launch_specs().await? {
+            let contract = self.registry.deployment_contract(&spec.project_id).await?;
+            self.deployments.record(DeploymentEvent::Published {
+                project_id: spec.project_id,
+                contract: contract.map(|contract| contract.contract),
+                at_ms,
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn start_alarm_scheduler(
@@ -165,8 +188,12 @@ impl ControlPlaneService {
             self.terminate_deployment_hosts(&previous).await?;
         }
         let changed = update.register(spec, contract).await?;
+        self.deployments.record(DeploymentEvent::Published {
+            project_id: spec.project_id.clone(),
+            contract: contract.map(|contract| contract.document().clone()),
+            at_ms: SystemClock.now_ms()?,
+        });
         self.routes.remove_project(&spec.project_id).await;
-        self.changes.notify().await;
         Ok(changed || replacing)
     }
 
@@ -240,8 +267,11 @@ impl ControlPlaneService {
         };
         self.terminate_deployment_hosts(&previous).await?;
         update.remove().await?;
+        self.deployments.record(DeploymentEvent::Removed {
+            project_id: project_id.to_owned(),
+            at_ms: SystemClock.now_ms()?,
+        });
         self.routes.remove_project(project_id).await;
-        self.changes.notify().await;
         Ok(true)
     }
 

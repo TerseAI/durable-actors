@@ -43,8 +43,9 @@ pub(crate) enum Signal {
     Logs,
     /// Lifecycle reports, which the control plane publishes as it records them.
     Lifecycle,
-    /// WebSocket connection events, which each gateway publishes through the collector.
-    Sockets,
+    /// Platform events (WebSocket connections and deployments), which the control plane publishes
+    /// through the collector.
+    Platform,
 }
 
 pub(crate) fn live_channel(project_id: &str, signal: Signal) -> String {
@@ -52,7 +53,7 @@ pub(crate) fn live_channel(project_id: &str, signal: Signal) -> String {
         Signal::Requests => "traces",
         Signal::Logs => "logs",
         Signal::Lifecycle => "lifecycle",
-        Signal::Sockets => "sockets",
+        Signal::Platform => "platform",
     };
     format!("durable-actors:v1:live:{project_id}:{signal}")
 }

@@ -232,8 +232,6 @@ struct Fixture {
     traces: crate::request_traces::TraceStore,
     telemetry: Arc<SqliteTracePersistence>,
     live: InProcessFeed,
-    changes: crate::postgres::notifications::ChangeFeed,
-    admin: AdminService,
     _runtime: RuntimeFixture,
     store: Arc<RuntimeStorage>,
     host: HostId,
@@ -272,15 +270,14 @@ impl Fixture {
             issuer.clone(),
         )?
         .with_invoke_api_key(Some("invoke-key".into()))?;
-        let changes = crate::postgres::notifications::ChangeFeed::default();
         let lifecycle = LifecycleStore::default().with_live(Arc::new(live.clone()));
         let inventory = super::socket_inventory::ConnectionInventoryReader::new(
             Arc::new(lifecycle.clone()),
             traces.clone(),
         );
-        let inspector = ActorInspector::new(Arc::new(inventory), store.clone(), changes.clone())
-            .with_traces(traces.clone());
-        let routes = super::inspection::router(inspector, admin.clone());
+        let inspector =
+            ActorInspector::new(Arc::new(inventory), store.clone()).with_traces(traces.clone());
+        let routes = super::inspection::router(inspector, admin);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
         Ok(Self {
@@ -288,8 +285,6 @@ impl Fixture {
             traces,
             telemetry,
             live,
-            changes,
-            admin,
             _runtime: runtime,
             store,
             host,
@@ -398,7 +393,7 @@ async fn inventory_stream_pushes_connections_as_gateways_report_them() -> Result
         .await?
         .error_for_status()?;
     stream_inventory(&mut stream).await?;
-    let gateway = super::local_telemetry::LocalSocketEvents::new(
+    let gateway = super::local_telemetry::LocalPlatformEvents::new(
         fixture.telemetry.clone(),
         fixture.live.clone(),
     );
@@ -439,7 +434,6 @@ async fn inventory_stream_follows_lifecycle_reports_and_clears_stopped_queues() 
     fixture
         .report_lifecycle(actor.clone(), LifecycleKind::Heartbeat, 2, waiting)
         .await?;
-    fixture.changes.notify().await;
     let connected = stream_inventory(&mut stream).await?;
     assert_eq!(connected["actors"][0]["live"], 1);
     assert_eq!(
@@ -449,7 +443,6 @@ async fn inventory_stream_follows_lifecycle_reports_and_clears_stopped_queues() 
     fixture
         .report_lifecycle(actor, LifecycleKind::Stopped, 3, vec![])
         .await?;
-    fixture.changes.notify().await;
     let expired = stream_inventory(&mut stream).await?;
     assert_eq!(expired["actors"][0]["dormant"], 1);
     assert_eq!(expired["actors"][0]["instances"][0]["waiting"], json!([]));
@@ -494,36 +487,27 @@ async fn stream_inventory(stream: &mut reqwest::Response) -> Result<Value> {
 }
 
 #[tokio::test]
-async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Result<()> {
+async fn inventory_pushes_deployed_types_without_loading_actors() -> Result<()> {
+    use crate::platform_events::deployments::{DeploymentEvent, DeploymentEvents};
     let fixture = Fixture::start().await?;
-    let contract = super::contracts::PublicActorContract::new(serde_json::from_str(
-        include_str!("../../../sdk/tests/fixtures/public-contract.json"),
-    )?)?;
-    fixture
-        .admin
-        .register_deployment(
-            &super::admin::HostLaunchSpec {
-                image_policy: Default::default(),
-                organization_id: "org-test".into(),
-                sandboxes: Default::default(),
-                project_id: "default".into(),
-                source: None,
-                code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
-                image_ref: "test-image".into(),
-                working_directory: "/customer".into(),
-                actor_entrypoint: Some("actors.mjs".into()),
-                secret_refs: vec![],
-            },
-            Some(&contract),
-        )
-        .await?;
-    let inventory: Value = fixture
-        .get("/v1/projects/default/observe/actors")
+    let mut stream = fixture
+        .get("/v1/projects/default/observe/events")
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let row = inventory["actors"]
+        .error_for_status()?;
+    stream_inventory(&mut stream).await?;
+    let control_plane = super::local_telemetry::LocalPlatformEvents::new(
+        fixture.telemetry.clone(),
+        fixture.live.clone(),
+    );
+    control_plane.record(DeploymentEvent::Published {
+        project_id: "default".into(),
+        contract: Some(serde_json::from_str(include_str!(
+            "../../../sdk/tests/fixtures/public-contract.json"
+        ))?),
+        at_ms: SystemClock.now_ms()?,
+    });
+    let pushed = stream_inventory(&mut stream).await?;
+    let row = pushed["actors"]
         .as_array()
         .unwrap()
         .iter()
@@ -533,11 +517,13 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
     assert_eq!(row["dormant"], 0);
     assert_eq!(row["instances"], json!([]));
     assert_eq!(row["methods"], json!(["clear", "sendMessage"]));
-    let mut stream = fixture
-        .get("/v1/projects/default/observe/events")
+    let inventory: Value = fixture
+        .get("/v1/projects/default/observe/actors")
         .await?
-        .error_for_status()?;
-    assert_eq!(stream_inventory(&mut stream).await?, inventory);
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(inventory, pushed);
     Ok(())
 }
 

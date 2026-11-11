@@ -39,8 +39,9 @@ pub struct ControlPlaneProcessConfig {
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
-    /// Where this gateway exports its WebSocket connection events; unset turns them off.
-    pub socket_telemetry: Option<super::SocketTelemetryConfig>,
+    /// Where the control plane exports platform events (WebSocket connections and deployments);
+    /// unset turns them off.
+    pub platform_telemetry: Option<super::PlatformTelemetryConfig>,
     pub usage_topic: Option<String>,
     pub region: Option<String>,
     pub alarm_poll_interval: Duration,
@@ -182,12 +183,6 @@ async fn control_plane_routes(
         &config.storage.postgres_url,
         config.storage.postgres_max_connections,
     )?;
-    let changes = crate::postgres::notifications::ChangeFeed::postgres(
-        database.clone(),
-        &config.storage.postgres_url,
-        stop.clone(),
-    )
-    .await?;
     let (traces, lifecycle) = telemetry_stores(&config.storage, redis.clone(), stop.clone())?;
     let retention = config
         .jwt_max_lifetime
@@ -259,14 +254,21 @@ async fn control_plane_routes(
         None => super::socket_bus::MemorySocketHub::default().join(config.max_socket_connections),
     };
     // A fresh ID per process: a restarted gateway must not vouch for the connections it lost.
-    let socket_events: Arc<dyn crate::sockets::events::SocketEvents> =
-        match &config.socket_telemetry {
-            Some(telemetry) => Arc::new(super::socket_telemetry::OtlpSocketEvents::connect(
+    let platform_events = config
+        .platform_telemetry
+        .as_ref()
+        .map(|telemetry| {
+            super::platform_telemetry::OtlpPlatformEvents::connect(
                 telemetry,
                 &uuid::Uuid::new_v4().to_string(),
-            )?),
-            None => Arc::new(crate::sockets::events::NoSocketEvents),
-        };
+            )
+        })
+        .transpose()?
+        .map(Arc::new);
+    let socket_events: Arc<dyn crate::sockets::events::SocketEvents> = match &platform_events {
+        Some(events) => events.clone(),
+        None => Arc::new(crate::sockets::events::NoSocketEvents),
+    };
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         socket_bus,
         config.gateway_accept_connections,
@@ -313,9 +315,12 @@ async fn control_plane_routes(
         ));
     }
     service.lifecycle = lifecycle;
-    service.changes = changes;
     service.gateway = Some(gateway);
     service.region = config.region;
+    if let Some(events) = platform_events {
+        service = service.with_deployment_events(events);
+        republish_deployments(service.clone());
+    }
     service.lifecycle.start_reconciliation(stop.clone());
     service.start_access_reconciliation(stop.clone());
     service.start_alarm_scheduler(config.alarm_poll_interval, stop);
@@ -327,8 +332,7 @@ async fn control_plane_routes(
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
         .with_invoke_api_key(config.invoke_api_key)?;
     let inspector =
-        super::inspection::ActorInspector::new(inventory, storage.clone(), service.changes.clone())
-            .with_traces(traces);
+        super::inspection::ActorInspector::new(inventory, storage.clone()).with_traces(traces);
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin.clone()))
         .merge(discovery);
@@ -597,7 +601,7 @@ impl ControlPlaneProcessConfig {
             storage,
             sandbox_provider,
             socket_event_sink,
-            socket_telemetry: socket_telemetry_config(&mut get)?,
+            platform_telemetry: platform_telemetry_config(&mut get)?,
             usage_topic: get("DURABLE_ACTORS_USAGE_TOPIC"),
             region,
             alarm_poll_interval,
@@ -743,17 +747,25 @@ fn alarm_poll_interval(get: &mut impl FnMut(&str) -> Option<String>) -> Result<D
     Ok(Duration::from_millis(milliseconds))
 }
 
-fn socket_telemetry_config(
+fn republish_deployments(service: ControlPlaneService) {
+    tokio::spawn(async move {
+        if let Err(error) = service.republish_deployments().await {
+            warn!(error = %format!("{error:#}"), "deployments were not republished");
+        }
+    });
+}
+
+fn platform_telemetry_config(
     get: &mut impl FnMut(&str) -> Option<String>,
-) -> Result<Option<super::SocketTelemetryConfig>> {
-    let Some(endpoint) = get("DURABLE_ACTORS_SOCKET_TELEMETRY_ENDPOINT") else {
+) -> Result<Option<super::PlatformTelemetryConfig>> {
+    let Some(endpoint) = get("DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT") else {
         return Ok(None);
     };
-    let token_file = get("DURABLE_ACTORS_SOCKET_TELEMETRY_TOKEN_FILE").context(
-        "DURABLE_ACTORS_SOCKET_TELEMETRY_ENDPOINT requires DURABLE_ACTORS_SOCKET_TELEMETRY_TOKEN_FILE",
+    let token_file = get("DURABLE_ACTORS_PLATFORM_TELEMETRY_TOKEN_FILE").context(
+        "DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT requires DURABLE_ACTORS_PLATFORM_TELEMETRY_TOKEN_FILE",
     )?;
-    Ok(Some(super::SocketTelemetryConfig {
-        endpoint: validated_http_url(&endpoint, "DURABLE_ACTORS_SOCKET_TELEMETRY_ENDPOINT")?,
+    Ok(Some(super::PlatformTelemetryConfig {
+        endpoint: validated_http_url(&endpoint, "DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT")?,
         token_file: token_file.into(),
     }))
 }

@@ -237,6 +237,15 @@ impl TraceStore {
         Ok(sessions)
     }
 
+    /// The public actor contract of the project's latest deployment.
+    pub(crate) async fn deployed_contract(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        self.queries.deployed_contract(project_id).await
+    }
+
     /// The project's connections open now, by actor.
     pub(crate) async fn open_connections(
         &self,

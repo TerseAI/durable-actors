@@ -20,11 +20,10 @@ use super::{
 };
 
 pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
-    local_router(inspector, admin.clone())
-        .route_layer(middleware::from_fn_with_state(admin, require_admin))
+    local_router(inspector).route_layer(middleware::from_fn_with_state(admin, require_admin))
 }
 
-pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Router {
+pub(super) fn local_router(inspector: ActorInspector) -> Router {
     Router::new()
         .route("/v1/projects/{project_id}/observe/state", get(actor_state))
         .route(
@@ -72,13 +71,12 @@ pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Ro
             "/v1/projects/{project_id}/observe/logs/histogram",
             get(log_histogram),
         )
-        .with_state(InspectionApi { inspector, admin })
+        .with_state(InspectionApi { inspector })
 }
 
 #[derive(Clone)]
 struct InspectionApi {
     inspector: ActorInspector,
-    admin: AdminService,
 }
 
 #[derive(Clone)]
@@ -86,20 +84,17 @@ pub(super) struct ActorInspector {
     traces: crate::request_traces::TraceStore,
     state: Arc<dyn crate::bucket::ActorStateReader>,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
-    changes: crate::postgres::notifications::ChangeFeed,
 }
 
 impl ActorInspector {
     pub(super) fn new(
         inventory: Arc<dyn crate::placement::ActorInventoryReader>,
         state: Arc<dyn crate::bucket::ActorStateReader>,
-        changes: crate::postgres::notifications::ChangeFeed,
     ) -> Self {
         Self {
             traces: crate::request_traces::TraceStore::default(),
             inventory,
             state,
-            changes,
         }
     }
 
@@ -125,47 +120,46 @@ async fn read_inventory(
     state: &InspectionApi,
     project: &str,
 ) -> Result<crate::placement::ActorInventorySnapshot> {
-    let mut inventory = state.inspector.inventory.actor_inventory(project).await?;
+    let (mut inventory, contract) = tokio::try_join!(
+        state.inspector.inventory.actor_inventory(project),
+        state.inspector.traces.deployed_contract(project),
+    )?;
     let mut rows: std::collections::BTreeMap<_, _> = inventory
         .actors
         .into_iter()
         .map(|row| (row.actor_name.clone(), row))
         .collect();
-    if let Some(contract) = state.admin.deployment_contract(project).await? {
-        if let Some(actors) = contract.contract["actors"].as_array() {
-            for actor in actors {
-                if let Some(name) = actor["actorName"].as_str() {
-                    let row = rows.entry(name.to_owned()).or_insert_with(|| {
-                        crate::placement::ActorInventory {
-                            actor_name: name.to_owned(),
-                            ..Default::default()
-                        }
+    if let Some(contract) = contract {
+        for (name, methods) in super::contracts::actor_methods(&contract)? {
+            let row =
+                rows.entry(name.clone())
+                    .or_insert_with(|| crate::placement::ActorInventory {
+                        actor_name: name,
+                        ..Default::default()
                     });
-                    row.methods = Some(contract.rpc_methods(name)?);
-                }
-            }
+            row.methods = Some(methods);
         }
     }
     inventory.actors = rows.into_values().collect();
     Ok(inventory)
 }
 
-/// How long the inventory stream waits after a lifecycle report or connection event before
+/// How long the inventory stream waits after a lifecycle report or platform event before
 /// re-reading the inventory.
 const REPORT_SETTLE: Duration = Duration::from_secs(1);
 
-/// The project's lifecycle reports and connection events as they are recorded. Without a live
-/// feed, the stream's periodic re-read still keeps the inventory current.
+/// The project's lifecycle reports and platform events (connections and deployments) as they are
+/// recorded. Without a live feed, the stream's periodic re-read still keeps the inventory current.
 async fn inventory_changes(
     state: &InspectionApi,
     project: &str,
 ) -> crate::request_traces::live::LiveStream {
     use crate::request_traces::otlp::Signal;
-    let (reports, connections) = tokio::join!(
+    let (reports, platform) = tokio::join!(
         live_signal(state, project, Signal::Lifecycle),
-        live_signal(state, project, Signal::Sockets),
+        live_signal(state, project, Signal::Platform),
     );
-    Box::pin(futures_util::stream::select(reports, connections))
+    Box::pin(futures_util::stream::select(reports, platform))
 }
 
 async fn live_signal(
@@ -191,7 +185,6 @@ async fn actor_events(
     use tokio_stream::wrappers::ReceiverStream;
 
     let project = project_id(path)?;
-    let mut changes = state.inspector.changes.subscribe();
     let mut recorded = inventory_changes(&state, &project).await;
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
     tokio::spawn(async move {
@@ -227,7 +220,6 @@ async fn actor_events(
             tokio::select! {
                 _ = sender.closed() => return,
                 _ = tokio::time::sleep(Duration::from_secs(15)) => {},
-                _ = changes.changed() => {},
                 change = recorded.next() => {
                     if change.is_none() {
                         recorded = Box::pin(futures_util::stream::pending());
@@ -517,13 +509,14 @@ async fn actor_state(
     .map_err(|_| ApiError::unavailable("State inspection timed out"))?
     .map_err(ApiError::internal)?;
     let contract = api
-        .admin
-        .deployment_contract(&actor.project_id)
+        .inspector
+        .traces
+        .deployed_contract(&actor.project_id)
         .await
         .map_err(ApiError::internal)?;
     let schema = contract
         .as_ref()
-        .and_then(|contract| contract.contract["actors"].as_array())
+        .and_then(|contract| contract["actors"].as_array())
         .and_then(|actors| {
             actors
                 .iter()

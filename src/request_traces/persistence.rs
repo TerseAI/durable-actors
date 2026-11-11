@@ -44,6 +44,8 @@ pub(crate) trait TraceQueries: Send + Sync {
     ) -> Result<Vec<SocketRecord>>;
     /// Each gateway's latest heartbeat.
     async fn gateway_heartbeats(&self) -> Result<HashMap<String, u64>>;
+    /// The public actor contract of the project's latest deployment.
+    async fn deployed_contract(&self, project_id: &str) -> Result<Option<serde_json::Value>>;
 }
 
 /// Answers every telemetry query with nothing, for deployments without an analytics backend.
@@ -90,5 +92,9 @@ impl TraceQueries for NoTraceQueries {
 
     async fn gateway_heartbeats(&self) -> Result<HashMap<String, u64>> {
         Ok(HashMap::new())
+    }
+
+    async fn deployed_contract(&self, _: &str) -> Result<Option<serde_json::Value>> {
+        Ok(None)
     }
 }

@@ -155,6 +155,10 @@ impl TraceQueries for ClickHouseTracePersistence {
     async fn gateway_heartbeats(&self) -> Result<std::collections::HashMap<String, u64>> {
         self.read_gateway_heartbeats().await
     }
+
+    async fn deployed_contract(&self, project_id: &str) -> Result<Option<serde_json::Value>> {
+        self.read_deployed_contract(project_id).await
+    }
 }
 
 struct Report {

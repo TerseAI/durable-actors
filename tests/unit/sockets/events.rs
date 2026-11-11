@@ -1,4 +1,5 @@
 use super::*;
+use opentelemetry_proto::tonic::common::v1::any_value::Value as ProtoKind;
 
 #[test]
 fn records_carry_their_project_and_the_resource_its_gateway() {
@@ -12,7 +13,7 @@ fn records_carry_their_project_and_the_resource_its_gateway() {
         metadata: serde_json::json!({"user": "one"}),
         at_ms: 1_000,
     };
-    let request = event.export_request("gateway-1");
+    let request = event.to_record().export_request("gateway-1");
     let resource = &request.resource_logs[0];
     let gateway = &resource.resource.as_ref().unwrap().attributes[0];
     assert_eq!(gateway.key, otlp::GATEWAY_ID);

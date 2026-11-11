@@ -1,5 +1,6 @@
-//! Exports a gateway's WebSocket connection events to the collector's internal OTLP receiver,
-//! authenticated with the pod's projected service-account token.
+//! Exports the control plane's platform events (WebSocket connections and deployments) to the
+//! collector's internal OTLP receiver, authenticated with the pod's projected service-account
+//! token.
 
 use std::{
     path::PathBuf,
@@ -9,7 +10,7 @@ use std::{
 use anyhow::Result;
 use opentelemetry::{
     KeyValue,
-    logs::{LogRecord, Logger, LoggerProvider, Severity},
+    logs::{AnyValue, LogRecord, Logger, LoggerProvider, Severity},
 };
 use opentelemetry_otlp::{LogExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
@@ -21,26 +22,30 @@ use tonic::{
 };
 
 use crate::{
+    platform_events::{
+        PlatformRecord,
+        deployments::{DeploymentEvent, DeploymentEvents},
+    },
     request_traces::otlp::GATEWAY_ID,
     sockets::events::{SocketEvent, SocketEvents},
 };
 
-const SCOPE: &str = "durable-actors-socket-gateway";
+const SCOPE: &str = "durable-actors-control-plane";
 
-pub struct SocketTelemetryConfig {
+pub struct PlatformTelemetryConfig {
     pub endpoint: String,
     /// A projected service-account token the kubelet keeps fresh; read on every export.
     pub token_file: PathBuf,
 }
 
-pub(super) struct OtlpSocketEvents {
+pub(super) struct OtlpPlatformEvents {
     logger: SdkLogger,
-    // Flushes buffered events when the gateway shuts down.
+    // Flushes buffered events when the process shuts down.
     _provider: SdkLoggerProvider,
 }
 
-impl OtlpSocketEvents {
-    pub(super) fn connect(config: &SocketTelemetryConfig, gateway_id: &str) -> Result<Self> {
+impl OtlpPlatformEvents {
+    pub(super) fn connect(config: &PlatformTelemetryConfig, gateway_id: &str) -> Result<Self> {
         let exporter = LogExporter::builder()
             .with_tonic()
             .with_endpoint(&config.endpoint)
@@ -66,16 +71,31 @@ impl OtlpSocketEvents {
     }
 }
 
-impl SocketEvents for OtlpSocketEvents {
-    fn record(&self, event: SocketEvent) {
+impl OtlpPlatformEvents {
+    fn emit(&self, record: PlatformRecord) {
         let mut log = self.logger.create_log_record();
-        log.set_timestamp(UNIX_EPOCH + Duration::from_millis(event.at_ms()));
-        log.set_event_name(event.name());
+        log.set_timestamp(UNIX_EPOCH + Duration::from_millis(record.at_ms));
+        log.set_event_name(record.name);
         log.set_severity_number(Severity::Info);
-        for (key, value) in event.attributes() {
+        for (key, value) in record.attributes {
             log.add_attribute(key, value);
         }
+        if let Some(body) = record.body {
+            log.set_body(AnyValue::from(body));
+        }
         self.logger.emit(log);
+    }
+}
+
+impl SocketEvents for OtlpPlatformEvents {
+    fn record(&self, event: SocketEvent) {
+        self.emit(event.to_record());
+    }
+}
+
+impl DeploymentEvents for OtlpPlatformEvents {
+    fn record(&self, event: DeploymentEvent) {
+        self.emit(event.to_record());
     }
 }
 

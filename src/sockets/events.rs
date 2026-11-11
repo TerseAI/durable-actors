@@ -4,16 +4,14 @@
 use std::time::Duration;
 
 use opentelemetry::logs::AnyValue;
-use opentelemetry_proto::tonic::{
-    collector::logs::v1::ExportLogsServiceRequest,
-    common::v1::{AnyValue as ProtoValue, KeyValue, any_value::Value as ProtoKind},
-    logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
-    resource::v1::Resource,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{actor::ActorKey, request_traces::otlp};
+use crate::{
+    actor::ActorKey,
+    platform_events::{PlatformRecord, count},
+    request_traces::otlp,
+};
 
 /// How often a gateway reports that it is alive.
 pub(crate) const ALIVE_INTERVAL: Duration = Duration::from_secs(10);
@@ -123,51 +121,14 @@ impl SocketEvent {
 }
 
 impl SocketEvent {
-    /// The event as the collector's Redis exporter publishes it, for gateways without a collector.
-    pub(crate) fn export_request(&self, gateway_id: &str) -> ExportLogsServiceRequest {
-        let attribute = |key: &str, value: AnyValue| KeyValue {
-            key: key.to_owned(),
-            value: Some(ProtoValue {
-                value: match value {
-                    AnyValue::Int(value) => Some(ProtoKind::IntValue(value)),
-                    AnyValue::Boolean(value) => Some(ProtoKind::BoolValue(value)),
-                    AnyValue::String(value) => Some(ProtoKind::StringValue(value.to_string())),
-                    _ => None,
-                },
-            }),
-            ..Default::default()
-        };
-        let record = LogRecord {
-            time_unix_nano: self.at_ms() * 1_000_000,
-            event_name: self.name().to_owned(),
-            attributes: self
-                .attributes()
-                .into_iter()
-                .map(|(key, value)| attribute(key, value))
-                .collect(),
-            ..Default::default()
-        };
-        ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                resource: Some(Resource {
-                    attributes: vec![attribute(
-                        otlp::GATEWAY_ID,
-                        AnyValue::from(gateway_id.to_owned()),
-                    )],
-                    ..Default::default()
-                }),
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![record],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
+    pub(crate) fn to_record(&self) -> PlatformRecord {
+        PlatformRecord {
+            name: self.name(),
+            at_ms: self.at_ms(),
+            attributes: self.attributes(),
+            body: None,
         }
     }
-}
-
-fn count(value: u64) -> AnyValue {
-    AnyValue::from(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
 /// Records connection events without blocking the connection; delivery is best effort.
@@ -175,7 +136,7 @@ pub(crate) trait SocketEvents: Send + Sync {
     fn record(&self, event: SocketEvent);
 }
 
-/// For gateways without socket telemetry configured.
+/// For gateways without platform telemetry configured.
 pub(crate) struct NoSocketEvents;
 
 impl SocketEvents for NoSocketEvents {

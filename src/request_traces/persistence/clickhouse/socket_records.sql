@@ -24,7 +24,7 @@ SELECT ConnectionId AS connection_id,
         EventName = 'durable_actors.socket.closed') AS bytes_out,
     argMaxIf(LogAttributes['durable_actors.duration_ms'], Timestamp,
         EventName = 'durable_actors.socket.closed') AS duration_ms
-FROM socket_events
+FROM platform_events
 WHERE ProjectId = {project:String}
     AND ConnectionId != ''
     AND ReceivedAt > now64(3) - toIntervalSecond({retention:UInt64})

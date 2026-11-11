@@ -42,7 +42,7 @@ pub(crate) const CONTROL_PLANE_REQUEST_TIMEOUT: Duration = Duration::from_secs(3
 
 pub use local::{DevOptions, serve_local};
 pub use organization_limits::OrganizationLimits;
-pub use socket_telemetry::SocketTelemetryConfig;
+pub use platform_telemetry::PlatformTelemetryConfig;
 
 #[cfg(test)]
 pub(crate) use self::auth::ActorInvocationCapability;
@@ -59,7 +59,7 @@ pub(crate) use self::{
 };
 pub use crate::request_traces::persistence::clickhouse::ClickHouseConfig;
 
+mod platform_telemetry;
 mod socket_bus;
 pub(crate) mod socket_gateway;
 mod socket_inventory;
-mod socket_telemetry;

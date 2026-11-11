@@ -370,15 +370,16 @@ async fn local_routes(
     if let Some(admission) = &admission {
         provisioner = provisioner.with_actor_admission(admission.clone());
     }
+    let platform_events = Arc::new(super::local_telemetry::LocalPlatformEvents::new(
+        storage.telemetry.0.clone(),
+        storage.telemetry.1.clone(),
+    ));
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         super::socket_bus::MemorySocketHub::default().join(max_socket_connections),
         true,
         stop.child_token(),
         crate::sandbox::connections::HostConnections::new()?.client,
-        Arc::new(super::local_telemetry::LocalSocketEvents::new(
-            storage.telemetry.0.clone(),
-            storage.telemetry.1.clone(),
-        )),
+        platform_events.clone(),
     )?;
     let gateway = super::gateway::Gateway::new(&issuer, origin.to_owned(), socket_gateway)?;
     let mut service = ControlPlaneService::new(
@@ -389,6 +390,7 @@ async fn local_routes(
         Arc::new(provisioner),
     )
     .with_runtime_access(storage.access.clone())
+    .with_deployment_events(platform_events)
     .with_alarm_store(Arc::new(
         super::alarms::SqliteAlarmStore::open(directory.join("alarms.sqlite3")).await?,
     ))
@@ -414,12 +416,8 @@ async fn local_routes(
         Arc::new(service.lifecycle.clone()),
         storage.traces.clone(),
     ));
-    let inspector = super::inspection::ActorInspector::new(
-        inventory,
-        storage.runtime.clone(),
-        service.changes.clone(),
-    )
-    .with_traces(storage.traces.clone());
+    let inspector = super::inspection::ActorInspector::new(inventory, storage.runtime.clone())
+        .with_traces(storage.traces.clone());
     let reload = LocalReload {
         service: service.clone(),
         admin: admin.clone(),
@@ -428,7 +426,7 @@ async fn local_routes(
         alarms: std::sync::Once::new(),
     };
     let public = public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::local_router(inspector, admin));
+        .merge(super::inspection::local_router(inspector));
     let public = public.clone().merge(super::mcp::local_router(public));
     let telemetry = super::local_telemetry::LocalTelemetrySink::new(
         ActorJwtVerifier::for_scope(

@@ -244,6 +244,47 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
     Ok(())
 }
 
+#[derive(Default)]
+struct RecordedDeployments(Mutex<Vec<crate::platform_events::deployments::DeploymentEvent>>);
+
+impl crate::platform_events::deployments::DeploymentEvents for RecordedDeployments {
+    fn record(&self, event: crate::platform_events::deployments::DeploymentEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+#[tokio::test]
+async fn deployments_are_published_when_committed_and_republished_on_startup() -> Result<()> {
+    let (service, admin, _) = fixture()?;
+    let recorded = Arc::new(RecordedDeployments::default());
+    let service = service.with_deployment_events(recorded.clone());
+    let contract = super::super::contracts::PublicActorContract::new(contract())?;
+    service
+        .deploy_source(&admin, &source(), Some(&contract))
+        .await?;
+    service.republish_deployments().await?;
+    assert!(service.delete_deployment(&admin, "default").await?);
+    let events = recorded.0.lock().unwrap();
+    let contracts: Vec<_> = events
+        .iter()
+        .map(|event| (event.project_id(), event.contract().cloned()))
+        .collect();
+    let deployed = Some(contract.document().clone());
+    assert_eq!(
+        contracts,
+        [
+            ("default", deployed.clone()),
+            ("default", deployed),
+            ("default", None)
+        ]
+    );
+    assert!(matches!(
+        events[2],
+        crate::platform_events::deployments::DeploymentEvent::Removed { .. }
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn compiled_artifact_selects_the_language_image() -> Result<()> {
     let (service, admin, _) = fixture()?;

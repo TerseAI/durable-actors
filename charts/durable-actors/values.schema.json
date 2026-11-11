@@ -262,7 +262,7 @@
             "enabled": {"type": "boolean"},
             "replicas": {"type": "integer", "minimum": 1},
             "resources": {"type": "object"},
-            "sockets": {
+            "platform": {
               "type": "object",
               "additionalProperties": false,
               "properties": {"issuer": {"type": "string"}}

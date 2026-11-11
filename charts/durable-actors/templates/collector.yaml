@@ -1,5 +1,5 @@
 {{- if .Values.telemetry.collector.enabled }}
-{{- $sockets := .Values.telemetry.collector.sockets.issuer }}
+{{- $platform := .Values.telemetry.collector.platform.issuer }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,9 +7,9 @@ metadata:
 data:
   collector.yaml: |
     {{- .Files.Get "files/collector.yaml" | nindent 4 }}
-  {{- if $sockets }}
-  collector-sockets.yaml: |
-    {{- .Files.Get "files/collector-sockets.yaml" | nindent 4 }}
+  {{- if $platform }}
+  collector-platform.yaml: |
+    {{- .Files.Get "files/collector-platform.yaml" | nindent 4 }}
   {{- end }}
 ---
 apiVersion: apps/v1
@@ -26,7 +26,7 @@ spec:
       labels:
         app.kubernetes.io/name: {{ include "actors.collectorName" . }}
       annotations:
-        checksum/config: {{ print (.Files.Get "files/collector.yaml") (.Files.Get "files/collector-sockets.yaml") $sockets | sha256sum }}
+        checksum/config: {{ print (.Files.Get "files/collector.yaml") (.Files.Get "files/collector-platform.yaml") $platform | sha256sum }}
     spec:
       automountServiceAccountToken: false
       {{- with .Values.nodeSelector }}
@@ -51,13 +51,13 @@ spec:
           image: {{ include "actors.image" .Values.images.collector | quote }}
           args:
             - --config=/etc/otelcol/collector.yaml
-            {{- if $sockets }}
-            - --config=/etc/otelcol/collector-sockets.yaml
+            {{- if $platform }}
+            - --config=/etc/otelcol/collector-platform.yaml
             {{- end }}
           ports:
             - {name: otlp-grpc, containerPort: 4317}
             - {name: health, containerPort: 13133}
-            {{- if $sockets }}
+            {{- if $platform }}
             - {name: otlp-internal, containerPort: 4319}
             {{- end }}
           securityContext:
@@ -74,8 +74,8 @@ spec:
             periodSeconds: 10
           env:
             - {name: CONTROL_PLANE_URL, value: {{ .Values.publicUrl | trimSuffix "/" | quote }}}
-            {{- if $sockets }}
-            - {name: SOCKET_TOKEN_ISSUER, value: {{ $sockets | quote }}}
+            {{- if $platform }}
+            - {name: PLATFORM_TOKEN_ISSUER, value: {{ $platform | quote }}}
             {{- end }}
             - {name: CLICKHOUSE_URL, value: {{ .Values.analytics.clickhouse.url | quote }}}
             - {name: CLICKHOUSE_DATABASE, value: {{ .Values.analytics.clickhouse.database | quote }}}
@@ -111,7 +111,7 @@ spec:
     app.kubernetes.io/name: {{ include "actors.collectorName" . }}
   ports:
     - {name: otlp-grpc, port: 4317, targetPort: otlp-grpc, appProtocol: grpc}
-    {{- if $sockets }}
+    {{- if $platform }}
     # Gateways only: the sandbox network policy allows 4317 and nothing else.
     - {name: otlp-internal, port: 4319, targetPort: otlp-internal, appProtocol: grpc}
     {{- end }}

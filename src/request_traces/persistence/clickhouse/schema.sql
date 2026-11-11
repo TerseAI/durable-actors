@@ -76,7 +76,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
 ALTER TABLE otel_traces MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
 ALTER TABLE otel_logs MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
-CREATE TABLE IF NOT EXISTS socket_events (
+CREATE TABLE IF NOT EXISTS platform_events (
     Timestamp DateTime64(9) CODEC(Delta(8), ZSTD(1)),
     TraceId String CODEC(ZSTD(1)),
     SpanId String CODEC(ZSTD(1)),
@@ -105,7 +105,22 @@ PARTITION BY toDate(ReceivedAt)
 ORDER BY (ProjectId, ActorName, ActorId, ConnectionId, Timestamp)
 TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
-ALTER TABLE socket_events MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
+ALTER TABLE platform_events MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
+
+-- Raw events expire, so each project's latest contract is kept here without a TTL. A removed
+-- deployment has an empty body.
+CREATE TABLE IF NOT EXISTS latest_deployments (
+    ProjectId LowCardinality(String),
+    Contract AggregateFunction(argMax, String, DateTime64(9))
+) ENGINE = AggregatingMergeTree
+ORDER BY ProjectId;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS latest_deployment_updates TO latest_deployments AS
+SELECT LogAttributes['durable_actors.project_id'] AS ProjectId,
+       argMaxState(Body, Timestamp) AS Contract
+FROM platform_events
+WHERE EventName IN ('durable_actors.deployment.published', 'durable_actors.deployment.removed')
+GROUP BY ProjectId;
 
 CREATE TABLE IF NOT EXISTS actor_lifecycle (
     project_id String,
