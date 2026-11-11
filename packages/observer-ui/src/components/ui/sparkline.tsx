@@ -1,4 +1,4 @@
-import { type CSSProperties, useId, useState } from "react"
+import { type CSSProperties, type ReactNode, createContext, useContext, useId, useState } from "react"
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip.js"
 
@@ -22,12 +22,24 @@ export type SparklineProps = {
     label: string
     describePoint?: (index: number) => PointDescription
     references?: Reference[]
+    /** A fixed vertical range, such as 0–1 for a share. */
+    bounds?: [number, number]
 }
 
-export function Sparkline({ values, color, label, describePoint, references = [] }: SparklineProps) {
+const HoverContext = createContext<[number | null, (index: number | null) => void] | null>(null)
+
+/** Charts inside share the hovered point, so every chart shows the same moment. */
+export function SyncedHover({ children }: { children: ReactNode }) {
+    const hovered = useState<number | null>(null)
+    return <HoverContext.Provider value={hovered}>{children}</HoverContext.Provider>
+}
+
+export function Sparkline({ values, color, label, describePoint, references = [], bounds }: SparklineProps) {
     const gradientId = useId()
-    const [active, setActive] = useState<number | null>(null)
-    const scale = scaleFor(values, references)
+    const own = useState<number | null>(null)
+    const [hovered, setHovered] = useContext(HoverContext) ?? own
+    const active = hovered !== null && hovered < values.length ? hovered : null
+    const scale = bounds ? { min: bounds[0], span: bounds[1] - bounds[0] || 1 } : scaleFor(values, references)
     const points = plot(values, scale)
     const line = points.map(({ x, y }, index) => `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ")
     const activePoint = active === null ? undefined : points[active]
@@ -58,15 +70,14 @@ export function Sparkline({ values, color, label, describePoint, references = []
                 {activePoint && <line x1={activePoint.x} x2={activePoint.x} y1={0} y2={height} className="stroke-muted-foreground/50" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
             </svg>
             {activePoint && <ActiveDot point={activePoint} color={color} />}
-            {describePoint &&
-                points.map((_, index) => (
-                    <PointTooltip
-                        key={index}
-                        style={hoverColumn(index, points.length)}
-                        point={describePoint(index)}
-                        onOpenChange={open => setActive(current => (open ? index : current === index ? null : current))}
-                    />
-                ))}
+            {describePoint && (
+                <div className="absolute inset-0" onPointerLeave={() => setHovered(null)}>
+                    {points.map((_, index) => (
+                        <span key={index} className="absolute inset-y-0" style={hoverColumn(index, points.length)} onPointerEnter={() => setHovered(index)} />
+                    ))}
+                </div>
+            )}
+            {describePoint && active !== null && <PointTooltip style={hoverColumn(active, points.length)} point={describePoint(active)} />}
         </div>
     )
 }
@@ -81,11 +92,11 @@ function ActiveDot({ point, color }: { point: Point; color: string }) {
     )
 }
 
-function PointTooltip({ style, point, onOpenChange }: { style: CSSProperties; point: PointDescription; onOpenChange: (open: boolean) => void }) {
+function PointTooltip({ style, point }: { style: CSSProperties; point: PointDescription }) {
     return (
-        <Tooltip onOpenChange={onOpenChange}>
+        <Tooltip open>
             <TooltipTrigger asChild>
-                <span className="absolute inset-y-0" style={style} />
+                <span className="pointer-events-none absolute inset-y-0" style={style} />
             </TooltipTrigger>
             <TooltipContent className="tabular-nums">
                 <div className="opacity-80">{point.at}</div>

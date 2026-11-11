@@ -19,8 +19,10 @@ import { RequestRateTrend } from "../overview/requestRateCard.js"
 import { TimeRangeControl } from "../timeRange/timeRangeControl.js"
 import { PageHeader } from "../ui/pageHeader.js"
 import { Skeleton } from "../ui/skeleton.js"
+import { SyncedHover } from "../ui/sparkline.js"
 
 import { ConnectionsCard } from "./connectionsCard.js"
+import { LiveCard } from "./liveCard.js"
 import { LogsCard, logsCardId } from "./logsCard.js"
 import { RequestsCard } from "./requestsCard.js"
 import { CpuCard, MemoryCard, StorageCard } from "./resourceCards.js"
@@ -50,30 +52,33 @@ export function InstancePage() {
                 </p>
             ) : (
                 <div className="flex flex-col gap-4">
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        <RequestRateTrend requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} color="var(--foreground)" />
-                        <TimingCard
-                            label="Avg Queue Wait"
-                            pick={queueTime}
-                            color="var(--chart-1)"
-                            chartLabel={`Average queue wait, ${describeWindow(timeWindow)}`}
-                            requests={ownRequests}
-                            failed={isRequestsError}
-                            timeWindow={timeWindow}
-                        />
-                        <TimingCard
-                            label="Avg Request Time"
-                            pick={serviceTime}
-                            color="var(--foreground)"
-                            chartLabel={`Average request time excluding the queue, ${describeWindow(timeWindow)}`}
-                            requests={ownRequests}
-                            failed={isRequestsError}
-                            timeWindow={timeWindow}
-                        />
-                        <MemoryCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
-                        <CpuCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
-                        <StorageCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
-                    </div>
+                    <SyncedHover>
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                            <LiveCard live={instance ? instance.status === "live" : null} periods={livePeriods} failed={isResidencyError} timeWindow={timeWindow} />
+                            <MemoryCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
+                            <CpuCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
+                            <StorageCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
+                            <RequestRateTrend requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} color="var(--foreground)" />
+                            <TimingCard
+                                label="Avg Queue Wait"
+                                pick={queueTime}
+                                color="var(--chart-1)"
+                                chartLabel={`Average queue wait, ${describeWindow(timeWindow)}`}
+                                requests={ownRequests}
+                                failed={isRequestsError}
+                                timeWindow={timeWindow}
+                            />
+                            <TimingCard
+                                label="Avg Request Time"
+                                pick={serviceTime}
+                                color="var(--foreground)"
+                                chartLabel={`Average request time excluding the queue, ${describeWindow(timeWindow)}`}
+                                requests={ownRequests}
+                                failed={isRequestsError}
+                                timeWindow={timeWindow}
+                            />
+                        </div>
+                    </SyncedHover>
                     <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} onShowLogs={showRequestLogs} />
                     <ConnectionsCard
                         instance={instance}

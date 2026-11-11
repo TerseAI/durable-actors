@@ -17,10 +17,11 @@ export type TrendCardProps = {
     chartLabel: string
     describePoint: (index: number) => PointDescription
     references?: Reference[]
+    bounds?: [number, number]
     children?: ReactNode
 }
 
-export function TrendCard({ label, aside, value, unit, busy, series, axis, color, chartLabel, describePoint, references, children }: TrendCardProps) {
+export function TrendCard({ label, aside, value, unit, busy, series, axis, color, chartLabel, describePoint, references, bounds, children }: TrendCardProps) {
     return (
         <StatCard
             label={label}
@@ -34,7 +35,7 @@ export function TrendCard({ label, aside, value, unit, busy, series, axis, color
                 <TrendSkeleton ticks={axis.length} />
             ) : (
                 <>
-                    <Sparkline values={series} color={color} label={chartLabel} describePoint={describePoint} references={references} />
+                    <Sparkline values={series} color={color} label={chartLabel} describePoint={describePoint} references={references} bounds={bounds} />
                     <div className="mt-1.5 flex justify-between text-xs text-muted-foreground tabular-nums">
                         {axis.map(tick => (
                             <span key={tick}>{tick}</span>
