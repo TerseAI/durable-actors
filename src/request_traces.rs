@@ -15,6 +15,8 @@ use std::{
 pub(crate) use crate::request_tracking::RequestOutcome;
 use crate::request_tracking::{RequestCompletion, RequestObserver};
 
+use crate::clock::{Clock, SystemClock};
+
 pub(crate) mod history;
 pub(crate) mod live;
 pub(crate) mod logs;
@@ -22,6 +24,7 @@ pub(crate) mod metrics;
 pub(crate) mod otlp;
 pub(crate) mod persistence;
 pub(crate) mod replay;
+pub(crate) mod sockets;
 use live::{InProcessFeed, LiveFeed, LiveStream};
 use persistence::{TraceQueries, sqlite::SqliteTracePersistence};
 use replay::ReplayQuery;
@@ -220,10 +223,33 @@ impl TraceStore {
         &self,
         project_id: &str,
         query: &metrics::TimeRange,
-    ) -> Result<Vec<metrics::SocketSession>> {
+    ) -> Result<Vec<sockets::SocketSession>> {
         validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
         query.validate().context(InvalidTraceQuery)?;
-        self.queries.websockets(project_id, query).await
+        let (from_ms, to_ms) = (query.from_ms.unwrap_or(0), query.to_ms.unwrap_or(u64::MAX));
+        let (records, heartbeats) = tokio::try_join!(
+            self.queries
+                .socket_records(project_id, to_ms, false, sockets::SESSION_LIMIT),
+            self.queries.gateway_heartbeats(),
+        )?;
+        let mut sessions = sockets::sessions(records, &heartbeats, SystemClock.now_ms()?);
+        sessions.retain(|session| sockets::overlaps(session, from_ms, to_ms));
+        Ok(sessions)
+    }
+
+    /// The project's connections open now, by actor.
+    pub(crate) async fn open_connections(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<crate::host_leases::ActorSocketInventory>> {
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        let (records, heartbeats) = tokio::try_join!(
+            self.queries
+                .socket_records(project_id, u64::MAX, true, sockets::OPEN_LIMIT),
+            self.queries.gateway_heartbeats(),
+        )?;
+        let sessions = sockets::sessions(records, &heartbeats, SystemClock.now_ms()?);
+        Ok(sockets::open_rooms(project_id, sessions))
     }
 }
 

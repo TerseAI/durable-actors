@@ -12,7 +12,7 @@ use crate::request_traces::{
     TracePage,
     history::HistoryQuery,
     logs::{LogHistogram, LogHistogramQuery, LogPage, LogQuery},
-    metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange},
+    metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, TimeRange},
     replay::ReplayQuery,
 };
 
@@ -141,8 +141,19 @@ impl TraceQueries for ClickHouseTracePersistence {
         self.read_queue_waits(project, query).await
     }
 
-    async fn websockets(&self, project: &str, range: &TimeRange) -> Result<Vec<SocketSession>> {
-        self.read_websockets(project, range).await
+    async fn socket_records(
+        &self,
+        project: &str,
+        to_ms: u64,
+        open_only: bool,
+        limit: usize,
+    ) -> Result<Vec<crate::request_traces::sockets::SocketRecord>> {
+        self.read_socket_records(project, to_ms, open_only, limit)
+            .await
+    }
+
+    async fn gateway_heartbeats(&self) -> Result<std::collections::HashMap<String, u64>> {
+        self.read_gateway_heartbeats().await
     }
 }
 

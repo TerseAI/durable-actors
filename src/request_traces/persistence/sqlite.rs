@@ -16,7 +16,7 @@ use crate::request_traces::{
     TraceEvent, TracePage,
     history::HistoryQuery,
     logs::{ActorLog, LogHistogram, LogHistogramQuery, LogPage, LogQuery},
-    metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange},
+    metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, TimeRange},
     replay::ReplayQuery,
 };
 
@@ -126,11 +126,22 @@ impl TraceQueries for SqliteTracePersistence {
             .await
     }
 
-    async fn websockets(&self, project_id: &str, query: &TimeRange) -> Result<Vec<SocketSession>> {
+    async fn socket_records(
+        &self,
+        project_id: &str,
+        to_ms: u64,
+        open_only: bool,
+        limit: usize,
+    ) -> Result<Vec<crate::request_traces::sockets::SocketRecord>> {
         let project_id = project_id.to_owned();
-        let query = query.clone();
-        self.run(move |connection| metrics::websockets(connection, &project_id, &query))
-            .await
+        self.run(move |connection| {
+            sockets::records(connection, &project_id, to_ms, open_only, limit)
+        })
+        .await
+    }
+
+    async fn gateway_heartbeats(&self) -> Result<std::collections::HashMap<String, u64>> {
+        self.run(sockets::heartbeats).await
     }
 
     async fn history(&self, project_id: &str, query: &HistoryQuery) -> Result<TracePage> {

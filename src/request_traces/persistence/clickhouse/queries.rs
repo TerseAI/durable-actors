@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use super::*;
@@ -5,7 +7,9 @@ use crate::request_traces::{
     InvalidTraceQuery, RequestTrace, TraceEvent, TraceRecord,
     logs::{ActorLog, LogHistogram, LogHistogramQuery},
     metrics::ClassMetrics,
+    sockets::SocketRecord,
 };
+use crate::sockets::events::SocketClose;
 
 impl ClickHouseTracePersistence {
     pub(super) async fn read_history(
@@ -197,35 +201,38 @@ impl ClickHouseTracePersistence {
             .collect())
     }
 
-    pub(super) async fn read_websockets(
+    pub(super) async fn read_socket_records(
         &self,
         project: &str,
-        range: &TimeRange,
-    ) -> Result<Vec<SocketSession>> {
+        to_ms: u64,
+        open_only: bool,
+        limit: usize,
+    ) -> Result<Vec<SocketRecord>> {
         let rows = tokio::time::timeout(
             Duration::from_secs(15),
-            self.query(include_str!("websockets.sql"), project)
-                .param("from", range.from_ms.unwrap_or(0))
-                .param("to", range.to_ms.unwrap_or(u64::MAX))
+            self.query(include_str!("socket_records.sql"), project)
+                .param("to", to_ms)
+                .param("open_only", open_only)
+                .param("limit", limit as u64)
                 .fetch_all::<SocketRow>(),
         )
         .await??;
-        rows.into_iter()
-            .map(|row| {
-                Ok(SocketSession {
-                    metadata: serde_json::from_str(&row.metadata).ok(),
-                    connection_id: row.connection_id,
-                    actor_name: row.actor_name,
-                    actor_id: row.actor_id,
-                    host_id: Some(row.host_id),
-                    opened_at_ms: row.opened_at_ms,
-                    closed_at_ms: row.closed_at_ms,
-                    last_seen_ms: Some(row.last_seen_ms),
-                    messages: row.messages,
-                    failures: row.failures,
-                })
-            })
-            .collect()
+        Ok(rows.into_iter().map(SocketRecord::from).collect())
+    }
+
+    pub(super) async fn read_gateway_heartbeats(&self) -> Result<HashMap<String, u64>> {
+        let rows = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client
+                .query(include_str!("gateway_heartbeats.sql"))
+                .param("retention", self.retention_seconds)
+                .fetch_all::<HeartbeatRow>(),
+        )
+        .await??;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.gateway_id, row.alive_at_ms))
+            .collect())
     }
 
     fn query(&self, sql: &str, project: &str) -> clickhouse::query::Query {
@@ -379,16 +386,58 @@ struct QueueRow {
     max_ms: f64,
 }
 
+/// The exporter stores attribute values as text, so the close's numbers arrive as strings.
 #[derive(Row, Deserialize)]
 struct SocketRow {
     connection_id: String,
     actor_name: String,
     actor_id: String,
-    host_id: String,
-    opened_at_ms: Option<u64>,
-    closed_at_ms: Option<u64>,
-    last_seen_ms: u64,
-    messages: u64,
-    failures: u64,
+    gateway_id: String,
+    opened_at_ms: u64,
     metadata: String,
+    closed_at_ms: u64,
+    close_code: String,
+    close_reason: String,
+    close_clean: String,
+    messages_in: String,
+    messages_out: String,
+    bytes_in: String,
+    bytes_out: String,
+    duration_ms: String,
+}
+
+impl From<SocketRow> for SocketRecord {
+    fn from(row: SocketRow) -> Self {
+        let number = |text: &str| text.parse().unwrap_or_default();
+        let closed = (row.closed_at_ms > 0).then(|| {
+            (
+                row.closed_at_ms,
+                SocketClose {
+                    code: row.close_code.parse().unwrap_or_default(),
+                    reason: row.close_reason,
+                    clean: row.close_clean == "true",
+                    messages_in: number(&row.messages_in),
+                    messages_out: number(&row.messages_out),
+                    bytes_in: number(&row.bytes_in),
+                    bytes_out: number(&row.bytes_out),
+                    duration_ms: number(&row.duration_ms),
+                },
+            )
+        });
+        Self {
+            connection_id: row.connection_id,
+            actor_name: row.actor_name,
+            actor_id: row.actor_id,
+            gateway_id: row.gateway_id,
+            opened_at_ms: row.opened_at_ms,
+            metadata: serde_json::from_str(&row.metadata).ok(),
+            closed,
+        }
+    }
+}
+
+#[derive(Row, Deserialize)]
+struct HeartbeatRow {
+    gateway_id: String,
+    alive_at_ms: u64,
 }

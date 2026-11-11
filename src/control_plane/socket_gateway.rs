@@ -1,7 +1,6 @@
 use super::{
     service::{ActorTarget, ControlPlaneService},
     socket_bus::SocketBus,
-    socket_inventory::SocketInventory,
     socket_ticket::SocketTicket,
 };
 use crate::request_tracking::HostState;
@@ -103,11 +102,6 @@ impl SocketGateway {
                 count: self.bus.count(actor).await?,
             }),
         }
-    }
-
-    pub(super) async fn inventory(&self, project: &str) -> Result<SocketInventory> {
-        ensure!(!self.stop.is_cancelled(), "socket gateway stopping");
-        self.bus.inventory(project).await
     }
 
     async fn target(

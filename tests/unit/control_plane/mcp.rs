@@ -80,25 +80,17 @@ async fn invoke_returns_the_outcome_without_the_host_target() {
 }
 
 #[tokio::test]
-async fn sessions_page_and_report_lost_connections() {
-    let session = |id: &str| {
-        json!({ "connectionId": id, "actorName": "Chat", "actorId": "one", "hostId": "host-1",
-            "openedAtMs": 1_794_330_000_000_u64, "closedAtMs": null, "lastSeenMs": null,
-            "messages": 1, "failures": 0 })
-    };
-    let sessions = json!([session("open-one"), session("orphan")]);
-    let inventory = json!({ "connectionsComplete": true, "actors": [{ "actorName": "Chat",
-        "live": 1, "dormant": 0, "unknown": 0, "instances": [{ "actorId": "one",
-        "status": "live", "lastActiveAtMs": null, "connections": [{ "id": "open-one", "metadata": null }] }] }] });
-    let api = Router::new()
-        .route(
-            "/v1/projects/demo/observe/websockets",
-            get(move || async move { Json(sessions) }),
-        )
-        .route(
-            "/v1/projects/demo/observe/actors",
-            get(move || async move { Json(inventory) }),
-        );
+async fn sessions_page_with_the_status_gateways_reported() {
+    let sessions = json!([
+        { "connectionId": "open-one", "actorName": "Chat", "actorId": "one", "status": "open",
+            "openedAtMs": 1_794_330_000_000_u64, "closedAtMs": null },
+        { "connectionId": "lost-one", "actorName": "Chat", "actorId": "one", "status": "lost",
+            "openedAtMs": 1_794_330_000_000_u64, "closedAtMs": 1_794_330_060_000_u64 },
+    ]);
+    let api = Router::new().route(
+        "/v1/projects/demo/observe/websockets",
+        get(move || async move { Json(sessions) }),
+    );
     let first = text(
         &call_tool(
             api.clone(),
@@ -114,8 +106,9 @@ async fn sessions_page_and_report_lost_connections() {
     assert_eq!(first["total"], 2);
     assert_eq!(first["records"][0]["status"], "open");
     assert_eq!(first["records"][0]["openedAt"], "2026-11-10T17:00:00.000Z");
+    assert!(first["records"][0].get("closedAt").is_none());
     assert_eq!(second["records"][0]["status"], "lost");
-    assert!(second["records"][0].get("hostId").is_none());
+    assert_eq!(second["records"][0]["closedAt"], "2026-11-10T17:01:00.000Z");
     assert!(second.get("nextCursor").is_none());
 }
 

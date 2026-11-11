@@ -1,7 +1,7 @@
 use super::fixtures::event;
 use super::*;
 use crate::request_traces::{
-    RequestKind, RequestOutcome,
+    RequestOutcome,
     metrics::{QueueWaitQuery, TimeRange},
 };
 
@@ -196,66 +196,81 @@ async fn queue_waits_group_admitted_attempts_and_filter_actor_and_time() -> Resu
 }
 
 #[tokio::test]
-async fn websocket_history_keeps_full_sessions_overlapping_the_range_and_connect_metadata()
--> Result<()> {
+async fn socket_events_assemble_connections_and_the_latest_heartbeat() -> Result<()> {
+    use crate::sockets::events::{SocketClose, SocketEvent};
     let store = SqliteTracePersistence::in_memory();
-    let mut events = Vec::new();
-    for (id, operation, time, outcome) in [
-        ("connect", "onConnect", 1000, RequestOutcome::Completed),
-        ("message", "onMessage", 3000, RequestOutcome::Failed),
-        ("close", "onDisconnect", 5000, RequestOutcome::Completed),
-    ] {
-        let mut record = event(id);
-        record.trace.kind = RequestKind::Websocket;
-        record.trace.connection_id = Some("socket".into());
-        record.trace.operation = operation.into();
-        record.trace.started_at_ms = time;
-        record.trace.outcome = outcome;
-        record.trace.metadata =
-            (operation == "onConnect").then(|| serde_json::json!({"userId":"ada"}));
-        events.push(record);
-    }
-    store.append(&events).await?;
-    let sessions = store
-        .websockets(
-            "default",
-            &TimeRange {
-                from_ms: Some(2000),
-                to_ms: Some(4000),
-            },
+    let actor = crate::actor::ActorKey {
+        project_id: "default".into(),
+        actor_name: "Room".into(),
+        actor_id: "one".into(),
+    };
+    let opened = |connection_id: &str, at_ms| SocketEvent::Opened {
+        actor: actor.clone(),
+        connection_id: connection_id.into(),
+        metadata: serde_json::json!({"userId": connection_id}),
+        at_ms,
+    };
+    store
+        .append_socket_events(
+            "gateway".into(),
+            vec![
+                opened("closed", 1000),
+                opened("open", 2000),
+                SocketEvent::Closed {
+                    actor: actor.clone(),
+                    connection_id: "closed".into(),
+                    close: SocketClose {
+                        code: 1001,
+                        reason: "going away".into(),
+                        clean: true,
+                        messages_in: 2,
+                        messages_out: 3,
+                        bytes_in: 20,
+                        bytes_out: 30,
+                        duration_ms: 4000,
+                    },
+                    at_ms: 5000,
+                },
+                SocketEvent::Alive { at_ms: 6000 },
+                SocketEvent::Alive { at_ms: 7000 },
+            ],
         )
         .await?;
-    assert_eq!(sessions.len(), 1);
-    let session = &sessions[0];
-    assert_eq!(session.connection_id, "socket");
-    assert_eq!(session.opened_at_ms, Some(1000));
-    assert_eq!(session.closed_at_ms, Some(5000));
-    assert_eq!(session.last_seen_ms, Some(5000));
-    assert_eq!((session.messages, session.failures), (1, 1));
-    assert_eq!(session.metadata, Some(serde_json::json!({"userId":"ada"})));
+    let records = store.socket_records("default", u64::MAX, false, 10).await?;
+    let ids: Vec<_> = records
+        .iter()
+        .map(|record| record.connection_id.as_str())
+        .collect();
+    assert_eq!(ids, ["open", "closed"]);
+    assert_eq!(
+        records[0].metadata,
+        Some(serde_json::json!({"userId": "open"}))
+    );
+    assert_eq!(
+        records[1]
+            .closed
+            .as_ref()
+            .map(|(at, close)| (*at, close.code)),
+        Some((5000, 1001))
+    );
+    let open = store.socket_records("default", u64::MAX, true, 10).await?;
+    assert_eq!(open.len(), 1);
     assert!(
         store
-            .websockets(
-                "default",
-                &TimeRange {
-                    from_ms: Some(5001),
-                    to_ms: None
-                }
-            )
+            .socket_records("default", 1500, false, 10)
             .await?
-            .is_empty()
+            .len()
+            == 1
     );
     assert!(
         store
-            .websockets(
-                "default",
-                &TimeRange {
-                    from_ms: None,
-                    to_ms: Some(999)
-                }
-            )
+            .socket_records("other", u64::MAX, false, 10)
             .await?
             .is_empty()
+    );
+    assert_eq!(
+        store.gateway_heartbeats().await?,
+        std::collections::HashMap::from([("gateway".to_owned(), 7000)])
     );
     Ok(())
 }

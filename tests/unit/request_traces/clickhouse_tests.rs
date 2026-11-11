@@ -262,11 +262,6 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
             .admitted,
         1
     );
-    let sockets = store.websockets(project, &TimeRange::default()).await?;
-    assert_eq!(
-        sockets[0].metadata,
-        Some(serde_json::json!({"userId": "alice"}))
-    );
     assert!(
         store
             .history("different-project", &HistoryQuery::default())
@@ -398,4 +393,90 @@ fn config(url: String) -> ClickHouseConfig {
         user: "trace_test".into(),
         password: "local-test-only".into(),
     }
+}
+
+#[tokio::test]
+async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() -> Result<()> {
+    use crate::sockets::events::{ALIVE, CLOSED, OPENED};
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    ingestion::initialize(&store.client, 86400).await?;
+    let project = format!("sockets-{}", uuid::Uuid::new_v4());
+    let gateway = uuid::Uuid::new_v4().to_string();
+    // As the collector's ClickHouse exporter writes them: attribute values are text.
+    let row = |at_ms: u64, event: &str, attributes: String| {
+        format!(
+            "(fromUnixTimestamp64Milli({at_ms}), '{event}', \
+             map('durable_actors.gateway_id', '{gateway}'), map({attributes}))"
+        )
+    };
+    let connection = |id: &str| {
+        format!(
+            "'durable_actors.project_id', '{project}', 'durable_actors.actor_name', 'Room', \
+             'durable_actors.actor_id', 'one', 'durable_actors.connection_id', '{id}'"
+        )
+    };
+    let values = [
+        row(1000, OPENED, format!("{}, 'durable_actors.metadata', '{{\"user\":\"closed\"}}'", connection("closed"))),
+        row(2000, OPENED, format!("{}, 'durable_actors.metadata', '{{\"user\":\"open\"}}'", connection("open"))),
+        row(
+            5000,
+            CLOSED,
+            format!(
+                "{}, 'durable_actors.close_code', '1001', 'durable_actors.close_reason', 'going away', \
+                 'durable_actors.close_clean', 'true', 'durable_actors.messages_in', '2', \
+                 'durable_actors.messages_out', '3'",
+                connection("closed")
+            ),
+        ),
+        row(7000, ALIVE, String::new()),
+    ]
+    .join(", ");
+    store
+        .client
+        .query(&format!(
+            "INSERT INTO socket_events (Timestamp, EventName, ResourceAttributes, LogAttributes) VALUES {values}"
+        ))
+        .execute()
+        .await?;
+    let records = store.socket_records(&project, u64::MAX, false, 10).await?;
+    let ids: Vec<_> = records
+        .iter()
+        .map(|record| record.connection_id.as_str())
+        .collect();
+    assert_eq!(ids, ["open", "closed"]);
+    assert_eq!(records[0].gateway_id, gateway);
+    assert_eq!(
+        records[0].metadata,
+        Some(serde_json::json!({"user": "open"}))
+    );
+    let (closed_at, close) = records[1].closed.clone().expect("a recorded close");
+    assert_eq!(
+        (
+            closed_at,
+            close.code,
+            close.reason.as_str(),
+            close.clean,
+            close.messages_in,
+            close.messages_out
+        ),
+        (5000, 1001, "going away", true, 2, 3)
+    );
+    assert_eq!(
+        store
+            .socket_records(&project, u64::MAX, true, 10)
+            .await?
+            .len(),
+        1
+    );
+    assert_eq!(
+        store.socket_records(&project, 1500, false, 10).await?.len(),
+        1
+    );
+    assert_eq!(store.gateway_heartbeats().await?.get(&gateway), Some(&7000));
+    Ok(())
 }

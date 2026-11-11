@@ -1,4 +1,3 @@
-use super::socket_gateway::SocketGateway;
 use crate::{
     host_leases::ActorSocketInventory,
     placement::{
@@ -10,27 +9,32 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-pub(super) struct GatewayInventoryReader {
+/// The actor inventory with each instance's open WebSocket connections, as the gateways reported
+/// them through socket events.
+pub(super) struct ConnectionInventoryReader {
     actors: Arc<dyn ActorInventoryReader>,
-    gateway: Arc<SocketGateway>,
+    sockets: crate::request_traces::TraceStore,
 }
 
-impl GatewayInventoryReader {
-    pub(super) fn new(actors: Arc<dyn ActorInventoryReader>, gateway: Arc<SocketGateway>) -> Self {
-        Self { actors, gateway }
+impl ConnectionInventoryReader {
+    pub(super) fn new(
+        actors: Arc<dyn ActorInventoryReader>,
+        sockets: crate::request_traces::TraceStore,
+    ) -> Self {
+        Self { actors, sockets }
     }
 }
 
 #[async_trait]
-impl ActorInventoryReader for GatewayInventoryReader {
+impl ActorInventoryReader for ConnectionInventoryReader {
     async fn actor_inventory(&self, project: &str) -> Result<ActorInventorySnapshot> {
-        let (actors, sockets) = tokio::try_join!(
+        let (actors, rooms) = tokio::try_join!(
             self.actors.actor_inventory(project),
-            self.gateway.inventory(project)
+            self.sockets.open_connections(project)
         )?;
         Ok(ActorInventorySnapshot {
-            actors: merge_rooms(actors.actors, sockets.rooms),
-            connections_complete: actors.connections_complete && sockets.complete,
+            actors: merge_rooms(actors.actors, rooms),
+            connections_complete: actors.connections_complete,
         })
     }
 
@@ -94,7 +98,6 @@ fn merge_rooms(
     actors.into_values().collect()
 }
 
-pub(super) struct SocketInventory {
-    pub rooms: Vec<ActorSocketInventory>,
-    pub complete: bool,
-}
+#[cfg(test)]
+#[path = "../../tests/unit/control_plane/socket_inventory.rs"]
+mod tests;

@@ -39,7 +39,7 @@ function getMetrics(inventory: ActorInventory, sessions: SocketSession[], now: n
     const instances = inventory.actors.flatMap(actor => actor.instances)
     const open = instances.reduce((sum, instance) => sum + instance.connections.length, 0)
     const live = instances.filter(instance => instance.status === "live").length
-    const series = [...openSeries(sessions, liveConnections(inventory), now).slice(0, -1), open]
+    const series = [...openSeries(sessions, now).slice(0, -1), open]
     const hourAgo = series[0] ?? 0
     return {
         open,
@@ -49,25 +49,17 @@ function getMetrics(inventory: ActorInventory, sessions: SocketSession[], now: n
     }
 }
 
-function liveConnections(inventory: ActorInventory): Set<string> {
-    return new Set(inventory.actors.flatMap(actor => actor.instances.flatMap(instance => instance.connections.map(connection => connectionKey(actor.actorName, instance.actorId, connection.id)))))
-}
-
-function openSeries(sessions: SocketSession[], live: Set<string>, now: number): number[] {
-    return Array.from({ length: bucketCount }, (_, index) => sessions.filter(session => isOpenAt(session, live, sampleTime(now, index))).length)
+function openSeries(sessions: SocketSession[], now: number): number[] {
+    return Array.from({ length: bucketCount }, (_, index) => sessions.filter(session => isOpenAt(session, sampleTime(now, index))).length)
 }
 
 function sampleTime(now: number, index: number): number {
     return now - trendWindowMs + index * (trendWindowMs / (bucketCount - 1))
 }
 
-function isOpenAt(session: SocketSession, live: Set<string>, at: number): boolean {
-    const span = sessionSpan(session, live.has(connectionKey(session.actorName, session.actorId, session.connectionId)))
-    return span !== null && span.fromMs <= at && at < span.toMs
-}
-
-function connectionKey(actorName: string, actorId: string, connectionId: string): string {
-    return JSON.stringify([actorName, actorId, connectionId])
+function isOpenAt(session: SocketSession, at: number): boolean {
+    const span = sessionSpan(session)
+    return span.fromMs <= at && at < span.toMs
 }
 
 function SocketStats({ change, perLiveActor }: SocketMetrics) {

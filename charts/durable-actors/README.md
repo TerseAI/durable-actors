@@ -96,6 +96,8 @@ telemetry:
 
 The collector accepts only host tokens and replaces any tenant attributes with the token's verified project, actor, host, and session. It fetches the verifying keys from `/.well-known/openid-configuration` at `publicUrl` and checks each token's signature and audience but not its issuer, so the control plane keeps its token issuer and tokens held by running sandboxes stay valid. Sandboxes reach it on port 4317, and sandboxes outside the cluster use the ingress. The control plane creates `otel_traces` and `otel_logs`, and the collector inserts into them with the same ClickHouse user. The old `actor_traces` and `actor_trace_status` tables are no longer written and empty out through their TTL; drop them by hand if you want the space back sooner.
 
+Gateways report WebSocket connections the same way. Set `telemetry.collector.sockets.issuer` to your cluster's service-account token issuer (`https://container.googleapis.com/v1/projects/PROJECT/locations/LOCATION/clusters/CLUSTER` on GKE). The collector then accepts gateway events on port 4319, which sandboxes cannot reach, and writes them to `socket_events`. Without it, the dashboard lists no open connections.
+
 ## Usage publishing
 
 To publish actor activation usage, set an existing Pub/Sub topic:

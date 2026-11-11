@@ -410,9 +410,9 @@ async fn local_routes(
     let telemetry_keys = issuer.verifier_keys_json()?;
     let admin = AdminService::new(options.api_key.clone(), registry, issuer)?
         .with_invoke_api_key(options.invoke_api_key.clone())?;
-    let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
+    let inventory = Arc::new(super::socket_inventory::ConnectionInventoryReader::new(
         Arc::new(service.lifecycle.clone()),
-        service.gateway.as_ref().unwrap().connections.clone(),
+        storage.traces.clone(),
     ));
     let inspector = super::inspection::ActorInspector::new(
         inventory,

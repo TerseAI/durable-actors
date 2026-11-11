@@ -1,7 +1,12 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use rusqlite::{Connection, params};
 
-use crate::sockets::events::SocketEvent;
+use crate::{
+    request_traces::sockets::SocketRecord,
+    sockets::events::{ALIVE, CLOSED, OPENED, SocketClose, SocketEvent},
+};
 
 pub(super) fn initialize(connection: &Connection) -> Result<()> {
     connection.execute_batch(
@@ -78,4 +83,68 @@ pub(super) fn append(
     )?;
     transaction.commit()?;
     Ok(())
+}
+
+/// Local volumes are small, so connections are assembled from their events here.
+pub(super) fn records(
+    connection: &mut Connection,
+    project_id: &str,
+    to_ms: u64,
+    open_only: bool,
+    limit: usize,
+) -> Result<Vec<SocketRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT connection_id, actor_name, actor_id, gateway_id, event, at_ms, detail
+         FROM socket_events WHERE project_id = ?1 AND event IN (?2, ?3) ORDER BY position",
+    )?;
+    let mut rows = statement.query(params![project_id, OPENED, CLOSED])?;
+    let mut opened = HashMap::<String, SocketRecord>::new();
+    let mut closed = HashMap::<String, (u64, SocketClose)>::new();
+    while let Some(row) = rows.next()? {
+        let connection_id: String = row.get(0)?;
+        let at_ms = u64::try_from(row.get::<_, i64>(5)?)?;
+        let detail: String = row.get(6)?;
+        if row.get::<_, String>(4)? == OPENED {
+            opened.insert(
+                connection_id.clone(),
+                SocketRecord {
+                    connection_id,
+                    actor_name: row.get(1)?,
+                    actor_id: row.get(2)?,
+                    gateway_id: row.get(3)?,
+                    opened_at_ms: at_ms,
+                    metadata: serde_json::from_str(&detail).ok(),
+                    closed: None,
+                },
+            );
+        } else {
+            closed.insert(connection_id, (at_ms, serde_json::from_str(&detail)?));
+        }
+    }
+    let mut records: Vec<_> = opened
+        .into_values()
+        .map(|mut record| {
+            record.closed = closed.remove(&record.connection_id);
+            record
+        })
+        .filter(|record| record.opened_at_ms <= to_ms && !(open_only && record.closed.is_some()))
+        .collect();
+    records.sort_by(|a, b| {
+        (b.opened_at_ms, &a.connection_id).cmp(&(a.opened_at_ms, &b.connection_id))
+    });
+    records.truncate(limit);
+    Ok(records)
+}
+
+pub(super) fn heartbeats(connection: &mut Connection) -> Result<HashMap<String, u64>> {
+    let mut statement = connection.prepare(
+        "SELECT gateway_id, MAX(at_ms) FROM socket_events WHERE event = ?1 GROUP BY gateway_id",
+    )?;
+    statement
+        .query_map([ALIVE], |row| Ok((row.get(0)?, row.get::<_, i64>(1)?)))?
+        .map(|row| {
+            let (gateway, at_ms) = row?;
+            Ok((gateway, u64::try_from(at_ms)?))
+        })
+        .collect()
 }

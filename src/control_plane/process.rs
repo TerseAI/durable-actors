@@ -319,9 +319,9 @@ async fn control_plane_routes(
     service.lifecycle.start_reconciliation(stop.clone());
     service.start_access_reconciliation(stop.clone());
     service.start_alarm_scheduler(config.alarm_poll_interval, stop);
-    let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
+    let inventory = Arc::new(super::socket_inventory::ConnectionInventoryReader::new(
         Arc::new(service.lifecycle.clone()),
-        service.gateway.as_ref().unwrap().connections.clone(),
+        traces.clone(),
     ));
     let discovery = super::discovery::router(&issuer, &public_origin)?;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?

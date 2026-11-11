@@ -592,7 +592,7 @@ paths:
             operationId: listWebSocketSessions
             tags: [Observability]
             summary: Get WebSocket session history
-            description: Up to 500 sessions ordered by latest start. Selects sessions whose retained activity span overlaps the inclusive range, keeping their full retained events and connect metadata.
+            description: Up to 500 sessions, newest first, as gateways reported them, selecting those open at any point in the inclusive range.
             parameters:
                 - { $ref: "#/components/parameters/FromMs" }
                 - { $ref: "#/components/parameters/ToMs" }
@@ -998,18 +998,19 @@ components:
                 maxMs: { type: number, minimum: 0 }
         SocketSession:
             type: object
-            required: [connectionId, actorName, actorId, hostId, openedAtMs, closedAtMs, lastSeenMs, messages, failures]
+            required: [connectionId, actorName, actorId, status, openedAtMs, closedAtMs]
             properties:
                 connectionId: { type: string }
                 actorName: { type: string }
                 actorId: { type: string }
-                hostId: { type: [string, "null"] }
-                openedAtMs: { type: [integer, "null"], minimum: 0 }
-                closedAtMs: { type: [integer, "null"], minimum: 0 }
-                lastSeenMs: { type: [integer, "null"], minimum: 0 }
-                messages: { type: integer, minimum: 0 }
-                failures: { type: integer, minimum: 0 }
-                metadata: { description: Metadata saved with a retained onConnect event. }
+                status: { type: string, enum: [open, closed, lost], description: "lost: the gateway stopped reporting before the connection closed." }
+                openedAtMs: { type: integer, minimum: 0 }
+                closedAtMs: { type: [integer, "null"], minimum: 0, description: When it closed, or for a lost session when its gateway last reported. }
+                closeCode: { type: integer, minimum: 0 }
+                closeReason: { type: string }
+                messagesIn: { type: integer, minimum: 0 }
+                messagesOut: { type: integer, minimum: 0 }
+                metadata: { description: Metadata the connection was opened with. }
         ActorBundle:
             type: object
             additionalProperties: false

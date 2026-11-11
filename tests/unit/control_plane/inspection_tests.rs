@@ -108,6 +108,28 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
         .await?;
     assert_eq!(waits[0]["admitted"], 2);
     assert_eq!(waits[0]["averageMs"], 10.0);
+    let now = SystemClock.now_ms()?;
+    let opened = |project: &str| crate::sockets::events::SocketEvent::Opened {
+        actor: ActorKey {
+            project_id: project.into(),
+            actor_name: "Room".into(),
+            actor_id: "same".into(),
+        },
+        connection_id: "same".into(),
+        metadata: json!({"user": project}),
+        at_ms: now - 1_000,
+    };
+    fixture
+        .telemetry
+        .append_socket_events(
+            "gateway".into(),
+            vec![
+                opened("alpha"),
+                opened("beta"),
+                crate::sockets::events::SocketEvent::Alive { at_ms: now },
+            ],
+        )
+        .await?;
     let sockets: Value = fixture
         .get(&format!("{base}/websockets"))
         .await?
@@ -115,6 +137,8 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
         .json()
         .await?;
     assert_eq!(sockets.as_array().unwrap().len(), 1);
+    assert_eq!(sockets[0]["status"], "open");
+    assert_eq!(sockets[0]["metadata"], json!({"user": "alpha"}));
     let mut stream = fixture
         .get(&format!("{base}/requests/events"))
         .await?
