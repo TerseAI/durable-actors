@@ -4,7 +4,7 @@ import { bucketCount, bucketLabel, windowTicks } from "../../lib/timeRange.js"
 import type { RequestTrace } from "../../types/Requests.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
 import { Skeleton } from "../ui/skeleton.js"
-import { TrendCard, TrendStat, TrendStatsSkeleton } from "../ui/trendCard.js"
+import { TrendCard, TrendStatsSkeleton } from "../ui/trendCard.js"
 
 export type TimingCardProps = {
     label: string
@@ -34,14 +34,7 @@ export function TimingCard({ label, pick, color, chartLabel, requests, failed, t
             chartLabel={chartLabel}
             describePoint={index => ({ at: bucketLabel(timeWindow, index), value: formatMs(series[index] ?? 0) })}
         >
-            {stats ? (
-                <>
-                    <TrendStat label="p95" value={formatMs(stats.p95)} />
-                    <TrendStat label="Max" value={formatMs(stats.max)} />
-                </>
-            ) : (
-                <TrendStatsSkeleton failed={failed} />
-            )}
+            {!stats && <TrendStatsSkeleton failed={failed} />}
         </TrendCard>
     )
 }
