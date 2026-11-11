@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     actor::ActorKey,
     actor_lifecycle::{LifecycleEvent, LifecyclePersistence},
-    actor_resources::{DatabasePoint, bucket_ms},
+    actor_resources::{ReportPoint, bucket_ms},
 };
 
 #[async_trait]
@@ -52,33 +52,31 @@ impl LifecyclePersistence for ClickHouseTracePersistence {
             .collect()
     }
 
-    async fn database_sizes(
-        &self,
-        actor: &ActorKey,
-        from: u64,
-        to: u64,
-    ) -> Result<Vec<DatabasePoint>> {
+    async fn reports(&self, actor: &ActorKey, from: u64, to: u64) -> Result<Vec<ReportPoint>> {
         let rows = tokio::time::timeout(
             Duration::from_secs(15),
-            self.actor_query(include_str!("database_sizes.sql"), actor, from, to)
+            self.actor_query(include_str!("lifecycle_reports.sql"), actor, from, to)
                 .param("bucket", bucket_ms(from, to))
-                .fetch_all::<DatabaseSizeRow>(),
+                .fetch_all::<ReportRow>(),
         )
         .await??;
-        Ok(rows
-            .into_iter()
-            .map(|row| DatabasePoint {
-                at_ms: row.at_ms,
-                bytes: row.bytes,
+        rows.into_iter()
+            .map(|row| {
+                Ok(ReportPoint {
+                    at_ms: row.at_ms,
+                    database_bytes: (row.database_bytes > 0).then_some(row.database_bytes),
+                    resources: serde_json::from_str(&row.resources)?,
+                })
             })
-            .collect())
+            .collect()
     }
 }
 
 #[derive(Row, Deserialize)]
-struct DatabaseSizeRow {
+struct ReportRow {
     at_ms: u64,
-    bytes: u64,
+    database_bytes: u64,
+    resources: String,
 }
 
 #[derive(Row, Deserialize)]

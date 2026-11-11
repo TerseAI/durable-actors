@@ -11,8 +11,8 @@ type Point = { x: number; y: number }
 
 export type PointDescription = { at: string; value: string; details?: string[] }
 
-/** A constant drawn in grey across the chart, such as a reservation (solid) or a limit (dotted). */
-export type Reference = { value: number; dotted?: boolean }
+/** A grey line under the series, such as a reservation (solid) or a limit (dotted). Null leaves a gap. */
+export type Reference = { values: (number | null)[]; dotted?: boolean }
 
 type Scale = { min: number; span: number }
 
@@ -42,13 +42,11 @@ export function Sparkline({ values, color, label, describePoint, references = []
                 </defs>
                 <line x1="0" y1={height - 0.5} x2={width} y2={height - 0.5} className="stroke-border" vectorEffect="non-scaling-stroke" />
                 <path d={`${line} L${width},${height} L0,${height} Z`} fill={`url(#${gradientId})`} />
-                {references.map(({ value, dotted }) => (
-                    <line
-                        key={`${value}-${dotted}`}
-                        x1="0"
-                        x2={width}
-                        y1={y(value, scale)}
-                        y2={y(value, scale)}
+                {references.map(({ values: reference, dotted }, index) => (
+                    <path
+                        key={index}
+                        d={steps(reference, scale)}
+                        fill="none"
                         className="stroke-muted-foreground"
                         strokeWidth={1.5}
                         strokeDasharray={dotted ? "1 4" : undefined}
@@ -105,13 +103,28 @@ function PointTooltip({ style, point, onOpenChange }: { style: CSSProperties; po
 // Charts with references start at 0, so usage reads against its reservation and limit.
 function scaleFor(values: number[], references: Reference[]): Scale {
     const min = references.length ? 0 : Math.min(...values)
-    const max = Math.max(...values, ...references.map(reference => reference.value))
+    const max = Math.max(...values, ...references.flatMap(reference => reference.values.filter(value => value !== null)))
     return { min, span: max - min || 1 }
 }
 
 function plot(values: number[], scale: Scale): Point[] {
     const step = width / Math.max(values.length - 1, 1)
     return values.map((value, index) => ({ x: index * step, y: y(value, scale) }))
+}
+
+/** A step line: each value holds until the next point, and nulls break the line. */
+function steps(values: (number | null)[], scale: Scale): string {
+    const step = width / Math.max(values.length - 1, 1)
+    let path = ""
+    let previous: number | null = null
+    values.forEach((value, index) => {
+        const x = (index * step).toFixed(1)
+        if (value === null) previous = null
+        else if (previous === null) path += `M${x},${y(value, scale).toFixed(1)}`
+        else path += `H${x}V${y(value, scale).toFixed(1)}`
+        if (value !== null) previous = value
+    })
+    return path
 }
 
 function y(value: number, { min, span }: Scale): number {

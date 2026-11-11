@@ -1,7 +1,8 @@
 export type KillReason = "out_of_memory" | "evicted" | "killed"
 
-/** What an activation reserved, as billed. A missing limit is uncapped. */
-export interface ResourceLimits {
+/** What an activation reserved at a point in time, as billed. A missing limit is uncapped. */
+export interface ReservationPoint {
+    atMs: number
     cpuMillis: number
     cpuLimitMillis?: number
     memoryMib: number
@@ -29,5 +30,6 @@ export interface ActorKill {
 export interface ActorResources {
     samples: ResourceSample[]
     database: DatabaseSize[]
+    reservations: ReservationPoint[]
     kills: ActorKill[]
 }

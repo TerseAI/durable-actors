@@ -524,8 +524,12 @@ async fn resources_join_node_collector_usage_to_assigned_actors() -> Result<()> 
         ]
     );
     assert_eq!(history.kills.len(), 1);
-    let sizes = store.database_sizes(&actor, 0, 200_000).await?;
-    assert_eq!(sizes.len(), 1);
-    assert_eq!(sizes[0].bytes, 8192);
+    let reports = store.reports(&actor, 0, 200_000).await?;
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].database_bytes, Some(8192));
+    assert_eq!(
+        reports[0].resources,
+        crate::sandbox::ResourceLimits::default()
+    );
     Ok(())
 }

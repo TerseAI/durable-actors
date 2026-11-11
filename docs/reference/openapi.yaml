@@ -1395,15 +1395,6 @@ components:
                                             type: [integer, "null"]
                                             minimum: 0
                                             description: SQLite database size from the latest lifecycle report (page count × page size). Dormant actors keep their last reported size. Null when the host has not reported one.
-                                        resources:
-                                            type: [object, "null"]
-                                            description: CPU and memory reserved for the instance's latest activation, as billed. A missing limit means uncapped. Null when unavailable.
-                                            required: [cpuMillis, memoryMib]
-                                            properties:
-                                                cpuMillis: { type: integer, minimum: 0, description: Requested CPU in thousandths. }
-                                                cpuLimitMillis: { type: integer, minimum: 0 }
-                                                memoryMib: { type: integer, minimum: 0, description: Requested memory in MiB. }
-                                                memoryLimitMib: { type: integer, minimum: 0 }
                                         connections:
                                             type: array
                                             items:
@@ -1422,7 +1413,7 @@ components:
                                                     operation: { type: string }
         ActorResources:
             type: object
-            required: [samples, database, kills]
+            required: [samples, database, reservations, kills]
             properties:
                 samples:
                     type: array
@@ -1442,6 +1433,18 @@ components:
                         properties:
                             atMs: { type: integer, minimum: 0 }
                             bytes: { type: integer, minimum: 0, description: SQLite page count × page size. }
+                reservations:
+                    type: array
+                    description: CPU and memory the actor's activations reserved, as billed, from their lifecycle reports. The latest report in each bucket. A missing limit means uncapped.
+                    items:
+                        type: object
+                        required: [atMs, cpuMillis, memoryMib]
+                        properties:
+                            atMs: { type: integer, minimum: 0 }
+                            cpuMillis: { type: integer, minimum: 0, description: Requested CPU in thousandths. }
+                            cpuLimitMillis: { type: integer, minimum: 0 }
+                            memoryMib: { type: integer, minimum: 0, description: Requested memory in MiB. }
+                            memoryLimitMib: { type: integer, minimum: 0 }
                 kills:
                     type: array
                     items:

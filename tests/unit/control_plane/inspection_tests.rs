@@ -1130,9 +1130,12 @@ async fn resources_api_serves_one_actors_database_sizes() -> Result<()> {
         .json()
         .await?;
     assert_eq!(
-        resources,
-        json!({"samples": [], "database": [{"atMs": now - 200, "bytes": 8192}], "kills": []})
+        resources["database"],
+        json!([{"atMs": now - 200, "bytes": 8192}])
     );
+    assert_eq!(resources["reservations"][0]["atMs"], now - 200);
+    assert_eq!(resources["reservations"][0]["cpuMillis"], 250);
+    assert_eq!(resources["samples"], json!([]));
     assert_eq!(
         fixture
             .get(&format!("{base}?actorName=Room"))

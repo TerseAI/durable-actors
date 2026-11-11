@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-use crate::{actor::ActorKey, actor_lifecycle::LifecycleStore};
+use crate::{actor::ActorKey, actor_lifecycle::LifecycleStore, sandbox::ResourceLimits};
 
 /// How often the node collector samples pods.
 pub(crate) const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
@@ -69,6 +69,7 @@ impl KillReason {
 pub(crate) struct ActorResources {
     pub samples: Vec<SamplePoint>,
     pub database: Vec<DatabasePoint>,
+    pub reservations: Vec<ReservationPoint>,
     pub kills: Vec<KillPoint>,
 }
 
@@ -93,6 +94,23 @@ pub(crate) struct SamplePoint {
 pub(crate) struct DatabasePoint {
     pub at_ms: u64,
     pub bytes: u64,
+}
+
+/// The CPU and memory an activation reserved, as billed, at a point in time.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReservationPoint {
+    pub at_ms: u64,
+    #[serde(flatten)]
+    pub resources: ResourceLimits,
+}
+
+/// What an actor's hosts reported at a point in time, from their lifecycle reports.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ReportPoint {
+    pub at_ms: u64,
+    pub database_bytes: Option<u64>,
+    pub resources: ResourceLimits,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -156,13 +174,30 @@ impl ResourceReader {
         from_ms: u64,
         to_ms: u64,
     ) -> Result<ActorResources> {
-        let (history, database) = tokio::try_join!(
+        let (history, reports) = tokio::try_join!(
             self.resources.history(actor, from_ms, to_ms),
-            self.lifecycle.database_sizes(actor, from_ms, to_ms),
+            self.lifecycle.reports(actor, from_ms, to_ms),
         )?;
+        let database = reports
+            .iter()
+            .filter_map(|report| {
+                Some(DatabasePoint {
+                    at_ms: report.at_ms,
+                    bytes: report.database_bytes?,
+                })
+            })
+            .collect();
+        let reservations = reports
+            .into_iter()
+            .map(|report| ReservationPoint {
+                at_ms: report.at_ms,
+                resources: report.resources,
+            })
+            .collect();
         Ok(ActorResources {
             samples: history.samples,
             database,
+            reservations,
             kills: history.kills,
         })
     }

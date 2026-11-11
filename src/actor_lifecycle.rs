@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     actor::ActorKey,
-    actor_resources::DatabasePoint,
+    actor_resources::ReportPoint,
     clock::{Clock, SystemClock},
     host_leases::WaitingOperation,
     placement::{
@@ -124,13 +124,8 @@ pub(crate) trait LifecyclePersistence: Send + Sync {
             .collect())
     }
 
-    /// The database sizes one actor's hosts reported between `from` and `to`, oldest first.
-    async fn database_sizes(
-        &self,
-        _actor: &ActorKey,
-        _from: u64,
-        _to: u64,
-    ) -> Result<Vec<DatabasePoint>> {
+    /// What one actor's hosts reported between `from` and `to`, oldest first.
+    async fn reports(&self, _actor: &ActorKey, _from: u64, _to: u64) -> Result<Vec<ReportPoint>> {
         Ok(Vec::new())
     }
 }
@@ -194,13 +189,13 @@ impl LifecycleStore {
         Ok(self)
     }
 
-    pub(crate) async fn database_sizes(
+    pub(crate) async fn reports(
         &self,
         actor: &ActorKey,
         from: u64,
         to: u64,
-    ) -> Result<Vec<DatabasePoint>> {
-        self.persistence.database_sizes(actor, from, to).await
+    ) -> Result<Vec<ReportPoint>> {
+        self.persistence.reports(actor, from, to).await
     }
 
     pub(crate) async fn record(&self, event: LifecycleEvent) -> Result<()> {
@@ -312,7 +307,6 @@ impl ActorInventoryReader for LifecycleStore {
                 status,
                 last_active_at_ms: event.report.last_active_at_ms,
                 database_bytes: event.report.database_bytes,
-                resources: Some(event.report.resources),
                 connections: Vec::new(),
                 waiting: match status {
                     ActorResidency::Unknown => None,
@@ -458,23 +452,17 @@ impl LifecyclePersistence for MemoryLifecyclePersistence {
         Ok(events)
     }
 
-    async fn database_sizes(
-        &self,
-        actor: &ActorKey,
-        from: u64,
-        to: u64,
-    ) -> Result<Vec<DatabasePoint>> {
+    async fn reports(&self, actor: &ActorKey, from: u64, to: u64) -> Result<Vec<ReportPoint>> {
         let mut points: Vec<_> = self
             .1
             .iter()
             .filter(|(key, event)| {
                 key.0 == *actor && (from..=to).contains(&event.report.occurred_at_ms)
             })
-            .filter_map(|(_, event)| {
-                Some(DatabasePoint {
-                    at_ms: event.report.occurred_at_ms,
-                    bytes: event.report.database_bytes?,
-                })
+            .map(|(_, event)| ReportPoint {
+                at_ms: event.report.occurred_at_ms,
+                database_bytes: event.report.database_bytes,
+                resources: event.report.resources,
             })
             .collect();
         points.sort_by_key(|point| point.at_ms);
