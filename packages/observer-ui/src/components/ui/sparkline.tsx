@@ -26,19 +26,23 @@ export type SparklineProps = {
     bounds?: [number, number]
 }
 
-const HoverContext = createContext<[number | null, (index: number | null) => void] | null>(null)
+/** The hovered point and the chart under the pointer. */
+type Hover = { index: number; chart: string } | null
 
-/** Charts inside share the hovered point, so every chart shows the same moment. */
+const HoverContext = createContext<[Hover, (hover: Hover) => void] | null>(null)
+
+/** Charts inside mark the same hovered moment; only the chart under the pointer shows its details. */
 export function SyncedHover({ children }: { children: ReactNode }) {
-    const hovered = useState<number | null>(null)
-    return <HoverContext.Provider value={hovered}>{children}</HoverContext.Provider>
+    const hover = useState<Hover>(null)
+    return <HoverContext.Provider value={hover}>{children}</HoverContext.Provider>
 }
 
 export function Sparkline({ values, color, label, describePoint, references = [], bounds }: SparklineProps) {
     const gradientId = useId()
-    const own = useState<number | null>(null)
-    const [hovered, setHovered] = useContext(HoverContext) ?? own
-    const active = hovered !== null && hovered < values.length ? hovered : null
+    const chart = useId()
+    const own = useState<Hover>(null)
+    const [hover, setHover] = useContext(HoverContext) ?? own
+    const active = hover && hover.index < values.length ? hover.index : null
     const scale = bounds ? { min: bounds[0], span: bounds[1] - bounds[0] || 1 } : scaleFor(values, references)
     const points = plot(values, scale)
     const line = points.map(({ x, y }, index) => `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ")
@@ -71,13 +75,13 @@ export function Sparkline({ values, color, label, describePoint, references = []
             </svg>
             {activePoint && <ActiveDot point={activePoint} color={color} />}
             {describePoint && (
-                <div className="absolute inset-0" onPointerLeave={() => setHovered(null)}>
+                <div className="absolute inset-0" onPointerLeave={() => setHover(null)}>
                     {points.map((_, index) => (
-                        <span key={index} className="absolute inset-y-0" style={hoverColumn(index, points.length)} onPointerEnter={() => setHovered(index)} />
+                        <span key={index} className="absolute inset-y-0" style={hoverColumn(index, points.length)} onPointerEnter={() => setHover({ index, chart })} />
                     ))}
                 </div>
             )}
-            {describePoint && active !== null && <PointTooltip style={hoverColumn(active, points.length)} point={describePoint(active)} />}
+            {describePoint && active !== null && hover?.chart === chart && <PointTooltip style={hoverColumn(active, points.length)} point={describePoint(active)} />}
         </div>
     )
 }
