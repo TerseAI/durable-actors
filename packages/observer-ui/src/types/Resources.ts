@@ -1,16 +1,25 @@
-export interface StorageUsage {
-    bytes: number
-    tables: number
-    rows: number
-    dailyBytes: number[]
+export type KillReason = "out_of_memory" | "evicted" | "killed"
+
+export interface ResourceSample {
+    atMs: number
+    cpuMillicores: number | null
+    memoryBytes: number
+    memoryLimitBytes: number | null
 }
 
-export interface MemoryUsage {
+export interface DatabaseSize {
+    atMs: number
     bytes: number
-    limitBytes: number
 }
 
-export interface InstanceResources {
-    storage: StorageUsage
-    memory: MemoryUsage | null
+export interface ActorKill {
+    atMs: number
+    reason: KillReason
+    message: string | null
+}
+
+export interface ActorResources {
+    samples: ResourceSample[]
+    database: DatabaseSize[]
+    kills: ActorKill[]
 }

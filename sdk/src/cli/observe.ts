@@ -56,6 +56,7 @@ class Observer {
                     | "openLogStream"
                     | "listRequests"
                     | "listResidency"
+                    | "getResources"
                     | "listLogs"
                     | "getLogHistogram"
                 >
@@ -163,6 +164,7 @@ class Observer {
         }
         const history = {
             "/api/observe/residency": this.client.listResidency,
+            "/api/observe/resources": this.client.getResources,
             "/api/observe/state": this.client.getState,
             "/api/observe/state/history": this.client.listStateHistory,
             "/api/observe/requests": this.client.listRequests,

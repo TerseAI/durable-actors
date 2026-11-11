@@ -27,6 +27,8 @@ export const formatSignedPercent = (ratio: number) => signedPercent.format(ratio
 export const formatMsValue = (ms: number) => (ms < 10 ? fine.format(ms) : count.format(Math.round(ms)))
 export const formatMs = (ms: number) => `${formatMsValue(ms)}\u00a0ms`
 export const formatMegabytes = (bytes: number) => decimal.format(bytes / 1_000_000)
+export const formatMebibytes = (bytes: number) => decimal.format(bytes / 1_048_576)
+export const formatCores = (millicores: number) => fine.format(millicores / 1000)
 export const formatPlural = (value: number, noun: string) => `${count.format(value)} ${value === 1 ? noun : `${noun}s`}`
 
 export function formatDuration(ms: number): string {
