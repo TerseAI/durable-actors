@@ -27,7 +27,12 @@ export const formatRate = (value: number) => (value < 10 ? fine : decimal).forma
 export const formatPercent = (ratio: number) => percent.format(ratio)
 export const formatSignedPercent = (ratio: number) => signedPercent.format(ratio)
 export const formatMsValue = (ms: number) => (ms < 10 ? fine.format(ms) : count.format(Math.round(ms)))
-export const formatMs = (ms: number) => `${formatMsValue(ms)}\u00a0ms`
+/** Milliseconds below a second, seconds from there up. */
+export function scaleMs(ms: number): { value: string; unit: string } {
+    if (ms < 999.5) return { value: formatMsValue(ms), unit: "ms" }
+    return { value: (ms < 9_950 ? fine : decimal).format(ms / 1000), unit: "s" }
+}
+export const formatMs = (ms: number) => Object.values(scaleMs(ms)).join("\u00a0")
 export const formatMebibytes = (bytes: number) => decimal.format(bytes / 1_048_576)
 export const formatCpu = (millicores: number) => fine.format(millicores / 1000)
 
