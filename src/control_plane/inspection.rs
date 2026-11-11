@@ -150,23 +150,31 @@ async fn read_inventory(
     Ok(inventory)
 }
 
-/// How long the inventory stream waits after a lifecycle report before re-reading the inventory.
+/// How long the inventory stream waits after a lifecycle report or connection event before
+/// re-reading the inventory.
 const REPORT_SETTLE: Duration = Duration::from_secs(1);
 
-/// The project's lifecycle reports as they are recorded. Without a live feed, the stream's periodic
-/// re-read still keeps the inventory current.
-async fn lifecycle_reports(
+/// The project's lifecycle reports and connection events as they are recorded. Without a live
+/// feed, the stream's periodic re-read still keeps the inventory current.
+async fn inventory_changes(
     state: &InspectionApi,
     project: &str,
 ) -> crate::request_traces::live::LiveStream {
     use crate::request_traces::otlp::Signal;
-    match state
-        .inspector
-        .traces
-        .subscribe(project, Signal::Lifecycle)
-        .await
-    {
-        Ok(reports) => reports,
+    let (reports, connections) = tokio::join!(
+        live_signal(state, project, Signal::Lifecycle),
+        live_signal(state, project, Signal::Sockets),
+    );
+    Box::pin(futures_util::stream::select(reports, connections))
+}
+
+async fn live_signal(
+    state: &InspectionApi,
+    project: &str,
+    signal: crate::request_traces::otlp::Signal,
+) -> crate::request_traces::live::LiveStream {
+    match state.inspector.traces.subscribe(project, signal).await {
+        Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(error = %format!("{error:#}"), "inventory stream reads periodically");
             Box::pin(futures_util::stream::pending())
@@ -184,7 +192,7 @@ async fn actor_events(
 
     let project = project_id(path)?;
     let mut changes = state.inspector.changes.subscribe();
-    let mut reports = lifecycle_reports(&state, &project).await;
+    let mut recorded = inventory_changes(&state, &project).await;
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
     tokio::spawn(async move {
         let mut previous = None;
@@ -220,14 +228,14 @@ async fn actor_events(
                 _ = sender.closed() => return,
                 _ = tokio::time::sleep(Duration::from_secs(15)) => {},
                 _ = changes.changed() => {},
-                report = reports.next() => {
-                    if report.is_none() {
-                        reports = Box::pin(futures_util::stream::pending());
+                change = recorded.next() => {
+                    if change.is_none() {
+                        recorded = Box::pin(futures_util::stream::pending());
                     }
-                    // A report reaches the live feed before its store write lands; read after it,
-                    // once for any reports that arrive meanwhile.
+                    // A change reaches the live feed before its store write lands; read after it,
+                    // once for any changes that arrive meanwhile.
                     tokio::time::sleep(REPORT_SETTLE).await;
-                    while let Some(Some(_)) = reports.next().now_or_never() {}
+                    while let Some(Some(_)) = recorded.next().now_or_never() {}
                 },
             }
         }

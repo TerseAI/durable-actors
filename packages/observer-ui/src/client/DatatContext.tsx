@@ -25,7 +25,7 @@ const DataContext = createContext<DataContextType | undefined>(undefined)
 export const DataProvider = ({ baseUrl = defaultBaseUrl, children }: { baseUrl?: string; children: ReactNode }) => {
     const { actorTypes, isError } = useActors(baseUrl)
     const { requests, isError: isRequestsError } = useRequests(baseUrl, useTimeWindow())
-    const { sessions, isError: isSocketsError } = useWebSockets(baseUrl)
+    const { sessions, isError: isSocketsError } = useWebSockets(baseUrl, actorTypes)
 
     return <DataContext.Provider value={{ baseUrl, actorTypes, isError, requests, isRequestsError, sessions, isSocketsError }}>{children}</DataContext.Provider>
 }

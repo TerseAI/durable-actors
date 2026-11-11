@@ -1,14 +1,19 @@
+import { useEffect } from "react"
+
 import useSWR from "swr"
 
 import { webSocketsKey } from "../client/cacheKeys.js"
 import { HttpObserverClient } from "../client/observerClient.js"
+import type { ActorInventory } from "../types/Actors.js"
 import type { SocketSession } from "../types/Sockets.js"
 
-// There is no WebSocket event stream; live open connections come from the actor inventory stream instead.
-const refreshIntervalMs = 15_000
-
-export function useWebSockets(baseUrl: string) {
-    const { data, error, isLoading } = useSWR<SocketSession[]>(webSocketsKey(baseUrl), () => new HttpObserverClient(baseUrl).listWebSockets(), { refreshInterval: refreshIntervalMs })
+export function useWebSockets(baseUrl: string, inventory: ActorInventory | null) {
+    const { data, error, isLoading, mutate } = useSWR<SocketSession[]>(webSocketsKey(baseUrl), () => new HttpObserverClient(baseUrl).listWebSockets())
+    // The inventory stream pushes every open and close, so the history is re-read only then.
+    const open = inventory?.actors.flatMap(actor => actor.instances.flatMap(instance => instance.connections.map(connection => connection.id))).join(",")
+    useEffect(() => {
+        if (open !== undefined) void mutate()
+    }, [open, mutate])
 
     return {
         sessions: data ?? null,
