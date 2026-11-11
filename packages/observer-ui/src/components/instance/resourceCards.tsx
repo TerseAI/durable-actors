@@ -29,13 +29,12 @@ const mebibyte = 1_048_576
 export function StorageCard({ resources, failed, timeWindow }: ResourceCardProps) {
     const sizes = resources?.database ?? []
     const latest = sizes.at(-1)?.bytes
-    const growth = latest === undefined ? 0 : latest - (sizes[0]?.bytes ?? latest)
     const series = bucketMax(sizes, timeWindow, size => size.bytes, true)
     const shown = latest === undefined ? undefined : scaleBytes(latest)
     const describe = (bytes: number) => Object.values(scaleBytes(bytes)).join(" ")
     return (
         <ResourceCard label="SQLite Storage" shown={shown} describe={describe} series={series} color="var(--chart-4)" resources={resources} failed={failed} timeWindow={timeWindow}>
-            {latest === undefined ? <span>No size reported in this window.</span> : <TrendStat label="Growth" value={`${growth < 0 ? "−" : "+"}${describe(Math.abs(growth))}`} />}
+            {latest === undefined && <span>No size reported in this window.</span>}
         </ResourceCard>
     )
 }
