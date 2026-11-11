@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react"
+
 import useSWR from "swr"
 import useSWRInfinite from "swr/infinite"
 import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
@@ -11,13 +13,14 @@ import type { TimeWindow } from "../types/TimeRange.js"
 
 import { currentBounds, windowKey } from "./useWindowedSWR.js"
 
-const liveRefreshMs = 5_000
+// Streamed lines reach the store a moment after the stream, so the histogram waits before re-reading.
+const histogramSettleMs = 1_000
 const streamedLimit = 2_000
 
 export function useLogs(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter) {
     const history = useLogHistory(baseUrl, timeWindow, filter)
     const streamed = useLogStream(baseUrl, timeWindow.live, filter)
-    const { data: histogram } = useLogHistogram(baseUrl, timeWindow, filter)
+    const { data: histogram } = useLogHistogram(baseUrl, timeWindow, filter, streamed?.[0]?.logId)
     const pages = history.data
     return {
         lines: pages ? newestFirst([...(streamed ?? []), ...pages.flatMap(page => page.records)]) : null,
@@ -45,13 +48,44 @@ function useLogStream(baseUrl: string, live: boolean, filter: LogFilter): ActorL
     return data
 }
 
-function useLogHistogram(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter) {
+function useLogHistogram(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter, newestStreamed: string | undefined) {
     const client = new HttpObserverClient(baseUrl)
     const bucketMs = chartBucketMs(timeWindow.toMs - timeWindow.fromMs)
-    return useSWR([...logHistogramKey(baseUrl, filter), ...windowKey(timeWindow), bucketMs], () => client.getLogHistogram(filter, alignBounds(currentBounds(timeWindow), bucketMs), bucketMs), {
-        refreshInterval: timeWindow.live ? liveRefreshMs : 0,
-        keepPreviousData: true
-    })
+    const histogram = useSWR(
+        [...logHistogramKey(baseUrl, filter), ...windowKey(timeWindow), bucketMs],
+        () => client.getLogHistogram(filter, alignBounds(currentBounds(timeWindow), bucketMs), bucketMs),
+        {
+            keepPreviousData: true
+        }
+    )
+    useRefreshAfterArrivals(newestStreamed, histogram.mutate)
+    return histogram
+}
+
+// Re-reads a settle period after lines arrive: at most once per period while they keep coming, once
+// more after the last, and never while the stream is quiet.
+function useRefreshAfterArrivals(newest: string | undefined, refresh: () => unknown) {
+    const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+    const arrivedSince = useRef(false)
+    useEffect(() => {
+        if (newest === undefined) return
+        if (timer.current) {
+            arrivedSince.current = true
+            return
+        }
+        const settle = () => {
+            timer.current = setTimeout(() => {
+                timer.current = undefined
+                void refresh()
+                if (arrivedSince.current) {
+                    arrivedSince.current = false
+                    settle()
+                }
+            }, histogramSettleMs)
+        }
+        settle()
+    }, [newest, refresh])
+    useEffect(() => () => clearTimeout(timer.current), [])
 }
 
 function newestFirst(lines: ActorLog[]): ActorLog[] {

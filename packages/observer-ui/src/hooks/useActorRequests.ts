@@ -6,12 +6,10 @@ import type { RequestTrace } from "../types/Requests.js"
 
 import { useWindowedSWR } from "./useWindowedSWR.js"
 
-const liveRefreshMs = 15_000
-
 type RequestFilter = { actorName: string; actorId?: string }
 
 // The shared request sample is capped project-wide, so busy actors can fall out of it.
-// Actor pages fetch their own history and top it up with streamed traces between polls.
+// Actor pages fetch their own history once and top it up with the project's request stream.
 export function useActorTypeRequests(actorName: string) {
     return useFilteredRequests({ actorName })
 }
@@ -23,14 +21,11 @@ export function useInstanceRequests(actorName: string, actorId: string) {
 function useFilteredRequests(filter: RequestFilter) {
     const { baseUrl, requests: streamed } = useData()
     const timeWindow = useTimeWindow()
-    const { data, error, isLoading } = useWindowedSWR(
-        [...requestsKey(baseUrl), filter.actorName, filter.actorId],
-        timeWindow,
-        bounds => new HttpObserverClient(baseUrl).collectRequests(bounds, filter),
-        { refreshInterval: timeWindow.live ? liveRefreshMs : 0 }
+    const { data, error, isLoading } = useWindowedSWR([...requestsKey(baseUrl), filter.actorName, filter.actorId], timeWindow, bounds =>
+        new HttpObserverClient(baseUrl).collectRequests(bounds, filter)
     )
     const live = streamed?.filter(trace => matches(trace, filter)) ?? []
-    const requests = data ? uniqueByEvent([...data, ...live]) : null
+    const requests = data ? uniqueByEvent([...data, ...live]).filter(trace => trace.startedAtMs >= timeWindow.fromMs) : null
     return {
         requests,
         isLoading,
