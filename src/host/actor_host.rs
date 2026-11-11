@@ -18,7 +18,7 @@ use crate::actor::{
     ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, validate_socket_effects,
 };
 use crate::host_leases::WaitingOperation;
-use crate::request_traces::{RequestKind, TraceRecorder};
+use crate::request_traces::RequestKind;
 use crate::request_tracking::{
     HostState, RequestCompletion, RequestMetadata, RequestObserver, RequestStage, RequestTracker,
 };
@@ -30,6 +30,7 @@ use super::{
         ActorActivation, CommitOrigin, DatabaseInvocation, HostDatabase, PreparedActivation,
         PreparedInvocation, PublicationError,
     },
+    telemetry::TraceRecorder,
 };
 
 pub(crate) struct ActorHost {

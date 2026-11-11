@@ -266,7 +266,7 @@ async fn control_plane_routes(
         })
         .transpose()?
         .map(Arc::new);
-    let socket_events: Arc<dyn PlatformEvents<crate::sockets::events::SocketEvent>> =
+    let socket_events: Arc<dyn PlatformEvents<crate::platform_events::sockets::SocketEvent>> =
         match &platform_events {
             Some(events) => events.clone(),
             None => Arc::new(NoPlatformEvents),

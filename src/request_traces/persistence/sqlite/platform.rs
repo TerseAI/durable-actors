@@ -8,9 +8,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Map, Value};
 
 use crate::{
-    platform_events::{PlatformRecord, deployments},
+    platform_events::{
+        PlatformRecord, deployments,
+        sockets::{ALIVE, CLOSED, OPENED, SocketClose},
+    },
     request_traces::{otlp, sockets::SocketRecord},
-    sockets::events::{ALIVE, CLOSED, OPENED, SocketClose},
 };
 
 pub(super) fn append(

@@ -104,7 +104,7 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
     assert_eq!(waits[0]["admitted"], 2);
     assert_eq!(waits[0]["averageMs"], 10.0);
     let now = SystemClock.now_ms()?;
-    let opened = |project: &str| crate::sockets::events::SocketEvent::Opened {
+    let opened = |project: &str| crate::platform_events::sockets::SocketEvent::Opened {
         actor: ActorKey {
             project_id: project.into(),
             actor_name: "Room".into(),
@@ -114,7 +114,7 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
         metadata: json!({"user": project}),
         at_ms: now - 1_000,
     };
-    let alive = |project: &str| crate::sockets::events::SocketEvent::Alive {
+    let alive = |project: &str| crate::platform_events::sockets::SocketEvent::Alive {
         project_id: project.into(),
         at_ms: now,
     };
@@ -366,9 +366,8 @@ impl Drop for Fixture {
 
 #[tokio::test]
 async fn platform_events_stream_live_and_the_inventory_reads_them() -> Result<()> {
-    use crate::{
-        platform_events::{PlatformEvents, deployments::DeploymentEvent},
-        sockets::events::SocketEvent,
+    use crate::platform_events::{
+        PlatformEvents, deployments::DeploymentEvent, sockets::SocketEvent,
     };
     let fixture = Fixture::start().await?;
     let mut events = EventReader::open(

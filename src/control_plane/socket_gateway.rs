@@ -6,12 +6,11 @@ use super::{
 use crate::request_tracking::HostState;
 use crate::{
     actor::{ActorKey, ActorSocketEffect, ActorSocketInvocation},
-    platform_events::PlatformEvents,
-    sockets::{
-        SocketRegistry,
-        browser::SocketDispatcher,
-        events::{ALIVE_INTERVAL, SocketEvent},
+    platform_events::{
+        PlatformEvents,
+        sockets::{ALIVE_INTERVAL, SocketEvent},
     },
+    sockets::{SocketRegistry, browser::SocketDispatcher},
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;

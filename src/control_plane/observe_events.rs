@@ -18,13 +18,12 @@ use crate::{
     clock::{Clock, SystemClock},
     host_leases::WaitingOperation,
     placement::ActorResidency,
-    platform_events::{deployments, lifecycle},
+    platform_events::{deployments, lifecycle, sockets},
     request_traces::{
         TraceRecord, TraceStore,
         logs::{ActorLog, LogQuery},
         otlp::{self, PlatformLog, Signal},
     },
-    sockets::events,
 };
 
 /// Which live channels to forward, and which logs.
@@ -240,9 +239,9 @@ fn platform(payload: &[u8]) -> Vec<ObserveEvent> {
 fn platform_event(log: &PlatformLog) -> Option<ObserveEvent> {
     match log.name.as_str() {
         lifecycle::REPORTED => instance_change(log),
-        events::OPENED => connection_opened(log),
-        events::CLOSED => connection_closed(log),
-        events::ALIVE => Some(ObserveEvent::GatewayAlive(GatewayAlive {
+        sockets::OPENED => connection_opened(log),
+        sockets::CLOSED => connection_closed(log),
+        sockets::ALIVE => Some(ObserveEvent::GatewayAlive(GatewayAlive {
             gateway_id: log.gateway_id.clone(),
             at_ms: log.at_ms,
         })),

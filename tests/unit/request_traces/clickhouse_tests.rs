@@ -372,7 +372,7 @@ fn config(url: String) -> ClickHouseConfig {
 
 #[tokio::test]
 async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() -> Result<()> {
-    use crate::sockets::events::{ALIVE, CLOSED, OPENED};
+    use crate::platform_events::sockets::{ALIVE, CLOSED, OPENED};
     let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
         return Ok(());
     };

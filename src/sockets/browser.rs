@@ -7,16 +7,13 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::SinkExt;
 use tokio::task::JoinHandle;
 
-use super::{
-    OutboundMessage, SocketReceiver, SocketRegistry,
-    events::{SocketClose, SocketEvent},
-    socket_channel,
-};
+use super::{OutboundMessage, SocketReceiver, SocketRegistry, socket_channel};
 use crate::actor::{
     ActorKey, ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
     ActorSocketMessage, validate_socket_effects,
 };
 use crate::control_plane::socket_ticket::SocketTicket;
+use crate::platform_events::sockets::{SocketClose, SocketEvent};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use std::sync::Arc;

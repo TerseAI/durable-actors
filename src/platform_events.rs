@@ -15,6 +15,7 @@ use crate::request_traces::otlp;
 
 pub(crate) mod deployments;
 pub(crate) mod lifecycle;
+pub(crate) mod sockets;
 
 /// An event observers read from the analytics store and the live feed.
 pub(crate) trait PlatformEvent: Send + 'static {

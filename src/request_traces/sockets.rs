@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::{
     actor::ActorKey,
     placement::ActorConnectionInventory,
-    sockets::events::{ALIVE_INTERVAL, SocketClose},
+    platform_events::sockets::{ALIVE_INTERVAL, SocketClose},
 };
 
 /// Sessions per response, newest first.

@@ -1,8 +1,12 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, UNIX_EPOCH},
+};
 
 use anyhow::Result;
+use opentelemetry::KeyValue;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, LoggerProvider, Severity};
-use opentelemetry::trace::TracerProvider;
+use opentelemetry::trace::{Span, SpanKind, Status, Tracer, TracerProvider};
 use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
     Resource,
@@ -14,7 +18,11 @@ use tonic::transport::ClientTlsConfig;
 use crate::{
     actor::{ActorLogRecord, ActorLogSink, LogLevel, StdioLogSink},
     control_plane::HostAuthorization,
-    request_traces::otlp::{EXPORT_DELAY, LOG_ID, REQUEST_ID},
+    request_traces::{
+        RequestKind,
+        otlp::{self, EXPORT_DELAY, LOG_ID, REQUEST_ID},
+    },
+    request_tracking::{RequestCompletion, RequestObserver, RequestOutcome},
 };
 
 const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
@@ -112,6 +120,72 @@ fn exporter<B: WithExportConfig + WithTonicConfig>(
     }
 }
 
+pub(crate) struct TraceRecorder {
+    tracer: SdkTracer,
+    operation: String,
+    attributes: Vec<KeyValue>,
+}
+
+impl TraceRecorder {
+    pub(crate) fn new(
+        tracer: SdkTracer,
+        invocation: &crate::actor::ActorInvocation,
+        kind: RequestKind,
+        connection_id: Option<String>,
+        metadata: Option<serde_json::Value>,
+    ) -> Self {
+        let mut attributes = vec![
+            KeyValue::new(otlp::REQUEST_ID, invocation.request_id.clone()),
+            KeyValue::new(otlp::KIND, kind.as_str()),
+        ];
+        attributes.extend(connection_id.map(|id| KeyValue::new(otlp::CONNECTION_ID, id)));
+        attributes.extend(metadata.map(|value| KeyValue::new(otlp::METADATA, value.to_string())));
+        Self {
+            tracer,
+            operation: invocation.method.clone(),
+            attributes,
+        }
+    }
+}
+
+impl RequestObserver for TraceRecorder {
+    fn record(self: Box<Self>, completion: &RequestCompletion) {
+        let started = UNIX_EPOCH + Duration::from_millis(completion.started_at_ms);
+        let ended = started + Duration::from_secs_f64(completion.timings.duration_ms / 1000.0);
+        let mut attributes = self.attributes;
+        attributes.extend(completion_attributes(completion));
+        let mut span = self
+            .tracer
+            .span_builder(self.operation)
+            .with_kind(SpanKind::Server)
+            .with_start_time(started)
+            .with_attributes(attributes)
+            .start_with_context(&self.tracer, &opentelemetry::Context::new());
+        if matches!(completion.outcome, RequestOutcome::Failed) {
+            span.set_status(Status::error(completion.outcome.as_str()));
+        }
+        span.end_with_timestamp(ended);
+    }
+}
+
+fn completion_attributes(completion: &RequestCompletion) -> impl Iterator<Item = KeyValue> {
+    let timings = &completion.timings;
+    [
+        Some(KeyValue::new(otlp::OUTCOME, completion.outcome.as_str())),
+        Some(KeyValue::new(otlp::HOST_STATE, timings.host_state.as_str())),
+        Some(KeyValue::new(otlp::ROUTING_MS, timings.routing_ms)),
+        timings
+            .queue_wait_ms
+            .map(|wait| KeyValue::new(otlp::QUEUE_WAIT_MS, wait)),
+        completion
+            .state_version
+            .and_then(|version| i64::try_from(version).ok())
+            .map(|version| KeyValue::new(otlp::STATE_VERSION, version)),
+    ]
+    .into_iter()
+    .flatten()
+}
+
 struct OtelLogSink {
     logger: SdkLogger,
 }
@@ -140,3 +214,7 @@ fn severity(level: LogLevel) -> Severity {
         LogLevel::Error => Severity::Error,
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/host/telemetry.rs"]
+mod tests;

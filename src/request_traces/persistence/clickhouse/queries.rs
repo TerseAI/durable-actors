@@ -4,13 +4,13 @@ use super::{
     super::cursor::{Cursor, page},
     *,
 };
+use crate::platform_events::sockets::SocketClose;
 use crate::request_traces::{
     RequestTrace, TraceEvent, TraceRecord,
     logs::{ActorLog, LogHistogram, LogHistogramQuery},
     metrics::ClassMetrics,
     sockets::SocketRecord,
 };
-use crate::sockets::events::SocketClose;
 
 impl ClickHouseTracePersistence {
     pub(super) async fn read_history(

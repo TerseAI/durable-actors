@@ -10,7 +10,6 @@ use std::{
 use tokio::sync::{RwLock, mpsc};
 
 pub(crate) mod browser;
-pub(crate) mod events;
 pub(crate) mod operations;
 pub(crate) const DEFAULT_MAX_CONNECTIONS: usize = 32768;
 pub(crate) const READ_BUFFER_BYTES: usize = 8 * 1024;
