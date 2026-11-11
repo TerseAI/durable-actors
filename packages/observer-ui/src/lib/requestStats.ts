@@ -40,6 +40,9 @@ export function requestCounts(requests: RequestTrace[], timeWindow: TimeWindow):
     return counts
 }
 
+/** Anything but a completed request: failed, rejected or interrupted. */
+export const isFailure = (trace: RequestTrace) => trace.outcome !== "completed"
+
 // Rerouted attempts are retried under the same request, so counting them would double-count.
 export function countable(requests: RequestTrace[]): RequestTrace[] {
     return requests.filter(trace => trace.outcome !== "rerouted")

@@ -22,6 +22,7 @@ import { Skeleton } from "../ui/skeleton.js"
 import { SyncedHover } from "../ui/sparkline.js"
 
 import { ConnectionsCard } from "./connectionsCard.js"
+import { ErrorsCard } from "./errorsCard.js"
 import { LiveCard } from "./liveCard.js"
 import { LogsCard, logsCardId } from "./logsCard.js"
 import { RequestsCard } from "./requestsCard.js"
@@ -59,6 +60,7 @@ export function InstancePage() {
                             <CpuCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
                             <StorageCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
                             <RequestRateTrend requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} color="var(--foreground)" />
+                            <ErrorsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} />
                             <TimingCard
                                 label="Avg Queue Wait"
                                 pick={queueTime}
