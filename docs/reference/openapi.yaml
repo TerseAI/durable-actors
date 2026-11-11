@@ -1397,7 +1397,7 @@ components:
                                             description: SQLite database size from the latest lifecycle report (page count × page size). Dormant actors keep their last reported size. Null when the host has not reported one.
                                         resources:
                                             type: [object, "null"]
-                                            description: CPU and memory reserved for the instance's latest activation, as billed. One CPU is one vCPU. A missing limit means uncapped. Null when unavailable.
+                                            description: CPU and memory reserved for the instance's latest activation, as billed. A missing limit means uncapped. Null when unavailable.
                                             required: [cpuMillis, memoryMib]
                                             properties:
                                                 cpuMillis: { type: integer, minimum: 0, description: Requested CPU in thousandths. }
@@ -1431,7 +1431,7 @@ components:
                         required: [atMs, cpuMillicores, memoryBytes, memoryLimitBytes]
                         properties:
                             atMs: { type: integer, minimum: 0 }
-                            cpuMillicores: { type: [integer, "null"], minimum: 0, description: Thousandths of a CPU (one CPU is one vCPU), averaged over the bucket. Null for a sandbox's first sample. }
+                            cpuMillicores: { type: [integer, "null"], minimum: 0, description: Thousandths of a CPU, averaged over the bucket. Null for a sandbox's first sample. }
                             memoryBytes: { type: integer, minimum: 0, description: Peak working-set memory in the bucket. }
                             memoryLimitBytes: { type: [integer, "null"], minimum: 0 }
                 database:

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 
-import { formatClock, formatCount, formatCpu, formatMebibytes, scaleBytes } from "../../format.js"
+import { formatClock, formatCpu, formatMebibytes, scaleBytes } from "../../format.js"
 import { bucketMax } from "../../lib/resources.js"
 import { bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import { cn } from "../../lib/utils.js"
@@ -87,8 +87,7 @@ export function CpuCard({ resources, limits, failed, timeWindow }: LimitCardProp
         <ResourceCard
             label="CPU"
             shown={latest === undefined ? undefined : { value: formatCpu(latest), unit: "CPU" }}
-            // Samples are thousandths of a CPU; on GKE one CPU is one vCPU.
-            describe={millicores => `${cpus(millicores)} used = ${formatCount(Math.round(millicores))} millicores (1 CPU = 1 vCPU)`}
+            describe={millicores => `${cpus(millicores)} used`}
             details={reservation(limits?.cpuMillis, limits?.cpuLimitMillis, cpus)}
             series={bucketMax(samples, timeWindow, sample => sample.cpuMillicores)}
             references={references(limits?.cpuMillis, limits?.cpuLimitMillis)}
