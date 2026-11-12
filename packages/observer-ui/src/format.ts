@@ -21,10 +21,16 @@ export const formatLogClock = (ms: number) => logClock.format(ms)
 export const formatCount = (value: number) => count.format(value)
 export const formatDecimal = (value: number) => decimal.format(value)
 export const formatPercent = (ratio: number) => percent.format(ratio)
-export const formatMsValue = (ms: number) => (ms < 10 ? fine.format(ms) : count.format(Math.round(ms)))
-export const formatMs = (ms: number) => `${formatMsValue(ms)}\u00a0ms`
+export const formatMs = (ms: number) => formatMsParts(ms).join("\u00a0")
 export const formatMegabytes = (bytes: number) => decimal.format(bytes / 1_000_000)
 export const formatPlural = (value: number, noun: string) => `${count.format(value)} ${value === 1 ? noun : `${noun}s`}`
+
+// The cutoffs sit just below 1 ms and 1 s so rounding never prints "1,000 µs" or "1,000 ms".
+export function formatMsParts(ms: number): [value: string, unit: string] {
+    if (ms >= 999.5) return [formatMagnitude(ms / 1000), "s"]
+    if (ms >= 0.9995 || ms === 0) return [formatMagnitude(ms), "ms"]
+    return [formatMagnitude(ms * 1000), "µs"]
+}
 
 export function formatDuration(ms: number): string {
     if (ms < 60_000) return `${Math.round(ms / 1000)}\u00a0s`
@@ -40,4 +46,8 @@ export function formatAgo(ms: number, now: number): string {
     if (seconds < 3600) return `${Math.floor(seconds / 60)}\u00a0min ago`
     if (seconds < 86_400) return `${Math.floor(seconds / 3600)}\u00a0h ago`
     return `${Math.floor(seconds / 86_400)}\u00a0d ago`
+}
+
+function formatMagnitude(value: number): string {
+    return value < 10 ? fine.format(value) : count.format(Math.round(value))
 }

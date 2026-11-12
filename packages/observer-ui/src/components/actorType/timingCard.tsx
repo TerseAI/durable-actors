@@ -1,4 +1,4 @@
-import { formatMs, formatMsValue } from "../../format.js"
+import { formatMs, formatMsParts } from "../../format.js"
 import { type TimingPick, timingStats } from "../../lib/requestStats.js"
 import { bucketCount, bucketLabel, windowTicks } from "../../lib/timeRange.js"
 import type { RequestTrace } from "../../types/Requests.js"
@@ -19,13 +19,14 @@ export type TimingCardProps = {
 export function TimingCard({ label, pick, color, chartLabel, requests, failed, timeWindow }: TimingCardProps) {
     const stats = requests && timingStats(requests, timeWindow, pick)
     const loading = !stats && !failed
-    const value = stats ? formatMsValue(stats.average) : loading ? <Skeleton className="h-11 w-20" /> : "—"
+    const [average, unit] = formatMsParts(stats?.average ?? 0)
+    const value = stats ? average : loading ? <Skeleton className="h-11 w-20" /> : "—"
     const series = stats?.series ?? Array<number>(bucketCount(timeWindow)).fill(0)
     return (
         <TrendCard
             label={label}
             value={value}
-            unit="ms"
+            unit={unit}
             busy={loading}
             failed={!stats && failed}
             series={series}
