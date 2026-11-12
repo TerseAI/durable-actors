@@ -1,13 +1,12 @@
 import { useData } from "../../client/DatatContext.js"
-import { formatClock, formatCount, formatDecimal, formatPlural, formatSignedPercent } from "../../format.js"
+import { formatClock, formatCount, formatPlural } from "../../format.js"
 import { sessionSpan } from "../../lib/sockets.js"
 import { bucketCount, emptySeries, trendAxis, trendWindowMs } from "../../lib/trendWindow.js"
 import type { ActorInventory } from "../../types/Actors.js"
 import type { SocketMetrics } from "../../types/Overview.js"
 import type { SocketSession } from "../../types/Sockets.js"
-import { Delta } from "../ui/delta.js"
 import { Skeleton } from "../ui/skeleton.js"
-import { TrendCard, TrendStat, TrendStatsSkeleton } from "../ui/trendCard.js"
+import { TrendCard } from "../ui/trendCard.js"
 
 export function SocketsCard() {
     const { actorTypes, sessions, isError, isSocketsError } = useData()
@@ -20,33 +19,23 @@ export function SocketsCard() {
     return (
         <TrendCard
             label="WebSocket Connections"
-            window="open now"
             value={value}
             unit="open"
             busy={loading}
+            failed={!metrics && failed}
             series={series}
             axis={trendAxis(now)}
             color="var(--chart-2)"
             chartLabel={metrics ? `Open WebSocket connections over the last hour, now ${formatCount(metrics.open)}` : "Open WebSocket connections over the last hour"}
             describePoint={index => ({ at: formatClock(sampleTime(now, index)), value: formatPlural(series[index] ?? 0, "open connection") })}
-        >
-            {metrics ? <SocketStats {...metrics} /> : <TrendStatsSkeleton failed={failed} />}
-        </TrendCard>
+        />
     )
 }
 
 function getMetrics(inventory: ActorInventory, sessions: SocketSession[], now: number): SocketMetrics {
     const instances = inventory.actors.flatMap(actor => actor.instances)
     const open = instances.reduce((sum, instance) => sum + instance.connections.length, 0)
-    const live = instances.filter(instance => instance.status === "live").length
-    const series = [...openSeries(sessions, now).slice(0, -1), open]
-    const hourAgo = series[0] ?? 0
-    return {
-        open,
-        change: hourAgo ? (open - hourAgo) / hourAgo : 0,
-        perLiveActor: live ? open / live : 0,
-        series
-    }
+    return { open, series: [...openSeries(sessions, now).slice(0, -1), open] }
 }
 
 function openSeries(sessions: SocketSession[], now: number): number[] {
@@ -60,16 +49,4 @@ function sampleTime(now: number, index: number): number {
 function isOpenAt(session: SocketSession, at: number): boolean {
     const span = sessionSpan(session)
     return span.fromMs <= at && at < span.toMs
-}
-
-function SocketStats({ change, perLiveActor }: SocketMetrics) {
-    return (
-        <>
-            <span className="flex items-center gap-2">
-                <Delta value={change}>{formatSignedPercent(change)}</Delta>
-                vs 1&nbsp;h ago
-            </span>
-            <TrendStat label="Avg" value={formatDecimal(perLiveActor)} suffix="per live actor" />
-        </>
-    )
 }

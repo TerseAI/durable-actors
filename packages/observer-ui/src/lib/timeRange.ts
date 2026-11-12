@@ -53,7 +53,7 @@ export function bucketLabel(timeWindow: TimeWindow, index: number): string {
     return formatTick(bucketEnd(timeWindow, index), timeWindow.toMs - timeWindow.fromMs)
 }
 
-export function bucketEnd({ fromMs, toMs, stepMs }: TimeWindow, index: number): number {
+function bucketEnd({ fromMs, toMs, stepMs }: TimeWindow, index: number): number {
     return Math.min(fromMs + (index + 1) * stepMs, toMs)
 }
 

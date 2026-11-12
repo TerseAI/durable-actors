@@ -57,7 +57,6 @@ export function InstancePage() {
                         <RequestRateTrend requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} color="var(--foreground)" />
                         <TimingCard
                             label="Avg Queue Wait"
-                            window={describeWindow(timeWindow)}
                             pick={queueTime}
                             color="var(--chart-1)"
                             chartLabel={`Average queue wait, ${describeWindow(timeWindow)}`}
@@ -67,7 +66,6 @@ export function InstancePage() {
                         />
                         <TimingCard
                             label="Avg Request Time"
-                            window="excl. queue"
                             pick={serviceTime}
                             color="var(--foreground)"
                             chartLabel={`Average request time excluding the queue, ${describeWindow(timeWindow)}`}

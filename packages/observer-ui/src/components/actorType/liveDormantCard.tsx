@@ -5,9 +5,8 @@ import { Skeleton } from "../ui/skeleton.js"
 import { StatCard, StatFigure } from "../ui/statCard.js"
 
 export function LiveDormantCard({ summary, failed }: { summary: ActorTypeSummary | null; failed: boolean }) {
-    const total = summary && <span className="shrink-0 text-xs font-normal tabular-nums">{formatCount(summary.total)} total</span>
     return (
-        <StatCard label="Live & Dormant" aside={total} busy={!summary && !failed}>
+        <StatCard label="Live & Dormant" busy={!summary && !failed}>
             {summary ? <Residency {...summary} /> : <ResidencySkeleton failed={failed} />}
         </StatCard>
     )
@@ -22,7 +21,7 @@ function Residency({ live, dormant, total }: ActorTypeSummary) {
                 <StatFigure value={formatCount(dormant)} unit="dormant" className="text-muted-foreground/75" />
             </div>
             <ResidencyBar liveShare={liveShare} label={`${formatCount(live)} live, ${formatCount(dormant)} dormant, ${formatPercent(liveShare)} live`} pulse className="mt-auto h-10 rounded-sm" />
-            <ResidencyLegend live={live} dormant={dormant} />
+            <ResidencyLegend />
         </>
     )
 }
