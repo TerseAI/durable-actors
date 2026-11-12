@@ -6,9 +6,9 @@ use std::{
 use axum::{
     Router,
     body::{Body, to_bytes},
-    extract::{Path, Request, State},
+    extract::{Request, State},
     http::{Method, StatusCode, header, request::Parts},
-    middleware,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::any,
 };
@@ -32,8 +32,8 @@ use tower::ServiceExt;
 use crate::actor::ActorKey;
 
 use super::{
-    admin::AdminService,
-    public_api::{ApiError, ProjectPath, project_id, require_admin},
+    admin::{AdminService, validate_component},
+    public_api::{ApiError, authorized_admin},
 };
 
 mod pages;
@@ -52,8 +52,10 @@ const DEFAULT_PAGE_SIZE: usize = 25;
 const MAX_PAGE_SIZE: usize = 100;
 const DEFAULT_QUEUE_WAITS: usize = 10;
 const DEFAULT_WINDOW_MINUTES: u64 = 60;
-const INSTRUCTIONS: &str = "Inspect and call the Durable Actors deployed in this project. \
-Start with describe_deployment to learn the actor classes, their methods and types, then \
+const ORGANIZATION_HEADER: &str = "x-durable-actors-organization-id";
+const INSTRUCTIONS: &str = "Inspect and call the Durable Actors deployed in your organization. \
+Start with list_projects, then pass a projectId to the other tools. \
+Use describe_deployment to learn the actor classes, their methods and types, then \
 list_actors for instances. To debug an instance, read get_actor_state, then list_requests and \
 list_logs filtered by actorName and actorId. IDs link the tools: a requestId appears in requests, \
 logs and saved state versions; a connectionId appears in WebSocket sessions and requests. List \
@@ -65,19 +67,21 @@ pub(super) fn router(api: Router, admin: AdminService) -> Router {
     // Every request must carry the admin credential, so the loopback Host allowlist adds nothing.
     service_router(
         api,
+        admin.clone(),
         StreamableHttpServerConfig::default().disable_allowed_hosts(),
     )
-    .route_layer(middleware::from_fn_with_state(admin, require_admin))
+    .route_layer(middleware::from_fn_with_state(admin, require_organization))
 }
 
-pub(super) fn local_router(api: Router) -> Router {
-    service_router(api, StreamableHttpServerConfig::default())
+pub(super) fn local_router(api: Router, admin: AdminService) -> Router {
+    service_router(api, admin.clone(), StreamableHttpServerConfig::default())
+        .route_layer(middleware::from_fn_with_state(admin, require_organization))
 }
 
 type McpService = StreamableHttpService<DeveloperTools, NeverSessionManager>;
 
-fn service_router(api: Router, config: StreamableHttpServerConfig) -> Router {
-    let tools = DeveloperTools { api };
+fn service_router(api: Router, admin: AdminService, config: StreamableHttpServerConfig) -> Router {
+    let tools = DeveloperTools { api, admin };
     let service: McpService = StreamableHttpService::new(
         move || Ok(tools.clone()),
         Arc::new(NeverSessionManager::default()),
@@ -85,43 +89,103 @@ fn service_router(api: Router, config: StreamableHttpServerConfig) -> Router {
             .with_legacy_session_mode(false)
             .with_json_response(true),
     );
-    Router::new()
-        .route("/v1/projects/{project_id}/mcp", any(serve))
-        .with_state(service)
+    Router::new().route("/mcp", any(serve)).with_state(service)
 }
 
-async fn serve(
-    State(service): State<McpService>,
-    path: Path<ProjectPath>,
-    mut request: Request,
-) -> Result<Response, ApiError> {
-    request.extensions_mut().insert(Project(project_id(path)?));
+async fn serve(State(service): State<McpService>, request: Request) -> Result<Response, ApiError> {
     let Ok(response) = service.oneshot(request).await;
     Ok(response.into_response())
 }
 
 #[derive(Clone)]
-struct Project(String);
+struct Organization(String);
 
-/// Exposes the project's HTTP API as MCP tools by calling the API router in process,
+async fn require_organization(
+    State(admin): State<AdminService>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authorized_admin(&admin, request.headers())?;
+    let organization = if let Some(value) = request.headers().get(ORGANIZATION_HEADER) {
+        let value = value.to_str().map_err(ApiError::bad_request)?;
+        validate_component("organization ID", value, 64).map_err(ApiError::bad_request)?;
+        value.to_owned()
+    } else {
+        let organizations: std::collections::HashSet<_> = admin
+            .current_deployments()
+            .await
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .map(|deployment| deployment.organization_id)
+            .collect();
+        if organizations.len() != 1 {
+            return Err(ApiError::bad_request(
+                "MCP requires an organization context",
+            ));
+        }
+        organizations.into_iter().next().expect("one organization")
+    };
+    request.extensions_mut().insert(Organization(organization));
+    Ok(next.run(request).await)
+}
+
+/// Exposes the HTTP API as MCP tools by calling the API router in process,
 /// so tools inherit its authentication, validation and errors.
 #[derive(Clone)]
 struct DeveloperTools {
     api: Router,
+    admin: AdminService,
 }
 
 #[tool_router]
 impl DeveloperTools {
     #[tool(
-        description = "List the deployed actor classes and their RPC methods, with TypeScript declarations for every method, state and socket message type. Start here.",
+        description = "List deployed projects in your organization. Use a projectId from this list with the other tools.",
+        output_schema = schema_for_output::<Page<ProjectView>>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn list_projects(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(params): Parameters<ProjectsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cursor = match decode_cursor(params.cursor.as_deref()) {
+            Ok(cursor) => cursor,
+            Err(invalid) => return Ok(invalid),
+        };
+        let organization = organization(&parts)?;
+        let mut projects: Vec<_> = self
+            .admin
+            .current_deployments()
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .filter(|deployment| deployment.organization_id == organization)
+            .map(|deployment| ProjectView {
+                project_id: deployment.project_id,
+            })
+            .collect();
+        projects.sort_by(|left, right| left.project_id.cmp(&right.project_id));
+        Ok(respond(Ok(pages::slice(
+            projects,
+            cursor,
+            page_size(params.limit),
+        ))))
+    }
+
+    #[tool(
+        description = "List the deployed actor classes and their RPC methods, with TypeScript declarations for every method, state and socket message type.",
         output_schema = schema_for_output::<Deployment>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn describe_deployment(
         &self,
         Extension(parts): Extension<Parts>,
+        Parameters(params): Parameters<ProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let reply = self.get(&parts, "deployment/contract", ()).await?;
+        let reply = self
+            .get(&parts, &params.project_id, "deployment/contract", ())
+            .await?;
         Ok(respond(
             reply.into_view::<ContractReply>().map(Deployment::from),
         ))
@@ -135,8 +199,10 @@ impl DeveloperTools {
     async fn list_actors(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(params): Parameters<ActorsParams>,
+        Parameters(request): Parameters<ProjectRequest<ActorsParams>>,
     ) -> Result<CallToolResult, ErrorData> {
+        let project_id = &request.project_id;
+        let params = request.input;
         let cursor = match decode_cursor(params.cursor.as_deref()) {
             Ok(cursor) => cursor,
             Err(invalid) => return Ok(invalid),
@@ -145,7 +211,7 @@ impl DeveloperTools {
             actor_name: params.actor_name.as_deref(),
             status: params.status.map(InstanceStatus::as_str),
         };
-        let reply = self.get(&parts, "observe/actors", ()).await?;
+        let reply = self.get(&parts, project_id, "observe/actors", ()).await?;
         Ok(respond(reply.into_view::<Inventory>().map(|inventory| {
             inventory.view(filter, cursor, page_size(params.limit))
         })))
@@ -159,13 +225,17 @@ impl DeveloperTools {
     async fn get_actor_state(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(params): Parameters<ActorStateParams>,
+        Parameters(request): Parameters<ProjectRequest<ActorStateParams>>,
     ) -> Result<CallToolResult, ErrorData> {
+        let project_id = &request.project_id;
+        let params = request.input;
         let query = StateQuery {
             path: params.path.clone(),
             include_schema: params.include_schema.unwrap_or(false),
         };
-        let reply = self.get(&parts, "observe/state", params).await?;
+        let reply = self
+            .get(&parts, project_id, "observe/state", params)
+            .await?;
         Ok(respond(
             reply
                 .into_view::<StateReply>()
@@ -181,9 +251,13 @@ impl DeveloperTools {
     async fn list_state_history(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(params): Parameters<StateHistoryParams>,
+        Parameters(request): Parameters<ProjectRequest<StateHistoryParams>>,
     ) -> Result<CallToolResult, ErrorData> {
-        let reply = self.get(&parts, "observe/state/history", params).await?;
+        let project_id = &request.project_id;
+        let params = request.input;
+        let reply = self
+            .get(&parts, project_id, "observe/state/history", params)
+            .await?;
         Ok(respond(
             reply
                 .into_view::<StateHistoryReply>()
@@ -199,10 +273,14 @@ impl DeveloperTools {
     async fn list_requests(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(mut params): Parameters<RequestHistoryParams>,
+        Parameters(request): Parameters<ProjectRequest<RequestHistoryParams>>,
     ) -> Result<CallToolResult, ErrorData> {
+        let project_id = &request.project_id;
+        let mut params = request.input;
         params.limit.get_or_insert(DEFAULT_PAGE_SIZE);
-        let reply = self.get(&parts, "observe/requests", params).await?;
+        let reply = self
+            .get(&parts, project_id, "observe/requests", params)
+            .await?;
         Ok(respond(
             reply.into_view::<Page<RequestView>>().map(views::requests),
         ))
@@ -216,10 +294,13 @@ impl DeveloperTools {
     async fn list_logs(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(mut params): Parameters<LogParams>,
+        Parameters(request): Parameters<ProjectRequest<LogParams>>,
     ) -> Result<CallToolResult, ErrorData> {
+        let project_id = &request.project_id;
+        let mut params = request.input;
         params.limit.get_or_insert(DEFAULT_PAGE_SIZE);
-        self.read::<Page<Log>>(&parts, "observe/logs", params).await
+        self.read::<Page<Log>>(&parts, project_id, "observe/logs", params)
+            .await
     }
 
     #[tool(
@@ -230,8 +311,10 @@ impl DeveloperTools {
     async fn get_health(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(mut params): Parameters<HealthParams>,
+        Parameters(request): Parameters<ProjectRequest<HealthParams>>,
     ) -> Result<CallToolResult, ErrorData> {
+        let project_id = &request.project_id;
+        let mut params = request.input;
         params.since_minutes.get_or_insert(DEFAULT_WINDOW_MINUTES);
         let limit = params
             .limit
@@ -241,11 +324,11 @@ impl DeveloperTools {
             since_minutes: params.since_minutes,
         };
         let metrics = self
-            .get(&parts, "observe/metrics", window)
+            .get(&parts, project_id, "observe/metrics", window)
             .await?
             .into_view::<Metrics>();
         let queue_waits = self
-            .get(&parts, "observe/queue-waits", params)
+            .get(&parts, project_id, "observe/queue-waits", params)
             .await?
             .into_view::<Vec<QueueWait>>();
         Ok(respond(metrics.and_then(|metrics| {
@@ -261,8 +344,10 @@ impl DeveloperTools {
     async fn list_websocket_sessions(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(params): Parameters<SessionParams>,
+        Parameters(request): Parameters<ProjectRequest<SessionParams>>,
     ) -> Result<CallToolResult, ErrorData> {
+        let project_id = &request.project_id;
+        let params = request.input;
         let cursor = match decode_cursor(params.cursor.as_deref()) {
             Ok(cursor @ Cursor { to_ms: Some(_), .. }) => cursor,
             Ok(_) => window(params.since_minutes.unwrap_or(DEFAULT_WINDOW_MINUTES))?,
@@ -270,7 +355,7 @@ impl DeveloperTools {
         };
         let range = json!({ "fromMs": cursor.from_ms, "toMs": cursor.to_ms });
         let sessions = self
-            .get(&parts, "observe/websockets", range)
+            .get(&parts, project_id, "observe/websockets", range)
             .await?
             .into_view::<Vec<Session>>();
         let limit = page_size(params.limit);
@@ -292,10 +377,12 @@ impl DeveloperTools {
     async fn invoke_actor(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(params): Parameters<InvokeParams>,
+        Parameters(request): Parameters<ProjectRequest<InvokeParams>>,
     ) -> Result<CallToolResult, ErrorData> {
+        let project_id = &request.project_id;
+        let params = request.input;
         let actor = ActorKey {
-            project_id: project(&parts)?.into(),
+            project_id: project_id.clone(),
             actor_name: params.actor_name,
             actor_id: params.actor_id,
         };
@@ -311,7 +398,13 @@ impl DeveloperTools {
         });
         let path = format!("actors/{}/{}/invoke", actor.actor_name, actor.actor_id);
         let reply = self
-            .send(&parts, Method::POST, &path, Body::from(body.to_string()))
+            .send(
+                &parts,
+                project_id,
+                Method::POST,
+                &path,
+                Body::from(body.to_string()),
+            )
             .await?;
         Ok(invocation_result(reply))
     }
@@ -333,33 +426,51 @@ impl DeveloperTools {
     async fn read<T: DeserializeOwned + Serialize>(
         &self,
         parts: &Parts,
+        project_id: &str,
         path: &str,
         params: impl Serialize,
     ) -> Result<CallToolResult, ErrorData> {
-        let reply = self.get(parts, path, params).await?;
+        let reply = self.get(parts, project_id, path, params).await?;
         Ok(respond(reply.into_view::<T>()))
     }
 
     async fn get(
         &self,
         parts: &Parts,
+        project_id: &str,
         path: &str,
         params: impl Serialize,
     ) -> Result<ApiReply, ErrorData> {
         let path = format!("{path}?{}", query_string(params)?);
-        self.send(parts, Method::GET, &path, Body::empty()).await
+        self.send(parts, project_id, Method::GET, &path, Body::empty())
+            .await
     }
 
     async fn send(
         &self,
         parts: &Parts,
+        project_id: &str,
         method: Method,
         path: &str,
         body: Body,
     ) -> Result<ApiReply, ErrorData> {
+        validate_component("project ID", project_id, 64)
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let organization = organization(parts)?;
+        let deployment = self
+            .admin
+            .current_deployment(project_id)
+            .await
+            .map_err(internal)?;
+        if !deployment.is_some_and(|deployment| deployment.organization_id == organization) {
+            return Ok(ApiReply {
+                status: StatusCode::NOT_FOUND,
+                body: json!({ "error": { "code": "not_found", "message": "Project not found" } }),
+            });
+        }
         let mut request = Request::builder()
             .method(method)
-            .uri(format!("/v1/projects/{}/{path}", project(parts)?))
+            .uri(format!("/v1/projects/{project_id}/{path}"))
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(authorization) = parts.headers.get(header::AUTHORIZATION) {
             request = request.header(header::AUTHORIZATION, authorization);
@@ -400,12 +511,12 @@ fn page_size(limit: Option<usize>) -> usize {
     limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
 }
 
-fn project(parts: &Parts) -> Result<&str, ErrorData> {
+fn organization(parts: &Parts) -> Result<&str, ErrorData> {
     parts
         .extensions
-        .get::<Project>()
-        .map(|Project(project)| project.as_str())
-        .ok_or_else(|| ErrorData::internal_error("MCP request has no project", None))
+        .get::<Organization>()
+        .map(|Organization(organization)| organization.as_str())
+        .ok_or_else(|| ErrorData::internal_error("MCP request has no organization", None))
 }
 
 fn query_string(params: impl Serialize) -> Result<String, ErrorData> {
@@ -529,6 +640,36 @@ fn truncated(mut text: String) -> String {
 
 fn internal(error: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(error.to_string(), None)
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ProjectParams {
+    /// Project ID from list_projects.
+    project_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRequest<T> {
+    /// Project ID from list_projects.
+    project_id: String,
+    #[serde(flatten)]
+    input: T,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ProjectsParams {
+    /// Projects per page, 1 to 100. Defaults to 25.
+    limit: Option<usize>,
+    /// nextCursor from the previous page.
+    cursor: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ProjectView {
+    project_id: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
