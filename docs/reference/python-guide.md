@@ -250,6 +250,25 @@ class Reminder(Actor):
         self.sent = True
 ```
 
+## Activation and shutdown
+
+The constructor is the wake signal: the worker runs it each time it activates an actor, after which `persisted()` fields are restored. `on_sleep` runs on a graceful eviction of an idle actor. It does not run when the worker crashes, or when the actor is evicted while a call is still running. Field and SQLite writes from `on_sleep` commit if it returns successfully.
+
+```python
+import time
+
+from durable_actors import Actor, persisted
+
+
+class Session(Actor):
+    stopped_at: int | None = persisted(None)
+
+    def on_sleep(self) -> None:
+        self.stopped_at = time.time_ns() // 1_000_000
+```
+
+Use `on_sleep` for last-seen timestamps or flushing buffered state. Socket broadcasts from it are not delivered. Async actors define `async def on_sleep`.
+
 ## Interleaving calls
 
 An actor runs one call at a time by default. Python methods run in a worker thread, and an `@interleave` method does not hold the actor while it runs: other calls can start at any point during it, not only while it waits on I/O. Protect state that overlapping calls share, for example with a `threading.Lock` in an `ephemeral()` field.
