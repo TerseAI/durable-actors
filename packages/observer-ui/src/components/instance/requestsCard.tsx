@@ -139,7 +139,7 @@ function Waterfall({ calls, total, inspectedId, onInspect }: { calls: RequestTra
                     <MethodRow key={row.key} row={row} calls={calls} origin={origin} scale={scale} inspectedId={inspectedId} onInspect={onInspect} />
                 ))}
             </ol>
-            <WaterfallFooter calls={calls} methods={rows.length} total={total} />
+            <WaterfallFooter shown={calls.length} total={total} />
         </>
     )
 }
@@ -321,21 +321,12 @@ function CallDetail({ call, blocker }: { call: RequestTrace; blocker: RequestTra
     )
 }
 
-function WaterfallFooter({ calls, methods, total }: { calls: RequestTrace[]; methods: number; total: number }) {
-    const waited = calls.filter(call => (call.queueWaitMs ?? 0) > 0).length
-    const errors = calls.filter(isFailed).length
+function WaterfallFooter({ shown, total }: { shown: number; total: number }) {
+    if (shown >= total) return null
     return (
-        <div className="flex justify-between border-t pt-3 text-xs text-muted-foreground tabular-nums">
-            <span>
-                {formatPlural(calls.length, "call")} across {formatPlural(methods, "method")} · {formatCount(waited)} waited in queue
-                {errors > 0 && ` · ${formatPlural(errors, "error")}`}
-            </span>
-            {calls.length < total && (
-                <span>
-                    Showing the latest {formatCount(calls.length)} of {formatCount(total)}
-                </span>
-            )}
-        </div>
+        <p className="border-t pt-3 text-xs text-muted-foreground tabular-nums">
+            Showing the latest {formatCount(shown)} of {formatCount(total)}
+        </p>
     )
 }
 
