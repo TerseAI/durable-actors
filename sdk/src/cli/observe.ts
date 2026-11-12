@@ -51,11 +51,7 @@ class Observer {
             Partial<
                 Pick<
                     ControlPlaneClient,
-                    | "openEventStream"
-                    | "listRequests"
-                    | "listResidency"
-                    | "listLogs"
-                    | "getLogHistogram"
+                    "openEventStream" | "listRequests" | "listResidency" | "listLogs" | "getLogHistogram"
                 >
             >,
         private readonly openBrowser: (url: string) => Promise<unknown>,
@@ -141,7 +137,9 @@ class Observer {
             await this.proxyEvents(
                 request,
                 response,
-                this.client.openEventStream ? signal => this.client.openEventStream!(signal, url.searchParams) : undefined
+                this.client.openEventStream
+                    ? signal => this.client.openEventStream!(signal, url.searchParams)
+                    : undefined
             )
             return
         }
