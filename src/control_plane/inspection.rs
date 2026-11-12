@@ -4,14 +4,13 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Query, State, rejection::QueryRejection},
-    http::{HeaderMap, header},
+    http::header,
     middleware,
     response::{IntoResponse, Response},
     routing::get,
 };
+use futures_util::StreamExt;
 use serde::Deserialize;
-
-mod live;
 
 use super::{
     admin::AdminService,
@@ -19,11 +18,10 @@ use super::{
 };
 
 pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
-    local_router(inspector, admin.clone())
-        .route_layer(middleware::from_fn_with_state(admin, require_admin))
+    local_router(inspector).route_layer(middleware::from_fn_with_state(admin, require_admin))
 }
 
-pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Router {
+pub(super) fn local_router(inspector: ActorInspector) -> Router {
     Router::new()
         .route("/v1/projects/{project_id}/observe/state", get(actor_state))
         .route(
@@ -40,7 +38,7 @@ pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Ro
         )
         .route(
             "/v1/projects/{project_id}/observe/events",
-            get(actor_events),
+            get(project_events),
         )
         .route(
             "/v1/projects/{project_id}/observe/requests",
@@ -58,26 +56,17 @@ pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Ro
             "/v1/projects/{project_id}/observe/websockets",
             get(websocket_history),
         )
-        .route(
-            "/v1/projects/{project_id}/observe/requests/events",
-            get(request_events),
-        )
         .route("/v1/projects/{project_id}/observe/logs", get(log_history))
-        .route(
-            "/v1/projects/{project_id}/observe/logs/events",
-            get(log_events),
-        )
         .route(
             "/v1/projects/{project_id}/observe/logs/histogram",
             get(log_histogram),
         )
-        .with_state(InspectionApi { inspector, admin })
+        .with_state(InspectionApi { inspector })
 }
 
 #[derive(Clone)]
 struct InspectionApi {
     inspector: ActorInspector,
-    admin: AdminService,
 }
 
 #[derive(Clone)]
@@ -85,20 +74,17 @@ pub(super) struct ActorInspector {
     traces: crate::request_traces::TraceStore,
     state: Arc<dyn crate::bucket::ActorStateReader>,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
-    changes: crate::postgres::notifications::ChangeFeed,
 }
 
 impl ActorInspector {
     pub(super) fn new(
         inventory: Arc<dyn crate::placement::ActorInventoryReader>,
         state: Arc<dyn crate::bucket::ActorStateReader>,
-        changes: crate::postgres::notifications::ChangeFeed,
     ) -> Self {
         Self {
             traces: crate::request_traces::TraceStore::default(),
             inventory,
             state,
-            changes,
         }
     }
 
@@ -124,86 +110,55 @@ async fn read_inventory(
     state: &InspectionApi,
     project: &str,
 ) -> Result<crate::placement::ActorInventorySnapshot> {
-    let mut inventory = state.inspector.inventory.actor_inventory(project).await?;
+    let (mut inventory, contract) = tokio::try_join!(
+        state.inspector.inventory.actor_inventory(project),
+        state.inspector.traces.deployed_contract(project),
+    )?;
     let mut rows: std::collections::BTreeMap<_, _> = inventory
         .actors
         .into_iter()
         .map(|row| (row.actor_name.clone(), row))
         .collect();
-    if let Some(contract) = state.admin.deployment_contract(project).await? {
-        if let Some(actors) = contract.contract["actors"].as_array() {
-            for actor in actors {
-                if let Some(name) = actor["actorName"].as_str() {
-                    let row = rows.entry(name.to_owned()).or_insert_with(|| {
-                        crate::placement::ActorInventory {
-                            actor_name: name.to_owned(),
-                            ..Default::default()
-                        }
+    if let Some(contract) = contract {
+        for (name, methods) in super::contracts::actor_methods(&contract)? {
+            let row =
+                rows.entry(name.clone())
+                    .or_insert_with(|| crate::placement::ActorInventory {
+                        actor_name: name,
+                        ..Default::default()
                     });
-                    row.methods = Some(contract.rpc_methods(name)?);
-                }
-            }
+            row.methods = Some(methods);
         }
     }
     inventory.actors = rows.into_values().collect();
     Ok(inventory)
 }
 
-async fn actor_events(
+/// The project's events on the requested live channels. Views read the store when they open and
+/// apply these afterwards, so the stream never reads the store itself.
+async fn project_events(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
+    query: Result<Query<super::observe_events::EventsQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     use axum::response::sse::{Event, KeepAlive, Sse};
-    use std::convert::Infallible;
-    use tokio_stream::wrappers::ReceiverStream;
-
     let project = project_id(path)?;
-    let mut changes = state.inspector.changes.subscribe();
-    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
-    tokio::spawn(async move {
-        let mut previous = None;
-        loop {
-            let result = tokio::select! {
-                _ = sender.closed() => return,
-                result = tokio::time::timeout(Duration::from_secs(25), read_inventory(&state, &project)) => result,
-            };
-            let data = match result {
-                Ok(Ok(inventory)) => {
-                    serde_json::to_string(&inventory).expect("serializable inventory")
-                }
-                _ => {
-                    let _ = sender
-                        .send(Ok(Event::default()
-                            .event("error")
-                            .data("Inventory unavailable")))
-                        .await;
-                    return;
-                }
-            };
-            if previous.as_ref() != Some(&data) {
-                if sender
-                    .send(Ok(Event::default().event("inventory").data(data.clone())))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                previous = Some(data);
-            }
-            tokio::select! {
-                _ = sender.closed() => return,
-                _ = tokio::time::sleep(Duration::from_secs(15)) => {},
-                _ = changes.changed() => {},
-            }
-        }
-    });
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.signals().map_err(ApiError::bad_request)?;
+    query
+        .log_filter()
+        .validate()
+        .map_err(ApiError::bad_request)?;
+    let batches = super::observe_events::subscribe(&state.inspector.traces, &project, &query)
+        .await
+        .map_err(|_| ApiError::unavailable("Live events are unavailable"))?;
+    let events = batches.map(|batch| Event::default().event(batch.name).json_data(&batch.events));
     Ok((
         [
             (header::CACHE_CONTROL, "no-store"),
             (header::HeaderName::from_static("x-accel-buffering"), "no"),
         ],
-        Sse::new(ReceiverStream::new(receiver))
-            .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
+        Sse::new(events).keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
     )
         .into_response())
 }
@@ -322,44 +277,6 @@ fn trace_query_error(error: anyhow::Error) -> ApiError {
     }
 }
 
-#[derive(Default, Deserialize)]
-struct RequestReplay {
-    after: Option<String>,
-}
-
-async fn request_events(
-    State(state): State<InspectionApi>,
-    path: Path<ProjectPath>,
-    query: Result<Query<RequestReplay>, QueryRejection>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    use crate::request_traces::{otlp::Signal, replay::ReplayQuery};
-    let project = path.0.project_id;
-    let Query(replay) = query.map_err(ApiError::bad_request)?;
-    let cursor = replay.after.or_else(|| {
-        headers
-            .get("last-event-id")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned)
-    });
-    let query = ReplayQuery {
-        cursor,
-        ..Default::default()
-    };
-    let store = state.inspector.traces;
-    let live = store
-        .subscribe(&project, Signal::Requests)
-        .await
-        .map_err(trace_query_error)?;
-    let page = store
-        .replay(&project, &query)
-        .await
-        .map_err(trace_query_error)?;
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    tokio::spawn(live::requests(store, project, live, sender, page));
-    Ok(event_stream(receiver))
-}
-
 async fn log_history(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
@@ -389,44 +306,6 @@ async fn log_histogram(
         .await
         .map_err(trace_query_error)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(histogram)).into_response())
-}
-
-async fn log_events(
-    State(state): State<InspectionApi>,
-    path: Path<ProjectPath>,
-    query: Result<Query<crate::request_traces::logs::LogQuery>, QueryRejection>,
-) -> Result<Response, ApiError> {
-    use crate::request_traces::otlp::Signal;
-    let project = path.0.project_id;
-    let Query(filter) = query.map_err(ApiError::bad_request)?;
-    filter.validate().map_err(ApiError::bad_request)?;
-    let live = state
-        .inspector
-        .traces
-        .subscribe(&project, Signal::Logs)
-        .await
-        .map_err(trace_query_error)?;
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    tokio::spawn(live::logs(live, filter, project, sender));
-    Ok(event_stream(receiver))
-}
-
-fn event_stream(
-    receiver: tokio::sync::mpsc::Receiver<
-        Result<axum::response::sse::Event, std::convert::Infallible>,
-    >,
-) -> Response {
-    use axum::response::sse::{KeepAlive, Sse};
-    use tokio_stream::wrappers::ReceiverStream;
-    (
-        [
-            (header::CACHE_CONTROL, "no-store"),
-            (header::HeaderName::from_static("x-accel-buffering"), "no"),
-        ],
-        Sse::new(ReceiverStream::new(receiver))
-            .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
-    )
-        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -474,13 +353,14 @@ async fn actor_state(
     .map_err(|_| ApiError::unavailable("State inspection timed out"))?
     .map_err(ApiError::internal)?;
     let contract = api
-        .admin
-        .deployment_contract(&actor.project_id)
+        .inspector
+        .traces
+        .deployed_contract(&actor.project_id)
         .await
         .map_err(ApiError::internal)?;
     let schema = contract
         .as_ref()
-        .and_then(|contract| contract.contract["actors"].as_array())
+        .and_then(|contract| contract["actors"].as_array())
         .and_then(|actors| {
             actors
                 .iter()

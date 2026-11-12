@@ -23,14 +23,12 @@ test("local CLI requests and event streams omit authorization without a secret",
     await client.getContract()
     await client.registerDeployment({})
     await client.checkConnection()
-    await client.openActorStream(new AbortController().signal)
-    await client.openRequestStream(new AbortController().signal)
+    await client.openEventStream(new AbortController().signal, new URLSearchParams({ signals: "platform" }))
     assert.deepEqual(paths, [
         "/v1/projects/local/deployment/contract",
         "/v1/projects/local/deployment",
         "/v1/projects/local/observe/actors",
-        "/v1/projects/local/observe/events",
-        "/v1/projects/local/observe/requests/events"
+        "/v1/projects/local/observe/events"
     ])
 })
 

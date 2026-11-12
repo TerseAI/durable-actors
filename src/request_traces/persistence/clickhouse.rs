@@ -1,10 +1,9 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use clickhouse::{Client, Row};
-use serde::{Deserialize, Serialize};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError, mpsc};
+use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::TraceQueries;
@@ -12,16 +11,12 @@ use crate::request_traces::{
     TracePage,
     history::HistoryQuery,
     logs::{LogHistogram, LogHistogramQuery, LogPage, LogQuery},
-    metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange},
-    replay::ReplayQuery,
+    metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, TimeRange},
 };
 
-mod ingestion;
 mod lifecycle;
 mod queries;
-
-// Lifecycle rows stay queued while ClickHouse is slow; the bound covers memory, not report count.
-const MAX_QUEUED_ROWS: usize = 100_000;
+mod schema;
 
 #[derive(Clone)]
 pub struct ClickHouseConfig {
@@ -31,11 +26,10 @@ pub struct ClickHouseConfig {
     pub password: String,
 }
 
-/// Reads request spans and actor logs the collector writes, and writes actor lifecycle events.
+/// Reads what the collector writes: request spans, actor logs and platform events, including
+/// lifecycle reports.
 pub(crate) struct ClickHouseTracePersistence {
     client: Client,
-    sender: mpsc::UnboundedSender<Report>,
-    queued_rows: Arc<Semaphore>,
     retention_seconds: u64,
 }
 
@@ -60,38 +54,11 @@ impl ClickHouseTracePersistence {
             .with_user(config.user)
             .with_password(config.password)
             .with_setting("max_execution_time", "10");
-        let (sender, receiver) = mpsc::unbounded_channel();
-        tokio::spawn(ingestion::run(
-            client.clone(),
-            receiver,
-            retention.as_secs(),
-            stop,
-        ));
+        tokio::spawn(schema::create(client.clone(), retention.as_secs(), stop));
         Ok(Self {
             client,
-            sender,
-            queued_rows: Arc::new(Semaphore::new(MAX_QUEUED_ROWS)),
             retention_seconds: retention.as_secs(),
         })
-    }
-
-    fn send(&self, lifecycle: crate::actor_lifecycle::LifecycleEvent) -> Result<()> {
-        let permit = self
-            .queued_rows
-            .clone()
-            .try_acquire_owned()
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "ClickHouse lifecycle queue unavailable: {}",
-                    match error {
-                        TryAcquireError::NoPermits => "full",
-                        TryAcquireError::Closed => "closed",
-                    }
-                )
-            })?;
-        self.sender
-            .send(Report { lifecycle, permit })
-            .map_err(|_| anyhow::anyhow!("ClickHouse lifecycle queue unavailable: closed"))
     }
 }
 
@@ -99,22 +66,6 @@ impl ClickHouseTracePersistence {
 impl TraceQueries for ClickHouseTracePersistence {
     async fn history(&self, project: &str, query: &HistoryQuery) -> Result<TracePage> {
         self.read_history(project, query).await
-    }
-
-    async fn replay(&self, project: &str, query: &ReplayQuery) -> Result<TracePage> {
-        let mut page = self
-            .read_history(
-                project,
-                &HistoryQuery {
-                    limit: query.limit,
-                    ..Default::default()
-                },
-            )
-            .await?;
-        // A snapshot includes late arrivals without a globally serialized commit cursor.
-        page.snapshot = true;
-        page.next_cursor = None;
-        Ok(page)
     }
 
     async fn logs(&self, project: &str, query: &LogQuery) -> Result<LogPage> {
@@ -141,14 +92,27 @@ impl TraceQueries for ClickHouseTracePersistence {
         self.read_queue_waits(project, query).await
     }
 
-    async fn websockets(&self, project: &str, range: &TimeRange) -> Result<Vec<SocketSession>> {
-        self.read_websockets(project, range).await
+    async fn socket_records(
+        &self,
+        project: &str,
+        to_ms: u64,
+        open_only: bool,
+        limit: usize,
+    ) -> Result<Vec<crate::request_traces::sockets::SocketRecord>> {
+        self.read_socket_records(project, to_ms, open_only, limit)
+            .await
     }
-}
 
-struct Report {
-    lifecycle: crate::actor_lifecycle::LifecycleEvent,
-    permit: OwnedSemaphorePermit,
+    async fn gateway_heartbeats(
+        &self,
+        project_id: &str,
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        self.read_gateway_heartbeats(project_id).await
+    }
+
+    async fn deployed_contract(&self, project_id: &str) -> Result<Option<serde_json::Value>> {
+        self.read_deployed_contract(project_id).await
+    }
 }
 
 #[cfg(test)]

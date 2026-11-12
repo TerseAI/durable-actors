@@ -31,6 +31,8 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
     const [drag, setDrag] = useState<Drag | null>(null)
     if (!histogram) return <Skeleton className="mt-4 mb-3.5 h-[122px] w-full rounded-sm" />
     const { buckets, fromMs, bucketMs } = histogram
+    // The pointer can outlast a histogram with fewer buckets, as right after a zoom.
+    const hoveredIndex = hovered !== null && hovered < buckets.length ? hovered : null
     const scale = niceScale(Math.max(...buckets.map(counts => countAtLeast(counts, null)), 1))
     const bucketAt = (event: PointerEvent<HTMLDivElement>) => {
         const box = event.currentTarget.getBoundingClientRect()
@@ -63,11 +65,11 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
                 >
                     <div className="absolute inset-0 flex items-end gap-0.5">
                         {buckets.map((counts, index) => (
-                            <Bar key={index} counts={counts} scale={scale} level={level} hovered={index === hovered} />
+                            <Bar key={index} counts={counts} scale={scale} level={level} hovered={index === hoveredIndex} />
                         ))}
                     </div>
                     {drag && <Selection drag={drag} buckets={buckets.length} />}
-                    {hovered !== null && !drag && countAtLeast(buckets[hovered]!, null) > 0 && <BucketTooltip index={hovered} histogram={histogram} />}
+                    {hoveredIndex !== null && !drag && countAtLeast(buckets[hoveredIndex]!, null) > 0 && <BucketTooltip index={hoveredIndex} histogram={histogram} />}
                 </div>
             </div>
             <TimeLabels histogram={histogram} live={live} />

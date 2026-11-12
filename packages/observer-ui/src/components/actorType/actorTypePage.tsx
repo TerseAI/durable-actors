@@ -37,7 +37,6 @@ export function ActorTypePage() {
                         <LiveDormantCard summary={actor && summarizeActorType(actor)} failed={isError} />
                         <TimingCard
                             label="Avg Queue Time"
-                            window={describeWindow(timeWindow)}
                             pick={queueTime}
                             color="var(--chart-1)"
                             chartLabel={`Average queue time, ${describeWindow(timeWindow)}`}
@@ -47,7 +46,6 @@ export function ActorTypePage() {
                         />
                         <TimingCard
                             label="Avg Request Latency"
-                            window="excl. queue"
                             pick={serviceTime}
                             color="var(--chart-2)"
                             chartLabel={`Average request latency, ${describeWindow(timeWindow)}`}

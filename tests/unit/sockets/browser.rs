@@ -10,9 +10,11 @@ struct Dispatcher(tokio::sync::mpsc::UnboundedSender<ActorSocketEvent>);
 #[tokio::test]
 async fn accepted_socket_outlives_its_ticket_without_waking_the_actor() -> Result<()> {
     let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let recorded = Arc::new(RecordedEvents::default());
     let state = SocketServerState {
         registry: SocketRegistry::default(),
         dispatcher: Arc::new(Dispatcher(events)),
+        events: recorded.clone(),
         stop: CancellationToken::new(),
     };
     let now = now_ms();
@@ -67,9 +69,32 @@ async fn accepted_socket_outlives_its_ticket_without_waking_the_actor() -> Resul
         assert_eq!(socket.next().await.transpose()?, Some(ClientMessage::Text("still connected".into())));
         state.stop.cancel();
         assert!(matches!(socket.next().await.transpose()?, Some(ClientMessage::Close(Some(frame))) if u16::from(frame.code) == 1012));
+        while recorded.0.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         anyhow::Ok(())
     }).await??;
+    let recorded = recorded.0.lock().unwrap();
+    assert!(
+        matches!(&recorded[0], SocketEvent::Opened { metadata, .. } if metadata == &serde_json::json!({"user":"one"}))
+    );
+    let SocketEvent::Closed { close, .. } = &recorded[1] else {
+        panic!("expected a close")
+    };
+    assert_eq!(
+        (close.code, close.messages_in, close.messages_out),
+        (1012, 0, 2)
+    );
     Ok(())
+}
+
+#[derive(Default)]
+struct RecordedEvents(std::sync::Mutex<Vec<SocketEvent>>);
+
+impl crate::platform_events::PlatformEvents<SocketEvent> for RecordedEvents {
+    fn record(&self, event: SocketEvent) {
+        self.0.lock().unwrap().push(event);
+    }
 }
 
 #[async_trait]
@@ -130,6 +155,7 @@ async fn joining_broadcasts_and_close_handshakes_reach_the_actor() -> Result<()>
         let state = SocketServerState {
             registry: SocketRegistry::default(),
             dispatcher: Arc::new(Dispatcher(events)),
+            events: Arc::new(crate::platform_events::NoPlatformEvents),
             stop: CancellationToken::new(),
         };
         let ticket = SocketTicket {
@@ -203,6 +229,7 @@ async fn sockets_accept_32_mib_and_close_oversize_with_1009() -> Result<()> {
     let state = SocketServerState {
         registry: SocketRegistry::default(),
         dispatcher: Arc::new(Dispatcher(events)),
+        events: Arc::new(crate::platform_events::NoPlatformEvents),
         stop: CancellationToken::new(),
     };
     let now = now_ms();

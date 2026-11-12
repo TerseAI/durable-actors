@@ -1,7 +1,7 @@
 //! Customer-facing views of the HTTP API's replies. Each view names the fields it shows, so
 //! runtime internals the API also returns (hosts, sessions, epochs, reroutes) drop out on parse.
 
-use std::{cmp::Reverse, collections::HashSet};
+use std::cmp::Reverse;
 
 use chrono::{DateTime, SecondsFormat};
 use rmcp::schemars::{self, JsonSchema};
@@ -171,7 +171,6 @@ impl RpcParameter {
 #[serde(rename_all = "camelCase")]
 pub(super) struct Inventory {
     actors: Vec<ActorInventory>,
-    connections_complete: bool,
 }
 
 #[derive(Deserialize)]
@@ -268,15 +267,6 @@ impl Inventory {
             instances: page.records,
             next_cursor: page.next_cursor,
         }
-    }
-
-    fn connected(&self) -> HashSet<&str> {
-        self.actors
-            .iter()
-            .flat_map(|actor| &actor.instances)
-            .flat_map(|instance| &instance.connections)
-            .map(|connection| connection.id.as_str())
-            .collect()
     }
 }
 
@@ -541,95 +531,45 @@ pub(super) struct Log {
     message: String,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct SocketSession {
-    connection_id: String,
-    actor_name: String,
-    actor_id: String,
-    opened_at_ms: Option<u64>,
-    closed_at_ms: Option<u64>,
-    last_seen_ms: Option<u64>,
-    messages: u64,
-    failures: u64,
-    #[serde(default)]
-    metadata: Option<Value>,
-}
-
-#[derive(Serialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Session {
     connection_id: String,
     actor_name: String,
     actor_id: String,
     status: SessionStatus,
+    #[schemars(with = "String")]
+    #[serde(rename(deserialize = "openedAtMs"), serialize_with = "timestamp")]
+    opened_at: u64,
+    /// When it closed, or for a lost session when its gateway last reported.
     #[schemars(with = "Option<String>")]
     #[serde(
-        serialize_with = "optional_timestamp",
-        skip_serializing_if = "Option::is_none"
-    )]
-    opened_at: Option<u64>,
-    #[schemars(with = "Option<String>")]
-    #[serde(
+        rename(deserialize = "closedAtMs"),
+        default,
         serialize_with = "optional_timestamp",
         skip_serializing_if = "Option::is_none"
     )]
     closed_at: Option<u64>,
-    #[schemars(with = "Option<String>")]
-    #[serde(
-        serialize_with = "optional_timestamp",
-        skip_serializing_if = "Option::is_none"
-    )]
-    last_seen_at: Option<u64>,
-    messages: u64,
-    failures: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    close_code: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    close_reason: Option<String>,
+    /// Text messages each way, known once the connection closes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    messages_in: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    messages_out: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     metadata: Option<Value>,
 }
 
-#[derive(Clone, Copy, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum SessionStatus {
     Open,
     Closed,
-    /// The connection ended without a recorded close.
+    /// The gateway stopped reporting before the connection closed.
     Lost,
-    Unknown,
-}
-
-/// Sessions on a host that stopped never record a close, so whether one is still open comes
-/// from the live inventory rather than the session history.
-pub(super) fn sessions(history: Vec<SocketSession>, inventory: &Inventory) -> Vec<Session> {
-    let connected = inventory.connected();
-    history
-        .into_iter()
-        .map(|session| {
-            let status = match session.closed_at_ms {
-                Some(_) => SessionStatus::Closed,
-                None if connected.contains(session.connection_id.as_str()) => SessionStatus::Open,
-                None if inventory.connections_complete => SessionStatus::Lost,
-                None => SessionStatus::Unknown,
-            };
-            session.view(status)
-        })
-        .collect()
-}
-
-impl SocketSession {
-    fn view(self, status: SessionStatus) -> Session {
-        Session {
-            connection_id: self.connection_id,
-            actor_name: self.actor_name,
-            actor_id: self.actor_id,
-            status,
-            opened_at: self.opened_at_ms,
-            closed_at: self.closed_at_ms,
-            last_seen_at: self.last_seen_ms,
-            messages: self.messages,
-            failures: self.failures,
-            metadata: self.metadata.filter(|metadata| !metadata.is_null()),
-        }
-    }
 }
 
 #[derive(Deserialize)]

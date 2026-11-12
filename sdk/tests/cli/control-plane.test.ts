@@ -20,8 +20,7 @@ test("observability reads and streams use the configured project", async () => {
     await client.getMetrics(new URLSearchParams())
     await client.listQueueWaits(new URLSearchParams())
     await client.listWebSockets(new URLSearchParams())
-    await client.openActorStream(signal)
-    await client.openRequestStream(signal, "cursor")
+    await client.openEventStream(signal, new URLSearchParams({ signals: "requests,platform" }))
     assert.deepEqual(
         requests,
         [
@@ -31,8 +30,7 @@ test("observability reads and streams use the configured project", async () => {
             "metrics",
             "queue-waits",
             "websockets",
-            "events",
-            "requests/events?after=cursor"
+            "events?signals=requests%2Cplatform"
         ].map(path => `https://control.example/v1/projects/hosted-project/observe/${path}`)
     )
 })
@@ -119,37 +117,27 @@ test("transport failures do not retry writes and warn that their outcome is unkn
     assert.equal(requests, 2)
 })
 
-test("live inventory streams carry server-side credentials and cancellation", async () => {
+test("live events carry server-side credentials and cancellation", async () => {
     const controller = new AbortController()
     const client = new ControlPlaneClient(connection, async (url, options) => {
-        assert.equal(url, "https://control.example/v1/projects/default/observe/events")
+        assert.equal(url, "https://control.example/v1/projects/default/observe/events?signals=platform")
         assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
         assert.equal(new Headers(options?.headers).get("accept"), "text/event-stream")
         assert.equal(options?.signal, controller.signal)
         assert.equal(options?.redirect, "error")
-        return new Response("event: inventory\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } })
+        return new Response("event: instance\ndata: []\n\n", { headers: { "content-type": "text/event-stream" } })
     })
-    assert.match(await (await client.openActorStream(controller.signal)).text(), /event: inventory/u)
+    const query = new URLSearchParams({ signals: "platform" })
+    assert.match(await (await client.openEventStream(controller.signal, query)).text(), /event: instance/u)
 })
 
-test("live inventory rejects denied responses and non-streaming upstreams", async () => {
+test("live events reject denied responses and non-streaming upstreams", async () => {
     for (const response of [new Response("secret", { status: 403 }), Response.json({})]) {
         const client = new ControlPlaneClient(connection, async () => response)
-        await assert.rejects(client.openActorStream(new AbortController().signal), {
-            message: "Live inventory is unavailable"
+        await assert.rejects(client.openEventStream(new AbortController().signal, new URLSearchParams()), {
+            message: "Live events are unavailable"
         })
     }
-})
-
-test("request traces stream through the authenticated control-plane client", async () => {
-    const controller = new AbortController()
-    const client = new ControlPlaneClient(connection, async (url, options) => {
-        assert.equal(url, "https://control.example/v1/projects/default/observe/requests/events")
-        assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
-        assert.equal(options?.signal, controller.signal)
-        return new Response("event: requests\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } })
-    })
-    assert.match(await (await client.openRequestStream(controller.signal)).text(), /event: requests/u)
 })
 
 test("request history uses bounded filters with server-side credentials", async () => {

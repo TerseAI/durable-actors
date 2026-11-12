@@ -130,35 +130,6 @@ impl SocketRegistry {
         }
     }
 
-    pub(crate) async fn inventory(
-        &self,
-        project: &str,
-    ) -> Vec<crate::host_leases::ActorSocketInventory> {
-        let entries = self.entries.read().await;
-        let mut inventory = Vec::new();
-        for (actor, sockets) in entries
-            .iter()
-            .filter(|(actor, _)| actor.project_id == project)
-        {
-            let mut connections: Vec<_> = sockets
-                .values()
-                .filter(|entry| entry.open)
-                .map(|entry| entry.connection.clone())
-                .collect();
-            connections.sort_by(|a, b| a.id.cmp(&b.id));
-            if !connections.is_empty() {
-                inventory.push(crate::host_leases::ActorSocketInventory {
-                    actor: actor.clone(),
-                    connections,
-                });
-            }
-        }
-        inventory.sort_by(|a, b| {
-            (&a.actor.actor_name, &a.actor.actor_id).cmp(&(&b.actor.actor_name, &b.actor.actor_id))
-        });
-        inventory
-    }
-
     pub(crate) async fn insert(
         &self,
         actor: &ActorKey,

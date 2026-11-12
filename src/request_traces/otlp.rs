@@ -9,6 +9,10 @@ use serde::de::DeserializeOwned;
 
 use super::{RequestTrace, TraceEvent, logs::ActorLog};
 
+/// How long every OTLP exporter we run batches before sending, so observers see an event about
+/// a tenth of a second after it happens.
+pub(crate) const EXPORT_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
 pub(crate) const ORGANIZATION_ID: &str = "durable_actors.organization_id";
 pub(crate) const PROJECT_ID: &str = "durable_actors.project_id";
 pub(crate) const ACTOR_NAME: &str = "durable_actors.actor_name";
@@ -25,6 +29,15 @@ pub(crate) const ROUTING_MS: &str = "durable_actors.routing_ms";
 pub(crate) const HOST_STATE: &str = "durable_actors.host_state";
 pub(crate) const STATE_VERSION: &str = "durable_actors.state_version";
 pub(crate) const METADATA: &str = "durable_actors.metadata";
+pub(crate) const GATEWAY_ID: &str = "durable_actors.gateway_id";
+pub(crate) const CLOSE_CODE: &str = "durable_actors.close_code";
+pub(crate) const CLOSE_REASON: &str = "durable_actors.close_reason";
+pub(crate) const CLOSE_CLEAN: &str = "durable_actors.close_clean";
+pub(crate) const MESSAGES_IN: &str = "durable_actors.messages_in";
+pub(crate) const MESSAGES_OUT: &str = "durable_actors.messages_out";
+pub(crate) const BYTES_IN: &str = "durable_actors.bytes_in";
+pub(crate) const BYTES_OUT: &str = "durable_actors.bytes_out";
+pub(crate) const DURATION_MS: &str = "durable_actors.duration_ms";
 
 const TENANT_PREFIX: &str = "durable_actors.";
 
@@ -32,12 +45,16 @@ const TENANT_PREFIX: &str = "durable_actors.";
 pub(crate) enum Signal {
     Requests,
     Logs,
+    /// Platform events (lifecycle reports, WebSocket connections and deployments), which the
+    /// control plane reports through the collector.
+    Platform,
 }
 
 pub(crate) fn live_channel(project_id: &str, signal: Signal) -> String {
     let signal = match signal {
         Signal::Requests => "traces",
         Signal::Logs => "logs",
+        Signal::Platform => "platform",
     };
     format!("durable-actors:v1:live:{project_id}:{signal}")
 }
@@ -101,6 +118,51 @@ pub(crate) fn actor_logs(request: ExportLogsServiceRequest) -> Vec<ActorLog> {
                 .into_iter()
                 .flat_map(|scope| scope.log_records)
                 .filter_map(move |record| actor_log(&resource.attributes, record))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// One platform event (a connection change, a gateway heartbeat, a deployment) as the collector
+/// publishes it.
+pub(crate) struct PlatformLog {
+    pub name: String,
+    pub gateway_id: String,
+    pub at_ms: u64,
+    pub attributes: Vec<KeyValue>,
+    pub body: Option<String>,
+}
+
+impl PlatformLog {
+    pub(crate) fn string(&self, key: &str) -> Option<String> {
+        string(&self.attributes, key)
+    }
+
+    pub(crate) fn count(&self, key: &str) -> Option<u64> {
+        integer(&self.attributes, key).and_then(|value| u64::try_from(value).ok())
+    }
+}
+
+pub(crate) fn platform_logs(request: ExportLogsServiceRequest) -> Vec<PlatformLog> {
+    request
+        .resource_logs
+        .into_iter()
+        .flat_map(|resource_logs| {
+            let gateway_id = resource_logs
+                .resource
+                .and_then(|resource| string(&resource.attributes, GATEWAY_ID))
+                .unwrap_or_default();
+            resource_logs
+                .scope_logs
+                .into_iter()
+                .flat_map(|scope| scope.log_records)
+                .map(move |record| PlatformLog {
+                    name: record.event_name,
+                    gateway_id: gateway_id.clone(),
+                    at_ms: record.time_unix_nano / 1_000_000,
+                    attributes: record.attributes,
+                    body: record.body.and_then(text),
+                })
                 .collect::<Vec<_>>()
         })
         .collect()

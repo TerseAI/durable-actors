@@ -4,11 +4,7 @@ import type { LogFilter } from "../types/Logs.js"
 
 export const actorsKey = (baseUrl: string) => ["actors", baseUrl] as const
 
-export const actorEventsKey = (baseUrl: string) => ["actors/events", baseUrl] as const
-
 export const requestsKey = (baseUrl: string) => ["requests", baseUrl] as const
-
-export const requestEventsKey = (baseUrl: string, durationMs: number) => ["requests/events", baseUrl, durationMs] as const
 
 export const residencyKey = (baseUrl: string, actorName: string) => ["residency", baseUrl, actorName] as const
 
@@ -18,4 +14,4 @@ export const logsKey = (baseUrl: string, { actorName, actorId, requestId, level,
 
 export const logHistogramKey = (baseUrl: string, { actorName, actorId, requestId, search }: LogFilter) => ["logs/histogram", baseUrl, actorName, actorId, requestId, search] as const
 
-export const logEventsKey = (baseUrl: string, filter: LogFilter) => ["logs/events", ...logsKey(baseUrl, filter).slice(1)] as const
+export const logLinesKey = (baseUrl: string, filter: LogFilter) => ["logs/streamed", ...logsKey(baseUrl, filter).slice(1)] as const

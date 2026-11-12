@@ -65,14 +65,20 @@ pub struct ActorInstanceOverview {
     pub actor_id: String,
     pub status: ActorResidency,
     pub last_active_at_ms: Option<u64>,
+    /// When the control plane received the instance's latest report.
+    pub reported_at_ms: Option<u64>,
+    /// When a live or dormant status turns unknown unless another report arrives; stopped
+    /// instances stay dormant.
+    pub stale_at_ms: Option<u64>,
     pub connections: Vec<ActorConnectionInventory>,
     pub waiting: Option<Vec<crate::host_leases::WaitingOperation>>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorConnectionInventory {
     pub id: String,
+    pub gateway_id: String,
     pub metadata: serde_json::Value,
 }
 
@@ -124,4 +130,6 @@ pub struct ResidencyPeriod {
 pub struct ActorInventorySnapshot {
     pub actors: Vec<ActorInventory>,
     pub connections_complete: bool,
+    /// When each gateway holding an open connection last showed it was alive.
+    pub gateways: std::collections::BTreeMap<String, u64>,
 }

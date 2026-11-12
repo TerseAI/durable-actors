@@ -1,7 +1,5 @@
-use super::socket_inventory::SocketInventory;
 use crate::{
     actor::{ActorKey, ActorSocketConnection, ActorSocketEffect},
-    host_leases::ActorSocketInventory,
     sockets::SocketRegistry,
 };
 use anyhow::{Context, Result, ensure};
@@ -9,7 +7,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -33,7 +31,6 @@ pub(super) trait SocketBus: Send + Sync {
         tag: Option<&str>,
     ) -> Result<Vec<ActorSocketConnection>>;
     async fn count(&self, actor: &ActorKey) -> Result<usize>;
-    async fn inventory(&self, project: &str) -> Result<SocketInventory>;
 }
 
 #[derive(Clone, Default)]
@@ -103,35 +100,6 @@ impl SocketBus for MemorySocketBus {
         }
         Ok(count)
     }
-
-    async fn inventory(&self, project: &str) -> Result<SocketInventory> {
-        let mut rooms = Vec::new();
-        for gateway in self.hub.gateways() {
-            rooms.extend(gateway.inventory(project).await);
-        }
-        Ok(SocketInventory {
-            rooms: merge_inventory(rooms),
-            complete: true,
-        })
-    }
-}
-
-fn merge_inventory(rooms: Vec<ActorSocketInventory>) -> Vec<ActorSocketInventory> {
-    let mut merged: BTreeMap<(String, String), ActorSocketInventory> = BTreeMap::new();
-    for room in rooms {
-        let key = (room.actor.actor_name.clone(), room.actor.actor_id.clone());
-        match merged.get_mut(&key) {
-            Some(entry) => entry.connections.extend(room.connections),
-            None => {
-                merged.insert(key, room);
-            }
-        }
-    }
-    let mut rooms: Vec<_> = merged.into_values().collect();
-    for room in &mut rooms {
-        room.connections.sort_by(|a, b| a.id.cmp(&b.id));
-    }
-    rooms
 }
 
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
@@ -192,9 +160,6 @@ enum Question {
         actor: ActorKey,
         tag: Option<String>,
     },
-    Inventory {
-        project: String,
-    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -205,9 +170,6 @@ enum Answer {
     },
     Connections {
         connections: Vec<ActorSocketConnection>,
-    },
-    Inventory {
-        rooms: Vec<ActorSocketInventory>,
     },
 }
 
@@ -435,9 +397,6 @@ impl Shared {
                                 .connections_with_tag(&actor, tag.as_deref())
                                 .await,
                         },
-                        Question::Inventory { project } => Answer::Inventory {
-                            rooms: self.registry.inventory(&project).await,
-                        },
                     };
                     if let Err(error) = self
                         .publish(&reply_to, &Envelope::Answer { id, answer })
@@ -591,28 +550,6 @@ impl SocketBus for RedisSocketBus {
                 _ => 0,
             })
             .sum())
-    }
-
-    async fn inventory(&self, project: &str) -> Result<SocketInventory> {
-        let (answers, complete) = self
-            .ask_partial(
-                &self.shared.gateways_channel(),
-                Question::Inventory {
-                    project: project.to_owned(),
-                },
-            )
-            .await?;
-        let rooms = answers
-            .into_iter()
-            .flat_map(|answer| match answer {
-                Answer::Inventory { rooms } => rooms,
-                _ => vec![],
-            })
-            .collect();
-        Ok(SocketInventory {
-            rooms: merge_inventory(rooms),
-            complete,
-        })
     }
 }
 

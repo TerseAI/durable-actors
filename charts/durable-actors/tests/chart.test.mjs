@@ -192,3 +192,26 @@ test("runs a node cache on sandbox nodes that sandboxes reach on their own node"
     assert.match(output, /emptyDir: {sizeLimit: 5Gi}/)
     assert.doesNotMatch(output, /initContainers/)
 })
+
+test("the control plane reports platform events on a port sandboxes cannot reach", () => {
+    const collector = {
+        analytics: { backend: "clickhouse", clickhouse: {
+            url: "https://clickhouse.example.com:8443", database: "actors", user: "writer",
+            passwordSecretKey: "clickhouse-password"
+        } },
+        redis: { urlSecretKey: "redis-url" },
+        telemetry: { collector: { enabled: true } }
+    }
+    assert.doesNotMatch(manifests(collector), /4319|PLATFORM_TELEMETRY/)
+    const issuer = "https://container.googleapis.com/v1/projects/p/locations/l/clusters/c"
+    const output = manifests({ ...collector, telemetry: { collector: { enabled: true, platform: { issuer } } } })
+    assert.match(output, /- --config=\/etc\/otelcol\/collector-platform.yaml/)
+    assert.match(output, /\{name: otlp-internal, port: 4319, targetPort: otlp-internal, appProtocol: grpc\}/)
+    assert.match(output, new RegExp(`PLATFORM_TOKEN_ISSUER, value: "${issuer}"`))
+    assert.match(output, /serviceAccountToken: \{audience: durable-actors-platform-telemetry, expirationSeconds: 3600, path: token\}/)
+    // Only the control plane serves WebSockets and deployments, so the pool manager gets no token.
+    assert.equal(output.match(/DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT/g).length, 1)
+    assert.doesNotMatch(output, /port: 4319\}\n[^\n]*\n[^\n]*sandbox/)
+    assert.match(output, /\{protocol: TCP, port: 4317\}/)
+    assert.doesNotMatch(output, /\{protocol: TCP, port: 4319\}/)
+})

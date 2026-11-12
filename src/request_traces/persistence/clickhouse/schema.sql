@@ -76,6 +76,51 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
 ALTER TABLE otel_traces MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
 ALTER TABLE otel_logs MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
+CREATE TABLE IF NOT EXISTS platform_events (
+    Timestamp DateTime64(9) CODEC(Delta(8), ZSTD(1)),
+    TraceId String CODEC(ZSTD(1)),
+    SpanId String CODEC(ZSTD(1)),
+    TraceFlags UInt8,
+    SeverityText LowCardinality(String) CODEC(ZSTD(1)),
+    SeverityNumber UInt8,
+    ServiceName LowCardinality(String) CODEC(ZSTD(1)),
+    Body String CODEC(ZSTD(1)),
+    ResourceSchemaUrl LowCardinality(String) CODEC(ZSTD(1)),
+    ResourceAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    ScopeSchemaUrl LowCardinality(String) CODEC(ZSTD(1)),
+    ScopeName String CODEC(ZSTD(1)),
+    ScopeVersion LowCardinality(String) CODEC(ZSTD(1)),
+    ScopeAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    LogAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    EventName LowCardinality(String) CODEC(ZSTD(1)),
+    -- Gateways report many projects under one resource, so these come from each record.
+    ProjectId LowCardinality(String) MATERIALIZED LogAttributes['durable_actors.project_id'],
+    ActorName LowCardinality(String) MATERIALIZED LogAttributes['durable_actors.actor_name'],
+    ActorId String MATERIALIZED LogAttributes['durable_actors.actor_id'],
+    ConnectionId String MATERIALIZED LogAttributes['durable_actors.connection_id'],
+    GatewayId String MATERIALIZED ResourceAttributes['durable_actors.gateway_id'],
+    ReceivedAt DateTime64(3) DEFAULT now64(3)
+) ENGINE = MergeTree
+PARTITION BY toDate(ReceivedAt)
+ORDER BY (ProjectId, ActorName, ActorId, ConnectionId, Timestamp)
+TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
+ALTER TABLE platform_events MODIFY TTL toDateTime(ReceivedAt) + INTERVAL RETENTION_SECONDS SECOND;
+
+-- Raw events expire, so each project's latest contract is kept here without a TTL. A removed
+-- deployment has an empty body.
+CREATE TABLE IF NOT EXISTS latest_deployments (
+    ProjectId LowCardinality(String),
+    Contract AggregateFunction(argMax, String, DateTime64(9))
+) ENGINE = AggregatingMergeTree
+ORDER BY ProjectId;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS latest_deployment_updates TO latest_deployments AS
+SELECT LogAttributes['durable_actors.project_id'] AS ProjectId,
+       argMaxState(Body, Timestamp) AS Contract
+FROM platform_events
+WHERE EventName IN ('durable_actors.deployment.published', 'durable_actors.deployment.removed')
+GROUP BY ProjectId;
 
 CREATE TABLE IF NOT EXISTS actor_lifecycle (
     project_id String,
@@ -105,3 +150,15 @@ FROM actor_lifecycle
 GROUP BY project_id, actor_name, actor_id;
 
 ALTER TABLE actor_lifecycle MODIFY TTL received_at + INTERVAL RETENTION_SECONDS SECOND;
+
+-- Lifecycle reports arrive as platform events, and the inventory view above follows from here.
+CREATE MATERIALIZED VIEW IF NOT EXISTS actor_lifecycle_reports TO actor_lifecycle AS
+SELECT LogAttributes['durable_actors.project_id'] AS project_id,
+       LogAttributes['durable_actors.actor_name'] AS actor_name,
+       LogAttributes['durable_actors.actor_id'] AS actor_id,
+       JSONExtractString(Body, 'eventId') AS event_id,
+       JSONExtractUInt(Body, 'ownerEpoch') AS owner_epoch,
+       JSONExtractUInt(Body, 'sequence') AS sequence,
+       Body AS event_json
+FROM platform_events
+WHERE EventName = 'durable_actors.actor.reported';

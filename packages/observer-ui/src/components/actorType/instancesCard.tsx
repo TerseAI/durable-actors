@@ -70,8 +70,7 @@ function InstanceGrid({ actor, instances, requests, now }: { actor: ActorType; i
     const shown = instances.slice(0, cellLimit)
     return (
         <>
-            <ColumnRuler />
-            <ul aria-label={`${actor.actorName} instances, most recently active first`} className="mt-1.5 grid grid-cols-24 gap-1.5 tabular-nums">
+            <ul aria-label={`${actor.actorName} instances, most recently active first`} className="mt-6 grid grid-cols-24 gap-1.5 tabular-nums">
                 {shown.map((instance, index) => (
                     <InstanceCell
                         key={instance.actorId}
@@ -86,16 +85,6 @@ function InstanceGrid({ actor, instances, requests, now }: { actor: ActorType; i
             </ul>
             <GridFooter actor={actor} shown={shown.length} matching={instances.length} />
         </>
-    )
-}
-
-function ColumnRuler() {
-    return (
-        <div aria-hidden className="mt-4.5 grid grid-cols-24 gap-1.5 text-[11px] text-muted-foreground tabular-nums">
-            <span>001</span>
-            <span className="col-start-12">012</span>
-            <span className="col-start-24 text-right">024</span>
-        </div>
     )
 }
 
@@ -174,17 +163,14 @@ function TooltipRow({ label, value }: { label: string; value: string }) {
 function GridFooter({ actor, shown, matching }: { actor: ActorType; shown: number; matching: number }) {
     const { live, dormant } = summarizeActorType(actor)
     return (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-[13px] text-muted-foreground tabular-nums">
-            <div className="flex flex-wrap gap-5">
-                <FooterKey swatch="bg-success" label="Live" count={live} />
-                <FooterKey swatch="bg-muted shadow-[inset_0_0_0_1px_var(--border)]" label="Dormant" count={dormant} />
-                {shown < matching && (
-                    <span>
-                        Showing {formatCount(shown)} of {formatCount(matching)}
-                    </span>
-                )}
-            </div>
-            <span className="text-xs">Most recent → Least recent</span>
+        <div className="mt-4 flex flex-wrap items-center gap-5 text-[13px] text-muted-foreground tabular-nums">
+            <FooterKey swatch="bg-success" label="Live" count={live} />
+            <FooterKey swatch="bg-muted shadow-[inset_0_0_0_1px_var(--border)]" label="Dormant" count={dormant} />
+            {shown < matching && (
+                <span>
+                    Showing {formatCount(shown)} of {formatCount(matching)}
+                </span>
+            )}
         </div>
     )
 }

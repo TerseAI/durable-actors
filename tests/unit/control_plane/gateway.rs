@@ -13,6 +13,7 @@ fn test_gateway(
         true,
         tokio_util::sync::CancellationToken::new(),
         crate::sandbox::connections::HostConnections::new()?.client,
+        Arc::new(crate::platform_events::NoPlatformEvents),
     )?;
     Gateway::new(issuer, origin, sockets)
 }
@@ -213,42 +214,6 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         assert_eq!(gateways[0].connections.registry.count(&actor).await, 1);
         assert_eq!(gateways[1].connections.registry.count(&actor).await, 1);
         assert_eq!(gateways[1].connections.bus.count(&actor).await?, 2);
-        struct EmptyInventory;
-        #[async_trait::async_trait]
-        impl crate::placement::ActorInventoryReader for EmptyInventory {
-            async fn actor_inventory(
-                &self,
-                _: &str,
-            ) -> Result<crate::placement::ActorInventorySnapshot> {
-                Ok(crate::placement::ActorInventorySnapshot {
-                    actors: vec![],
-                    connections_complete: true,
-                })
-            }
-        }
-        let reader = super::super::socket_inventory::GatewayInventoryReader::new(
-            Arc::new(EmptyInventory),
-            gateways[1].connections.clone(),
-        );
-        let overview =
-            crate::placement::ActorInventoryReader::actor_inventory(&reader, "default").await?;
-        assert!(overview.connections_complete);
-        let overview = overview.actors;
-        assert_eq!(overview.len(), 1);
-        assert_eq!(overview[0].dormant, 1);
-        assert_eq!(overview[0].instances[0].connections.len(), 2);
-        assert_eq!(
-            overview[0].instances[0].connections[0].metadata,
-            serde_json::json!({"retained":true})
-        );
-        assert!(
-            gateways[1]
-                .connections
-                .inventory("unrelated")
-                .await?
-                .rooms
-                .is_empty()
-        );
         retiring.store(true, Ordering::SeqCst);
         *provisioner.route.lock().unwrap() = host_routes[1].clone();
         provisioner.unavailable.store(2, Ordering::SeqCst);

@@ -1,10 +1,7 @@
 use anyhow::Result;
-use rusqlite::{Connection, Transaction, params_from_iter, types::Value};
+use rusqlite::{Connection, params_from_iter, types::Value};
 
-use super::{
-    super::cursor::{HistoryCursor, HistoryPage},
-    replay,
-};
+use super::super::cursor::{Cursor, page};
 use crate::request_traces::{TracePage, TraceRecord, history::HistoryQuery};
 
 pub(super) fn query(
@@ -12,31 +9,23 @@ pub(super) fn query(
     project_id: &str,
     query: &HistoryQuery,
 ) -> Result<TracePage> {
-    let transaction = connection.transaction()?;
-    let metadata = replay::metadata(&transaction, project_id)?;
-    let page = HistoryPage::new(project_id, query, metadata)?;
-    let records = select(
-        &transaction,
-        project_id,
-        query,
-        page.watermark,
-        page.after.as_ref(),
-    )?;
-    page.finish(query.limit, records)
+    let after = query
+        .cursor
+        .as_deref()
+        .map(|value| Cursor::decode(value, project_id, query))
+        .transpose()?;
+    let records = select(connection, project_id, query, after.as_ref())?;
+    page(project_id, query, records)
 }
 
 fn select(
-    transaction: &Transaction<'_>,
+    connection: &Connection,
     project_id: &str,
     query: &HistoryQuery,
-    watermark: u64,
-    cursor: Option<&HistoryCursor>,
+    after: Option<&Cursor>,
 ) -> Result<Vec<TraceRecord>> {
-    let mut clauses = vec!["project_id = ?", "position <= ?"];
-    let mut values = vec![
-        Value::Text(project_id.into()),
-        Value::Integer(watermark as i64),
-    ];
+    let mut clauses = vec!["project_id = ?"];
+    let mut values = vec![Value::Text(project_id.into())];
     for (clause, value) in [
         (
             "json_extract(event, '$.requestId') = ?",
@@ -68,26 +57,24 @@ fn select(
             values.push(value);
         }
     }
-    if let Some(cursor) = cursor {
-        clauses.push("(started_at_ms, position) < (?, ?)");
+    if let Some(after) = after {
+        clauses.push("(started_at_ms, event_id) < (?, ?)");
         values.extend([
-            Value::Integer(cursor.time as i64),
-            Value::Integer(cursor.sequence as i64),
+            Value::Integer(after.time as i64),
+            Value::Text(after.event_id.clone()),
         ]);
     }
     values.push(Value::Integer((query.limit + 1) as i64));
-    let mut statement = transaction.prepare(&format!(
-        "SELECT position, event FROM traces WHERE {} ORDER BY started_at_ms DESC, position DESC LIMIT ?",
+    let mut statement = connection.prepare(&format!(
+        "SELECT event FROM traces WHERE {} ORDER BY started_at_ms DESC, event_id DESC LIMIT ?",
         clauses.join(" AND ")
     ))?;
-    let rows = statement.query_map(params_from_iter(values), |row| {
-        Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?))
-    })?;
-    rows.map(|row| {
-        let (sequence, json) = row?;
+    let rows = statement.query_map(params_from_iter(values), |row| row.get::<_, String>(0))?;
+    rows.map(|json| {
+        let event: crate::request_traces::TraceEvent = serde_json::from_str(&json?)?;
         Ok(TraceRecord {
-            sequence,
-            event: serde_json::from_str(&json)?,
+            sequence: event.trace.started_at_ms,
+            event,
         })
     })
     .collect()

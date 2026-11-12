@@ -33,7 +33,7 @@ use opentelemetry_proto::tonic::{
 use prost::Message;
 
 #[tokio::test]
-async fn inventory_reads_and_streams_filter_projects_before_grouping() -> Result<()> {
+async fn inventory_reads_filter_projects_before_grouping() -> Result<()> {
     let fixture = Fixture::start().await?;
     for (project, id) in [("alpha", "same"), ("beta", "same"), ("beta", "extra")] {
         let actor = ActorKey {
@@ -52,11 +52,6 @@ async fn inventory_reads_and_streams_filter_projects_before_grouping() -> Result
         .await?;
     assert_eq!(page["actors"][0]["live"], 1);
     assert_eq!(page["actors"][0]["instances"].as_array().unwrap().len(), 1);
-    let mut stream = fixture
-        .get("/v1/projects/alpha/observe/events")
-        .await?
-        .error_for_status()?;
-    assert_eq!(stream_inventory(&mut stream).await?, page);
     let empty: Value = fixture
         .get("/v1/projects/empty/observe/actors")
         .await?
@@ -108,6 +103,36 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
         .await?;
     assert_eq!(waits[0]["admitted"], 2);
     assert_eq!(waits[0]["averageMs"], 10.0);
+    let now = SystemClock.now_ms()?;
+    let opened = |project: &str| crate::platform_events::sockets::SocketEvent::Opened {
+        actor: ActorKey {
+            project_id: project.into(),
+            actor_name: "Room".into(),
+            actor_id: "same".into(),
+        },
+        connection_id: "same".into(),
+        metadata: json!({"user": project}),
+        at_ms: now - 1_000,
+    };
+    let alive = |project: &str| crate::platform_events::sockets::SocketEvent::Alive {
+        project_id: project.into(),
+        at_ms: now,
+    };
+    fixture
+        .telemetry
+        .append_platform(
+            "gateway".into(),
+            [
+                opened("alpha"),
+                opened("beta"),
+                alive("alpha"),
+                alive("beta"),
+            ]
+            .iter()
+            .map(crate::platform_events::PlatformEvent::to_record)
+            .collect(),
+        )
+        .await?;
     let sockets: Value = fixture
         .get(&format!("{base}/websockets"))
         .await?
@@ -115,31 +140,29 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
         .json()
         .await?;
     assert_eq!(sockets.as_array().unwrap().len(), 1);
-    let mut stream = fixture
-        .get(&format!("{base}/requests/events"))
-        .await?
-        .error_for_status()?;
-    let chunk = tokio::time::timeout(Duration::from_secs(5), stream.chunk())
-        .await??
-        .unwrap();
-    let event = String::from_utf8(chunk.to_vec())?;
-    assert!(event.contains("alpha"));
-    assert!(!event.contains("beta"));
-    for (route, cursor) in [
-        ("requests?cursor=", "nextCursor"),
-        ("requests/events?after=", "resumeCursor"),
-    ] {
-        let url = format!(
-            "/v1/projects/beta/observe/{route}{}",
-            page[cursor].as_str().unwrap()
-        );
-        assert_eq!(fixture.get(&url).await?.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(sockets[0]["status"], "open");
+    assert_eq!(sockets[0]["metadata"], json!({"user": "alpha"}));
+    let mut events =
+        EventReader::open(&fixture, &format!("{base}/events?signals=requests")).await?;
+    for project in ["beta", "alpha"] {
+        let trace = serde_json::from_value(json!({
+            "projectId": project, "requestId": format!("{project}-live"),
+            "actorName": "Room", "actorId": "same", "kind": "method", "operation": "post",
+            "startedAtMs": 3, "durationMs": 1, "routingMs": 0.0, "outcome": "completed"
+        }))?;
+        fixture.record(trace).await?;
     }
+    let (_, streamed) = events.next().await?;
+    assert_eq!(streamed[0]["requestId"], "alpha-live");
+    let url = format!(
+        "/v1/projects/beta/observe/requests?cursor={}",
+        page["nextCursor"].as_str().unwrap()
+    );
+    assert_eq!(fixture.get(&url).await?.status(), StatusCode::BAD_REQUEST);
     for route in [
         "requests",
-        "requests/events",
+        "events?signals=requests",
         "logs",
-        "logs/events",
         "metrics",
         "queue-waits",
         "websockets",
@@ -176,8 +199,8 @@ async fn observability_requires_admin_credentials() -> Result<()> {
         .token;
     for path in [
         "/v1/projects/default/observe/actors",
-        "/v1/projects/default/observe/events",
-        "/v1/projects/default/observe/requests/events",
+        "/v1/projects/default/observe/events?signals=platform",
+        "/v1/projects/default/observe/events?signals=requests",
         "/v1/projects/default/observe/requests",
         "/v1/projects/default/observe/metrics",
         "/v1/projects/default/observe/queue-waits",
@@ -205,11 +228,8 @@ async fn observability_requires_admin_credentials() -> Result<()> {
 
 struct Fixture {
     lifecycle: LifecycleStore,
-    traces: crate::request_traces::TraceStore,
     telemetry: Arc<SqliteTracePersistence>,
     live: InProcessFeed,
-    changes: crate::postgres::notifications::ChangeFeed,
-    admin: AdminService,
     _runtime: RuntimeFixture,
     store: Arc<RuntimeStorage>,
     host: HostId,
@@ -248,21 +268,21 @@ impl Fixture {
             issuer.clone(),
         )?
         .with_invoke_api_key(Some("invoke-key".into()))?;
-        let changes = crate::postgres::notifications::ChangeFeed::default();
-        let lifecycle = LifecycleStore::default();
-        let inspector =
-            ActorInspector::new(Arc::new(lifecycle.clone()), store.clone(), changes.clone())
-                .with_traces(traces.clone());
-        let routes = super::inspection::router(inspector, admin.clone());
+        let lifecycle = LifecycleStore::default().with_events(Arc::new(
+            super::local_telemetry::LocalPlatformEvents::new(telemetry.clone(), live.clone()),
+        ));
+        let inventory = super::socket_inventory::ConnectionInventoryReader::new(
+            Arc::new(lifecycle.clone()),
+            traces.clone(),
+        );
+        let inspector = ActorInspector::new(Arc::new(inventory), store.clone()).with_traces(traces);
+        let routes = super::inspection::router(inspector, admin);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
         Ok(Self {
             lifecycle,
-            traces,
             telemetry,
             live,
-            changes,
-            admin,
             _runtime: runtime,
             store,
             host,
@@ -315,13 +335,13 @@ impl Fixture {
 
     async fn record(&self, trace: RequestTrace) -> Result<()> {
         let event = TraceEvent {
-            event_id: uuid::Uuid::new_v4().to_string(),
+            event_id: trace.request_id.clone(),
             host_id: "host".into(),
             session_id: "session".into(),
             trace,
         };
         self.telemetry.append(std::slice::from_ref(&event)).await?;
-        self.live.publish(
+        self.live.send(
             otlp::live_channel(&event.trace.project_id, Signal::Requests),
             span_request(&event).encode_to_vec(),
         );
@@ -345,140 +365,157 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
-async fn inventory_stream_follows_lifecycle_reports_and_clears_stopped_queues() -> Result<()> {
+async fn platform_events_stream_live_and_the_inventory_reads_them() -> Result<()> {
+    use crate::platform_events::{
+        PlatformEvents, deployments::DeploymentEvent, sockets::SocketEvent,
+    };
     let fixture = Fixture::start().await?;
-    let actor = fixture.actor("unsaved");
-    fixture
-        .report_lifecycle(actor.clone(), LifecycleKind::Started, 1, vec![])
-        .await?;
-    let mut stream = fixture
-        .get("/v1/projects/default/observe/events")
-        .await?
-        .error_for_status()?;
-    let first = stream_inventory(&mut stream).await?;
-    assert!(first.get("namespaceId").is_none());
-    assert_eq!(first["actors"][0]["live"], 1);
+    let mut events = EventReader::open(
+        &fixture,
+        "/v1/projects/default/observe/events?signals=platform",
+    )
+    .await?;
+    let platform = super::local_telemetry::LocalPlatformEvents::new(
+        fixture.telemetry.clone(),
+        fixture.live.clone(),
+    );
+    let actor = fixture.actor("chat");
     let waiting = vec![crate::host_leases::WaitingOperation {
         id: "queued-1".into(),
         operation: "sendMessage".into(),
     }];
     fixture
-        .report_lifecycle(actor.clone(), LifecycleKind::Heartbeat, 2, waiting)
+        .report_lifecycle(actor.clone(), LifecycleKind::Started, 1, waiting)
         .await?;
-    fixture.changes.notify().await;
-    let connected = stream_inventory(&mut stream).await?;
-    assert_eq!(connected["actors"][0]["live"], 1);
+    let (name, live) = events.next().await?;
+    assert_eq!(name, "instance");
     assert_eq!(
-        connected["actors"][0]["instances"][0]["waiting"][0]["operation"],
-        "sendMessage"
+        (&live[0]["actorId"], &live[0]["status"]),
+        (&json!("chat"), &json!("live"))
     );
+    assert_eq!(live[0]["waiting"][0]["operation"], "sendMessage");
+    let reported = live[0]["reportedAtMs"].as_u64().unwrap();
+    assert_eq!(live[0]["staleAtMs"], reported + 35_000);
+
+    platform.record(SocketEvent::Opened {
+        actor: actor.clone(),
+        connection_id: "pushed".into(),
+        metadata: json!({"user": "alpha"}),
+        at_ms: SystemClock.now_ms()?,
+    });
+    let (name, opened) = events.next().await?;
+    assert_eq!(name, "connectionOpened");
+    assert_eq!(opened[0]["metadata"], json!({"user": "alpha"}));
+    let inventory = inventory_when(&fixture, |inventory| {
+        inventory["actors"][0]["instances"][0]["connections"][0]["id"] == "pushed"
+    })
+    .await?;
+    assert_eq!(
+        inventory["actors"][0]["instances"][0]["connections"][0]["gatewayId"],
+        opened[0]["gatewayId"]
+    );
+
     fixture
-        .report_lifecycle(actor, LifecycleKind::Stopped, 3, vec![])
+        .report_lifecycle(actor, LifecycleKind::Stopped, 2, vec![])
         .await?;
-    fixture.changes.notify().await;
-    let expired = stream_inventory(&mut stream).await?;
-    assert_eq!(expired["actors"][0]["dormant"], 1);
-    assert_eq!(expired["actors"][0]["instances"][0]["waiting"], json!([]));
-    assert_eq!(
-        expired["actors"][0]["instances"][0]["connections"],
-        json!([])
+    let (_, stopped) = events.next().await?;
+    assert_eq!(stopped[0]["status"], "dormant");
+    assert_eq!(stopped[0]["staleAtMs"], Value::Null);
+    assert_eq!(stopped[0]["waiting"], json!([]));
+
+    platform.record(DeploymentEvent::Published {
+        project_id: "default".into(),
+        contract: Some(serde_json::from_str(include_str!(
+            "../../../sdk/tests/fixtures/public-contract.json"
+        ))?),
+        at_ms: SystemClock.now_ms()?,
+    });
+    let (name, deployed) = events.next().await?;
+    assert_eq!(name, "deployment");
+    let methods = json!(["clear", "sendMessage"]);
+    assert!(
+        deployed[0]["actors"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"actorName": "ChatRoom", "methods": methods}))
     );
-    let inventory: Value = fixture
-        .get("/v1/projects/default/observe/actors")
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(inventory["actors"][0]["dormant"], 1);
-    assert_eq!(inventory["actors"][0]["instances"][0]["waiting"], json!([]));
-    assert_eq!(
-        inventory["actors"][0]["instances"][0]["connections"],
-        json!([])
-    );
+    inventory_when(&fixture, |inventory| {
+        inventory["actors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["actorName"] == "ChatRoom" && row["methods"] == methods)
+    })
+    .await?;
     Ok(())
 }
 
-async fn stream_inventory(stream: &mut reqwest::Response) -> Result<Value> {
+async fn inventory_when(fixture: &Fixture, ready: impl Fn(&Value) -> bool) -> Result<Value> {
     tokio::time::timeout(Duration::from_secs(2), async {
-        let mut bytes = Vec::new();
         loop {
-            bytes.extend(
-                stream
-                    .chunk()
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("stream ended"))?,
-            );
-            let text = String::from_utf8_lossy(&bytes);
-            if text.ends_with("\n\n") {
-                if let Some(data) = text.lines().find_map(|line| line.strip_prefix("data: ")) {
-                    return serde_json::from_str(data).map_err(Into::into);
-                }
+            let inventory: Value = fixture
+                .get("/v1/projects/default/observe/actors")
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if ready(&inventory) {
+                return Ok(inventory);
             }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await?
 }
 
-#[tokio::test]
-async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Result<()> {
-    let fixture = Fixture::start().await?;
-    let contract = super::contracts::PublicActorContract::new(serde_json::from_str(
-        include_str!("../../../sdk/tests/fixtures/public-contract.json"),
-    )?)?;
-    fixture
-        .admin
-        .register_deployment(
-            &super::admin::HostLaunchSpec {
-                image_policy: Default::default(),
-                organization_id: "org-test".into(),
-                sandboxes: Default::default(),
-                project_id: "default".into(),
-                source: None,
-                code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
-                image_ref: "test-image".into(),
-                working_directory: "/customer".into(),
-                actor_entrypoint: Some("actors.mjs".into()),
-                secret_refs: vec![],
-            },
-            Some(&contract),
-        )
-        .await?;
-    let inventory: Value = fixture
-        .get("/v1/projects/default/observe/actors")
+/// Reads a stream's server-sent events one message at a time.
+struct EventReader {
+    response: reqwest::Response,
+    buffer: String,
+}
+
+impl EventReader {
+    async fn open(fixture: &Fixture, path: &str) -> Result<Self> {
+        let response = fixture.get(path).await?.error_for_status()?;
+        Ok(Self {
+            response,
+            buffer: String::new(),
+        })
+    }
+
+    async fn next(&mut self) -> Result<(String, Value)> {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                while let Some(end) = self.buffer.find("\n\n") {
+                    let message: String = self.buffer.drain(..end + 2).collect();
+                    let name = message
+                        .lines()
+                        .find_map(|line| line.strip_prefix("event: "));
+                    let data = message.lines().find_map(|line| line.strip_prefix("data: "));
+                    if let (Some(name), Some(data)) = (name, data) {
+                        return Ok((name.to_owned(), serde_json::from_str(data)?));
+                    }
+                }
+                let chunk = self
+                    .response
+                    .chunk()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("stream ended"))?;
+                self.buffer.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        })
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let row = inventory["actors"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["actorName"] == "ChatRoom")
-        .unwrap();
-    assert_eq!(row["live"], 0);
-    assert_eq!(row["dormant"], 0);
-    assert_eq!(row["instances"], json!([]));
-    assert_eq!(row["methods"], json!(["clear", "sendMessage"]));
-    let mut stream = fixture
-        .get("/v1/projects/default/observe/events")
-        .await?
-        .error_for_status()?;
-    assert_eq!(stream_inventory(&mut stream).await?, inventory);
-    Ok(())
+    }
 }
 
 #[tokio::test]
-async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("request-traces.sqlite3");
-    let fixture = Fixture::start_with_telemetry(SqliteTracePersistence::new(path.clone())).await?;
-    let mut stream = fixture
-        .get("/v1/projects/default/observe/requests/events")
-        .await?
-        .error_for_status()?;
-    assert_eq!(stream.headers()["cache-control"], "no-store");
-    let empty = stream_inventory(&mut stream).await?;
-    assert_eq!(empty["records"], json!([]));
+async fn event_stream_forwards_each_recorded_request() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    let mut events = EventReader::open(
+        &fixture,
+        "/v1/projects/default/observe/events?signals=requests",
+    )
+    .await?;
     for id in ["first", "second"] {
         fixture
             .record(request_trace(
@@ -489,32 +526,11 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
                 RequestOutcome::Completed,
             ))
             .await?;
-        let page = stream_inventory(&mut stream).await?;
-        assert_eq!(page["records"].as_array().unwrap().len(), 1);
-        assert_eq!(page["records"][0]["requestId"], id);
-        assert_eq!(page["records"][0]["queueWaitMs"], 10.0);
+        let (name, requests) = events.next().await?;
+        assert_eq!(name, "request");
+        assert_eq!(requests[0]["requestId"], id);
+        assert_eq!(requests[0]["queueWaitMs"], 10.0);
     }
-    drop(stream);
-    let snapshot = serde_json::to_value(
-        fixture
-            .traces
-            .replay("default", &Default::default())
-            .await?,
-    )?;
-    let mut replay = fixture
-        .get("/v1/projects/default/observe/requests/events")
-        .await?;
-    assert_eq!(stream_inventory(&mut replay).await?, snapshot);
-    assert_eq!(snapshot["records"].as_array().unwrap().len(), 2);
-    drop(replay);
-    drop(fixture);
-    let restarted = Fixture::start_with_telemetry(SqliteTracePersistence::new(path)).await?;
-    let mut replay = restarted
-        .get("/v1/projects/default/observe/requests/events")
-        .await?;
-    let restored = stream_inventory(&mut replay).await?;
-    assert_eq!(restored["records"], snapshot["records"]);
-    assert_eq!(restored["epoch"], snapshot["epoch"]);
     Ok(())
 }
 
@@ -577,12 +593,12 @@ async fn log_filters_apply_to_history_live_tail_and_histogram() -> Result<()> {
             {"debug": 1, "info": 1, "warn": 0, "error": 1}
         ])
     );
-    let mut stream = fixture
-        .get("/v1/projects/default/observe/logs/events?requestId=request-2&level=warn&search=D")
-        .await?
-        .error_for_status()?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    fixture.live.publish(
+    let mut events = EventReader::open(
+        &fixture,
+        "/v1/projects/default/observe/events?signals=logs&requestId=request-2&level=warn&search=D",
+    )
+    .await?;
+    fixture.live.send(
         otlp::live_channel("default", Signal::Logs),
         log_request(&[
             log("c", Some("request-1"), "error"),
@@ -591,9 +607,10 @@ async fn log_filters_apply_to_history_live_tail_and_histogram() -> Result<()> {
         ])
         .encode_to_vec(),
     );
-    let tail = stream_inventory(&mut stream).await?;
-    assert_eq!(tail["records"].as_array().unwrap().len(), 1);
-    assert_eq!(tail["records"][0]["logId"], "d");
+    let (name, tail) = events.next().await?;
+    assert_eq!(name, "log");
+    assert_eq!(tail.as_array().unwrap().len(), 1);
+    assert_eq!(tail[0]["logId"], "d");
     for invalid in [
         "logs?limit=501",
         "logs/histogram?fromMs=0&toMs=2000&bucketMs=1",
@@ -618,7 +635,6 @@ async fn request_history_validates_filters_and_returns_empty_pages() -> Result<(
     let page: Value = response.json().await?;
     assert_eq!(page["records"], json!([]));
     assert_eq!(page["nextCursor"], Value::Null);
-    assert_eq!(page["capacity"], 100);
     for query in [
         "limit=0",
         "limit=501",
@@ -646,7 +662,7 @@ async fn request_history_validates_filters_and_returns_empty_pages() -> Result<(
 }
 
 #[tokio::test]
-async fn request_history_filters_and_pages_without_including_later_appends() -> Result<()> {
+async fn request_history_filters_and_pages() -> Result<()> {
     let fixture = Fixture::start().await?;
     for (id, name, actor, time, outcome) in [
         (
@@ -711,15 +727,6 @@ async fn request_history_filters_and_pages_without_including_later_appends() -> 
     assert_eq!(first["records"].as_array().unwrap().len(), 1);
     assert_eq!(first["records"][0]["requestId"], "second");
     let cursor = first["nextCursor"].as_str().unwrap();
-    record_request(
-        &fixture,
-        "late",
-        "Room",
-        "one",
-        1000,
-        crate::request_traces::RequestOutcome::Failed,
-    )
-    .await?;
     let next: Value = fixture
         .get(&format!(
             "/v1/projects/default/observe/requests?{filters}&cursor={cursor}"
@@ -731,7 +738,6 @@ async fn request_history_filters_and_pages_without_including_later_appends() -> 
     assert_eq!(next["records"].as_array().unwrap().len(), 1);
     assert_eq!(next["records"][0]["requestId"], "first");
     assert_eq!(next["nextCursor"], Value::Null);
-    assert_eq!(next["reset"], false);
     assert_eq!(
         fixture
             .get(&format!(
@@ -865,33 +871,6 @@ fn text(key: &str, value: &str) -> KeyValue {
         }),
         ..Default::default()
     }
-}
-
-#[tokio::test]
-async fn request_stream_resumes_saved_cursors() -> Result<()> {
-    let fixture = Fixture::start().await?;
-    let snapshot = serde_json::to_value(
-        fixture
-            .traces
-            .replay("default", &Default::default())
-            .await?,
-    )?;
-    let cursor = snapshot["resumeCursor"].as_str().unwrap();
-    let mut replay = fixture
-        .get(&format!(
-            "/v1/projects/default/observe/requests/events?after={cursor}"
-        ))
-        .await?;
-    assert_eq!(replay.status(), StatusCode::OK);
-    assert_eq!(stream_inventory(&mut replay).await?["records"], json!([]));
-    assert_eq!(
-        fixture
-            .get("/v1/projects/default/observe/requests/events?after=broken")
-            .await?
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-    Ok(())
 }
 
 #[tokio::test]

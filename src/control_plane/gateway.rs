@@ -95,6 +95,7 @@ async fn connect(
             service,
             generation,
         }),
+        events: connections.events.clone(),
         stop: connections.stop.clone(),
     };
     Ok(upgrade

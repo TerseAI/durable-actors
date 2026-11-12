@@ -1,10 +1,15 @@
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use std::collections::HashMap;
 
-use super::*;
+use super::{
+    super::cursor::{Cursor, page},
+    *,
+};
+use crate::platform_events::sockets::SocketClose;
 use crate::request_traces::{
-    InvalidTraceQuery, RequestTrace, TraceEvent, TraceRecord,
+    RequestTrace, TraceEvent, TraceRecord,
     logs::{ActorLog, LogHistogram, LogHistogramQuery},
     metrics::ClassMetrics,
+    sockets::SocketRecord,
 };
 
 impl ClickHouseTracePersistence {
@@ -44,43 +49,15 @@ impl ClickHouseTracePersistence {
                 .fetch_all::<SpanRow>(),
         )
         .await??;
-        let more = rows.len() > query.limit;
-        let records: Vec<_> = rows
+        let records = rows
             .into_iter()
-            .take(query.limit)
             .filter_map(SpanRow::into_event)
             .map(|event| TraceRecord {
                 sequence: event.trace.started_at_ms,
                 event,
             })
             .collect();
-        let filters = query.filter_key()?;
-        let next_cursor = if more {
-            records
-                .last()
-                .map(|last| {
-                    Cursor {
-                        project: project.into(),
-                        filters,
-                        time: last.event.trace.started_at_ms,
-                        event_id: last.event.event_id.clone(),
-                    }
-                    .encode()
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        Ok(TracePage {
-            epoch: "clickhouse-v2".into(),
-            cursor: records.first().map_or(0, |record| record.sequence),
-            capacity: query.limit,
-            records,
-            next_cursor,
-            resume_cursor: "snapshot".into(),
-            reset: false,
-            snapshot: false,
-        })
+        page(project, query, records)
     }
 
     pub(super) async fn read_logs(&self, project: &str, query: &LogQuery) -> Result<LogPage> {
@@ -197,35 +174,58 @@ impl ClickHouseTracePersistence {
             .collect())
     }
 
-    pub(super) async fn read_websockets(
+    pub(super) async fn read_socket_records(
         &self,
         project: &str,
-        range: &TimeRange,
-    ) -> Result<Vec<SocketSession>> {
+        to_ms: u64,
+        open_only: bool,
+        limit: usize,
+    ) -> Result<Vec<SocketRecord>> {
         let rows = tokio::time::timeout(
             Duration::from_secs(15),
-            self.query(include_str!("websockets.sql"), project)
-                .param("from", range.from_ms.unwrap_or(0))
-                .param("to", range.to_ms.unwrap_or(u64::MAX))
+            self.query(include_str!("socket_records.sql"), project)
+                .param("to", to_ms)
+                .param("open_only", open_only)
+                .param("limit", limit as u64)
                 .fetch_all::<SocketRow>(),
         )
         .await??;
-        rows.into_iter()
-            .map(|row| {
-                Ok(SocketSession {
-                    metadata: serde_json::from_str(&row.metadata).ok(),
-                    connection_id: row.connection_id,
-                    actor_name: row.actor_name,
-                    actor_id: row.actor_id,
-                    host_id: Some(row.host_id),
-                    opened_at_ms: row.opened_at_ms,
-                    closed_at_ms: row.closed_at_ms,
-                    last_seen_ms: Some(row.last_seen_ms),
-                    messages: row.messages,
-                    failures: row.failures,
-                })
-            })
-            .collect()
+        Ok(rows.into_iter().map(SocketRecord::from).collect())
+    }
+
+    pub(super) async fn read_gateway_heartbeats(
+        &self,
+        project: &str,
+    ) -> Result<HashMap<String, u64>> {
+        let rows = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client
+                .query(include_str!("gateway_heartbeats.sql"))
+                .param("project", project)
+                .param("retention", self.retention_seconds)
+                .fetch_all::<HeartbeatRow>(),
+        )
+        .await??;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.gateway_id, row.alive_at_ms))
+            .collect())
+    }
+
+    pub(super) async fn read_deployed_contract(
+        &self,
+        project: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let contract = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.query(include_str!("deployed_contract.sql"), project)
+                .fetch_optional::<String>(),
+        )
+        .await??;
+        contract
+            .filter(|contract| !contract.is_empty())
+            .map(|contract| Ok(serde_json::from_str(&contract)?))
+            .transpose()
     }
 
     fn query(&self, sql: &str, project: &str) -> clickhouse::query::Query {
@@ -233,36 +233,6 @@ impl ClickHouseTracePersistence {
             .query(sql)
             .param("project", project)
             .param("retention", self.retention_seconds)
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    project: String,
-    filters: String,
-    time: u64,
-    event_id: String,
-}
-
-impl Cursor {
-    fn decode(value: &str, project: &str, query: &HistoryQuery) -> Result<Self> {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(value)
-            .map_err(|_| InvalidTraceQuery)?;
-        let cursor: Self = serde_json::from_slice(&bytes).map_err(|_| InvalidTraceQuery)?;
-        ensure!(
-            cursor.project == project
-                && cursor.filters == query.filter_key()?
-                && !cursor.event_id.is_empty()
-                && cursor.event_id.len() <= 256,
-            InvalidTraceQuery
-        );
-        Ok(cursor)
-    }
-
-    fn encode(&self) -> Result<String> {
-        Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(self)?))
     }
 }
 
@@ -379,16 +349,58 @@ struct QueueRow {
     max_ms: f64,
 }
 
+/// The exporter stores attribute values as text, so the close's numbers arrive as strings.
 #[derive(Row, Deserialize)]
 struct SocketRow {
     connection_id: String,
     actor_name: String,
     actor_id: String,
-    host_id: String,
-    opened_at_ms: Option<u64>,
-    closed_at_ms: Option<u64>,
-    last_seen_ms: u64,
-    messages: u64,
-    failures: u64,
+    gateway_id: String,
+    opened_at_ms: u64,
     metadata: String,
+    closed_at_ms: u64,
+    close_code: String,
+    close_reason: String,
+    close_clean: String,
+    messages_in: String,
+    messages_out: String,
+    bytes_in: String,
+    bytes_out: String,
+    duration_ms: String,
+}
+
+impl From<SocketRow> for SocketRecord {
+    fn from(row: SocketRow) -> Self {
+        let number = |text: &str| text.parse().unwrap_or_default();
+        let closed = (row.closed_at_ms > 0).then(|| {
+            (
+                row.closed_at_ms,
+                SocketClose {
+                    code: row.close_code.parse().unwrap_or_default(),
+                    reason: row.close_reason,
+                    clean: row.close_clean == "true",
+                    messages_in: number(&row.messages_in),
+                    messages_out: number(&row.messages_out),
+                    bytes_in: number(&row.bytes_in),
+                    bytes_out: number(&row.bytes_out),
+                    duration_ms: number(&row.duration_ms),
+                },
+            )
+        });
+        Self {
+            connection_id: row.connection_id,
+            actor_name: row.actor_name,
+            actor_id: row.actor_id,
+            gateway_id: row.gateway_id,
+            opened_at_ms: row.opened_at_ms,
+            metadata: serde_json::from_str(&row.metadata).ok(),
+            closed,
+        }
+    }
+}
+
+#[derive(Row, Deserialize)]
+struct HeartbeatRow {
+    gateway_id: String,
+    alive_at_ms: u64,
 }

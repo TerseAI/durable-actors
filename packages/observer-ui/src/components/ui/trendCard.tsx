@@ -6,22 +6,21 @@ import { StatCard } from "./statCard.js"
 
 export type TrendCardProps = {
     label: string
-    window: string
     value: ReactNode
     unit: ReactNode
     busy?: boolean
+    failed?: boolean
     series: number[]
     axis: string[]
     color: string
     chartLabel: string
     describePoint: (index: number) => PointDescription
-    children: ReactNode
 }
 
-export function TrendCard({ label, window, value, unit, busy, series, axis, color, chartLabel, describePoint, children }: TrendCardProps) {
+export function TrendCard({ label, value, unit, busy, failed, series, axis, color, chartLabel, describePoint }: TrendCardProps) {
     return (
-        <StatCard label={label} aside={<span className="shrink-0 text-xs font-normal tabular-nums">{window}</span>} value={value} unit={busy ? <Skeleton className="h-3.5 w-9" /> : unit} busy={busy}>
-            <div className="mt-2 flex flex-wrap items-center gap-x-4.5 gap-y-1 text-[13px] text-muted-foreground tabular-nums">{children}</div>
+        <StatCard label={label} value={value} unit={busy ? <Skeleton className="h-3.5 w-9" /> : unit} busy={busy}>
+            {failed && <p className="mt-2 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>}
             {busy ? (
                 <TrendSkeleton ticks={axis.length} />
             ) : (
@@ -48,24 +47,5 @@ function TrendSkeleton({ ticks }: { ticks: number }) {
                 ))}
             </div>
         </>
-    )
-}
-
-export function TrendStatsSkeleton({ failed }: { failed: boolean }) {
-    if (failed) return <span>Couldn't reach the observer API.</span>
-    return (
-        <>
-            <Skeleton className="h-3.5 w-20" />
-            <Skeleton className="h-3.5 w-28" />
-        </>
-    )
-}
-
-export function TrendStat({ label, value, suffix }: { label: string; value: string; suffix?: string }) {
-    return (
-        <span>
-            {label} <b className="font-bold text-foreground">{value}</b>
-            {suffix && ` ${suffix}`}
-        </span>
     )
 }

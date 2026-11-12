@@ -1,15 +1,12 @@
-import useSWR from "swr"
-
 import { webSocketsKey } from "../client/cacheKeys.js"
+import type { EventBus } from "../client/events.js"
 import { HttpObserverClient } from "../client/observerClient.js"
-import type { SocketSession } from "../types/Sockets.js"
+import { applySocketEvents } from "../lib/views/sockets.js"
 
-// There is no WebSocket event stream; live open connections come from the actor inventory stream instead.
-const refreshIntervalMs = 15_000
+import { useLiveView } from "./useLiveView.js"
 
-export function useWebSockets(baseUrl: string) {
-    const { data, error, isLoading } = useSWR<SocketSession[]>(webSocketsKey(baseUrl), () => new HttpObserverClient(baseUrl).listWebSockets(), { refreshInterval: refreshIntervalMs })
-
+export function useWebSockets(baseUrl: string, events: EventBus | null) {
+    const { data, error, isLoading } = useLiveView(webSocketsKey(baseUrl), () => new HttpObserverClient(baseUrl).listWebSockets(), applySocketEvents, events)
     return {
         sessions: data ?? null,
         isLoading,

@@ -57,18 +57,11 @@ pub(crate) struct PublishedContract {
 
 impl PublishedContract {
     pub(crate) fn rpc_methods(&self, actor_name: &str) -> Result<Vec<String>> {
-        let document: ContractDocument = serde_json::from_value(self.contract.clone())?;
-        let actor = document
-            .actors
+        actor_methods(&self.contract)?
             .into_iter()
-            .find(|actor| actor.actor_name == actor_name)
-            .context("actor is not in the published contract")?;
-        Ok(actor
-            .rpc
-            .methods
-            .into_iter()
-            .map(|method| method.name)
-            .collect())
+            .find(|(name, _)| name == actor_name)
+            .map(|(_, methods)| methods)
+            .context("actor is not in the published contract")
     }
 
     pub(crate) fn new(contract: &PublicActorContract) -> Self {
@@ -77,6 +70,19 @@ impl PublishedContract {
             contract: contract.document().clone(),
         }
     }
+}
+
+/// Each actor class a contract document declares, with its RPC method names.
+pub(crate) fn actor_methods(document: &Value) -> Result<Vec<(String, Vec<String>)>> {
+    let document: ContractDocument = serde_json::from_value(document.clone())?;
+    Ok(document
+        .actors
+        .into_iter()
+        .map(|actor| {
+            let methods = actor.rpc.methods.into_iter().map(|method| method.name);
+            (actor.actor_name, methods.collect())
+        })
+        .collect())
 }
 
 #[derive(Deserialize)]

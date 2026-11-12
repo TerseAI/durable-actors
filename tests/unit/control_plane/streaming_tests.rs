@@ -570,6 +570,7 @@ impl Stack {
             true,
             tokio_util::sync::CancellationToken::new(),
             crate::sandbox::connections::HostConnections::new()?.client,
+            Arc::new(crate::platform_events::NoPlatformEvents),
         )?;
         service.gateway = Some(super::super::gateway::Gateway::new(
             &issuer,
@@ -583,6 +584,7 @@ impl Stack {
             true,
             tokio_util::sync::CancellationToken::new(),
             crate::sandbox::connections::HostConnections::new()?.client,
+            Arc::new(crate::platform_events::NoPlatformEvents),
         )?;
         let mut second_service = service.clone();
         second_service.gateway = Some(super::super::gateway::Gateway::new(

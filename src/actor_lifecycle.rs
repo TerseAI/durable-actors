@@ -13,6 +13,7 @@ use crate::{
         ActorInstanceOverview, ActorInventory, ActorInventoryReader, ActorInventorySnapshot,
         ActorResidency,
     },
+    platform_events::{NoPlatformEvents, PlatformEvents},
     sandbox::ResourceLimits,
 };
 
@@ -138,6 +139,7 @@ pub(crate) struct LifecycleStore {
     usage: Option<Arc<dyn UsagePublisher>>,
     usage_sessions: Arc<dyn reconciliation::UsageSessions>,
     observer: Option<Arc<dyn LifecycleObserver>>,
+    events: Arc<dyn PlatformEvents<LifecycleEvent>>,
 }
 
 impl Default for LifecycleStore {
@@ -152,8 +154,16 @@ impl LifecycleStore {
             persistence,
             usage: None,
             observer: None,
+            events: Arc::new(NoPlatformEvents),
             usage_sessions: Arc::new(reconciliation::MemoryUsageSessions::default()),
         }
+    }
+
+    /// Reports each recorded event to observability, which stores and publishes it like any
+    /// other platform event.
+    pub(crate) fn with_events(mut self, events: Arc<dyn PlatformEvents<LifecycleEvent>>) -> Self {
+        self.events = events;
+        self
     }
 
     pub(crate) fn with_observer(mut self, observer: Arc<dyn LifecycleObserver>) -> Self {
@@ -199,8 +209,9 @@ impl LifecycleStore {
                     Some(observer) => observer.observe(&event).await,
                     None => Ok(()),
                 }
-            }
+            },
         );
+        self.events.record(event);
         persisted.and(observed)
     }
 
@@ -273,35 +284,24 @@ impl ActorInventoryReader for LifecycleStore {
         let now = SystemClock.now_ms()?;
         let mut actors = BTreeMap::<String, ActorInventory>::new();
         for event in self.persistence.latest(project).await? {
-            let status = residency(&event, now);
             let actor = actors
                 .entry(event.actor.actor_name.clone())
                 .or_insert_with(|| ActorInventory {
                     actor_name: event.actor.actor_name.clone(),
                     ..Default::default()
                 });
-            match status {
+            let instance = instance_overview(event, now);
+            match instance.status {
                 ActorResidency::Live => actor.live += 1,
                 ActorResidency::Dormant => actor.dormant += 1,
                 ActorResidency::Unknown => actor.unknown += 1,
             }
-            actor.instances.push(ActorInstanceOverview {
-                actor_id: event.actor.actor_id,
-                status,
-                last_active_at_ms: event.report.last_active_at_ms,
-                connections: Vec::new(),
-                waiting: match status {
-                    ActorResidency::Unknown => None,
-                    ActorResidency::Dormant if event.report.kind == LifecycleKind::Stopped => {
-                        Some(Vec::new())
-                    }
-                    _ => Some(event.report.waiting),
-                },
-            });
+            actor.instances.push(instance);
         }
         Ok(ActorInventorySnapshot {
             actors: actors.into_values().collect(),
             connections_complete: true,
+            gateways: BTreeMap::new(),
         })
     }
 
@@ -317,6 +317,25 @@ impl ActorInventoryReader for LifecycleStore {
             .history(project, actor_name, from_ms, to_ms)
             .await?;
         Ok(residency::history(events, from_ms, to_ms))
+    }
+}
+
+/// The instance as its latest report leaves it at `now`, without connections.
+pub(crate) fn instance_overview(event: LifecycleEvent, now: u64) -> ActorInstanceOverview {
+    let status = residency(&event, now);
+    let stopped = event.report.kind == LifecycleKind::Stopped;
+    ActorInstanceOverview {
+        actor_id: event.actor.actor_id,
+        status,
+        last_active_at_ms: event.report.last_active_at_ms,
+        reported_at_ms: Some(event.received_at_ms),
+        stale_at_ms: (!stopped).then(|| event.received_at_ms.saturating_add(STALE_AFTER_MS)),
+        connections: Vec::new(),
+        waiting: match status {
+            ActorResidency::Unknown => None,
+            ActorResidency::Dormant if stopped => Some(Vec::new()),
+            _ => Some(event.report.waiting),
+        },
     }
 }
 

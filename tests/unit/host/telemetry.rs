@@ -1,5 +1,3 @@
-use super::live::InProcessFeed;
-use super::persistence::sqlite::SqliteTracePersistence;
 use super::*;
 use crate::request_tracking::{HostState, RequestTracker};
 use opentelemetry::trace::TracerProvider;
@@ -66,66 +64,4 @@ async fn completed_requests_become_one_span_with_request_attributes() -> Result<
     let duration = span.end_time.duration_since(span.start_time)?;
     assert!((duration.as_secs_f64() * 1000.0 - timing.duration_ms).abs() < 1.0);
     Ok(())
-}
-
-#[tokio::test]
-async fn sqlite_replay_resumes_after_restart_with_a_durable_cursor() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("requests.sqlite3");
-    let open = || {
-        let persistence = Arc::new(SqliteTracePersistence::new(path.clone()));
-        (
-            persistence.clone(),
-            TraceStore::new(persistence, Arc::new(InProcessFeed::default())),
-        )
-    };
-    let (persistence, store) = open();
-    persistence
-        .append(&(0..3).map(event).collect::<Vec<_>>())
-        .await?;
-    let cursor = store
-        .replay("default", &ReplayQuery::default())
-        .await?
-        .resume_cursor;
-    drop((persistence, store));
-
-    let (persistence, store) = open();
-    persistence.append(&[event(9)]).await?;
-    let delta = store
-        .replay(
-            "default",
-            &ReplayQuery {
-                cursor: Some(cursor),
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert_eq!(delta.records.len(), 1);
-    assert_eq!(delta.records[0].event.trace.request_id, "9");
-    Ok(())
-}
-
-fn event(id: usize) -> TraceEvent {
-    TraceEvent {
-        event_id: id.to_string(),
-        host_id: "host".into(),
-        session_id: "session".into(),
-        trace: RequestTrace {
-            state_version: None,
-            project_id: "default".into(),
-            request_id: id.to_string(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-            kind: RequestKind::Method,
-            operation: "increment".into(),
-            connection_id: None,
-            started_at_ms: 1000,
-            duration_ms: 12.0,
-            queue_wait_ms: Some(5.0),
-            host_state: HostState::Warm,
-            routing_ms: 0.0,
-            outcome: RequestOutcome::Completed,
-            metadata: None,
-        },
-    }
 }

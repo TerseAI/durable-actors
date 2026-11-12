@@ -2,16 +2,13 @@ import { useData } from "../client/DatatContext.js"
 import { useTimeWindow } from "../client/TimeRangeContext.js"
 import { requestsKey } from "../client/cacheKeys.js"
 import { HttpObserverClient } from "../client/observerClient.js"
-import type { RequestTrace } from "../types/Requests.js"
+import { currentBounds, windowKey } from "../lib/timeRange.js"
+import { type RequestFilter, applyRequestEvents } from "../lib/views/requests.js"
 
-import { useWindowedSWR } from "./useWindowedSWR.js"
-
-const liveRefreshMs = 15_000
-
-type RequestFilter = { actorName: string; actorId?: string }
+import { useLiveView } from "./useLiveView.js"
 
 // The shared request sample is capped project-wide, so busy actors can fall out of it.
-// Actor pages fetch their own history and top it up with streamed traces between polls.
+// Actor pages read their own history.
 export function useActorTypeRequests(actorName: string) {
     return useFilteredRequests({ actorName })
 }
@@ -21,28 +18,18 @@ export function useInstanceRequests(actorName: string, actorId: string) {
 }
 
 function useFilteredRequests(filter: RequestFilter) {
-    const { baseUrl, requests: streamed } = useData()
+    const { baseUrl, events } = useData()
     const timeWindow = useTimeWindow()
-    const { data, error, isLoading } = useWindowedSWR(
-        [...requestsKey(baseUrl), filter.actorName, filter.actorId],
-        timeWindow,
-        bounds => new HttpObserverClient(baseUrl).collectRequests(bounds, filter),
-        { refreshInterval: timeWindow.live ? liveRefreshMs : 0 }
+    const { data, error, isLoading } = useLiveView(
+        [...requestsKey(baseUrl), filter.actorName, filter.actorId, ...windowKey(timeWindow)],
+        () => new HttpObserverClient(baseUrl).collectRequests(currentBounds(timeWindow), filter),
+        applyRequestEvents(timeWindow.toMs - timeWindow.fromMs, filter),
+        timeWindow.live ? events : null
     )
-    const live = streamed?.filter(trace => matches(trace, filter)) ?? []
-    const requests = data ? uniqueByEvent([...data, ...live]) : null
     return {
-        requests,
+        requests: data?.filter(trace => trace.startedAtMs >= timeWindow.fromMs) ?? null,
         isLoading,
         isError: !data && Boolean(error),
         error
     }
-}
-
-function matches(trace: RequestTrace, { actorName, actorId }: RequestFilter): boolean {
-    return trace.actorName === actorName && (actorId === undefined || trace.actorId === actorId)
-}
-
-function uniqueByEvent(traces: RequestTrace[]): RequestTrace[] {
-    return [...new Map(traces.map(trace => [trace.eventId, trace])).values()]
 }

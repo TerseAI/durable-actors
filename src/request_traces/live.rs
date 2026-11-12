@@ -7,7 +7,8 @@ use tokio::sync::broadcast;
 
 use crate::redis_client::Redis;
 
-/// Each item is one OTLP export request (traces or logs) for the subscribed channel.
+/// Each item is one message for the subscribed channel: an OTLP export request as the collector
+/// published it.
 pub(crate) type LiveStream = Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>;
 
 #[async_trait]
@@ -53,7 +54,7 @@ impl Default for InProcessFeed {
 }
 
 impl InProcessFeed {
-    pub(crate) fn publish(&self, channel: String, payload: Vec<u8>) {
+    pub(crate) fn send(&self, channel: String, payload: Vec<u8>) {
         let _ = self.updates.send(Arc::new((channel, payload)));
     }
 }

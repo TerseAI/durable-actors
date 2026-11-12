@@ -42,8 +42,8 @@ mod views;
 use pages::{Cursor, Page};
 use views::{
     Actors, ContractReply, Deployment, Health, InstanceFilter, Inventory, Invocation, Log, Metrics,
-    Outcome, QueueWait, Request as RequestView, Session, SocketSession, StateHistory,
-    StateHistoryReply, StateQuery, StateReply, StateView,
+    Outcome, QueueWait, Request as RequestView, Session, StateHistory, StateHistoryReply,
+    StateQuery, StateReply, StateView,
 };
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 40_000;
@@ -254,7 +254,7 @@ impl DeveloperTools {
     }
 
     #[tool(
-        description = "List WebSocket sessions, newest first, with message counts, connect metadata and a status: open, closed, or lost when the connection ended without a recorded close. Covers up to the 500 most recent sessions in the window; page with nextCursor.",
+        description = "List WebSocket sessions, newest first, with connect metadata, close details and a status: open, closed, or lost when its gateway stopped reporting before the connection closed. Covers up to the 500 most recent sessions in the window; page with nextCursor.",
         output_schema = schema_for_output::<Page<Session>>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -269,19 +269,14 @@ impl DeveloperTools {
             Err(invalid) => return Ok(invalid),
         };
         let range = json!({ "fromMs": cursor.from_ms, "toMs": cursor.to_ms });
-        let history = self
+        let sessions = self
             .get(&parts, "observe/websockets", range)
             .await?
-            .into_view::<Vec<SocketSession>>();
-        let inventory = self
-            .get(&parts, "observe/actors", ())
-            .await?
-            .into_view::<Inventory>();
+            .into_view::<Vec<Session>>();
         let limit = page_size(params.limit);
-        Ok(respond(history.and_then(|history| {
-            inventory
-                .map(|inventory| pages::slice(views::sessions(history, &inventory), cursor, limit))
-        })))
+        Ok(respond(
+            sessions.map(|sessions| pages::slice(sessions, cursor, limit)),
+        ))
     }
 
     #[tool(

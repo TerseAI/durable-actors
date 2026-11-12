@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::queries::SpanRow;
 use super::*;
 use crate::request_traces::{RequestKind, RequestOutcome};
@@ -14,18 +16,13 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
     };
     let stop = CancellationToken::new();
     let _guard = stop.clone().drop_guard();
-    let backend = || {
-        ClickHouseTracePersistence::start(
-            config(url.clone()),
-            Duration::from_secs(86400),
-            stop.clone(),
-        )
-        .map(Arc::new)
-    };
-    let persistence = backend()?;
-    // Surfaces schema errors directly; the writer would otherwise retry them silently.
-    ingestion::initialize(&persistence.client, 86400).await?;
-    let writer = LifecycleStore::new(backend()?);
+    let persistence = Arc::new(ClickHouseTracePersistence::start(
+        config(url.clone()),
+        Duration::from_secs(86400),
+        stop.clone(),
+    )?);
+    // Surfaces schema errors directly; startup would otherwise retry them silently.
+    schema::initialize(&persistence.client, 86400).await?;
     let reader = LifecycleStore::new(persistence.clone());
     let project = format!("lifecycle-{}", uuid::Uuid::new_v4());
     let mut event = LifecycleEvent {
@@ -73,7 +70,7 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
                 });
         }
         event.event_id = format!("session:{}", event.report.sequence);
-        writer.record(event.clone()).await?;
+        collect(&persistence, &event).await?;
         wait_lifecycle(&persistence, &project, &event.event_id).await?;
         let snapshot = reader.actor_inventory(&project).await?;
         assert_eq!(snapshot.actors.len(), 1);
@@ -102,9 +99,9 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
     event.report.started_at_ms = 4000;
     event.report.occurred_at_ms = 4000;
     event.report.waiting.clear();
-    writer.record(event.clone()).await?;
-    writer.record(stopped).await?;
-    writer.record(event.clone()).await?;
+    collect(&persistence, &event).await?;
+    collect(&persistence, &stopped).await?;
+    collect(&persistence, &event).await?;
     wait_lifecycle(&persistence, &project, &event.event_id).await?;
     assert_eq!(reader.actor_inventory(&project).await?.actors[0].live, 1);
     let history = reader
@@ -262,11 +259,6 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
             .admitted,
         1
     );
-    let sockets = store.websockets(project, &TimeRange::default()).await?;
-    assert_eq!(
-        sockets[0].metadata,
-        Some(serde_json::json!({"userId": "alice"}))
-    );
     assert!(
         store
             .history("different-project", &HistoryQuery::default())
@@ -282,6 +274,31 @@ fn ids(page: &TracePage) -> Vec<&str> {
         .iter()
         .map(|record| record.event.event_id.as_str())
         .collect()
+}
+
+/// Inserts the report as the collector's platform pipeline does.
+async fn collect(
+    store: &ClickHouseTracePersistence,
+    event: &crate::actor_lifecycle::LifecycleEvent,
+) -> Result<()> {
+    use crate::platform_events::PlatformEvent;
+    let record = event.to_record();
+    store
+        .client
+        .query(
+            "INSERT INTO platform_events (Timestamp, EventName, LogAttributes, Body) VALUES \
+             (fromUnixTimestamp64Milli(?), ?, map('durable_actors.project_id', ?, \
+             'durable_actors.actor_name', ?, 'durable_actors.actor_id', ?), ?)",
+        )
+        .bind(record.at_ms)
+        .bind(record.name)
+        .bind(&event.actor.project_id)
+        .bind(&event.actor.actor_name)
+        .bind(&event.actor.actor_id)
+        .bind(record.body.unwrap_or_default())
+        .execute()
+        .await?;
+    Ok(())
 }
 
 async fn wait_lifecycle(
@@ -303,53 +320,6 @@ async fn wait_lifecycle(
         }
     })
     .await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn unavailable_clickhouse_cannot_block_lifecycle_reports_and_the_queue_is_bounded()
--> Result<()> {
-    use crate::actor_lifecycle::{LifecycleEvent, LifecyclePersistence};
-    let stop = CancellationToken::new();
-    let _guard = stop.clone().drop_guard();
-    let backend = ClickHouseTracePersistence::start(
-        config("http://127.0.0.1:9".into()),
-        Duration::from_secs(86400),
-        stop,
-    )?;
-    let event = LifecycleEvent {
-        organization_id: None,
-        event_id: "session:1".into(),
-        actor: crate::actor::ActorKey {
-            project_id: "default".into(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-        },
-        host_id: "host".into(),
-        session_id: "session".into(),
-        region: "us-east".into(),
-        received_at_ms: 1,
-        report: crate::actor_lifecycle::LifecycleReport {
-            kind: crate::actor_lifecycle::LifecycleKind::Started,
-            owner_epoch: 1,
-            sequence: 1,
-            started_at_ms: 1,
-            occurred_at_ms: 1,
-            resources: Default::default(),
-            resident: None,
-            last_active_at_ms: None,
-            waiting: Vec::new(),
-        },
-    };
-    tokio::time::timeout(Duration::from_secs(2), async {
-        for _ in 0..MAX_QUEUED_ROWS {
-            backend.record(&event).await?;
-        }
-        assert!(backend.record(&event).await.is_err());
-        assert_eq!(backend.queued_rows.available_permits(), 0);
-        anyhow::Ok(())
-    })
-    .await??;
     Ok(())
 }
 
@@ -398,4 +368,127 @@ fn config(url: String) -> ClickHouseConfig {
         user: "trace_test".into(),
         password: "local-test-only".into(),
     }
+}
+
+#[tokio::test]
+async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() -> Result<()> {
+    use crate::platform_events::sockets::{ALIVE, CLOSED, OPENED};
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    schema::initialize(&store.client, 86400).await?;
+    let project = format!("sockets-{}", uuid::Uuid::new_v4());
+    let gateway = uuid::Uuid::new_v4().to_string();
+    // As the collector's ClickHouse exporter writes them: attribute values are text.
+    let row = |at_ms: u64, event: &str, attributes: String| {
+        format!(
+            "(fromUnixTimestamp64Milli({at_ms}), '{event}', \
+             map('durable_actors.gateway_id', '{gateway}'), map({attributes}))"
+        )
+    };
+    let connection = |id: &str| {
+        format!(
+            "'durable_actors.project_id', '{project}', 'durable_actors.actor_name', 'Room', \
+             'durable_actors.actor_id', 'one', 'durable_actors.connection_id', '{id}'"
+        )
+    };
+    let values = [
+        row(1000, OPENED, format!("{}, 'durable_actors.metadata', '{{\"user\":\"closed\"}}'", connection("closed"))),
+        row(2000, OPENED, format!("{}, 'durable_actors.metadata', '{{\"user\":\"open\"}}'", connection("open"))),
+        row(
+            5000,
+            CLOSED,
+            format!(
+                "{}, 'durable_actors.close_code', '1001', 'durable_actors.close_reason', 'going away', \
+                 'durable_actors.close_clean', 'true', 'durable_actors.messages_in', '2', \
+                 'durable_actors.messages_out', '3'",
+                connection("closed")
+            ),
+        ),
+        row(7000, ALIVE, format!("'durable_actors.project_id', '{project}'")),
+    ]
+    .join(", ");
+    store
+        .client
+        .query(&format!(
+            "INSERT INTO platform_events (Timestamp, EventName, ResourceAttributes, LogAttributes) VALUES {values}"
+        ))
+        .execute()
+        .await?;
+    let records = store.socket_records(&project, u64::MAX, false, 10).await?;
+    let ids: Vec<_> = records
+        .iter()
+        .map(|record| record.connection_id.as_str())
+        .collect();
+    assert_eq!(ids, ["open", "closed"]);
+    assert_eq!(records[0].gateway_id, gateway);
+    assert_eq!(
+        records[0].metadata,
+        Some(serde_json::json!({"user": "open"}))
+    );
+    let (closed_at, close) = records[1].closed.clone().expect("a recorded close");
+    assert_eq!(
+        (
+            closed_at,
+            close.code,
+            close.reason.as_str(),
+            close.clean,
+            close.messages_in,
+            close.messages_out
+        ),
+        (5000, 1001, "going away", true, 2, 3)
+    );
+    assert_eq!(
+        store
+            .socket_records(&project, u64::MAX, true, 10)
+            .await?
+            .len(),
+        1
+    );
+    assert_eq!(
+        store.socket_records(&project, 1500, false, 10).await?.len(),
+        1
+    );
+    assert_eq!(
+        store.gateway_heartbeats(&project).await?.get(&gateway),
+        Some(&7000)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_latest_deployment_event_holds_the_deployed_contract() -> Result<()> {
+    use crate::platform_events::deployments::{PUBLISHED, REMOVED};
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    schema::initialize(&store.client, 86400).await?;
+    let project = format!("deployments-{}", uuid::Uuid::new_v4());
+    let insert = |at_ms: u64, event: &str, body: &str| {
+        store.client.query(&format!(
+            "INSERT INTO platform_events (Timestamp, EventName, LogAttributes, Body) VALUES \
+             (fromUnixTimestamp64Milli({at_ms}), '{event}', map('durable_actors.project_id', '{project}'), '{body}')"
+        ))
+    };
+    assert_eq!(store.deployed_contract(&project).await?, None);
+    // Out of order, as a startup republish and a deploy can arrive.
+    insert(2000, PUBLISHED, r#"{"version":2}"#)
+        .execute()
+        .await?;
+    insert(1000, PUBLISHED, r#"{"version":1}"#)
+        .execute()
+        .await?;
+    assert_eq!(
+        store.deployed_contract(&project).await?,
+        Some(serde_json::json!({"version": 2}))
+    );
+    insert(3000, REMOVED, "").execute().await?;
+    assert_eq!(store.deployed_contract(&project).await?, None);
+    Ok(())
 }

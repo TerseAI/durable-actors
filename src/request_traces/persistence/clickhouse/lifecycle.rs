@@ -3,8 +3,9 @@ use crate::actor_lifecycle::{LifecycleEvent, LifecyclePersistence};
 
 #[async_trait]
 impl LifecyclePersistence for ClickHouseTracePersistence {
-    async fn record(&self, event: &LifecycleEvent) -> Result<()> {
-        self.send(event.clone())
+    /// The collector stores the reports the control plane emits.
+    async fn record(&self, _event: &LifecycleEvent) -> Result<()> {
+        Ok(())
     }
 
     async fn latest(&self, project: &str) -> Result<Vec<LifecycleEvent>> {
@@ -52,29 +53,4 @@ impl LifecyclePersistence for ClickHouseTracePersistence {
 #[derive(Row, Deserialize)]
 struct InventoryRow {
     event_json: String,
-}
-
-#[derive(Row, Serialize)]
-pub(super) struct LifecycleRow {
-    project_id: String,
-    actor_name: String,
-    actor_id: String,
-    event_id: String,
-    owner_epoch: u64,
-    sequence: u64,
-    event_json: String,
-}
-
-impl LifecycleRow {
-    pub(super) fn from_event(event: &LifecycleEvent) -> Result<Self> {
-        Ok(Self {
-            project_id: event.actor.project_id.clone(),
-            actor_name: event.actor.actor_name.clone(),
-            actor_id: event.actor.actor_id.clone(),
-            event_id: event.event_id.clone(),
-            owner_epoch: event.report.owner_epoch,
-            sequence: event.report.sequence,
-            event_json: serde_json::to_string(event)?,
-        })
-    }
 }

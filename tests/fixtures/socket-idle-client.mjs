@@ -7,6 +7,8 @@ const socket = await client.connect("Counter", "one", null)
 const messages = []
 socket.addEventListener("message", event => messages.push(event.data))
 const inspect = () => client.invoke("Counter", "one", "inspect", [])
+// onConnect's metadata and tags apply after it returns, so an interleaved inspect can see the count first.
+const connected = state => state.count > 0 && state.sockets[0]?.metadata != null && state.sockets[0].tags.length > 0
 async function message() {
     socket.send({ text: "wake up" })
     const deadline = Date.now() + 5_000
@@ -18,7 +20,7 @@ async function message() {
 try {
     const deadline = Date.now() + 5000
     let first = await inspect()
-    while ((first.count === 0 || first.sockets.length === 0) && Date.now() < deadline) {
+    while (!connected(first) && Date.now() < deadline) {
         await setTimeout(10)
         first = await inspect()
     }

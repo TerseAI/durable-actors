@@ -61,10 +61,6 @@ async fn memory_publishes_reach_every_gateway_holding_the_actors_sockets() -> Re
     assert_eq!(first.count(&room).await?, 2);
     let red = first.connections(&room, Some("red")).await?;
     assert_eq!(red.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["a"]);
-    let inventory = second.inventory("p").await?;
-    assert!(inventory.complete);
-    assert_eq!(inventory.rooms.len(), 1);
-    assert_eq!(inventory.rooms[0].connections.len(), 2);
     Ok(())
 }
 
@@ -126,10 +122,6 @@ async fn redis_publishes_reach_every_gateway_holding_the_actors_sockets() -> Res
     assert_eq!(control.count(&room).await?, 2);
     let red = control.connections(&room, Some("red")).await?;
     assert_eq!(red.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["a"]);
-    let inventory = control.inventory("p").await?;
-    assert!(inventory.complete);
-    assert_eq!(inventory.rooms.len(), 1);
-    assert_eq!(inventory.rooms[0].connections.len(), 2);
 
     second.registry().remove(&room, "b").await;
     second.unwatch(&room).await;
@@ -193,7 +185,7 @@ async fn redis_auto_responses_cleared_while_unwatched_do_not_return() -> Result<
 }
 
 #[tokio::test]
-async fn redis_questions_fail_or_report_incomplete_when_a_gateway_does_not_answer() -> Result<()> {
+async fn redis_questions_fail_when_a_gateway_does_not_answer() -> Result<()> {
     let Some((url, namespace)) = test_redis() else {
         return Ok(());
     };
@@ -208,7 +200,6 @@ async fn redis_questions_fail_or_report_incomplete_when_a_gateway_does_not_answe
     silent
         .subscribe(format!("{namespace}:actor:{}", room.storage_key().as_str()))
         .await?;
-    assert!(!control.inventory("p").await?.complete);
     assert!(control.count(&room).await.is_err());
     Ok(())
 }

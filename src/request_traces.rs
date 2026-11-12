@@ -1,19 +1,12 @@
 use crate::control_plane::admin::validate_component;
 use crate::request_tracking::HostState;
 use anyhow::{Context, Result};
-use opentelemetry::{
-    KeyValue,
-    trace::{Span, SpanKind, Status, Tracer},
-};
-use opentelemetry_sdk::trace::SdkTracer;
 use serde::{Deserialize, Serialize};
-use std::{
-    sync::Arc,
-    time::{Duration, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 pub(crate) use crate::request_tracking::RequestOutcome;
-use crate::request_tracking::{RequestCompletion, RequestObserver};
+
+use crate::clock::{Clock, SystemClock};
 
 pub(crate) mod history;
 pub(crate) mod live;
@@ -21,10 +14,9 @@ pub(crate) mod logs;
 pub(crate) mod metrics;
 pub(crate) mod otlp;
 pub(crate) mod persistence;
-pub(crate) mod replay;
+pub(crate) mod sockets;
 use live::{InProcessFeed, LiveFeed, LiveStream};
 use persistence::{TraceQueries, sqlite::SqliteTracePersistence};
-use replay::ReplayQuery;
 
 pub(crate) const TRACE_CAPACITY: usize = 500;
 
@@ -82,7 +74,7 @@ fn new_event_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceRecord {
     pub sequence: u64,
@@ -93,30 +85,8 @@ pub(crate) struct TraceRecord {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TracePage {
-    pub epoch: String,
-    pub cursor: u64,
-    pub capacity: usize,
     pub records: Vec<TraceRecord>,
     pub next_cursor: Option<String>,
-    pub resume_cursor: String,
-    pub reset: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub snapshot: bool,
-}
-
-impl TracePage {
-    pub(crate) fn empty(capacity: usize) -> Self {
-        Self {
-            epoch: "none".into(),
-            cursor: 0,
-            capacity,
-            records: Vec::new(),
-            next_cursor: None,
-            resume_cursor: "snapshot".into(),
-            reset: false,
-            snapshot: false,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -158,12 +128,6 @@ impl TraceStore {
         self.live
             .subscribe(otlp::live_channel(project_id, signal))
             .await
-    }
-
-    pub(crate) async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
-        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
-        query.validate().context(InvalidTraceQuery)?;
-        self.queries.replay(project_id, query).await
     }
 
     pub(crate) async fn history(
@@ -220,79 +184,41 @@ impl TraceStore {
         &self,
         project_id: &str,
         query: &metrics::TimeRange,
-    ) -> Result<Vec<metrics::SocketSession>> {
+    ) -> Result<Vec<sockets::SocketSession>> {
         validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
         query.validate().context(InvalidTraceQuery)?;
-        self.queries.websockets(project_id, query).await
+        let (from_ms, to_ms) = (query.from_ms.unwrap_or(0), query.to_ms.unwrap_or(u64::MAX));
+        let (records, heartbeats) = tokio::try_join!(
+            self.queries
+                .socket_records(project_id, to_ms, false, sockets::SESSION_LIMIT),
+            self.queries.gateway_heartbeats(project_id),
+        )?;
+        let mut sessions = sockets::sessions(records, &heartbeats, SystemClock.now_ms()?);
+        sessions.retain(|session| sockets::overlaps(session, from_ms, to_ms));
+        Ok(sessions)
+    }
+
+    /// The public actor contract of the project's latest deployment.
+    pub(crate) async fn deployed_contract(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        self.queries.deployed_contract(project_id).await
+    }
+
+    /// The project's connections open now, by actor.
+    pub(crate) async fn open_connections(
+        &self,
+        project_id: &str,
+    ) -> Result<sockets::OpenConnections> {
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        let (records, heartbeats) = tokio::try_join!(
+            self.queries
+                .socket_records(project_id, u64::MAX, true, sockets::OPEN_LIMIT),
+            self.queries.gateway_heartbeats(project_id),
+        )?;
+        let sessions = sockets::sessions(records, &heartbeats, SystemClock.now_ms()?);
+        Ok(sockets::open_connections(project_id, sessions, &heartbeats))
     }
 }
-
-pub(crate) struct TraceRecorder {
-    tracer: SdkTracer,
-    operation: String,
-    attributes: Vec<KeyValue>,
-}
-
-impl TraceRecorder {
-    pub(crate) fn new(
-        tracer: SdkTracer,
-        invocation: &crate::actor::ActorInvocation,
-        kind: RequestKind,
-        connection_id: Option<String>,
-        metadata: Option<serde_json::Value>,
-    ) -> Self {
-        let mut attributes = vec![
-            KeyValue::new(otlp::REQUEST_ID, invocation.request_id.clone()),
-            KeyValue::new(otlp::KIND, kind.as_str()),
-        ];
-        attributes.extend(connection_id.map(|id| KeyValue::new(otlp::CONNECTION_ID, id)));
-        attributes.extend(metadata.map(|value| KeyValue::new(otlp::METADATA, value.to_string())));
-        Self {
-            tracer,
-            operation: invocation.method.clone(),
-            attributes,
-        }
-    }
-}
-
-impl RequestObserver for TraceRecorder {
-    fn record(self: Box<Self>, completion: &RequestCompletion) {
-        let started = UNIX_EPOCH + Duration::from_millis(completion.started_at_ms);
-        let ended = started + Duration::from_secs_f64(completion.timings.duration_ms / 1000.0);
-        let mut attributes = self.attributes;
-        attributes.extend(completion_attributes(completion));
-        let mut span = self
-            .tracer
-            .span_builder(self.operation)
-            .with_kind(SpanKind::Server)
-            .with_start_time(started)
-            .with_attributes(attributes)
-            .start_with_context(&self.tracer, &opentelemetry::Context::new());
-        if matches!(completion.outcome, RequestOutcome::Failed) {
-            span.set_status(Status::error(completion.outcome.as_str()));
-        }
-        span.end_with_timestamp(ended);
-    }
-}
-
-fn completion_attributes(completion: &RequestCompletion) -> impl Iterator<Item = KeyValue> {
-    let timings = &completion.timings;
-    [
-        Some(KeyValue::new(otlp::OUTCOME, completion.outcome.as_str())),
-        Some(KeyValue::new(otlp::HOST_STATE, timings.host_state.as_str())),
-        Some(KeyValue::new(otlp::ROUTING_MS, timings.routing_ms)),
-        timings
-            .queue_wait_ms
-            .map(|wait| KeyValue::new(otlp::QUEUE_WAIT_MS, wait)),
-        completion
-            .state_version
-            .and_then(|version| i64::try_from(version).ok())
-            .map(|version| KeyValue::new(otlp::STATE_VERSION, version)),
-    ]
-    .into_iter()
-    .flatten()
-}
-
-#[cfg(test)]
-#[path = "../tests/unit/request_traces/tests.rs"]
-mod tests;

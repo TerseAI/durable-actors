@@ -1,12 +1,15 @@
 use super::{
     service::{ActorTarget, ControlPlaneService},
     socket_bus::SocketBus,
-    socket_inventory::SocketInventory,
     socket_ticket::SocketTicket,
 };
 use crate::request_tracking::HostState;
 use crate::{
     actor::{ActorKey, ActorSocketEffect, ActorSocketInvocation},
+    platform_events::{
+        PlatformEvents,
+        sockets::{ALIVE_INTERVAL, SocketEvent},
+    },
     sockets::{SocketRegistry, browser::SocketDispatcher},
 };
 use anyhow::{Context, Result, ensure};
@@ -41,6 +44,7 @@ pub(super) struct SocketGateway {
     pub(super) bus: Arc<dyn SocketBus>,
     pub(super) accepts_sockets: bool,
     pub(super) http: reqwest::Client,
+    pub(super) events: Arc<dyn PlatformEvents<SocketEvent>>,
 }
 
 impl SocketGateway {
@@ -49,13 +53,22 @@ impl SocketGateway {
         accepts_sockets: bool,
         stop: CancellationToken,
         http: reqwest::Client,
+        events: Arc<dyn PlatformEvents<SocketEvent>>,
     ) -> Result<Arc<Self>> {
+        if accepts_sockets {
+            tokio::spawn(report_alive(
+                bus.registry().clone(),
+                events.clone(),
+                stop.clone(),
+            ));
+        }
         Ok(Arc::new(Self {
             registry: bus.registry().clone(),
             bus,
             accepts_sockets,
             stop,
             http,
+            events,
         }))
     }
 
@@ -93,11 +106,6 @@ impl SocketGateway {
                 count: self.bus.count(actor).await?,
             }),
         }
-    }
-
-    pub(super) async fn inventory(&self, project: &str) -> Result<SocketInventory> {
-        ensure!(!self.stop.is_cancelled(), "socket gateway stopping");
-        self.bus.inventory(project).await
     }
 
     async fn target(
@@ -286,5 +294,28 @@ impl SocketDispatcher for GatewaySocketDispatcher {
     fn notify(&self, ticket: &SocketTicket, event: &crate::actor::ActorSocketEvent) {
         self.service
             .deliver_socket_message_event(&ticket.actor, None, event);
+    }
+}
+
+/// Readers treat a gateway's open connections as ended once these reports stop. Each report
+/// names one project, so it reaches that project's observers like its connection events.
+async fn report_alive(
+    registry: SocketRegistry,
+    events: Arc<dyn PlatformEvents<SocketEvent>>,
+    stop: CancellationToken,
+) {
+    use crate::clock::{Clock, SystemClock};
+    let mut ticks = tokio::time::interval(ALIVE_INTERVAL);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = stop.cancelled() => return,
+            _ = ticks.tick() => {
+                let at_ms = SystemClock.now_ms().unwrap_or_default();
+                for project_id in registry.project_ids().await {
+                    events.record(SocketEvent::Alive { project_id, at_ms });
+                }
+            }
+        }
     }
 }
