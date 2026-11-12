@@ -192,9 +192,8 @@ async fn dev_observability_is_open_while_application_routes_enforce_the_secret()
     );
     for endpoint in [
         "actors",
-        "events",
+        "events?signals=requests,logs,platform",
         "requests",
-        "requests/events",
         "metrics",
         "queue-waits",
         "websockets",
