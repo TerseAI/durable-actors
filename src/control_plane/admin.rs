@@ -362,6 +362,10 @@ impl AdminService {
         self.registry.launch_spec(project_id).await
     }
 
+    pub(crate) async fn current_deployments(&self) -> Result<Vec<HostLaunchSpec>> {
+        self.registry.launch_specs().await
+    }
+
     #[cfg(test)]
     pub(crate) async fn register_deployment(
         &self,

@@ -10,9 +10,9 @@ use super::*;
 
 #[tokio::test]
 async fn lists_developer_tools() {
-    let reply = rpc(local_router(Router::new()), "tools/list", json!({})).await;
+    let reply = rpc(test_router(Router::new()).await, "tools/list", json!({})).await;
     let tools = reply["result"]["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 10);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     let tool = |name: &str| tools.iter().find(|tool| tool["name"] == name).expect(name);
     assert_eq!(tool("invoke_actor")["annotations"]["destructiveHint"], true);
@@ -24,31 +24,43 @@ async fn lists_developer_tools() {
 async fn tool_calls_forward_the_credential_and_filters() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let api = Router::new().route(
-        "/v1/projects/demo/observe/requests",
+        "/v1/projects/{project}/observe/requests",
         get({
             let seen = seen.clone();
             move |headers: HeaderMap, uri: Uri| async move {
                 seen.lock().unwrap().push((
                     headers[header::AUTHORIZATION].to_str().unwrap().to_owned(),
+                    uri.path().to_owned(),
                     uri.query().unwrap_or_default().to_owned(),
                 ));
                 Json(json!({ "records": [], "nextCursor": null }))
             }
         }),
     );
-    let arguments = json!({ "actorName": "Counter", "outcome": "failed" });
-    let reply = call_tool(api, "list_requests", arguments).await;
+    let admin = test_admin(&[("demo", "org-test"), ("second", "org-test")]).await;
+    let router = local_router(api, admin);
+    for project in ["demo", "second"] {
+        let arguments =
+            json!({ "projectId": project, "actorName": "Counter", "outcome": "failed" });
+        let reply = rpc(
+            router.clone(),
+            "tools/call",
+            json!({"name":"list_requests", "arguments":arguments}),
+        )
+        .await;
 
-    assert_eq!(reply["result"]["isError"], false);
-    assert_eq!(text(&reply), json!({ "records": [] }));
-    assert_eq!(
-        reply["result"]["structuredContent"],
-        json!({ "records": [] })
-    );
-    let (authorization, query) = seen.lock().unwrap().pop().expect("API call");
-    assert_eq!(authorization, "Bearer secret");
-    for pair in ["actorName=Counter", "outcome=failed", "limit=25"] {
-        assert!(query.split('&').any(|item| item == pair), "{query}");
+        assert_eq!(reply["result"]["isError"], false);
+        assert_eq!(text(&reply), json!({ "records": [] }));
+        assert_eq!(
+            reply["result"]["structuredContent"],
+            json!({ "records": [] })
+        );
+        let (authorization, path, query) = seen.lock().unwrap().pop().expect("API call");
+        assert_eq!(authorization, "Bearer secret");
+        assert_eq!(path, format!("/v1/projects/{project}/observe/requests"));
+        for pair in ["actorName=Counter", "outcome=failed", "limit=25"] {
+            assert!(query.split('&').any(|item| item == pair), "{query}");
+        }
     }
 }
 
@@ -125,9 +137,10 @@ async fn invalid_cursors_are_tool_errors_the_model_can_fix() {
     assert_eq!(text(&reply)["error"]["code"], "invalid_request");
 }
 
-async fn call_tool(api: Router, name: &str, arguments: Value) -> Value {
+async fn call_tool(api: Router, name: &str, mut arguments: Value) -> Value {
+    arguments["projectId"] = json!("demo");
     let params = json!({ "name": name, "arguments": arguments });
-    rpc(local_router(api), "tools/call", params).await
+    rpc(test_router(api).await, "tools/call", params).await
 }
 
 fn text(reply: &Value) -> Value {
@@ -137,25 +150,143 @@ fn text(reply: &Value) -> Value {
     serde_json::from_str(text).expect("JSON text")
 }
 
-async fn rpc(router: Router, method: &str, mut params: Value) -> Value {
+async fn rpc(router: Router, method: &str, params: Value) -> Value {
+    rpc_as(router, method, params, None, "secret").await.1
+}
+
+async fn rpc_as(
+    router: Router,
+    method: &str,
+    mut params: Value,
+    organization: Option<&str>,
+    credential: &str,
+) -> (StatusCode, Value) {
     params["_meta"] = json!({
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
         "io.modelcontextprotocol/clientInfo": { "name": "test", "version": "1.0" },
         "io.modelcontextprotocol/clientCapabilities": {}
     });
-    let mut request = Request::post("/v1/projects/demo/mcp")
+    let mut request = Request::post("/mcp")
         .header(header::HOST, "localhost")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
-        .header(header::AUTHORIZATION, "Bearer secret")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
         .header("mcp-protocol-version", "2026-07-28")
         .header("mcp-method", method);
+    if let Some(organization) = organization {
+        request = request.header(ORGANIZATION_HEADER, organization);
+    }
     if let Some(name) = params["name"].as_str() {
         request = request.header("mcp-name", name);
     }
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
     let request = request.body(Body::from(body.to_string())).unwrap();
     let Ok(response) = router.oneshot(request).await;
+    let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    serde_json::from_slice(&bytes).expect("JSON-RPC reply")
+    (
+        status,
+        serde_json::from_slice(&bytes).expect("JSON-RPC reply"),
+    )
+}
+
+async fn test_router(api: Router) -> Router {
+    local_router(api, test_admin(&[("demo", "org-test")]).await)
+}
+
+async fn test_admin(projects: &[(&str, &str)]) -> AdminService {
+    use crate::control_plane::{
+        admin::{AdminRegistry, HostLaunchSpec, LocalAdminRegistry},
+        service::tests::test_issuer,
+    };
+    let registry = Arc::new(LocalAdminRegistry::default());
+    for (project, organization) in projects {
+        registry
+            .register_test_deployment(&HostLaunchSpec {
+                project_id: (*project).into(),
+                organization_id: (*organization).into(),
+                image_policy: Default::default(),
+                sandboxes: Default::default(),
+                source: None,
+                code_snapshot: None,
+                image_ref: "image".into(),
+                working_directory: "/workspace".into(),
+                actor_entrypoint: Some("src/actors.ts".into()),
+                secret_refs: vec!["must-not-leak".into()],
+            })
+            .await
+            .unwrap();
+    }
+    AdminService::new(Some("secret".into()), registry, test_issuer().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn lists_only_projects_in_the_authenticated_organization() {
+    let admin = test_admin(&[
+        ("demo", "org-test"),
+        ("second", "org-test"),
+        ("private", "org-other"),
+    ])
+    .await;
+    let router = local_router(Router::new(), admin);
+    let (_, reply) = rpc_as(
+        router,
+        "tools/call",
+        json!({"name":"list_projects", "arguments":{}}),
+        Some("org-test"),
+        "secret",
+    )
+    .await;
+    assert_eq!(
+        text(&reply)["records"],
+        json!([{"projectId":"demo"}, {"projectId":"second"}])
+    );
+}
+
+#[tokio::test]
+async fn every_actor_tool_hides_projects_outside_the_organization() {
+    let admin = test_admin(&[("demo", "org-test"), ("private", "org-other")]).await;
+    async fn unexpected_request() -> StatusCode {
+        panic!("Must not contact a foreign project's API")
+    }
+    let api = Router::new().fallback(unexpected_request);
+    let router = local_router(api, admin);
+    for name in [
+        "describe_deployment",
+        "list_actors",
+        "get_actor_state",
+        "list_state_history",
+        "list_requests",
+        "list_logs",
+        "get_health",
+        "list_websocket_sessions",
+        "invoke_actor",
+    ] {
+        let (_, reply) = rpc_as(router.clone(), "tools/call", json!({"name":name, "arguments":{
+            "projectId":"private", "organizationId":"org-other", "actorName":"Counter", "actorId":"one", "method":"increment"
+        }}), Some("org-test"), "secret").await;
+        assert_eq!(reply["result"]["isError"], true, "{name}: {reply}");
+        assert_eq!(
+            text(&reply)["error"]["code"],
+            "not_found",
+            "{name}: {reply}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn requires_authentication_and_explicit_context_for_multiple_organizations() {
+    let admin = test_admin(&[("demo", "org-test"), ("private", "org-other")]).await;
+    let router = local_router(Router::new(), admin);
+    let (status, _) = rpc_as(
+        router.clone(),
+        "tools/list",
+        json!({}),
+        Some("org-test"),
+        "wrong",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = rpc_as(router.clone(), "tools/list", json!({}), None, "secret").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
