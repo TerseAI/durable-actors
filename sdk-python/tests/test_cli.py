@@ -266,11 +266,13 @@ def test_observer_assets_proxy_streaming_and_browser_boundaries(tmp_path, cli_en
                 assert http.get("/api/observe/../../deployment").status_code == 404
                 assert http.get("/%2e%2e/pyproject.toml").status_code == 404
                 assert (
-                    http.head("/api/observe/events")
+                    http.head("/api/observe/events?signals=requests,logs,platform")
                     .headers["content-type"]
                     .startswith("text/event-stream")
                 )
-                with http.stream("GET", "/api/observe/events") as stream:
+                with http.stream(
+                    "GET", "/api/observe/events?signals=requests,logs,platform"
+                ) as stream:
                     assert stream.status_code == 200
                     assert next(stream.iter_bytes())
                 runtime.terminate()
