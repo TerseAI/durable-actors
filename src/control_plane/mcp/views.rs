@@ -363,22 +363,18 @@ pub(super) struct Version {
     connection_id: Option<String>,
 }
 
+// One struct, not an untagged enum: MCP clients reject output schemas whose root is not an object.
 #[derive(Serialize, JsonSchema)]
-#[serde(untagged)]
-pub(super) enum StateView {
-    Saved {
-        #[serde(flatten)]
-        version: Version,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
-        state: Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        schema: Option<Value>,
-    },
-    Empty {
-        state: Value,
-        message: String,
-    },
+pub(super) struct StateView {
+    #[serde(flatten)]
+    version: Option<Version>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    state: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 pub(super) struct StateQuery {
@@ -389,9 +385,12 @@ pub(super) struct StateQuery {
 impl StateReply {
     pub(super) fn view(self, query: StateQuery) -> StateView {
         let Some(snapshot) = self.snapshot else {
-            return StateView::Empty {
+            return StateView {
+                version: None,
+                path: None,
                 state: Value::Null,
-                message: "This instance has no saved state yet.".into(),
+                schema: None,
+                message: Some("This instance has no saved state yet.".into()),
             };
         };
         let state = match &query.path {
@@ -402,11 +401,12 @@ impl StateReply {
             .include_schema
             .then(|| self.schema.as_ref().and_then(state_schema))
             .flatten();
-        StateView::Saved {
-            version: snapshot.record.into(),
+        StateView {
+            version: Some(snapshot.record.into()),
             path: query.path,
             state,
             schema,
+            message: None,
         }
     }
 }

@@ -13,7 +13,9 @@ async fn lists_developer_tools() {
     let reply = rpc(test_router(Router::new()).await, "tools/list", json!({})).await;
     let tools = reply["result"]["tools"].as_array().expect("tools");
     assert_eq!(tools.len(), 10);
-    assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
+    for tool in tools {
+        assert_eq!(tool["outputSchema"]["type"], "object", "{}", tool["name"]);
+    }
     let tool = |name: &str| tools.iter().find(|tool| tool["name"] == name).expect(name);
     assert_eq!(tool("invoke_actor")["annotations"]["destructiveHint"], true);
     assert_eq!(tool("invoke_actor")["annotations"]["openWorldHint"], true);
