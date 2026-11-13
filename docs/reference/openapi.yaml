@@ -215,6 +215,50 @@ paths:
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/warm-host:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: warmActorHost
+            tags: [Actors]
+            summary: Keep an actor's host warm
+            security: [{ ApiKey: [] }, { InvokeApiKey: [] }, { ActorSession: [] }, {}]
+            description: |
+                Resolves placement and starts the actor's host if needed, then keeps the host running for warmMs after it receives the warm. After that, the normal idle time applies. A warm never shortens a longer one already in effect, and runs no actor code. A warmMs of 0 restarts the idle time from now.
+                By default the reply waits until the host has the warm (200). With waitForCompletion false, the reply is 202 once the request itself is checked. With timeoutMs as well, it waits up to that long: 200 if the host has the warm in time, the error if it fails in time, otherwise 202. Failures after a 202 are not reported to the caller.
+                Accepts the administrative secret, the invoke API key, or a runtime-issued actor:session credential for this project.
+            requestBody: { $ref: "#/components/requestBodies/WarmActorHost" }
+            responses:
+                "200":
+                    description: The host has the warm.
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/WarmStatus" }
+                            examples:
+                                warm: { value: { status: OK } }
+                "202":
+                    description: The control plane accepted the warm; the host may still be starting.
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/WarmStatus" }
+                            examples:
+                                accepted: { value: { status: accepted } }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "403":
+                    description: Actor has no published RPC methods, or organization access is disabled (access_disabled).
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/Error" }
+                "404": { $ref: "#/components/responses/NotFound" }
+                "409": { $ref: "#/components/responses/Conflict" }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "429": { $ref: "#/components/responses/ActorLimit" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "502": { description: The warm's outcome is unknown. }
+                "503": { $ref: "#/components/responses/Unavailable" }
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke:
         servers:
             - url: "{actorHost}"
@@ -837,6 +881,14 @@ components:
                     examples:
                         default: { value: {} }
                         regional: { value: { homeRegion: north-america-west } }
+        WarmActorHost:
+            required: true
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/WarmActorHostRequest" }
+                    examples:
+                        wait: { value: { requestId: request-1, warmMs: 60000 } }
+                        quick: { value: { requestId: request-1, warmMs: 60000, waitForCompletion: false, timeoutMs: 2000 } }
         FindWebSocket:
             required: true
             content:
@@ -1189,6 +1241,21 @@ components:
                           required: [type]
                           properties:
                               type: { const: unauthenticated }
+        WarmActorHostRequest:
+            type: object
+            additionalProperties: false
+            required: [requestId, warmMs]
+            properties:
+                requestId: { type: string, minLength: 1, maxLength: 255 }
+                warmMs: { type: integer, minimum: 0, maximum: 86400000 }
+                waitForCompletion: { type: boolean }
+                timeoutMs: { type: integer, minimum: 1, maximum: 30000, description: Only with waitForCompletion false. }
+                homeRegion: { type: [string, "null"], minLength: 1, maxLength: 64, pattern: "^[a-z0-9-]+$" }
+        WarmStatus:
+            type: object
+            required: [status]
+            properties:
+                status: { enum: [OK, accepted] }
         ActorInvocationMetadata:
             type: object
             description: Timing and host-start context finalized once by the host request tracker and shared with the response, observability and diagnostic log. Omitted for requests denied before host dispatch.

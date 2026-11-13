@@ -88,6 +88,9 @@ pub(super) async fn warm_host(
 ) -> Result<Response, ApiError> {
     let actor = path.into_actor();
     let Json(request) = body.map_err(ApiError::json)?;
+    if request.request_id.is_empty() || request.request_id.len() > 255 {
+        return Err(ApiError::bad_request("requestId must be 1 to 255 bytes"));
+    }
     if request.warm_ms > 86_400_000 {
         return Err(ApiError::bad_request("warmMs must be 0 to 86400000"));
     }

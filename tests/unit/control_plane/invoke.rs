@@ -491,6 +491,7 @@ async fn warming_rejects_a_malformed_duration_without_launching() -> Result<()> 
     for body in [
         json!({"requestId": "warm-1"}),                       // 400
         json!({"requestId": "warm-1", "warmMs": null}),       // 400
+        json!({"requestId": "", "warmMs": 60_000}),           // 400
         json!({"requestId": "warm-1", "warmMs": -5}),         // 400
         json!({"requestId": "warm-1", "warmMs": 1.5}),        // 400
         json!({"requestId": "warm-1", "warmMs": "60000"}),    // 400
