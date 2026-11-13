@@ -49,13 +49,21 @@ def actor_reference(actor: type[A], actor_id: str, transport: AsyncActorTranspor
             )
         await client.broadcast(actor.__name__, actor_id, encode(outgoing, message))
 
+    async def warm(self: A, warm_ms: int, **options: Any) -> dict[str, str]:
+        return await client.warm(actor.__name__, actor_id, warm_ms, **options)
+
     members: dict[str, Any] = {
         name: remote_method(actor, actor_id, client, name, method)
         for name, method in definition.methods.items()
     }
     members.update({name: property(unavailable) for name in definition.fields})
     members.update(
-        {"connect": connect, "broadcast": broadcast, "id": property(lambda self: actor_id)}
+        {
+            "connect": connect,
+            "broadcast": broadcast,
+            "warm": warm,
+            "id": property(lambda self: actor_id),
+        }
     )
     reference = type(f"{actor.__name__}Reference", (actor,), members)
     return cast(A, object.__new__(reference))

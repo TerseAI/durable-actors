@@ -9,12 +9,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock, Timer
 from types import TracebackType
-from typing import Any, Protocol
+from typing import Any, Protocol, Unpack
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
-from .client import ActorTransport, Client, SocketGrant, component, validate_origin
+from .client import ActorTransport, Client, SocketGrant, WarmOptions, component, validate_origin
 
 
 class ActorSession(BaseModel):
@@ -108,6 +108,13 @@ class ActorSessionTransport:
         """Broadcast using the current session's permissions."""
         with self._acquire() as client:
             client.broadcast(actor_name, actor_id, message)
+
+    def warm(
+        self, actor_name: str, actor_id: str, warm_ms: int, **options: Unpack[WarmOptions]
+    ) -> dict[str, str]:
+        """Warm using the current session's permissions."""
+        with self._acquire() as client:
+            return client.warm(actor_name, actor_id, warm_ms, **options)
 
     def close(self) -> None:
         """Stop renewal and close owned transports once their active calls finish."""
