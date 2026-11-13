@@ -61,6 +61,10 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
             post(find_actor),
         )
         .route(
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/warm-host",
+            post(super::invocation::warm_host),
+        )
+        .route(
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket",
             post(find_websocket),
         )

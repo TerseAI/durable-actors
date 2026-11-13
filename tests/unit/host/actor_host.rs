@@ -697,11 +697,22 @@ async fn a_warm_only_lengthens_the_window() -> Result<()> {
     let (host, _started, _release) = controlled_host().await;
     let now = tokio::time::Instant::now();
     let longer = now + Duration::from_secs(300);
-    host.warm("warm-1".into(), now + Duration::from_secs(10))
+    host.warm(
+        "warm-1".into(),
+        now + Duration::from_secs(10),
+        HostState::Warm,
+        0.0,
+    )
+    .await?;
+    host.warm("warm-2".into(), longer, HostState::Warm, 0.0)
         .await?;
-    host.warm("warm-2".into(), longer).await?;
-    host.warm("warm-3".into(), now + Duration::from_secs(10))
-        .await?;
+    host.warm(
+        "warm-3".into(),
+        now + Duration::from_secs(10),
+        HostState::Warm,
+        0.0,
+    )
+    .await?;
     assert_eq!(host.status().borrow().warm_until, Some(longer));
     Ok(())
 }

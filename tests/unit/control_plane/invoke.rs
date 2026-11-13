@@ -451,6 +451,7 @@ async fn warming_an_actor_without_a_host_replies_once_its_host_is_warm() -> Resu
     assert_eq!(warms.len(), 1);
     assert_eq!(warms[0]["warmMs"], 60_000);
     assert_eq!(warms[0]["requestId"], "warm-1");
+    assert_eq!(warms[0]["hostState"], "cold");
     assert!(
         warms[0]["ownerEpoch"]
             .as_u64()

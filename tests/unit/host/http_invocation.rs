@@ -465,6 +465,24 @@ async fn a_warm_is_traced_as_an_rpc_warm() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test] // TODO: Test 36 a warm that started its host is traced as cold with its routing time
+async fn a_warm_records_the_host_state_and_routing_time_it_arrives_with() -> Result<()> {
+    let mut fixture = HttpHost::start(None).await?;
+    fixture
+        .post(
+            "warm-host",
+            "counter-1",
+            json!({"requestId": "warm-1", "ownerEpoch": 1, "warmMs": 30_000, "hostState": "cold", "routingMs": 500.0}),
+        )
+        .await?;
+    let trace = tokio::time::timeout(Duration::from_secs(1), fixture.traces.recv())
+        .await?
+        .unwrap();
+    assert_eq!(trace.host_state, HostState::Cold);
+    assert_eq!(trace.routing_ms, 500.0);
+    Ok(())
+}
+
 #[tokio::test] // TODO: Test 22 a warm whose token lists only some methods is accepted by the host, because a warm is not a method
 async fn a_warm_with_a_session_grant_is_accepted() -> Result<()> {
     let grant = InvocationGrant {

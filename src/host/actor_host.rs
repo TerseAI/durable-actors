@@ -178,6 +178,8 @@ impl ActorHost {
         &self,
         request_id: String,
         until: tokio::time::Instant,
+        host_state: HostState,
+        routing_ms: f64,
     ) -> Result<ActorExecutionResult> {
         let invocation = ActorInvocation {
             actor: self.actor.clone(),
@@ -185,8 +187,15 @@ impl ActorHost {
             method: "warm".into(),
             args: vec![],
         };
-        self.submit(ActorOperation::Warm { invocation, until }, 0)
-            .await
+        self.submit_traced(
+            ActorOperation::Warm { invocation, until },
+            0,
+            Instant::now(),
+            host_state,
+            routing_ms,
+        )
+        .await
+        .0
     }
 
     pub(crate) async fn drain(&self, timeout: Duration) -> Result<()> {

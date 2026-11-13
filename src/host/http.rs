@@ -222,10 +222,12 @@ impl ActorHostHttpService {
         &self,
         request_id: String,
         until: tokio::time::Instant,
+        host_state: HostState,
+        routing_ms: f64,
     ) -> Result<StatusCode, HttpError> {
         match self
             .host
-            .warm(request_id, until)
+            .warm(request_id, until, host_state, routing_ms)
             .await
             .map_err(bad_request)?
         {
@@ -330,7 +332,14 @@ async fn warm_host(
         ));
     }
     let until = tokio::time::Instant::now() + std::time::Duration::from_millis(request.warm_ms);
-    service.warm(request.request_id, until).await
+    service
+        .warm(
+            request.request_id,
+            until,
+            request.host_state,
+            request.routing_ms,
+        )
+        .await
 }
 
 fn authorize_grant(
@@ -404,6 +413,10 @@ struct InvokeRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WarmHostRequest {
+    #[serde(default)]
+    host_state: HostState,
+    #[serde(default)]
+    routing_ms: f64,
     request_id: String,
     owner_epoch: u64,
     warm_ms: u64,
