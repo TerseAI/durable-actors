@@ -3,6 +3,8 @@ import type { ActorConnection, ActorSocketMessage } from "../actor/socket.js"
 import type { ActorSchemas } from "../actor/socketValidation.js"
 import { parseActorHostReply } from "../client-runtime/http.js"
 import { cloneJson } from "../client-runtime/json.js"
+import { warmActor } from "../client-runtime/stub.js"
+import type { WarmOptions, WarmStatus } from "../client-runtime/stub.js"
 import type { ActorClientTransport } from "../client/client.js"
 import { ActorInvocationError, ActorProtocolError } from "../errors.js"
 
@@ -44,6 +46,10 @@ class HostActorClient implements ActorClientTransport {
 
     async broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void> {
         return (await this.remote()).broadcast(actorName, actorId, message)
+    }
+
+    async warm(actorName: string, actorId: string, warmMs: number, options?: WarmOptions): Promise<WarmStatus> {
+        return warmActor(actorName, actorId, warmMs, options, await this.remote())
     }
 }
 

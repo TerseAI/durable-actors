@@ -57,6 +57,29 @@ test("backend stubs use the existing client lazily within the current invocation
     assert.equal(value, "scoped")
 })
 
+test("backend stubs warm through the client of the current invocation scope", async () => {
+    const warms: unknown[][] = []
+    const stub = createActorStub<{ warm(warmMs: number): Promise<unknown> }>("Room", "one", [])
+    const status = await runWithActorClient(
+        {
+            async invoke() {
+                throw new Error("unused")
+            },
+            async connect() {
+                throw new Error("unused")
+            },
+            async broadcast() {},
+            async warm(...args) {
+                warms.push(args)
+                return { status: "OK" as const }
+            }
+        },
+        () => stub.warm(1000)
+    )
+    assert.deepEqual(status, { status: "OK" })
+    assert.deepEqual(warms, [["Room", "one", 1000, undefined]])
+})
+
 test("backend stubs reject invalid identities and unsafe method names before dispatch", () => {
     assert.throws(() => createActorStub("Room", "bad/id", []), /actor ID/)
     assert.throws(() => createActorStub("bad/type", "one", []), /actor name/)

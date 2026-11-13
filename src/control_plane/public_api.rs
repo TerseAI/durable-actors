@@ -599,8 +599,8 @@ struct DeploymentReply {
 
 pub(super) struct ApiError {
     status: StatusCode,
-    code: String,
-    message: String,
+    pub(super) code: String,
+    pub(super) message: String,
     retry_after_seconds: Option<u64>,
 }
 

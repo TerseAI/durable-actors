@@ -93,13 +93,33 @@ pub(super) async fn warm_host(
     }
     let wait = request.wait()?;
     authorize_warm(&state, &actor, &headers, request.home_region.as_deref())?;
+    let (actor_name, actor_id) = (actor.actor_name.clone(), actor.actor_id.clone());
+    let request_id = request.request_id.clone();
     let warming = warm(state, actor, headers, request);
     let warmed = match wait {
         None => Some(warming.await),
-        Some(limit) => tokio::time::timeout(limit, tokio::spawn(warming))
-            .await
-            .ok()
-            .map(|joined| joined.unwrap_or_else(|error| Err(ApiError::internal(error)))),
+        Some(limit) => tokio::time::timeout(
+            limit,
+            tokio::spawn(async move {
+                let result = warming.await;
+                if let Err(error) = &result {
+                    tracing::warn!(
+                        event = "actor_warm",
+                        request_id,
+                        actor_name,
+                        actor_id,
+                        outcome = "failed",
+                        error_code = %error.code,
+                        error = %error.message,
+                        "background warm failed"
+                    );
+                }
+                result
+            }),
+        )
+        .await
+        .ok()
+        .map(|joined| joined.unwrap_or_else(|error| Err(ApiError::internal(error)))),
     };
     let (code, status) = match warmed.transpose()? {
         Some(()) => (StatusCode::OK, "OK"),
