@@ -488,11 +488,11 @@ async fn warming_an_awake_actor_launches_no_host() -> Result<()> {
 async fn warming_rejects_a_malformed_duration_without_launching() -> Result<()> {
     let fixture = Fixture::start(vec![]).await?;
     for body in [
-        json!({"requestId": "warm-1"}),                    // 400
-        json!({"requestId": "warm-1", "warmMs": null}),    // 400
-        json!({"requestId": "warm-1", "warmMs": -5}),      // 400
-        json!({"requestId": "warm-1", "warmMs": 1.5}),     // 400
-        json!({"requestId": "warm-1", "warmMs": "60000"}), // 400
+        json!({"requestId": "warm-1"}),                       // 400
+        json!({"requestId": "warm-1", "warmMs": null}),       // 400
+        json!({"requestId": "warm-1", "warmMs": -5}),         // 400
+        json!({"requestId": "warm-1", "warmMs": 1.5}),        // 400
+        json!({"requestId": "warm-1", "warmMs": "60000"}),    // 400
         json!({"requestId": "warm-1", "warmMs": 86_400_001}), // 400
         json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": false, "timeoutMs": 0}), // 400
         json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": false, "timeoutMs": 1.5}), // 400
