@@ -692,6 +692,40 @@ async fn controlled_host() -> (
     (Arc::new(host), receiver, release)
 }
 
+#[tokio::test] // TODO: Test 3 warms ending at 10 s, 300 s, then 10 s: warm_until stays at 300 s
+async fn a_warm_only_lengthens_the_window() -> Result<()> {
+    let (host, _started, _release) = controlled_host().await;
+    let now = tokio::time::Instant::now();
+    let longer = now + Duration::from_secs(300);
+    host.warm(
+        "warm-1".into(),
+        now + Duration::from_secs(10),
+        HostState::Warm,
+        0.0,
+    )
+    .await?;
+    host.warm("warm-2".into(), longer, HostState::Warm, 0.0)
+        .await?;
+    host.warm(
+        "warm-3".into(),
+        now + Duration::from_secs(10),
+        HostState::Warm,
+        0.0,
+    )
+    .await?;
+    assert_eq!(host.status().borrow().warm_until, Some(longer));
+    Ok(())
+}
+
+// #[tokio::test] // TODO: Test 3.5 after a warm is confirmed, the host's status shows its warm_until
+// async fn warm_until_is_published_once_a_warm_is_confirmed() -> Result<()> {
+//     let (host, _started, _release) = controlled_host().await;
+//     let until = tokio::time::Instant::now() + Duration::from_secs(30);
+//     host.warm(until).await?;
+//     assert_eq!(host.status().borrow().warm_until, Some(until));
+//     Ok(())
+// }
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_state() -> Result<()> {
     for _ in 0..64 {

@@ -50,6 +50,10 @@ impl ActorHostHttpService {
                 "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
                 post(invoke),
             )
+            .route(
+                "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/warm-host",
+                post(warm_host),
+            )
             .layer(DefaultBodyLimit::disable())
             .with_state(Arc::new(self))
     }
@@ -213,6 +217,31 @@ impl ActorHostHttpService {
         };
         outcome.with_metadata(metadata)
     }
+
+    async fn warm(
+        &self,
+        request_id: String,
+        until: tokio::time::Instant,
+        host_state: HostState,
+        routing_ms: f64,
+    ) -> Result<StatusCode, HttpError> {
+        match self
+            .host
+            .warm(request_id, until, host_state, routing_ms)
+            .await
+            .map_err(bad_request)?
+        {
+            ActorExecutionResult::Completed { .. } => Ok(StatusCode::OK),
+            ActorExecutionResult::HostUnavailable => Err(HttpError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "actor host is shutting down".into(),
+            )),
+            ActorExecutionResult::Failed { failure } => Err(HttpError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                failure.message,
+            )),
+        }
+    }
 }
 
 async fn socket_event(
@@ -287,6 +316,32 @@ async fn invoke(
     ))
 }
 
+async fn warm_host(
+    State(service): State<Arc<ActorHostHttpService>>,
+    Path(actor): Path<ActorKey>,
+    headers: HeaderMap,
+    body: Result<Json<WarmHostRequest>, JsonRejection>,
+) -> Result<StatusCode, HttpError> {
+    let principal = service.authenticate(&headers)?;
+    let Json(request) = body.map_err(json_error)?;
+    service.authorize(&principal, &actor, request.owner_epoch)?;
+    if request.warm_ms > 86_400_000 {
+        return Err(HttpError(
+            StatusCode::BAD_REQUEST,
+            "warmMs must be 0 to 86400000".into(),
+        ));
+    }
+    let until = tokio::time::Instant::now() + std::time::Duration::from_millis(request.warm_ms);
+    service
+        .warm(
+            request.request_id,
+            until,
+            request.host_state,
+            request.routing_ms,
+        )
+        .await
+}
+
 fn authorize_grant(
     grant: Option<&crate::control_plane::session::InvocationGrant>,
     method: Option<&str>,
@@ -353,6 +408,18 @@ struct InvokeRequest {
     owner_epoch: u64,
     method: String,
     args: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WarmHostRequest {
+    #[serde(default)]
+    host_state: HostState,
+    #[serde(default)]
+    routing_ms: f64,
+    request_id: String,
+    owner_epoch: u64,
+    warm_ms: u64,
 }
 
 #[derive(Serialize)]

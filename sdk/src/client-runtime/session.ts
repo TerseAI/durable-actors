@@ -2,7 +2,8 @@ import { HttpActorClient } from "./client.js"
 import { ActorSessionRejectedError } from "./errors.js"
 import { validateActorComponent, validateOrigin } from "./settings.js"
 import type { DurableActorsClientOptions } from "./settings.js"
-import type { ActorRpcTransport } from "./stub.js"
+import { warmActor } from "./stub.js"
+import type { ActorRpcTransport, WarmOptions, WarmStatus } from "./stub.js"
 
 export interface ActorSession {
     readonly projectId: string
@@ -52,17 +53,23 @@ export class ActorSessionTransport implements ActorRpcTransport {
     }
 
     async invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown> {
-        if (this.closed) throw new Error("Actor session transport is disposed")
-        this.lastUsedAt = this.now()
-        const transport =
-            this.transport && this.expiresAtMs > this.now() + 5_000 ? this.transport : await this.refresh()
-        return transport.invoke(actorName, actorId, method, args)
+        return (await this.current()).invoke(actorName, actorId, method, args)
+    }
+
+    async warm(actorName: string, actorId: string, warmMs: number, options?: WarmOptions): Promise<WarmStatus> {
+        return warmActor(actorName, actorId, warmMs, options, await this.current())
     }
 
     dispose(): void {
         this.closed = true
         this.cancel?.()
         this.transport = undefined
+    }
+
+    private async current(): Promise<ActorRpcTransport> {
+        if (this.closed) throw new Error("Actor session transport is disposed")
+        this.lastUsedAt = this.now()
+        return this.transport && this.expiresAtMs > this.now() + 5_000 ? this.transport : this.refresh()
     }
 
     private refresh(): Promise<ActorRpcTransport> {

@@ -26,7 +26,7 @@ function actorSource(actor: ActorApi) {
     const stub = `actors.${actor.actorName}.${stubName}`
     return {
         declarations: `export namespace ${actor.actorName} {
-export type ${stubName} = $ActorTypes[${JSON.stringify(actor.actorName)}]["Methods"]
+export type ${stubName} = $ActorTypes[${JSON.stringify(actor.actorName)}]["Methods"] & import("./runtime/index.js").ActorWarm
 ${methodTypes(actor.actorName, actor.rpc.methods, stubName, methodsName)}
 }`,
         descriptor: actorDescriptor(

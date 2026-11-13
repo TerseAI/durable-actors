@@ -433,6 +433,258 @@ async fn backend_socket_effects_reach_clients_connected_to_another_replica() -> 
     Ok(())
 }
 
+#[tokio::test] // TODO: Test 8 warming an actor with no running host starts one host, runs no method, and replies 200 once the host has the warm
+async fn warming_an_actor_without_a_host_replies_once_its_host_is_warm() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let response = fixture
+        .post(
+            "warm-host",
+            "api-key",
+            json!({"requestId": "warm-1", "warmMs": 60_000}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.json::<Value>().await?, json!({"status": "OK"}));
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+    let warms = fixture.host.warms.lock().unwrap();
+    assert_eq!(warms.len(), 1);
+    assert_eq!(warms[0]["warmMs"], 60_000);
+    assert_eq!(warms[0]["requestId"], "warm-1");
+    assert_eq!(warms[0]["hostState"], "cold");
+    assert!(
+        warms[0]["ownerEpoch"]
+            .as_u64()
+            .is_some_and(|epoch| epoch > 0)
+    );
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 9 warming an actor whose host is running sends the warm to that host and starts no new one
+async fn warming_an_awake_actor_launches_no_host() -> Result<()> {
+    let fixture = Fixture::start_with_existing_host(vec![], true).await?;
+    let response = fixture
+        .post(
+            "warm-host",
+            "api-key",
+            json!({"requestId": "warm-1", "warmMs": 60_000}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+    let warms = fixture.host.warms.lock().unwrap();
+    assert_eq!(warms.len(), 1);
+    assert_eq!(warms[0]["warmMs"], 60_000);
+    assert_eq!(warms[0]["requestId"], "warm-1");
+    assert!(
+        warms[0]["ownerEpoch"]
+            .as_u64()
+            .is_some_and(|epoch| epoch > 0)
+    );
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 10 a missing or malformed duration or quick-reply option gets 400 invalid_request and starts no host
+async fn warming_rejects_a_malformed_duration_without_launching() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    for body in [
+        json!({"requestId": "warm-1"}),                       // 400
+        json!({"requestId": "warm-1", "warmMs": null}),       // 400
+        json!({"requestId": "", "warmMs": 60_000}),           // 400
+        json!({"requestId": "warm-1", "warmMs": -5}),         // 400
+        json!({"requestId": "warm-1", "warmMs": 1.5}),        // 400
+        json!({"requestId": "warm-1", "warmMs": "60000"}),    // 400
+        json!({"requestId": "warm-1", "warmMs": 86_400_001}), // 400
+        json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": false, "timeoutMs": 0}), // 400
+        json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": false, "timeoutMs": 1.5}), // 400
+        json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": false, "timeoutMs": 30_001}), // 400
+        json!({"requestId": "warm-1", "warmMs": 60_000, "timeoutMs": 2000}), // 400
+        json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": true, "timeoutMs": 2000}), // 400
+        json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": "no"}), // 400
+    ] {
+        let response = fixture.post("warm-host", "api-key", body).await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let reply: Value = response.json().await?;
+        assert_eq!(reply["error"]["code"], "invalid_request");
+    }
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 0);
+    assert!(fixture.host.warms.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 11 a warm sent with a session token replies 200 and reaches the host, like one sent with the admin key
+async fn warming_accepts_a_session_token() -> Result<()> {
+    let fixture = Fixture::start_with_existing_host(vec![], true).await?;
+    let expiry = (super::super::super::auth::unix_seconds()? + 30) * 1000;
+    let session = fixture
+        .admin
+        .issue_session("default".into(), "subject".into(), expiry)?;
+    let response = fixture
+        .post(
+            "warm-host",
+            &session.token,
+            json!({"requestId": "warm-1", "warmMs": 60_000}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.host.warms.lock().unwrap().len(), 1);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 12 warming a new id with homeRegion north-america-east creates the actor in north-america-east
+async fn warming_places_a_new_actor_in_the_requested_region() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let response = fixture
+        .post(
+            "warm-host",
+            "api-key",
+            json!({"requestId": "warm-1", "warmMs": 60_000, "homeRegion": "north-america-east"}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let reply: Value = fixture
+        .post("find-actor", "api-key", json!({}))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(reply, json!({"homeRegion": "north-america-east"}));
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 13 with the host start held, waitForCompletion false replies 202 at once, and with timeoutMs 100 replies 202 after 100 ms; the host still gets the warm once the start is released
+async fn not_waiting_for_completion_replies_202_while_the_host_starts() -> Result<()> {
+    for (body, waited) in [
+        (
+            json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": false}),
+            Duration::ZERO,
+        ),
+        (
+            json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": false, "timeoutMs": 100}),
+            Duration::from_millis(100),
+        ),
+    ] {
+        let fixture = Fixture::start(vec![]).await?;
+        fixture.host.launch_gate.send_replace(false);
+        let started = tokio::time::Instant::now();
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.post("warm-host", "api-key", body),
+        )
+        .await??;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(started.elapsed() >= waited);
+        assert_eq!(
+            response.json::<Value>().await?,
+            json!({"status": "accepted"})
+        );
+        assert!(fixture.host.warms.lock().unwrap().is_empty());
+        fixture.host.launch_gate.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while fixture.host.warms.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 14 with waitForCompletion false and timeoutMs 2000, a start that fails within 2 s replies 503 unavailable, not 202
+async fn waiting_with_a_timeout_reports_a_failure_in_time() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    fixture.host.fail_launch.store(true, Ordering::SeqCst);
+    let response = fixture
+        .post(
+            "warm-host",
+            "api-key",
+            json!({"requestId": "warm-1", "warmMs": 60_000, "waitForCompletion": false, "timeoutMs": 2000}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let reply: Value = response.json().await?;
+    assert_eq!(reply["error"]["code"], "unavailable");
+    assert!(fixture.host.warms.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 15 a 0 ms warm to a running host still reaches it
+async fn a_zero_ms_warm_still_reaches_the_host() -> Result<()> {
+    let fixture = Fixture::start_with_existing_host(vec![], true).await?;
+    let response = fixture
+        .post(
+            "warm-host",
+            "api-key",
+            json!({"requestId": "warm-1", "warmMs": 0}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let warms = fixture.host.warms.lock().unwrap();
+    assert_eq!(warms.len(), 1);
+    assert_eq!(warms[0]["warmMs"], 0);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 24 a warm sent with the limited key replies 200 and reaches the host, like one sent with the main key
+async fn warming_accepts_the_invoke_api_key() -> Result<()> {
+    let fixture = Fixture::start_with_existing_host(vec![], true).await?;
+    let response = fixture
+        .post(
+            "warm-host",
+            "invoke-key",
+            json!({"requestId": "warm-1", "warmMs": 60_000}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.host.warms.lock().unwrap().len(), 1);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 23 warming a sleeping actor starts one host in its saved home, moves the owner epoch to 2, and the host gets the warm
+async fn warming_a_sleeping_actor_wakes_it_in_its_saved_home() -> Result<()> {
+    let fixture = Fixture::start_with_sleeping_actor(vec![]).await?;
+    let response = fixture
+        .post(
+            "warm-host",
+            "api-key",
+            json!({"requestId": "warm-1", "warmMs": 60_000}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    let warms = fixture.host.warms.lock().unwrap();
+    assert_eq!(warms.len(), 1);
+    assert_eq!(warms[0]["ownerEpoch"], 2);
+    drop(warms);
+    let reply: Value = fixture
+        .post("find-actor", "api-key", json!({}))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(reply, json!({"homeRegion": "north-america-east"}));
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 25 a warm for a host that is shutting down waits for it, starts one fresh host, and the fresh host gets the warm
+async fn warming_a_host_that_is_shutting_down_lands_on_a_fresh_host() -> Result<()> {
+    let fixture = Fixture::start_with_draining_actor(vec![]).await?;
+    let response = fixture
+        .post(
+            "warm-host",
+            "api-key",
+            json!({"requestId": "warm-1", "warmMs": 60_000}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
+    let warms = fixture.host.warms.lock().unwrap();
+    assert_eq!(warms.len(), 1);
+    assert_eq!(warms[0]["ownerEpoch"], 2);
+    Ok(())
+}
+
 struct Fixture {
     service: ControlPlaneService,
     gateway: ControlPlaneService,
@@ -457,6 +709,46 @@ impl Fixture {
         Self::start_with_routes(replies, existing, None).await
     }
 
+    async fn start_with_sleeping_actor(replies: Vec<(StatusCode, Value)>) -> Result<Self> {
+        let fixture = Self::start(replies).await?;
+        fixture.place_chat_room(0).await?;
+        Ok(fixture)
+    }
+
+    async fn start_with_draining_actor(replies: Vec<(StatusCode, Value)>) -> Result<Self> {
+        let fixture = Self::start(replies).await?;
+        let expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 300;
+        let placement = fixture.place_chat_room(expires_at_ms).await?;
+        fixture
+            .service
+            .routes
+            .put(
+                &chat_room(),
+                crate::control_plane::routes::RouteEntry::Draining(
+                    crate::control_plane::routes::RouteIdentity::of(&placement),
+                ),
+            )
+            .await;
+        Ok(fixture)
+    }
+
+    async fn place_chat_room(&self, expires_at_ms: u64) -> Result<ObjectPlacement> {
+        let spec = self.service.registry.launch_spec("default").await?.unwrap();
+        let key = chat_room().storage_key();
+        self.placements.set_owner(
+            &key,
+            HostLease {
+                expires_at_ms,
+                ..test_lease(&HostId::new(format!(
+                    "host.v3.{}.fixture",
+                    spec.host_config_key()
+                )))
+            },
+            "north-america-east",
+        )?;
+        Ok(self.placements.get_owner(&key).await?.unwrap())
+    }
+
     async fn start_with_routes(
         replies: Vec<(StatusCode, Value)>,
         existing: bool,
@@ -470,6 +762,10 @@ impl Fixture {
             replies: Mutex::new(replies.into()),
             calls: AtomicUsize::new(0),
             requests: Mutex::new(vec![]),
+            launches: AtomicUsize::new(0),
+            warms: Mutex::new(vec![]),
+            fail_launch: false.into(),
+            launch_gate: tokio::sync::watch::channel(true).0,
         });
         let host_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let host_origin = format!("http://{}", host_listener.local_addr()?);
@@ -481,6 +777,10 @@ impl Fixture {
             .route(
                 "/v1/projects/default/actors/ChatRoom/one/socket-events",
                 post(host_socket_event),
+            )
+            .route(
+                "/v1/projects/default/actors/ChatRoom/one/warm-host",
+                post(host_warm),
             )
             .with_state(host.clone());
         let host_server = tokio::spawn(async move { axum::serve(host_listener, routes).await });
@@ -672,6 +972,14 @@ async fn post_actor(
         .await?)
 }
 
+fn chat_room() -> ActorKey {
+    ActorKey {
+        project_id: "default".into(),
+        actor_name: "ChatRoom".into(),
+        actor_id: "one".into(),
+    }
+}
+
 fn broadcast() -> Value {
     json!({ "effects":[{"type":"broadcast", "message":{"type":"text", "data":"hello"}, "except_connection_ids":[], "tags":[]}]})
 }
@@ -691,6 +999,10 @@ struct HostFixture {
     replies: Mutex<VecDeque<(StatusCode, Value)>>,
     calls: AtomicUsize,
     requests: Mutex<Vec<(String, Value)>>,
+    launches: AtomicUsize,
+    warms: Mutex<Vec<Value>>,
+    fail_launch: std::sync::atomic::AtomicBool,
+    launch_gate: tokio::sync::watch::Sender<bool>,
 }
 
 async fn host_invoke(
@@ -735,6 +1047,11 @@ async fn host_socket_event(
     Json(SocketEventReply::Completed { effects })
 }
 
+async fn host_warm(State(state): State<Arc<HostFixture>>, Json(body): Json<Value>) -> StatusCode {
+    state.warms.lock().unwrap().push(body);
+    StatusCode::OK
+}
+
 struct InvocationProvisioner {
     host: Arc<HostFixture>,
     route: String,
@@ -762,7 +1079,16 @@ impl HostProvisioner for InvocationProvisioner {
         _: Option<&crate::bucket::OwnershipHint>,
         operation: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+        self.host.launches.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(25)).await;
+        self.host
+            .launch_gate
+            .subscribe()
+            .wait_for(|open| *open)
+            .await?;
+        if self.host.fail_launch.load(Ordering::SeqCst) {
+            anyhow::bail!("fixture launch failed");
+        }
         let lease = HostLease {
             route: self.route.clone(),
             session_id: uuid::Uuid::new_v4().to_string(),

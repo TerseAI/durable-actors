@@ -5,6 +5,21 @@ import { validateActorComponent } from "./settings.js"
 
 interface ActorRpcTransport {
     invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
+    warm?(actorName: string, actorId: string, warmMs: number, options?: WarmOptions): Promise<WarmStatus>
+}
+
+/** Waits until the host is warm by default; `waitForCompletion: false` replies at once or within `timeoutMs`. */
+type WarmOptions =
+    | { readonly waitForCompletion?: true; readonly timeoutMs?: never }
+    | { readonly waitForCompletion: false; readonly timeoutMs?: number }
+
+interface WarmStatus {
+    readonly status: "OK" | "accepted"
+}
+
+interface ActorWarm {
+    /** Keeps this actor's host up for `warmMs` after it is ready, starting it if needed. */
+    warm(warmMs: number, options?: WarmOptions): Promise<WarmStatus>
 }
 
 interface ActorRpcMethod {
@@ -34,7 +49,8 @@ function createActorStub<Stub extends object>(
                 "onConnect",
                 "onMessage",
                 "onDisconnect",
-                "onAlarm"
+                "onAlarm",
+                "warm"
             ].includes(method.name)
         )
             throw new ActorDefinitionError(`actor method ${actorName}.${method.name} is reserved`)
@@ -50,11 +66,26 @@ function createActorStub<Stub extends object>(
             }
         })
     }
+    Object.defineProperty(stub, "warm", {
+        value: (warmMs: number, options?: WarmOptions) =>
+            warmActor(actorName, actorId, warmMs, options, transport ?? defaultTransport())
+    })
     return stub as Stub
 }
 
-export { createActorStub }
-export type { ActorRpcMethod, ActorRpcTransport }
+async function warmActor(
+    actorName: string,
+    actorId: string,
+    warmMs: number,
+    options: WarmOptions | undefined,
+    transport: ActorRpcTransport
+): Promise<WarmStatus> {
+    if (!transport.warm) throw new ActorDefinitionError("actor transport does not support warm")
+    return transport.warm(actorName, actorId, warmMs, options)
+}
+
+export { createActorStub, warmActor }
+export type { ActorRpcMethod, ActorRpcTransport, ActorWarm, WarmOptions, WarmStatus }
 
 let shared: ActorRpcTransport | undefined
 export function createActorTransport(options: DurableActorsClientOptions): ActorRpcTransport {

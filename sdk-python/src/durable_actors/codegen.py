@@ -419,8 +419,9 @@ def actor_client(actor: Document, types: dict[str, str]) -> str:
         "from __future__ import annotations",
         "import json as _json",
         "from collections.abc import Callable as _Callable, Awaitable as _Awaitable",
+        "from typing import Unpack as _Unpack",
         "from pydantic import TypeAdapter as _TypeAdapter",
-        "from durable_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant, default_client as _default_client",
+        "from durable_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant, WarmOptions as _WarmOptions, default_client as _default_client",
         "from durable_actors.async_client import AsyncActorTransport as _AsyncActorTransport, default_async_client as _default_async_client",
         "from durable_actors.async_connection import AsyncConnection as _AsyncConnection",
         "from durable_actors.connection import Connection as _Connection",
@@ -451,9 +452,23 @@ def stub_class(actor: Document, types: dict[str, str], asynchronous: bool) -> li
     ]
     for method in actor["rpc"]["methods"]:
         lines.extend(rpc_method(name, method, actor["rpc"]["schema"], types, asynchronous))
+    lines.extend(warm_method(name, asynchronous))
     lines.extend(socket_methods(name, types, asynchronous))
     lines.extend(subscription_method(actor, types, asynchronous))
     return lines
+
+
+def warm_method(actor: str, asynchronous: bool) -> list[str]:
+    prefix = "async " if asynchronous else ""
+    awaited = "await " if asynchronous else ""
+    return [
+        f"    {prefix}def warm(self, warm_ms: int, **options: _Unpack[_WarmOptions]) -> dict[str, str]:",
+        docstring(
+            "Keep this actor's host up for warm_ms after it is ready, starting it if needed.", 8
+        ),
+        f"        return {awaited}self._transport.warm({actor!r}, self._actor_id, warm_ms, **options)",
+        "",
+    ]
 
 
 def rpc_method(
@@ -467,7 +482,7 @@ def rpc_method(
     awaited = "await " if asynchronous else ""
     style = "asynchronously" if asynchronous else "synchronously"
     name = identifier(method["name"])
-    if name in {"connect", "prepare_websocket", "subscribe", "broadcast"}:
+    if name in {"connect", "prepare_websocket", "subscribe", "broadcast", "warm"}:
         raise ValueError(f"reserved actor method: {name}")
     params, values, defaults = method_parameters(method["parameters"], schema, types)
     result = method["result"]

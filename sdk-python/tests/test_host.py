@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,60 @@ class Index(Actor):
                 }
             )
             assert (await host.receive())["reply"] == {"type": "invoked", "result": ["doc-1"]}
+
+
+def test_actors_warm_other_actors_through_the_remote_client():
+    from durable_actors import Actor
+    from durable_actors.host_transport import AsyncHostTransport, HostTransport
+
+    class Index(Actor):
+        def add(self, document: str) -> list[str]:
+            return [document]
+
+    warms = []
+
+    class Remote:
+        def warm(self, actor_name, actor_id, warm_ms, **options):
+            warms.append((actor_name, actor_id, warm_ms, options))
+            return {"status": "OK"}
+
+    async def call(request):
+        raise AssertionError("a warm must not go through the host")
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = HostTransport(AsyncHostTransport(call, None), loop, Remote)
+        assert Index.get("main", transport).warm(60_000) == {"status": "OK"}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+    assert warms == [("Index", "main", 60_000, {})]
+
+
+async def test_async_actors_warm_other_actors_through_the_remote_client():
+    from durable_actors import AsyncActor
+    from durable_actors.host_transport import AsyncHostTransport
+
+    class Index(AsyncActor):
+        async def add(self, document: str) -> list[str]:
+            return [document]
+
+    warms = []
+
+    class Remote:
+        async def warm(self, actor_name, actor_id, warm_ms, **options):
+            warms.append((actor_name, actor_id, warm_ms, options))
+            return {"status": "OK"}
+
+    async def call(request):
+        raise AssertionError("a warm must not go through the host")
+
+    transport = AsyncHostTransport(call, Remote())
+    assert await Index.get("main", transport).warm(60_000) == {"status": "OK"}
+    assert warms == [("Index", "main", 60_000, {})]
 
 
 async def test_output_reaches_the_host_tagged_with_its_invocation(tmp_path):

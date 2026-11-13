@@ -585,7 +585,10 @@ where
     loop {
         let (phase, idle_since) = {
             let current = status.borrow_and_update();
-            (current.phase, current.idle_since)
+            let idle_since = current
+                .idle_since
+                .map(|since| current.warm_until.map_or(since, |until| since.max(until)));
+            (current.phase, idle_since)
         };
         if phase == ActorPhase::Stopped {
             break Err(anyhow::anyhow!(

@@ -1,3 +1,5 @@
+import { warmActor } from "../client-runtime/stub.js"
+import type { WarmOptions, WarmStatus } from "../client-runtime/stub.js"
 import { actorClient } from "../client/client.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
@@ -172,6 +174,16 @@ function referenceClass(actorClass: ActorClass): ActorReferenceClass {
         }
     })
 
+    Object.defineProperty(ActorReference.prototype, "warm", {
+        configurable: false,
+        enumerable: false,
+        writable: false,
+        value: function warmActorHost(this: Actor, warmMs: number, options?: WarmOptions): Promise<WarmStatus> {
+            const actorId = actorIdOf(this)
+            return actorClient().then(client => warmActor(definition.actorName, actorId, warmMs, options, client))
+        }
+    })
+
     definition.methods.forEach(method => {
         Object.defineProperty(ActorReference.prototype, method, {
             configurable: false,
@@ -216,7 +228,7 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
         if (typeof descriptor.value !== "function") return []
         validateActorComponent("actor method", name)
         if (name === "then") throw new ActorDefinitionError(`actor class ${actorName} cannot define method then`)
-        if (name === "connect" || name === "broadcast" || name === "db" || name === "alarm")
+        if (name === "connect" || name === "broadcast" || name === "db" || name === "alarm" || name === "warm")
             throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
             throw new ActorDefinitionError(
@@ -296,6 +308,8 @@ type ActorReference<Instance extends AnyActor> = {
     ): Promise<ActorConnection<SocketIncoming<Instance>, SocketOutgoing<Instance>, JsonObject>>
     /** Sends to all connections without running actor code. Messages are not saved. */
     broadcast(message: SocketOutgoing<Instance>): Promise<void>
+    /** Keeps this actor's host up for `warmMs` after it is ready, starting it if needed. */
+    warm(warmMs: number, options?: WarmOptions): Promise<WarmStatus>
 }
 type ActorLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect" | "onAlarm"
 type SocketMetadata<Instance extends AnyActor> = Instance[typeof actorTypes]["metadata"]

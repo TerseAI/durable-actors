@@ -335,6 +335,24 @@ impl HttpHost {
         actor_id: &str,
         host_state: HostState,
     ) -> Result<Value> {
+        Ok(self
+            .post("invoke", actor_id, json!({"requestId": request_id, "ownerEpoch": 1, "method": "increment", "args": [], "hostState": host_state, "routingMs": 500.0}))
+            .await?
+            .json()
+            .await?)
+    }
+
+    async fn warm(&self, request_id: &str, actor_id: &str, warm_ms: u64) -> Result<()> {
+        self.post(
+            "warm-host",
+            actor_id,
+            json!({"requestId": request_id, "ownerEpoch": 1, "warmMs": warm_ms}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn post(&self, endpoint: &str, actor_id: &str, body: Value) -> Result<reqwest::Response> {
         let actor = ActorKey {
             project_id: "default".into(),
             actor_name: "Counter".into(),
@@ -350,9 +368,131 @@ impl HttpHost {
             self.grant.clone(),
             "http://10.1.2.3:7101",
         )?;
-        Ok(self.client.post(format!("{}/v1/projects/default/actors/Counter/{actor_id}/invoke", self.origin))
+        Ok(self
+            .client
+            .post(format!(
+                "{}/v1/projects/default/actors/Counter/{actor_id}/{endpoint}",
+                self.origin
+            ))
             .bearer_auth(token.token)
-            .json(&json!({"requestId": request_id, "ownerEpoch": 1, "method": "increment", "args": [], "hostState": host_state, "routingMs": 500.0}))
-            .send().await?.error_for_status()?.json().await?)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?)
     }
+}
+
+#[tokio::test] // TODO: Test 4 a 30 s warm sets warm_until 30 s after the host receives it
+async fn a_warm_counts_its_duration_from_when_the_host_receives_it() -> Result<()> {
+    let fixture = HttpHost::start(None).await?;
+    let sent = tokio::time::Instant::now();
+    fixture.warm("warm", "counter-1", 30_000).await?;
+    let replied = tokio::time::Instant::now();
+    let warm_until = fixture
+        .host
+        .status()
+        .borrow()
+        .warm_until
+        .expect("warm_until");
+    assert!(warm_until >= sent + Duration::from_secs(30));
+    assert!(warm_until <= replied + Duration::from_secs(30));
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 35 a 0 ms warm sets warm_until to when the host receives it, so the idle time starts again from there
+async fn a_zero_ms_warm_restarts_the_idle_time_from_when_the_host_receives_it() -> Result<()> {
+    let fixture = HttpHost::start(None).await?;
+    let sent = tokio::time::Instant::now();
+    fixture.warm("warm", "counter-1", 0).await?;
+    let replied = tokio::time::Instant::now();
+    let warm_until = fixture
+        .host
+        .status()
+        .borrow()
+        .warm_until
+        .expect("warm_until");
+    assert!(warm_until >= sent);
+    assert!(warm_until <= replied);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 5 warms of 86,400,001 and u64::MAX ms get 400; 0 and 86,400,000 ms are accepted
+async fn warms_are_accepted_only_within_the_allowed_range() -> Result<()> {
+    let fixture = HttpHost::start(None).await?;
+    for warm_ms in [86_400_001, u64::MAX] {
+        let error = fixture
+            .warm("warm", "counter-1", warm_ms)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<reqwest::Error>()
+                .and_then(reqwest::Error::status),
+            Some(reqwest::StatusCode::BAD_REQUEST)
+        );
+    }
+    assert_eq!(fixture.host.status().borrow().warm_until, None);
+    for warm_ms in [0, 86_400_000] {
+        fixture.warm("warm", "counter-1", warm_ms).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 6 a warm for another actor gets 403 and leaves warm_until empty
+async fn a_warm_for_another_actor_is_rejected_before_anything_is_stored() -> Result<()> {
+    let fixture = HttpHost::start(None).await?;
+    let error = fixture.warm("warm", "another", 30_000).await.unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status),
+        Some(reqwest::StatusCode::FORBIDDEN)
+    );
+    assert_eq!(fixture.host.status().borrow().warm_until, None);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 7 a warm records a trace with kind method, operation warm and its request id
+async fn a_warm_is_traced_as_an_rpc_warm() -> Result<()> {
+    let mut fixture = HttpHost::start(None).await?;
+    fixture.warm("warm-1", "counter-1", 30_000).await?;
+    let trace = tokio::time::timeout(Duration::from_secs(1), fixture.traces.recv())
+        .await?
+        .unwrap();
+    assert_eq!(trace.kind, crate::request_traces::RequestKind::Method);
+    assert_eq!(trace.operation, "warm");
+    assert_eq!(trace.request_id, "warm-1");
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 36 a warm that started its host is traced as cold with its routing time
+async fn a_warm_records_the_host_state_and_routing_time_it_arrives_with() -> Result<()> {
+    let mut fixture = HttpHost::start(None).await?;
+    fixture
+        .post(
+            "warm-host",
+            "counter-1",
+            json!({"requestId": "warm-1", "ownerEpoch": 1, "warmMs": 30_000, "hostState": "cold", "routingMs": 500.0}),
+        )
+        .await?;
+    let trace = tokio::time::timeout(Duration::from_secs(1), fixture.traces.recv())
+        .await?
+        .unwrap();
+    assert_eq!(trace.host_state, HostState::Cold);
+    assert_eq!(trace.routing_ms, 500.0);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 22 a warm whose token lists only some methods is accepted by the host, because a warm is not a method
+async fn a_warm_with_a_session_grant_is_accepted() -> Result<()> {
+    let grant = InvocationGrant {
+        subject: "caller".into(),
+        grant_id: "session".into(),
+        expires_at: i64::MAX,
+        methods: vec!["increment".into()],
+    };
+    let fixture = HttpHost::start(Some(grant)).await?;
+    fixture.warm("warm", "counter-1", 30_000).await?;
+    assert!(fixture.host.status().borrow().warm_until.is_some());
+    Ok(())
 }

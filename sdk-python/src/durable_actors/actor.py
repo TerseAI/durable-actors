@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, Unpack
 
 from typing_extensions import TypeVar as DefaultTypeVar
 
@@ -12,7 +12,7 @@ from .database import ActorAlarm, ActorDatabase
 from .json import JsonValue
 
 if TYPE_CHECKING:
-    from .client import ActorTransport
+    from .client import ActorTransport, WarmOptions
     from .connection import Connection
     from .socket import ActorSocket
 
@@ -49,6 +49,10 @@ class Actor(ActorBase[Metadata, Incoming, Outgoing, Tag]):
     def connect(self, metadata: Metadata) -> Connection[Incoming, Outgoing, JsonValue, JsonValue]:
         """Open a typed WebSocket through a source-class reference from get()."""
         raise RuntimeError("connect() requires an actor reference from get()")
+
+    def warm(self, warm_ms: int, **options: Unpack[WarmOptions]) -> dict[str, str]:
+        """Keep this actor's host up for warm_ms through a reference from get()."""
+        raise RuntimeError("warm() requires an actor reference from get()")
 
     @property
     def db(self) -> ActorDatabase:

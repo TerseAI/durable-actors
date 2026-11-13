@@ -328,6 +328,15 @@ def test_generated_subscription_name_is_reserved(tmp_path):
         generate_client(contract, tmp_path / "conflicting")
 
 
+def test_generated_warm_name_is_reserved(tmp_path):
+    import pytest
+
+    contract = public_contract([Chat])
+    contract["actors"][0]["rpc"]["methods"][0]["name"] = "warm"
+    with pytest.raises(ValueError, match="reserved"):
+        generate_client(contract, tmp_path / "conflicting")
+
+
 def test_generated_emitted_state_preserves_optional_contract_fields(tmp_path, monkeypatch):
     from durable_actors import Unset
 
@@ -569,3 +578,43 @@ async def test_generated_async_client_invokes_and_decodes_shared_models(tmp_path
             result = await actor.echo(message)
     assert type(result) is generated.actors.Echo.Message
     assert result == message
+
+
+def test_generated_warm_passes_the_duration_to_the_caller_transport(tmp_path, monkeypatch):
+    generate_client(json.loads(json.dumps(public_contract([Chat]))), tmp_path / "warm_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    generated = importlib.import_module("warm_client")
+    calls = []
+
+    class Warms(Transport):
+        def warm(self, actor_name, actor_id, warm_ms, **options):
+            calls.append((actor_name, actor_id, warm_ms, options))
+            return {"status": "OK"}
+
+    assert generated.actors.Chat.get("lobby", Warms()).warm(30_000) == {"status": "OK"}
+    generated.actors.Chat.get("lobby", Warms()).warm(
+        30_000, wait_for_completion=False, timeout_ms=2000
+    )
+    assert calls == [
+        ("Chat", "lobby", 30_000, {}),
+        ("Chat", "lobby", 30_000, {"wait_for_completion": False, "timeout_ms": 2000}),
+    ]
+
+
+async def test_generated_async_warm_passes_the_duration_to_the_caller_transport(
+    tmp_path, monkeypatch
+):
+    generate_client(json.loads(json.dumps(public_contract([Chat]))), tmp_path / "async_warm_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    generated = importlib.import_module("async_warm_client")
+    calls = []
+
+    class AsyncWarms:
+        async def warm(self, actor_name, actor_id, warm_ms, **options):
+            calls.append((actor_name, actor_id, warm_ms, options))
+            return {"status": "OK"}
+
+    assert await generated.async_actors.Chat.get("lobby", AsyncWarms()).warm(30_000) == {
+        "status": "OK"
+    }
+    assert calls == [("Chat", "lobby", 30_000, {})]

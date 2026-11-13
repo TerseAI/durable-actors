@@ -166,3 +166,36 @@ test("a five-minute session survives the customer's 135-second idle return witho
     assert.deepEqual(f.stats(), { exchanges: 2, transports: 2, calls: 3 })
     f.client.dispose()
 })
+
+test("warm goes through the session's transport and returns its status", async () => {
+    const warms: unknown[][] = []
+    const client = new ActorSessionTransport(
+        {
+            projectId: "project",
+            getSession: async () => ({
+                projectId: "project",
+                controlPlaneUrl: "https://actors.example",
+                token: "session-1",
+                expiresAtMs: 1_000_000 + 300_000
+            })
+        },
+        {
+            now: () => 1_000_000,
+            schedule: () => () => {},
+            createTransport: options => {
+                assert.equal(options.apiKey, "session-1")
+                return {
+                    async invoke() {
+                        throw new Error("not used")
+                    },
+                    async warm(...args: unknown[]) {
+                        warms.push(args)
+                        return { status: "OK" }
+                    }
+                }
+            }
+        }
+    )
+    assert.deepEqual(await client.warm("Counter", "one", 30_000, { waitForCompletion: false }), { status: "OK" })
+    assert.deepEqual(warms, [["Counter", "one", 30_000, { waitForCompletion: false }]])
+})
