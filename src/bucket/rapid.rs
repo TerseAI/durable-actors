@@ -29,6 +29,7 @@ const ROTATION_INTERVAL: Duration = Duration::from_secs(60);
 /// Keeps every Rapid object a session writes far younger than the 7-day lifecycle rule.
 const IDLE_SEGMENT_REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) const RAPID_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const ARCHIVE_PREFIX: &str = "durable-actors-v3-snapshots-";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Replica {
@@ -346,7 +347,7 @@ pub(super) fn object_name(logical: &str) -> Result<String> {
     let actor = parts[..4].join("/");
     let hash = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, actor.as_bytes());
     Ok(format!(
-        "durable-actors-v3-snapshots-{}~{}",
+        "{ARCHIVE_PREFIX}{}~{}",
         URL_SAFE_NO_PAD.encode(hash.as_ref()),
         parts[4].replace('/', "~")
     ))
