@@ -499,3 +499,6 @@ fn s3_error(status: StatusCode, code: &str) -> Response {
     )
         .into_response()
 }
+
+#[path = "s3/live.rs"]
+mod live;
