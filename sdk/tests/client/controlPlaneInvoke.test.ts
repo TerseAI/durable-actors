@@ -88,7 +88,7 @@ test("warm sends waitForCompletion false and timeoutMs and resolves on 202", asy
     ])
 })
 
-test("warm rejects a duration outside 1 to 86400000 before sending", async () => {
+test("warm accepts 0 to 86400000 and rejects anything else before sending", async () => {
     let sent = 0
     const client = new RemoteActorClient(options, {
         fetch: async () => {
@@ -96,7 +96,9 @@ test("warm rejects a duration outside 1 to 86400000 before sending", async () =>
             return Response.json({ status: "OK" })
         }
     })
-    for (const warmMs of [-5, 0, 1.5, 86_400_001])
+    for (const warmMs of [-5, 1.5, NaN, 86_400_001])
         await assert.rejects(client.warm("Counter", "one", warmMs), ActorValidationError)
     assert.equal(sent, 0)
+    for (const warmMs of [0, 86_400_000]) await client.warm("Counter", "one", warmMs)
+    assert.equal(sent, 2)
 })

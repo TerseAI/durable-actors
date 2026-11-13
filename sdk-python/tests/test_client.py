@@ -218,7 +218,7 @@ async def test_async_warm_sends_the_duration_and_returns_the_status():
     }
 
 
-def test_warm_rejects_a_duration_outside_the_range_before_sending():
+def test_warm_accepts_0_to_86400000_and_rejects_anything_else_before_sending():
     calls = []
 
     def handle(request):
@@ -227,7 +227,10 @@ def test_warm_rejects_a_duration_outside_the_range_before_sending():
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
         with Client("http://control.test", project_id="test", api_key="key", http=http) as client:
-            for warm_ms in [-5, 0, 1.5, True, 86_400_001]:
+            for warm_ms in [-5, 1.5, float("nan"), True, 86_400_001]:
                 with pytest.raises(ValueError):
                     client.warm("Counter", "one", warm_ms)
-    assert calls == []
+            assert calls == []
+            for warm_ms in [0, 86_400_000]:
+                client.warm("Counter", "one", warm_ms)
+    assert len(calls) == 2

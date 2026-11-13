@@ -328,6 +328,15 @@ def test_generated_subscription_name_is_reserved(tmp_path):
         generate_client(contract, tmp_path / "conflicting")
 
 
+def test_generated_warm_name_is_reserved(tmp_path):
+    import pytest
+
+    contract = public_contract([Chat])
+    contract["actors"][0]["rpc"]["methods"][0]["name"] = "warm"
+    with pytest.raises(ValueError, match="reserved"):
+        generate_client(contract, tmp_path / "conflicting")
+
+
 def test_generated_emitted_state_preserves_optional_contract_fields(tmp_path, monkeypatch):
     from durable_actors import Unset
 
@@ -582,8 +591,8 @@ def test_generated_warm_passes_the_duration_to_the_caller_transport(tmp_path, mo
             calls.append((actor_name, actor_id, warm_ms, options))
             return {"status": "OK"}
 
-    assert generated.actors.Chat.warm("lobby", 30_000, Warms()) == {"status": "OK"}
-    generated.actors.Chat.warm("lobby", 30_000, Warms(), wait_for_completion=False, timeout_ms=2000)
+    assert generated.actors.Chat.get("lobby", Warms()).warm(30_000) == {"status": "OK"}
+    generated.actors.Chat.get("lobby", Warms()).warm(30_000, wait_for_completion=False, timeout_ms=2000)
     assert calls == [
         ("Chat", "lobby", 30_000, {}),
         ("Chat", "lobby", 30_000, {"wait_for_completion": False, "timeout_ms": 2000}),
@@ -603,5 +612,5 @@ async def test_generated_async_warm_passes_the_duration_to_the_caller_transport(
             calls.append((actor_name, actor_id, warm_ms, options))
             return {"status": "OK"}
 
-    assert await generated.async_actors.Chat.warm("lobby", 30_000, AsyncWarms()) == {"status": "OK"}
+    assert await generated.async_actors.Chat.get("lobby", AsyncWarms()).warm(30_000) == {"status": "OK"}
     assert calls == [("Chat", "lobby", 30_000, {})]

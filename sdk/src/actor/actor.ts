@@ -216,7 +216,7 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
         if (typeof descriptor.value !== "function") return []
         validateActorComponent("actor method", name)
         if (name === "then") throw new ActorDefinitionError(`actor class ${actorName} cannot define method then`)
-        if (name === "connect" || name === "broadcast" || name === "db" || name === "alarm")
+        if (name === "connect" || name === "broadcast" || name === "db" || name === "alarm" || name === "warm")
             throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
             throw new ActorDefinitionError(

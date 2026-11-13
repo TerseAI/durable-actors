@@ -399,10 +399,27 @@ async fn a_warm_counts_its_duration_from_when_the_host_receives_it() -> Result<(
     Ok(())
 }
 
-#[tokio::test] // TODO: Test 5 warms of 0, 86,400,001 and u64::MAX ms get 400; 1 and 86,400,000 ms are accepted
+#[tokio::test] // TODO: Test 35 a 0 ms warm sets warm_until to when the host receives it, so the idle time starts again from there
+async fn a_zero_ms_warm_restarts_the_idle_time_from_when_the_host_receives_it() -> Result<()> {
+    let fixture = HttpHost::start(None).await?;
+    let sent = tokio::time::Instant::now();
+    fixture.warm("warm", "counter-1", 0).await?;
+    let replied = tokio::time::Instant::now();
+    let warm_until = fixture
+        .host
+        .status()
+        .borrow()
+        .warm_until
+        .expect("warm_until");
+    assert!(warm_until >= sent);
+    assert!(warm_until <= replied);
+    Ok(())
+}
+
+#[tokio::test] // TODO: Test 5 warms of 86,400,001 and u64::MAX ms get 400; 0 and 86,400,000 ms are accepted
 async fn warms_are_accepted_only_within_the_allowed_range() -> Result<()> {
     let fixture = HttpHost::start(None).await?;
-    for warm_ms in [0, 86_400_001, u64::MAX] {
+    for warm_ms in [86_400_001, u64::MAX] {
         let error = fixture
             .warm("warm", "counter-1", warm_ms)
             .await
@@ -415,7 +432,7 @@ async fn warms_are_accepted_only_within_the_allowed_range() -> Result<()> {
         );
     }
     assert_eq!(fixture.host.status().borrow().warm_until, None);
-    for warm_ms in [1, 86_400_000] {
+    for warm_ms in [0, 86_400_000] {
         fixture.warm("warm", "counter-1", warm_ms).await?;
     }
     Ok(())

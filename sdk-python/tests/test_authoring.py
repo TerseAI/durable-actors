@@ -307,3 +307,12 @@ def test_subscription_method_name_is_reserved():
 
     with pytest.raises(ValueError, match="reserved"):
         describe_actor(Conflicting)
+
+
+def test_warm_method_name_is_reserved():
+    class Conflicting(Actor):
+        def warm(self) -> None:
+            pass
+
+    with pytest.raises(ValueError, match="reserved"):
+        describe_actor(Conflicting)

@@ -34,7 +34,8 @@ function createActorStub<Stub extends object>(
                 "onConnect",
                 "onMessage",
                 "onDisconnect",
-                "onAlarm"
+                "onAlarm",
+                "warm"
             ].includes(method.name)
         )
             throw new ActorDefinitionError(`actor method ${actorName}.${method.name} is reserved`)

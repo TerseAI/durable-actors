@@ -484,12 +484,13 @@ async fn warming_an_awake_actor_launches_no_host() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test] // TODO: Test 10 a malformed duration or quick-reply option gets 400 invalid_request and starts no host
+#[tokio::test] // TODO: Test 10 a missing or malformed duration or quick-reply option gets 400 invalid_request and starts no host
 async fn warming_rejects_a_malformed_duration_without_launching() -> Result<()> {
     let fixture = Fixture::start(vec![]).await?;
     for body in [
+        json!({"requestId": "warm-1"}),                    // 400
+        json!({"requestId": "warm-1", "warmMs": null}),    // 400
         json!({"requestId": "warm-1", "warmMs": -5}),      // 400
-        json!({"requestId": "warm-1", "warmMs": 0}),       // 400
         json!({"requestId": "warm-1", "warmMs": 1.5}),     // 400
         json!({"requestId": "warm-1", "warmMs": "60000"}), // 400
         json!({"requestId": "warm-1", "warmMs": 86_400_001}), // 400
@@ -606,19 +607,20 @@ async fn waiting_with_a_timeout_reports_a_failure_in_time() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test] // TODO: Test 15 a warm with no duration, or a null one, starts one host, sends it no warm, and replies 200
-async fn warming_without_a_duration_starts_the_host_and_holds_nothing() -> Result<()> {
-    for body in [
-        json!({"requestId": "warm-1"}),
-        json!({"requestId": "warm-1", "warmMs": null}),
-    ] {
-        let fixture = Fixture::start(vec![]).await?;
-        let response = fixture.post("warm-host", "api-key", body).await?;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(fixture.host.launches.load(Ordering::SeqCst), 1);
-        assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
-        assert!(fixture.host.warms.lock().unwrap().is_empty());
-    }
+#[tokio::test] // TODO: Test 15 a 0 ms warm to a running host still reaches it
+async fn a_zero_ms_warm_still_reaches_the_host() -> Result<()> {
+    let fixture = Fixture::start_with_existing_host(vec![], true).await?;
+    let response = fixture
+        .post(
+            "warm-host",
+            "api-key",
+            json!({"requestId": "warm-1", "warmMs": 0}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let warms = fixture.host.warms.lock().unwrap();
+    assert_eq!(warms.len(), 1);
+    assert_eq!(warms[0]["warmMs"], 0);
     Ok(())
 }
 

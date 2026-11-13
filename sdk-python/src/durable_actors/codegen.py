@@ -467,7 +467,7 @@ def rpc_method(
     awaited = "await " if asynchronous else ""
     style = "asynchronously" if asynchronous else "synchronously"
     name = identifier(method["name"])
-    if name in {"connect", "prepare_websocket", "subscribe", "broadcast"}:
+    if name in {"connect", "prepare_websocket", "subscribe", "broadcast", "warm"}:
         raise ValueError(f"reserved actor method: {name}")
     params, values, defaults = method_parameters(method["parameters"], schema, types)
     result = method["result"]

@@ -63,6 +63,10 @@ test("backend stubs reject invalid identities and unsafe method names before dis
     assert.throws(() => createActorStub("Room", "one", [{ name: "then", result: "value" }]), /reserved/)
 })
 
+test("backend stubs reserve warm for holding the host", () => {
+    assert.throws(() => createActorStub("Room", "one", [{ name: "warm", result: "value" }]), /reserved/)
+})
+
 test("backend stubs trim omitted trailing arguments and reject undefined holes before JSON transport", async () => {
     const received: (readonly unknown[])[] = []
     const stub = createActorStub<{ send(text?: string, count?: number): Promise<void> }>(
