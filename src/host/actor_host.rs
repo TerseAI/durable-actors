@@ -47,6 +47,7 @@ pub(crate) struct ActorStatus {
     pub idle_since: Option<tokio::time::Instant>,
     pub waiting: Vec<WaitingOperation>,
     pub last_active_at_ms: Option<u64>,
+    pub warm_until: Option<tokio::time::Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +64,7 @@ impl Default for ActorStatus {
             idle_since: Some(tokio::time::Instant::now()),
             waiting: Vec::new(),
             last_active_at_ms: None,
+            warm_until: None,
         }
     }
 }
@@ -172,6 +174,21 @@ impl ActorHost {
         .0
     }
 
+    pub(crate) async fn warm(
+        &self,
+        request_id: String,
+        until: tokio::time::Instant,
+    ) -> Result<ActorExecutionResult> {
+        let invocation = ActorInvocation {
+            actor: self.actor.clone(),
+            request_id,
+            method: "warm".into(),
+            args: vec![],
+        };
+        self.submit(ActorOperation::Warm { invocation, until }, 0)
+            .await
+    }
+
     pub(crate) async fn drain(&self, timeout: Duration) -> Result<()> {
         let _ = self.mailbox.send(ActorMessage::Drain);
         let mut status = self.status.clone();
@@ -226,7 +243,9 @@ impl ActorHost {
         let tracer = self.traces.as_ref()?.clone();
         let (kind, connection, metadata) = match operation {
             ActorOperation::Activate { .. } => return None,
-            ActorOperation::Method(_) => (RequestKind::Method, None, None),
+            ActorOperation::Method(_) | ActorOperation::Warm { .. } => {
+                (RequestKind::Method, None, None)
+            }
             ActorOperation::Socket(invocation) => match &invocation.event {
                 ActorSocketEvent::Connect { connection } => (
                     RequestKind::Websocket,
@@ -318,7 +337,10 @@ impl Actor {
     fn receive(&mut self, request: ActorRequest) {
         match self.rejection(&request.operation) {
             Some(result) => self.finish(request, result),
-            None => self.pending.push_back(Queued::new(request)),
+            None => match request.operation {
+                ActorOperation::Warm { until, .. } => self.warm(request, until),
+                _ => self.pending.push_back(Queued::new(request)),
+            },
         }
     }
 
@@ -330,6 +352,18 @@ impl Actor {
             return Some(Err(error));
         }
         None
+    }
+
+    fn warm(&self, request: ActorRequest, until: tokio::time::Instant) {
+        self.status
+            .send_modify(|status| status.warm_until = status.warm_until.max(Some(until)));
+        self.finish(
+            request,
+            Ok(ActorExecutionResult::Completed {
+                result: Value::Null,
+                effects: vec![],
+            }),
+        );
     }
 
     fn start_ready(&mut self) {
@@ -476,6 +510,7 @@ impl Actor {
                 idle_since,
                 waiting,
                 last_active_at_ms: status.last_active_at_ms,
+                warm_until: status.warm_until,
             };
             let changed = *status != next;
             *status = next;
@@ -718,7 +753,7 @@ async fn execute(
                 ActorSocketOutcome::Failed(failure) => ActorMethodOutcome::Failed(failure),
             },
         ),
-        ActorOperation::Activate { .. } => unreachable!(),
+        ActorOperation::Activate { .. } | ActorOperation::Warm { .. } => unreachable!(),
     }
 }
 
@@ -858,6 +893,10 @@ enum ActorOperation {
     },
     Method(ActorInvocation),
     Socket(ActorSocketInvocation),
+    Warm {
+        invocation: ActorInvocation,
+        until: tokio::time::Instant,
+    },
 }
 
 impl ActorOperation {
@@ -890,7 +929,7 @@ impl ActorOperation {
                 method: "activate".into(),
                 args: vec![],
             }),
-            Self::Method(invocation) => Cow::Borrowed(invocation),
+            Self::Method(invocation) | Self::Warm { invocation, .. } => Cow::Borrowed(invocation),
             Self::Socket(invocation) => Cow::Owned(ActorInvocation {
                 request_id: invocation.request_id.clone(),
                 actor: invocation.actor.clone(),
