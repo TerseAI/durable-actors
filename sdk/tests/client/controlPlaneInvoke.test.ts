@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
+import { ActorInvocationError } from "../../src/errors.js"
 
 const options = { projectId: "project", apiKey: "backend-key", controlPlaneUrl: "https://gateway.example" }
 
@@ -42,4 +43,30 @@ test("only explicit pre-execution rejection retries with the same request ID", a
     assert.equal(await client.invoke("Counter", "one", "increment", []), 7)
     assert.equal(requests.length, 2)
     assert.deepEqual(requests[0], requests[1])
+})
+
+test("actor overload preserves its error code and request ID without automatic replay", async () => {
+    let calls = 0
+    const client = new RemoteActorClient(options, {
+        requestId: () => "overloaded-request",
+        fetch: async () => {
+            calls++
+            return Response.json({
+                outcome: {
+                    type: "failed",
+                    code: "actor_overloaded",
+                    message: "actor request capacity reached; request rejected before execution"
+                }
+            })
+        }
+    })
+    await assert.rejects(
+        client.invoke("Counter", "one", "increment", []),
+        error =>
+            error instanceof ActorInvocationError &&
+            error.code === "actor_overloaded" &&
+            error.requestId === "overloaded-request" &&
+            error.message.includes("before execution")
+    )
+    assert.equal(calls, 1)
 })

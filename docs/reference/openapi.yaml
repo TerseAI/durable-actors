@@ -1223,7 +1223,7 @@ components:
                   properties:
                       metadata: { $ref: "#/components/schemas/ActorInvocationMetadata" }
                       type: { const: failed }
-                      code: { type: string, minLength: 1, description: "Includes actor_error, unavailable and outcome_unknown." }
+                      code: { type: string, minLength: 1, description: "Includes actor_error, unavailable, outcome_unknown and actor_overloaded. actor_overloaded means the host rejected the request before execution because its outstanding-operation limit was reached." }
                       message: { type: string }
                 - type: object
                   required: [type, reason]

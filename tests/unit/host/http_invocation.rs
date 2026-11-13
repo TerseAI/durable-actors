@@ -129,6 +129,98 @@ async fn queued_response_reuses_observability_queue_wait() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn overload_is_explicitly_rejected_before_execution_over_http_and_socket_events() -> Result<()>
+{
+    let mut fixture = HttpHost::start(None).await?;
+    let mut calls = JoinSet::new();
+    let host = fixture.host.clone();
+    calls.spawn(async move { invoke(&host, "first").await });
+    assert_eq!(fixture.started.recv().await.as_deref(), Some("first"));
+    for index in 1..128 {
+        let host = fixture.host.clone();
+        calls.spawn(async move { invoke(&host, &format!("queued-{index}")).await });
+    }
+    let mut status = fixture.host.status();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        status.wait_for(|status| status.waiting.len() == 127),
+    )
+    .await??;
+    let reply = tokio::time::timeout(
+        Duration::from_secs(1),
+        fixture.invoke("overflow", "counter-1"),
+    )
+    .await??;
+    assert_eq!(reply["type"], "failed");
+    assert_eq!(reply["code"], "actor_overloaded");
+    assert!(
+        reply["message"]
+            .as_str()
+            .unwrap()
+            .contains("before execution")
+    );
+    assert!(reply["metadata"]["queueWaitMs"].is_null());
+    let trace = fixture.traces.recv().await.unwrap();
+    assert_eq!(trace.outcome.as_str(), "rejected");
+    assert_trace_metadata(&reply, trace);
+
+    let actor = counter();
+    let token = fixture.issuer.issue_invocation_target(
+        &actor,
+        fixture.host.id(),
+        "00000000-0000-4000-8000-000000000001",
+        "revision-1",
+        "us-east",
+        1,
+        None,
+        "http://10.1.2.3:7101",
+    )?;
+    let socket: Value = fixture
+        .client
+        .post(format!(
+            "{}/v1/projects/default/actors/Counter/counter-1/socket-events",
+            fixture.origin
+        ))
+        .bearer_auth(token.token)
+        .json(&crate::control_plane::socket_gateway::SocketEventRequest {
+            host_state: HostState::Warm,
+            routing_ms: 0.0,
+            owner_epoch: 1,
+            invocation: crate::actor::ActorSocketInvocation {
+                actor,
+                request_id: "socket-overflow".into(),
+                event: crate::actor::ActorSocketEvent::Message {
+                    connection_id: "socket".into(),
+                    message: crate::actor::ActorSocketMessage::Text {
+                        data: "hello".into(),
+                    },
+                },
+                connections: vec![],
+            },
+        })
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(socket["type"], "failed");
+    assert!(
+        socket["message"]
+            .as_str()
+            .unwrap()
+            .contains("rejected before execution")
+    );
+    assert!(!socket["message"].as_str().unwrap().contains("unknown"));
+    assert!(fixture.started.try_recv().is_err());
+    calls.abort_all();
+    while calls.join_next().await.is_some() {}
+    fixture.release.add_permits(1);
+    fixture.host.drain(Duration::from_secs(2)).await?;
+    assert!(fixture.host.status().borrow().waiting.is_empty());
+    Ok(())
+}
+
 fn assert_trace_metadata(reply: &Value, trace: crate::request_traces::RequestTrace) {
     // Decode both through JSON, as the HTTP response and observability API do.
     let trace: Value = serde_json::from_str(&serde_json::to_string(&trace).unwrap()).unwrap();
@@ -355,4 +447,34 @@ impl HttpHost {
             .json(&json!({"requestId": request_id, "ownerEpoch": 1, "method": "increment", "args": [], "hostState": host_state, "routingMs": 500.0}))
             .send().await?.error_for_status()?.json().await?)
     }
+}
+
+#[tokio::test]
+async fn cancelled_http2_stream_removes_queued_inventory_before_execution() -> Result<()> {
+    let mut fixture = HttpHost::start(None).await?;
+    fixture.client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let host = fixture.host.clone();
+    let first = tokio::spawn(async move { invoke(&host, "first").await });
+    assert_eq!(fixture.started.recv().await.as_deref(), Some("first"));
+    let mut status = fixture.host.status();
+    let mut queued = Box::pin(fixture.invoke("cancelled-http2", "counter-1"));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::select! {
+            result = &mut queued => panic!("queued request completed before cancellation: {result:?}"),
+            result = status.wait_for(|s| s.waiting.len() == 1) => { result?; }
+        }
+        anyhow::Ok(())
+    }).await??;
+    drop(queued);
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        status.wait_for(|s| s.waiting.is_empty()),
+    )
+    .await??;
+    assert!(fixture.started.try_recv().is_err());
+    fixture.release.add_permits(1);
+    assert_eq!(first.await??, completed(1));
+    fixture.host.drain(Duration::from_secs(2)).await?;
+    assert!(fixture.started.try_recv().is_err());
+    Ok(())
 }

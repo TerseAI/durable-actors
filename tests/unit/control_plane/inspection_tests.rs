@@ -1025,6 +1025,11 @@ async fn residency_api_filters_projects_and_actors_and_validates_ranges() -> Res
             .await?;
     }
     let base = "/v1/projects/alpha/observe/residency";
+    // The default range needs a positive interval after the lifecycle reports.
+    let reported_at_ms = SystemClock.now_ms()?;
+    while SystemClock.now_ms()? <= reported_at_ms {
+        tokio::task::yield_now().await;
+    }
     let history: Value = fixture
         .get(&format!(
             "{base}?actorName=Room.with.dots&toMs=9007199254740991"

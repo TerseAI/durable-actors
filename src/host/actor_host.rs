@@ -9,7 +9,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::actor::{
@@ -20,7 +21,8 @@ use crate::actor::{
 use crate::host_leases::WaitingOperation;
 use crate::request_traces::RequestKind;
 use crate::request_tracking::{
-    HostState, RequestCompletion, RequestMetadata, RequestObserver, RequestStage, RequestTracker,
+    HostState, RequestCompletion, RequestMetadata, RequestObserver, RequestOutcome, RequestStage,
+    RequestTracker,
 };
 use opentelemetry_sdk::trace::SdkTracer;
 
@@ -33,10 +35,14 @@ use super::{
     telemetry::TraceRecorder,
 };
 
+const MAX_OUTSTANDING_REQUESTS: usize = 128;
+
 pub(crate) struct ActorHost {
     actor: ActorKey,
     endpoint: HostEndpoint,
-    mailbox: mpsc::UnboundedSender<ActorMessage>,
+    mailbox: mpsc::Sender<ActorMessage>,
+    capacity: Arc<Semaphore>,
+    cancelled: Arc<Notify>,
     status: watch::Receiver<ActorStatus>,
     traces: Option<SdkTracer>,
 }
@@ -82,7 +88,8 @@ impl ActorHost {
         publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
         let (status, observed) = watch::channel(ActorStatus::default());
-        let (mailbox, requests) = mpsc::unbounded_channel();
+        let (mailbox, requests) = mpsc::channel(MAX_OUTSTANDING_REQUESTS);
+        let cancelled = Arc::new(Notify::new());
         Actor {
             actor: actor.clone(),
             owner_epoch: 0,
@@ -93,6 +100,7 @@ impl ActorHost {
             publisher,
             status,
             requests,
+            cancelled: cancelled.clone(),
             pending: VecDeque::new(),
             running: FuturesUnordered::new(),
             next_invocation: 0,
@@ -106,6 +114,8 @@ impl ActorHost {
             actor,
             endpoint,
             mailbox,
+            capacity: Arc::new(Semaphore::new(MAX_OUTSTANDING_REQUESTS)),
+            cancelled,
             status: observed,
             traces: None,
         }
@@ -173,11 +183,13 @@ impl ActorHost {
     }
 
     pub(crate) async fn drain(&self, timeout: Duration) -> Result<()> {
-        let _ = self.mailbox.send(ActorMessage::Drain);
         let mut status = self.status.clone();
-        tokio::time::timeout(timeout, status.wait_for(ActorStatus::drained))
-            .await
-            .context("actor invocations did not drain before shutdown")??;
+        tokio::time::timeout(timeout, async {
+            let _ = self.mailbox.send(ActorMessage::Drain).await;
+            status.wait_for(ActorStatus::drained).await.map(|_| ())
+        })
+        .await
+        .context("actor invocations did not drain before shutdown")??;
         Ok(())
     }
 
@@ -200,24 +212,48 @@ impl ActorHost {
         routing_ms: f64,
     ) -> (Result<ActorExecutionResult>, Option<RequestMetadata>) {
         let (reply, result) = oneshot::channel();
-        let (tracker, timing) =
+        let (mut tracker, timing) =
             RequestTracker::new(started, host_state, routing_ms, self.observer(&operation));
+        if self.mailbox.is_closed()
+            || (self.status.borrow().phase != ActorPhase::Serving && !operation.is_disconnect())
+        {
+            tracker.finish(RequestOutcome::Rejected);
+            return (Ok(ActorExecutionResult::HostUnavailable), timing.await.ok());
+        }
+        let Ok(permit) = self.capacity.clone().try_acquire_owned() else {
+            tracker.finish(RequestOutcome::Rejected);
+            return (Ok(overloaded()), timing.await.ok());
+        };
+        let mut cancellation = RequestCancellation {
+            token: CancellationToken::new(),
+            changed: self.cancelled.clone(),
+            completed: false,
+        };
         let request = Box::new(ActorRequest {
             tracker,
             operation,
             owner_epoch,
             reply,
+            cancelled: cancellation.token.clone(),
+            _permit: permit,
         });
-        if let Err(mpsc::error::SendError(ActorMessage::Request(request))) =
-            self.mailbox.send(ActorMessage::Request(request))
-        {
-            request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
+        match self.mailbox.try_send(ActorMessage::Request(request)) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(ActorMessage::Request(mut request))) => {
+                request.tracker.finish(RequestOutcome::Rejected);
+                request.finish(&self.endpoint, Ok(overloaded()));
+            }
+            Err(mpsc::error::TrySendError::Closed(ActorMessage::Request(request))) => {
+                request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
+            }
+            Err(_) => unreachable!(),
         }
         let outcome = result.await.unwrap_or_else(|_| {
             Ok(ActorExecutionResult::Failed {
                 failure: ActorInvocationFailure::outcome_unknown_after_execution(),
             })
         });
+        cancellation.completed = true;
         let timing = timing.await.ok();
         (outcome, timing)
     }
@@ -259,7 +295,8 @@ struct Actor {
     database: Arc<HostDatabase>,
     publisher: Arc<dyn ActorSocketPublisher>,
     status: watch::Sender<ActorStatus>,
-    requests: mpsc::UnboundedReceiver<ActorMessage>,
+    requests: mpsc::Receiver<ActorMessage>,
+    cancelled: Arc<Notify>,
     admission: Option<watch::Receiver<()>>,
     pending: VecDeque<Queued>,
     running: FuturesUnordered<BoxFuture<'static, Completion>>,
@@ -301,6 +338,7 @@ impl Actor {
                     self.evict(false).await;
                     return;
                 }
+                _ = self.cancelled.notified() => self.discard_cancelled(),
                 permission = admitted(&mut self.admission), if self.blocked_on.is_some() && !self.hydrating => {
                     if permission.is_err() { return; }
                     self.interleaved = true;
@@ -315,11 +353,25 @@ impl Actor {
         }
     }
 
-    fn receive(&mut self, request: ActorRequest) {
+    fn receive(&mut self, mut request: ActorRequest) {
+        if request.cancelled.is_cancelled() {
+            request.tracker.finish(RequestOutcome::Rejected);
+            return;
+        }
         match self.rejection(&request.operation) {
             Some(result) => self.finish(request, result),
             None => self.pending.push_back(Queued::new(request)),
         }
+    }
+
+    fn discard_cancelled(&mut self) {
+        self.pending.retain_mut(|queued| {
+            if !queued.request.cancelled.is_cancelled() {
+                return true;
+            }
+            queued.request.tracker.finish(RequestOutcome::Rejected);
+            false
+        });
     }
 
     fn rejection(&self, operation: &ActorOperation) -> Option<Result<ActorExecutionResult>> {
@@ -334,8 +386,12 @@ impl Actor {
 
     fn start_ready(&mut self) {
         while self.blocked_on.is_none()
-            && let Some(Queued { request, .. }) = self.pending.pop_front()
+            && let Some(Queued { mut request, .. }) = self.pending.pop_front()
         {
+            if request.cancelled.is_cancelled() {
+                request.tracker.finish(RequestOutcome::Rejected);
+                continue;
+            }
             match self.rejection(&request.operation) {
                 Some(result) => self.finish(request, result),
                 None => self.start(request),
@@ -826,6 +882,28 @@ fn failed(code: &str, message: impl Into<String>) -> ActorExecutionResult {
     }
 }
 
+fn overloaded() -> ActorExecutionResult {
+    failed(
+        "actor_overloaded",
+        "actor request capacity reached; request rejected before execution",
+    )
+}
+
+struct RequestCancellation {
+    token: CancellationToken,
+    changed: Arc<Notify>,
+    completed: bool,
+}
+
+impl Drop for RequestCancellation {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.token.cancel();
+            self.changed.notify_one();
+        }
+    }
+}
+
 enum ActorMessage {
     Request(Box<ActorRequest>),
     Drain,
@@ -836,6 +914,8 @@ struct ActorRequest {
     operation: ActorOperation,
     owner_epoch: u64,
     reply: oneshot::Sender<Result<ActorExecutionResult>>,
+    cancelled: CancellationToken,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl ActorRequest {

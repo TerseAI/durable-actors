@@ -40,6 +40,9 @@ struct IncrementingExecutor {
 mod sqlite;
 use sqlite::{exec, fields, persist_fields, replication, write_fields};
 
+#[path = "overload.rs"]
+mod overload;
+
 fn counter() -> ActorKey {
     ActorKey {
         project_id: "default".into(),
@@ -1065,7 +1068,7 @@ async fn queued_actor_bursts_respect_shutdown_fencing() -> Result<()> {
     let first = tokio::spawn(async move { invoke(&caller, "first").await });
     assert_eq!(started.recv().await.as_deref(), Some("first"));
     let mut queued = Vec::new();
-    for index in 0..128 {
+    for index in 0..MAX_OUTSTANDING_REQUESTS - 1 {
         let caller = host.clone();
         queued.push(tokio::spawn(async move {
             invoke(&caller, &format!("queued-{index}")).await
@@ -1073,9 +1076,12 @@ async fn queued_actor_bursts_respect_shutdown_fencing() -> Result<()> {
     }
     tokio::time::timeout(
         Duration::from_secs(2),
-        status.wait_for(|status| status.waiting.len() == 128),
+        status.wait_for(|status| status.waiting.len() == MAX_OUTSTANDING_REQUESTS - 1),
     )
     .await??;
+    assert!(
+        matches!(invoke(&host, "overflow").await?, ActorExecutionResult::Failed { failure } if failure.code == "actor_overloaded")
+    );
     assert!(host.drain(Duration::from_millis(30)).await.is_err());
     assert_eq!(
         invoke(&host, "draining").await?,
@@ -2725,3 +2731,6 @@ async fn activation_fails_when_the_executor_does_not_load_the_assigned_actor() -
     assert!(format!("{error:#}").contains("not loaded"));
     Ok(())
 }
+
+#[path = "bounded_queue.rs"]
+mod bounded_queue;
