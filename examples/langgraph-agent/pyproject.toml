@@ -1,0 +1,20 @@
+[project]
+name = "durable-actors-langgraph-example"
+version = "0.1.0"
+description = "Multi-agent LangGraph workflow with durable actor persistence and recovery"
+requires-python = ">=3.11"
+dependencies = [
+    "durable-actors",
+    "langgraph>=0.2.0",
+    "langchain-core>=0.3.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.uv.sources]
+durable-actors = { path = "../../sdk-python", editable = true }
+durable-actors-runtime = { path = "../.." }
