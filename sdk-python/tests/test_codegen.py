@@ -569,3 +569,39 @@ async def test_generated_async_client_invokes_and_decodes_shared_models(tmp_path
             result = await actor.echo(message)
     assert type(result) is generated.actors.Echo.Message
     assert result == message
+
+
+def test_generated_warm_passes_the_duration_to_the_caller_transport(tmp_path, monkeypatch):
+    generate_client(json.loads(json.dumps(public_contract([Chat]))), tmp_path / "warm_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    generated = importlib.import_module("warm_client")
+    calls = []
+
+    class Warms(Transport):
+        def warm(self, actor_name, actor_id, warm_ms, **options):
+            calls.append((actor_name, actor_id, warm_ms, options))
+            return {"status": "OK"}
+
+    assert generated.actors.Chat.warm("lobby", 30_000, Warms()) == {"status": "OK"}
+    generated.actors.Chat.warm("lobby", 30_000, Warms(), wait_for_completion=False, timeout_ms=2000)
+    assert calls == [
+        ("Chat", "lobby", 30_000, {}),
+        ("Chat", "lobby", 30_000, {"wait_for_completion": False, "timeout_ms": 2000}),
+    ]
+
+
+async def test_generated_async_warm_passes_the_duration_to_the_caller_transport(
+    tmp_path, monkeypatch
+):
+    generate_client(json.loads(json.dumps(public_contract([Chat]))), tmp_path / "async_warm_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    generated = importlib.import_module("async_warm_client")
+    calls = []
+
+    class AsyncWarms:
+        async def warm(self, actor_name, actor_id, warm_ms, **options):
+            calls.append((actor_name, actor_id, warm_ms, options))
+            return {"status": "OK"}
+
+    assert await generated.async_actors.Chat.warm("lobby", 30_000, AsyncWarms()) == {"status": "OK"}
+    assert calls == [("Chat", "lobby", 30_000, {})]

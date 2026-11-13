@@ -447,6 +447,107 @@ test("public contracts reject unsupported versions and generate an empty backend
     await assert.rejects(generateClientArtifacts({ version: 2, actors: [] } as never), /version/)
 })
 
+test("generated warm takes an optional duration and returns the server's status", async t => {
+    const root = await project(t)
+    const entrypoint = path.join(root, "actors.ts")
+    await writeFile(
+        entrypoint,
+        `
+        import { Actor } from "durable-actors"
+        export class Room extends Actor<{}, never, never> {
+            async ping() { return 1 }
+        }
+    `
+    )
+    await writeArtifacts(root, await generateClientArtifacts(new ActorCompiler().compileContract(entrypoint)))
+    await writeFile(
+        path.join(root, "consumer.ts"),
+        `
+        import { actors } from "./index.js"
+        const held: Promise<{ status: "OK" | "accepted" }> = actors.Room.warm("lobby", 60_000)
+        const started: Promise<{ status: "OK" | "accepted" }> = actors.Room.warm("lobby")
+        const quick: Promise<{ status: "OK" | "accepted" }> = actors.Room.warm("lobby", 60_000, {
+            waitForCompletion: false,
+            timeoutMs: 2000
+        })
+        // @ts-expect-error the duration is a number of milliseconds
+        actors.Room.warm("lobby", "60000")
+        // @ts-expect-error waitForCompletion is true or false
+        actors.Room.warm("lobby", 60_000, { waitForCompletion: "no" })
+        // @ts-expect-error timeoutMs needs waitForCompletion: false
+        actors.Room.warm("lobby", 60_000, { timeoutMs: 2000 })
+        // @ts-expect-error timeoutMs needs waitForCompletion: false
+        actors.Room.warm("lobby", 60_000, { waitForCompletion: true, timeoutMs: 2000 })
+    `
+    )
+    checkTypes(path.join(root, "consumer.ts"))
+})
+
+test("warm in a browser build refuses like get", async t => {
+    const root = await project(t)
+    const entrypoint = path.join(root, "actors.ts")
+    await writeFile(
+        entrypoint,
+        `
+        import { Actor } from "durable-actors"
+        export class Room extends Actor<{}, never, never> {
+            async ping() { return 1 }
+        }
+    `
+    )
+    await writeArtifacts(root, await generateClientArtifacts(new ActorCompiler().compileContract(entrypoint)))
+    const browser = await build({
+        entryPoints: [path.join(root, "index.js")],
+        bundle: true,
+        platform: "browser",
+        format: "esm",
+        write: false
+    })
+    const browserModule = await import(
+        `data:text/javascript;base64,${Buffer.from(browser.outputFiles![0]!.text).toString("base64")}`
+    )
+    assert.throws(() => browserModule.actors.Room.warm("lobby", 60_000), /server/)
+})
+
+test("generated warm passes the actor, id, duration and options to the transport", async t => {
+    const root = await project(t)
+    const entrypoint = path.join(root, "actors.ts")
+    await writeFile(
+        entrypoint,
+        `
+        import { Actor } from "durable-actors"
+        export class Room extends Actor<{}, never, never> {
+            async ping() { return 1 }
+        }
+    `
+    )
+    await writeArtifacts(root, await generateClientArtifacts(new ActorCompiler().compileContract(entrypoint)))
+    const outfile = path.join(root, "backend.mjs")
+    await build({
+        entryPoints: [path.join(root, "index.js")],
+        outfile,
+        bundle: true,
+        format: "esm",
+        platform: "node"
+    })
+    const { actors } = await import(pathToFileURL(outfile).href)
+    const warms: unknown[][] = []
+    const transport = {
+        async invoke() {
+            throw new Error("not used")
+        },
+        async warm(...args: unknown[]) {
+            warms.push(args)
+            return { status: "OK" }
+        }
+    }
+    assert.deepEqual(
+        await actors.Room.warm("lobby", 60_000, { waitForCompletion: false, timeoutMs: 2000 }, transport),
+        { status: "OK" }
+    )
+    assert.deepEqual(warms, [["Room", "lobby", 60_000, { waitForCompletion: false, timeoutMs: 2000 }]])
+})
+
 async function project(t: { after(fn: () => Promise<void>): void }) {
     const root = await mkdtemp(path.join(os.tmpdir(), "backend-codegen-"))
     t.after(() => rm(root, { recursive: true, force: true }))
