@@ -50,3 +50,5 @@ console.log(await counter.increment())
 ```
 
 For WebSockets and browser integration, see the [chatroom example](https://github.com/TerseAI/durable-actors/blob/main/examples/chat/README.md).
+
+For emitted state, import `subscribe` from your generated `browser.js` or `durable-actors/browser`. It merges snapshots and updates into complete state and reconnects using a fresh backend grant. See [browser subscriptions](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/typescript-guide.md#subscribe-from-a-browser) for an example and cleanup behavior.

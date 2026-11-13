@@ -33,7 +33,7 @@ async function standaloneProject(t) {
 
 async function checkArtifacts(directory) {
     const generated = path.join(directory, "generated")
-    assert.deepEqual((await readdir(generated)).sort(), ["index.d.ts", "index.js", "package.json", "runtime", "types.d.ts"])
+    assert.deepEqual((await readdir(generated)).sort(), ["browser.d.ts", "browser.js", "index.d.ts", "index.js", "package.json", "runtime", "types.d.ts"])
     const files = await readdir(path.join(generated, "runtime"))
     for (const file of files) {
         if (file.endsWith(".js")) assert.ok(files.includes(file.replace(/\.js$/, ".d.ts")), file)
@@ -47,6 +47,13 @@ async function checkTypes(directory) {
         consumer,
         `
         import { actors, createActorTransport, createActorSessionTransport, ActorSessionRejectedError, ActorInvocationError, type ActorSession, type SocketGrant } from "./generated/index.js"
+        import { subscribe, type ActorStateMessage, type ActorStateUpdate, type actors as BrowserActors } from "./generated/browser.js"
+        const subscription = subscribe<BrowserActors.ChatRoom.State>(async () => ({ websocketUrl: "wss://example.com/socket" }), state => {})
+        subscription.close()
+        const snapshot: ActorStateMessage<{ count: number }> = { type: "state", state: { count: 1 } }
+        const update: ActorStateUpdate<{ count: number }> = { type: "state_update", changes: { count: 2 }, removed: [], version: 1 }
+        // @ts-expect-error state patches preserve field types
+        const invalid: ActorStateUpdate<{ count: number }> = { type: "state_update", changes: { count: "wrong" }, removed: [], version: 1 }
         const transport = createActorTransport({ controlPlaneUrl: "http://localhost:7100" })
         const room = actors.ChatRoom.get("lobby", transport)
         const message: Promise<{ id: string; text: string }> = room.sendMessage({ text: "hello" })
@@ -190,6 +197,20 @@ async function invokeClient(directory, origin, format) {
 }
 
 async function checkBrowser(directory) {
+    const subscription = await build({
+        entryPoints: [path.join(directory, "generated/browser.js")],
+        bundle: true,
+        platform: "browser",
+        format: "esm",
+        write: false,
+        metafile: true,
+        logLevel: "silent"
+    })
+    const browserClient = await import(`data:text/javascript;base64,${Buffer.from(subscription.outputFiles[0].text).toString("base64")}`)
+    assert.equal(typeof browserClient.subscribe, "function")
+    assert.equal(typeof browserClient.Subscription, "function")
+    assert.ok(Object.keys(subscription.metafile.inputs).every(file => !/\/(?:settings|proxy|stub|session)\.js$/.test(file)))
+    assert.doesNotMatch(subscription.outputFiles[0].text, /process\.|Buffer\.|node:|require\(/)
     const browser = await build({ entryPoints: [path.join(directory, "generated/index.js")], bundle: true, platform: "browser", format: "esm", write: false, logLevel: "silent" })
     const module = await import(`data:text/javascript;base64,${Buffer.from(browser.outputFiles[0].text).toString("base64")}`)
     assert.throws(() => module.actors.ChatRoom.get("lobby"), /server/)

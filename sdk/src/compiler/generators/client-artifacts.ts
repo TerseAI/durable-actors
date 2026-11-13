@@ -46,6 +46,11 @@ async function clientArtifacts(
     return new Map([
         ["index.js", await formatSource(javascript.outputText)],
         ["index.d.ts", await formatSource(declaration.outputText)],
+        ["browser.js", await formatSource('export * from "./runtime/browser.js"')],
+        [
+            "browser.d.ts",
+            await formatSource('export * from "./runtime/browser.js"\nexport type { actors } from "./index.js"')
+        ],
         ["types.d.ts", await formatSource(typescript.declarations)],
         [
             "package.json",

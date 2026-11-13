@@ -195,6 +195,33 @@ socket.addEventListener("message", event => {
 })
 ```
 
+### Subscribe from a browser
+
+Use the generated `browser.js` entry to receive complete `@Emittable` state without importing backend code. The same API is available from `durable-actors/browser`.
+
+```typescript
+import { subscribe, type actors } from "./generated/browser.js"
+
+const subscription = subscribe<actors.BankAccount.State>(
+    async () => {
+        const response = await fetch("/api/socket/BankAccount/demo", { method: "POST" })
+        if (!response.ok) throw new Error(`Connection denied (${response.status})`)
+        return response.json()
+    },
+    state => console.log(state.balance),
+    { onError: error => console.error(error) }
+)
+
+// On unmount or when changing actors:
+subscription.close()
+```
+
+Your backend authenticates the user and returns a grant from `prepareWebsocket`, as above. Keep API keys on the backend. The grant callback runs before every connection attempt, so reconnects use fresh authorization.
+
+The callback receives the initial snapshot and subsequent complete states: updates replace top-level fields in `changes` and delete fields in `removed`. Nested values are replaced, and application messages are ignored. Each callback gets an isolated copy. Older or duplicate versions are ignored within a connection; reconnecting starts from a new snapshot. `ActorStateMessage<State>` and `ActorStateUpdate<State>` are exported for consumers that handle frames directly. The state generic provides compile-time types; it does not validate application field values at runtime.
+
+Lost connections and grant failures retry after 1 second, doubling up to 30 seconds until a state snapshot arrives. `onError` reports these failures; call `close()` there to stop retries after an authorization denial. Malformed frames or a throwing state callback stop the subscription and populate `subscription.error`. `subscription.closed` becomes true after an explicit close or a terminal failure. Without `onError`, errors are logged to the console. Closing cancels retries, closes the socket, and ignores any grant still being fetched.
+
 ## Using @Resource
 
 It's common to tie a Durable Actor with other pieces of infra such as a Sandbox or a Coding Harness. The problem, is that those have a different lifecycle (ex: sandboxes can be up for days). In order to simplify the core logic of your actor, you can create Resources and tie them to the lifecycle of the Durable Actor.
