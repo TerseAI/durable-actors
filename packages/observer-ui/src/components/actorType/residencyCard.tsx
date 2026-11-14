@@ -33,13 +33,7 @@ export function ResidencyCard({ actor, history, requests, failed, timeWindow }: 
     const livePeriods = history && groupLivePeriods(history)
     const shown = expanded ? instances : instances?.slice(0, previewRows)
     return (
-        <SectionCard
-            title="Residency"
-            description={history?.truncated && "Showing the most recent residency only. Narrow the time range to see all of it."}
-            aside={<ResidencyKeys />}
-            busy={!shown && !failed}
-            className="pb-3"
-        >
+        <SectionCard title="Residency" aside={<ResidencyKeys />} busy={!shown && !failed} className="pb-3">
             {failed ? (
                 <p className="py-4 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
             ) : (
