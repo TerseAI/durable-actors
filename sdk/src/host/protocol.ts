@@ -6,26 +6,42 @@ import type { SocketEffect, SocketLookup, SocketQuery } from "../actor/socketPro
 import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtocol.js"
 import { ActorProtocolError } from "../errors.js"
 import type { JsonValue } from "../json.js"
-import { jsonValueSchema } from "../json.js"
 
 import type { DatabaseRequest } from "./database-bridge.js"
 import type { DatabaseCall } from "./database.js"
 
 function parseActorSessionServerMessage(document: string): ActorSessionServerMessage {
-    let value: unknown
+    const result = actorSessionServerMessageSchema.safeParse(parseJson(document))
+    if (!result.success) throw new ActorProtocolError(`actor session message is invalid: ${result.error.message}`)
+    return result.data
+}
+
+function parseJson(document: string): unknown {
     try {
-        value = JSON.parse(document)
+        return mayHoldPrototypeKey(document) ? JSON.parse(document, withoutPrototypeKeys) : JSON.parse(document)
     } catch (error) {
         throw new ActorProtocolError("actor session message is not valid JSON", { cause: error })
     }
-    const result = actorSessionServerMessageSchema.safeParse(value)
-    if (!result.success) throw new ActorProtocolError(`actor session message is invalid: ${result.error.message}`)
-    return result.data
+}
+
+function mayHoldPrototypeKey(document: string): boolean {
+    return PROTOTYPE_KEY_SPELLINGS.some(spelling => document.includes(spelling))
+}
+
+function withoutPrototypeKeys(key: string, value: unknown): unknown {
+    return key === "__proto__" ? undefined : value
 }
 
 function failedReply(code: string, message: string): FailedReply {
     return { type: "failed", code, message }
 }
+
+// JSON spells the key outright or escapes one of its letters, which all lie between \u005f and \u0074.
+const PROTOTYPE_KEY_SPELLINGS = ["__proto__", "\\u005", "\\u006", "\\u007"]
+
+// State, arguments and actor results are already JSON once parsed, so only their presence is checked.
+// The recursive schema this replaces also dropped __proto__ keys, which parseJson now does.
+const relayedJsonSchema = z.custom<JsonValue>(value => value !== undefined)
 
 const databaseValueSchema = z.discriminatedUnion("type", [
     z.object({ type: z.literal("null") }),
@@ -37,7 +53,7 @@ const databaseValueSchema = z.discriminatedUnion("type", [
 
 const databaseResultSchema = z.discriminatedUnion("type", [
     z.object({ type: z.literal("rows"), columns: z.array(z.string()), rows: z.array(z.array(databaseValueSchema)) }),
-    z.object({ type: z.literal("fields"), fields: z.record(z.string(), jsonValueSchema) }),
+    z.object({ type: z.literal("fields"), fields: z.record(z.string(), relayedJsonSchema) }),
     z.object({
         type: z.literal("alarm"),
         timestamp_ms: z.number().int().safe().nullable()
@@ -49,7 +65,7 @@ const invokeCommandSchema = z.object({
     type: z.literal("invoke"),
     request_id: actorComponentSchema,
     method: actorComponentSchema,
-    args: z.array(jsonValueSchema)
+    args: z.array(relayedJsonSchema)
 })
 
 const websocketEventCommandSchema = z.object({
@@ -83,7 +99,7 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
     z.object({
         type: z.literal("actor_result"),
         call_id: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-        outcome: jsonValueSchema
+        outcome: relayedJsonSchema
     }),
     z.object({
         type: z.literal("socket_connections"),
