@@ -96,9 +96,13 @@ impl HostLeaseMaintainer {
         shutdown: CancellationToken,
         lease_lost: watch::Sender<bool>,
     ) {
+        // The first lease was claimed before this host started, so it may already be partly spent.
+        let mut renew_at = local_deadline
+            .checked_sub(Duration::from_millis(self.lease_duration_ms) - self.renew_every)
+            .map_or_else(Instant::now, |at| at.min(Instant::now() + self.renew_every));
         loop {
             if !self
-                .wait_until_renewal(local_deadline, &shutdown, &lease_lost)
+                .wait_until_renewal(local_deadline, renew_at, &shutdown, &lease_lost)
                 .await
             {
                 return;
@@ -110,12 +114,14 @@ impl HostLeaseMaintainer {
                 return;
             };
             local_deadline = deadline;
+            renew_at = Instant::now() + self.renew_every;
         }
     }
 
     async fn wait_until_renewal(
         &self,
         local_deadline: Instant,
+        renew_at: Instant,
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
     ) -> bool {
@@ -130,7 +136,7 @@ impl HostLeaseMaintainer {
                 let _ = lease_lost.send(true);
                 false
             }
-            _ = tokio::time::sleep(self.renew_every) => true,
+            _ = tokio::time::sleep_until(renew_at) => true,
         }
     }
 
@@ -171,7 +177,9 @@ impl HostLeaseMaintainer {
         // The store stamps the durable expiration with its own clock. The locally
         // confirmed window is anchored to this host's clock, sampled before the
         // store round trip, so it always lapses at or before the stamped expiry
-        // regardless of the absolute offset between the two clocks.
+        // regardless of the absolute offset between the two clocks. The first
+        // lease is the control plane's claim, stamped before this host started,
+        // so the window also ends at that expiry as this host's clock reads it.
         let local_now_ms = self.clock.now_ms()?;
         let local_valid_until_ms = local_now_ms
             .checked_add(self.lease_duration_ms)
@@ -195,7 +203,9 @@ impl HostLeaseMaintainer {
         // above. This makes the process fence no later than the locally confirmed
         // lease window, even when a renewal RPC consumed most of that window.
         let deadline_anchor = Instant::now();
-        let remaining_ms = local_valid_until_ms.saturating_sub(self.clock.now_ms()?);
+        let remaining_ms = local_valid_until_ms
+            .min(lease.expires_at_ms)
+            .saturating_sub(self.clock.now_ms()?);
         ensure!(
             remaining_ms > 0,
             "host lease expired before its registration response arrived"

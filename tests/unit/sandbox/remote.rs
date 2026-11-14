@@ -45,6 +45,10 @@ impl HostAssignment for Assign {
             "/customer/actors.mjs"
         );
         assert!(environment["DURABLE_ACTORS_CODE_ARTIFACT"].starts_with("gcs:"));
+        assert_eq!(
+            environment["DURABLE_ACTORS_OWNERSHIP_CLAIM"],
+            "{\"epoch\":3}"
+        );
         let secrets: HashMap<String, String> =
             serde_json::from_str(&environment["DURABLE_ACTORS_CUSTOMER_ENV"])?;
         assert_eq!(secrets["CUSTOMER_SECRET"], "assigned-secret");
@@ -98,8 +102,8 @@ fn request() -> Result<EnsureHostRequest> {
     };
     Ok(EnsureHostRequest {
         initial_operation: None,
-        actor_is_new: true,
-        owner_hint: None,
+        ownership_claim: Some("{\"epoch\":3}".into()),
+        host_route: None,
         actor: Some(crate::actor::ActorKey {
             project_id: "project".into(),
             actor_name: "Counter".into(),

@@ -109,7 +109,7 @@ impl Bucket for MemoryBucket {
 }
 
 #[tokio::test]
-async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Result<()> {
+async fn host_adopts_its_claim_then_reads_and_writes_without_a_control_plane() -> Result<()> {
     let bucket = Arc::new(MemoryBucket::default());
     let storage = host_storage(bucket.clone()).await?;
     let host = storage.host.clone();
@@ -157,9 +157,29 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
     Ok(())
 }
 
+/// A host whose new actor the control plane already claimed for `http://host`.
 async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
     let runtime = Arc::new(RuntimeStorage::new(bucket.clone(), Arc::new(SystemClock))?);
     let host = HostId::new("host.v3.revision.host");
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let claim = runtime
+        .claim_activation(
+            &actor,
+            &HostLeaseRequest {
+                id: host.clone(),
+                session_id: "session".into(),
+                route: "http://host".into(),
+                duration_ms: 30_000,
+            },
+            "us-east",
+            true,
+            None,
+        )
+        .await?;
     Ok(HostStorage {
         objects: None,
         observer: Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?),
@@ -168,13 +188,8 @@ async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
         host,
         session: "session".into(),
         region: "us-east".into(),
-        actor: ActorKey {
-            project_id: "default".into(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-        },
-        new_actor: true,
-        owner_hint: None,
+        actor,
+        claim: Some(claim),
         node_cache: None,
         activation: Mutex::new(None),
         checkpoint: Mutex::new(None),
@@ -350,7 +365,7 @@ impl crate::bucket::SnapshotStore for DelayedFinish {
 
 #[tokio::test(start_paused = true)]
 async fn storage_drain_renews_ownership_and_only_seals_archived_state() -> Result<()> {
-    use crate::{bucket::SnapshotStoreConfig, placement::ObjectPlacementStore};
+    use crate::bucket::SnapshotStoreConfig;
     for (fail, stall) in [(false, false), (true, false), (false, true)] {
         let bucket = Arc::new(MemoryBucket::default());
         let delayed = Arc::new(DelayedFinish {
@@ -361,7 +376,7 @@ async fn storage_drain_renews_ownership_and_only_seals_archived_state() -> Resul
         });
         let mut storage = host_storage(bucket.clone()).await?;
         storage.runtime = Arc::new(
-            RuntimeStorage::new(bucket, Arc::new(SystemClock))?
+            RuntimeStorage::new(bucket.clone(), Arc::new(SystemClock))?
                 .with_persistence(SnapshotStoreConfig::Local, delayed.clone())?,
         );
         let storage = Arc::new(storage);
@@ -387,20 +402,26 @@ async fn storage_drain_renews_ownership_and_only_seals_archived_state() -> Resul
         }
         finishing.await??;
         assert!(storage.register(&request).await.is_err());
-        let (_, hint) = storage
-            .runtime
-            .get_owner_with_hint(&storage.actor.storage_key())
-            .await?;
-        let record = serde_json::to_value(hint.unwrap())?;
-        assert_eq!(record["record"]["sealed"], !fail && !stall);
-        assert_eq!(record["record"]["lease"]["expires_at_ms"], 0);
+        let record = bucket.owner_record()?;
+        assert_eq!(record["sealed"], !fail && !stall);
+        assert_eq!(record["lease"]["expires_at_ms"], 0);
     }
     Ok(())
 }
 
+impl MemoryBucket {
+    fn owner_record(&self) -> Result<serde_json::Value> {
+        let objects = self.objects.lock().unwrap();
+        let (_, owner) = objects
+            .iter()
+            .find(|(key, _)| key.contains("/owners/"))
+            .context("ownership record missing")?;
+        Ok(serde_json::from_slice(&owner.bytes)?)
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn shutdown_releases_ownership_while_a_renewal_is_stuck() -> Result<()> {
-    use crate::placement::ObjectPlacementStore;
     let bucket = Arc::new(MemoryBucket::default());
     let storage = Arc::new(host_storage(bucket.clone()).await?);
     let request = HostLeaseRequest {
@@ -426,13 +447,9 @@ async fn shutdown_releases_ownership_while_a_renewal_is_stuck() -> Result<()> {
     assert!(storage.ensure_authority().is_err());
     resume.add_permits(1);
     assert!(renewing.await?.is_err());
-    let (_, hint) = storage
-        .runtime
-        .get_owner_with_hint(&storage.actor.storage_key())
-        .await?;
-    let record = serde_json::to_value(hint.unwrap())?;
-    assert_eq!(record["record"]["lease"]["expires_at_ms"], 0);
-    assert_eq!(record["record"]["sealed"], true);
+    let record = bucket.owner_record()?;
+    assert_eq!(record["lease"]["expires_at_ms"], 0);
+    assert_eq!(record["sealed"], true);
     Ok(())
 }
 

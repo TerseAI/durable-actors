@@ -26,6 +26,8 @@ pub(crate) struct HostStorageConfig {
     pub persistence: super::SnapshotStoreConfig,
     pub region: String,
     pub tokens: Option<StorageTokens>,
+    #[serde(default)]
+    pub ownership: super::OwnershipLocation,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -71,6 +73,7 @@ pub(crate) struct RuntimeAccess {
     location: BucketLocation,
     token_source: Option<Box<dyn StorageTokenSource>>,
     persistence: super::SnapshotStoreConfig,
+    ownership: super::OwnershipLocation,
 }
 
 impl RuntimeAccess {
@@ -82,7 +85,13 @@ impl RuntimeAccess {
             },
             location,
             persistence,
+            ownership: super::OwnershipLocation::Bucket,
         })
+    }
+
+    pub(crate) fn with_ownership(mut self, ownership: super::OwnershipLocation) -> Self {
+        self.ownership = ownership;
+        self
     }
 
     pub(crate) fn validate_code(&self, code: &crate::bundle::ActorBundle) -> Result<()> {
@@ -110,7 +119,10 @@ impl RuntimeAccess {
             bucket: self.location.clone(),
             persistence: self.persistence.clone(),
             region: region.into(),
-            tokens: self.issue(actor, code_snapshot).await?,
+            tokens: self
+                .issue(actor, code_snapshot, OwnershipAccess::Read)
+                .await?,
+            ownership: self.ownership,
         })?)
     }
 
@@ -118,6 +130,7 @@ impl RuntimeAccess {
         &self,
         actor: &crate::actor::ActorKey,
         code_snapshot: Option<&str>,
+        ownership: OwnershipAccess,
     ) -> Result<Option<StorageTokens>> {
         let BucketLocation::Gcs {
             bucket,
@@ -135,6 +148,7 @@ impl RuntimeAccess {
             Some(artifact_bucket),
             actor,
             code.as_ref(),
+            ownership,
         )?;
         let source = self
             .token_source
@@ -144,6 +158,15 @@ impl RuntimeAccess {
             tokio::try_join!(source.issue(&scopes.ownership), source.issue(&scopes.state))?;
         Ok(Some(StorageTokens { ownership, state }))
     }
+}
+
+/// What a host may do with its actor's ownership record in the bucket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnershipAccess {
+    /// Hosts renew and release through the control plane, so they only read the record.
+    Read,
+    /// Hosts started before the control plane claimed activations renew the record themselves.
+    Write,
 }
 
 #[async_trait]
@@ -277,13 +300,17 @@ fn scopes(
     artifact_bucket: Option<&str>,
     actor: &crate::actor::ActorKey,
     code: Option<&crate::bundle::ActorBundle>,
+    access: OwnershipAccess,
 ) -> Result<Scopes> {
     // Owner paths end in `<base64url id>.json`, and base64url has no `.`, so this prefix matches
     // only this actor's owner object.
     let mut ownership = vec![rule(
         bucket,
         crate::storage_paths::owner(&actor.storage_key())?,
-        Permissions::OBJECT_USER,
+        match access {
+            OwnershipAccess::Read => Permissions::OBJECT_VIEWER,
+            OwnershipAccess::Write => Permissions::OBJECT_USER,
+        },
     )];
     if let Some(code) = code {
         ensure!(

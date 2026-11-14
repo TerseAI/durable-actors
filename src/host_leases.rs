@@ -4,6 +4,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_HOST_LEASE_DURATION_MS: u64 = 60_000;
+/// The lease a host renews unless `DURABLE_ACTORS_LEASE_MS` overrides it, and the lease the
+/// control plane claims for a host it starts.
+pub const DEFAULT_HOST_LEASE_MS: u64 = 30_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostLease {

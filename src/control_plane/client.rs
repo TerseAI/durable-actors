@@ -110,7 +110,9 @@ impl ControlPlaneClient {
         &self,
     ) -> Result<Option<crate::bucket::access::StorageTokens>> {
         match self
-            .execute(ControlPlaneCommand::RefreshStorageAccess)
+            .execute(ControlPlaneCommand::RefreshStorageAccess {
+                read_only_ownership: true,
+            })
             .await?
         {
             ControlPlaneCommandReply::StorageAccess {
@@ -297,6 +299,63 @@ impl crate::actor::ActorCaller for ControlPlaneClient {
         self.invoke_actor(call).await.unwrap_or_else(|error| {
             serde_json::json!({"type": "failed", "code": "outcome_unknown", "message": format!("{error:#}")})
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::bucket::OwnershipStore for ControlPlaneClient {
+    async fn get(&self, key: &str) -> Result<Option<crate::bucket::BucketObject>> {
+        let command = ControlPlaneCommand::LoadOwnership { key: key.into() };
+        match self.execute(command).await? {
+            ControlPlaneCommandReply::Ownership { record } => {
+                Ok(record.map(|record| crate::bucket::BucketObject {
+                    generation: record.generation,
+                    bytes: record.bytes.into(),
+                }))
+            }
+            _ => anyhow::bail!("unexpected ownership reply"),
+        }
+    }
+
+    async fn replace(&self, _: &str, _: Option<i64>, _: bytes::Bytes) -> Result<bool> {
+        anyhow::bail!("hosts renew and release ownership through activation commands")
+    }
+
+    async fn keys(&self) -> Result<Vec<String>> {
+        anyhow::bail!("hosts read only their own actor's ownership")
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::bucket::ActivationAuthority for ControlPlaneClient {
+    async fn renew_activation(
+        &self,
+        _: &ActorKey,
+        request: &crate::host_leases::HostLeaseRequest,
+    ) -> Result<crate::host_leases::HostLease> {
+        let command = ControlPlaneCommand::RenewActivation {
+            request: request.clone(),
+        };
+        match self.execute(command).await? {
+            ControlPlaneCommandReply::Lease { lease } => Ok(lease),
+            _ => anyhow::bail!("unexpected lease renewal reply"),
+        }
+    }
+
+    async fn release_activation(
+        &self,
+        _: &ActorKey,
+        _: &crate::host::HostId,
+        _: &str,
+        checkpoint: Option<crate::bucket::SessionCheckpoint>,
+    ) -> Result<()> {
+        match self
+            .execute(ControlPlaneCommand::ReleaseActivation { checkpoint })
+            .await?
+        {
+            ControlPlaneCommandReply::Unit => Ok(()),
+            _ => anyhow::bail!("unexpected activation release reply"),
+        }
     }
 }
 

@@ -1,6 +1,8 @@
 pub(crate) mod access;
 mod file;
 mod gcs;
+mod ownership;
+pub(crate) use ownership::{BucketOwnership, OwnershipLocation, OwnershipStore, confirm_replace};
 mod rapid;
 pub(crate) use rapid::{RAPID_OPERATION_TIMEOUT, RapidSnapshots};
 pub(crate) mod recovery;
@@ -15,8 +17,10 @@ use async_trait::async_trait;
 pub use file::FileBucket;
 pub use gcs::GcsBucket;
 pub(crate) use gcs::WarmStorage;
-pub(crate) use runtime::{ActorStateReader, CachedBase};
-pub use runtime::{LoadedActor, OwnershipHint, RuntimeStorage, RuntimeStorageReader};
+pub(crate) use runtime::{ActivationAuthority, ActorStateReader, CachedBase, SessionCheckpoint};
+pub use runtime::{
+    LoadedActor, OwnershipClaim, OwnershipHint, RuntimeStorage, RuntimeStorageReader,
+};
 
 #[derive(Clone, Debug)]
 pub struct BucketObject {

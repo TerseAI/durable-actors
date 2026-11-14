@@ -18,11 +18,11 @@ use crate::{
     storage::{SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name},
 };
 
-use super::{Bucket, replace};
+use super::{Bucket, OwnershipStore, replace};
 
 mod abandoned;
 mod activation;
-pub(crate) use activation::CachedBase;
+pub(crate) use activation::{ActivationAuthority, CachedBase};
 mod history;
 pub(crate) use history::ActorStateReader;
 mod session;
@@ -32,6 +32,8 @@ mod session;
 mod activation_tests;
 pub struct RuntimeStorage {
     reader: RuntimeStorageReader,
+    /// Where renewals and releases go when this process is a host rather than the control plane.
+    authority: Option<Arc<dyn ActivationAuthority>>,
     owned: Mutex<HashMap<String, Ownership>>,
     uploaded: Mutex<HashMap<String, UploadedSnapshots>>,
 }
@@ -40,6 +42,7 @@ pub struct RuntimeStorageReader {
     restore: Arc<dyn crate::litestream::DatabaseRestore>,
     clock: Arc<dyn crate::clock::Clock>,
     authority: Arc<dyn Bucket>,
+    ownership: Arc<dyn OwnershipStore>,
     snapshots: Arc<dyn super::SnapshotStore>,
     pub(crate) persistence: super::SnapshotStoreConfig,
 }
@@ -66,10 +69,6 @@ pub struct OwnershipHint {
 }
 
 impl OwnershipHint {
-    pub(crate) fn sealed_base(&self) -> Option<&SnapshotRef> {
-        self.record.base.as_ref().filter(|_| self.record.sealed)
-    }
-
     pub(crate) fn sealed(&self) -> bool {
         self.record.sealed
     }
@@ -87,6 +86,18 @@ impl OwnershipHint {
     }
 }
 
+/// An epoch the control plane claimed for one host. The host adopts it without writing ownership.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OwnershipClaim(Ownership);
+
+impl OwnershipClaim {
+    /// The durable snapshot the claimed epoch starts from.
+    pub(crate) fn base(&self) -> Option<&SnapshotRef> {
+        self.0.base.as_ref()
+    }
+}
+
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
     pub state: Option<Bytes>,
@@ -100,8 +111,10 @@ struct UploadedSnapshots {
     latest: Option<SnapshotRef>,
 }
 
+/// The durable base a released session seals for the next epoch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SessionCheckpoint {
-    snapshot: Option<SnapshotRef>,
+    pub(crate) snapshot: Option<SnapshotRef>,
 }
 
 struct LoadedSnapshot {
@@ -144,9 +157,15 @@ impl RuntimeStorage {
                 clock,
                 Arc::new(crate::litestream::EmbeddedRestore),
             )?,
+            authority: None,
             owned: Mutex::new(HashMap::new()),
             uploaded: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub(crate) fn with_authority(mut self, authority: Arc<dyn ActivationAuthority>) -> Self {
+        self.authority = Some(authority);
+        self
     }
 
     pub(crate) fn with_persistence(
@@ -156,6 +175,11 @@ impl RuntimeStorage {
     ) -> Result<Self> {
         self.reader = self.reader.with_persistence(config, snapshots)?;
         Ok(self)
+    }
+
+    pub(crate) fn with_ownership(mut self, ownership: Arc<dyn OwnershipStore>) -> Self {
+        self.reader = self.reader.with_ownership(ownership);
+        self
     }
 }
 
@@ -196,6 +220,7 @@ impl RuntimeStorageReader {
             clock,
             snapshots: Arc::new(super::BucketSnapshots(authority.clone())),
             persistence: super::SnapshotStoreConfig::Local,
+            ownership: Arc::new(super::BucketOwnership(authority.clone())),
             authority,
         })
     }
@@ -209,6 +234,11 @@ impl RuntimeStorageReader {
         self.persistence = config;
         self.snapshots = snapshots;
         Ok(self)
+    }
+
+    pub(crate) fn with_ownership(mut self, ownership: Arc<dyn OwnershipStore>) -> Self {
+        self.ownership = ownership;
+        self
     }
 }
 
@@ -418,7 +448,7 @@ impl RuntimeStorageReader {
     }
 
     async fn load(&self, object: &ActorStorageKey) -> Result<Option<(i64, Ownership)>> {
-        self.authority
+        self.ownership
             .get(&ownership_key(object)?)
             .await?
             .map(|value| {
