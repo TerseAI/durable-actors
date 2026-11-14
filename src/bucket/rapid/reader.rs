@@ -221,15 +221,31 @@ impl LogStorage {
     ) -> Result<Vec<Record>> {
         let reads =
             futures_util::future::join_all(manifest.replicas.iter().map(|replica| async move {
-                bounded(self.zone(replica)?.read(replica, fence)).await
+                match self.resolve(replica).await? {
+                    Some(replica) => bounded(self.zone(&replica)?.read(&replica, fence))
+                        .await
+                        .map(Some),
+                    None => Ok(None),
+                }
             }))
             .await;
         let mut copies = Vec::new();
+        let mut absent = 0;
         for read in reads {
             match read {
-                Ok(bytes) => copies.push(frame::decode(&bytes)?),
+                Ok(Some(bytes)) => copies.push(frame::decode(&bytes)?),
+                Ok(None) => absent += 1,
                 Err(error) => tracing::warn!(%error, "Rapid log replica unavailable during read"),
             }
+        }
+        // The manifest lands before its objects open; under All, every acknowledged write reached
+        // every object, so one that never opened proves the log is empty.
+        if copies.is_empty()
+            && absent > 0
+            && (manifest.placement == crate::bucket::RapidPlacement::All
+                || absent == manifest.replicas.len())
+        {
+            return Ok(Vec::new());
         }
         ensure!(
             !copies.is_empty(),
@@ -246,6 +262,18 @@ impl LogStorage {
         }
         // A complete uncertain tail is made durable in Standard before ownership advances.
         Ok(selected)
+    }
+
+    /// Each log object name is created once, so its live generation is the one the writer used.
+    async fn resolve(&self, replica: &Replica) -> Result<Option<Replica>> {
+        if replica.generation > 0 {
+            return Ok(Some(replica.clone()));
+        }
+        let generation = bounded(self.zone(replica)?.generation(&replica.object)).await?;
+        Ok(generation.map(|generation| Replica {
+            generation,
+            ..replica.clone()
+        }))
     }
 }
 

@@ -46,6 +46,7 @@ trait LogWriter: Send {
 trait LogZone: Send + Sync {
     fn bucket(&self) -> &str;
     async fn open(&self, object: &str) -> Result<(Replica, Box<dyn LogWriter>)>;
+    async fn generation(&self, object: &str) -> Result<Option<i64>>;
     async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes>;
     async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes>;
     async fn delete(&self, replica: &Replica) -> Result<()>;
@@ -75,6 +76,8 @@ struct Manifest {
     stream: StateStream,
     first_version: u64,
     replicas: Vec<Replica>,
+    #[serde(default)]
+    placement: super::RapidPlacement,
 }
 
 impl RapidSnapshots {
@@ -297,7 +300,7 @@ impl Manifest {
                 buckets.insert(&replica.bucket)
                     && zones.iter().any(|zone| zone.bucket() == replica.bucket)
                     && replica.object == self.object()?
-                    && replica.generation > 0,
+                    && replica.generation >= 0,
                 "invalid log replica descriptor"
             );
         }

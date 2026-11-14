@@ -113,6 +113,22 @@ impl LogZone for GcsZone {
         Ok((replica, Box::new(GcsWriter(writer))))
     }
 
+    async fn generation(&self, object: &str) -> Result<Option<i64>> {
+        match self
+            .clients
+            .control
+            .get_object()
+            .set_bucket(&self.bucket)
+            .set_object(object)
+            .send()
+            .await
+        {
+            Ok(object) => Ok(Some(object.generation)),
+            Err(error) if not_found(&error) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes> {
         let _transfer = self.clients.transfers.acquire().await?;
         let mut writer = if fence {
@@ -201,15 +217,17 @@ impl LogZone for GcsZone {
             .await
         {
             Ok(_) => Ok(()),
-            Err(error)
-                if error.http_status_code() == Some(404)
-                    || error.status().is_some_and(|s| s.code.name() == "NOT_FOUND") =>
-            {
-                Ok(())
-            }
+            Err(error) if not_found(&error) => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
+}
+
+fn not_found(error: &google_cloud_storage::Error) -> bool {
+    error.http_status_code() == Some(404)
+        || error
+            .status()
+            .is_some_and(|status| status.code.name() == "NOT_FOUND")
 }
 
 #[async_trait]

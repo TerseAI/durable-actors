@@ -7,6 +7,9 @@ type Opened = Vec<(Replica, Box<dyn LogWriter>)>;
 pub(super) struct Prepared {
     pub id: String,
     pub prefix: String,
+    /// Every zone the log may open in, before any generation exists.
+    pub candidates: Vec<Replica>,
+    pub placement: RapidPlacement,
     opened: AbortOnDropHandle<Result<Option<Opened>>>,
 }
 
@@ -14,13 +17,27 @@ impl Prepared {
     pub fn new(prefix: String, zones: Vec<Arc<dyn LogZone>>, placement: RapidPlacement) -> Self {
         let id = uuid::Uuid::new_v4().to_string();
         let object = format!("{prefix}{id}.segment");
+        let candidates = zones
+            .iter()
+            .map(|zone| Replica {
+                bucket: zone.bucket().into(),
+                object: object.clone(),
+                generation: 0,
+            })
+            .collect();
         let opened = AbortOnDropHandle::new(tokio::spawn(async move {
             match placement {
                 RapidPlacement::All => open_all(&zones, &object).await,
                 RapidPlacement::Nearest => open_nearest(zones, object).await,
             }
         }));
-        Self { id, prefix, opened }
+        Self {
+            id,
+            prefix,
+            candidates,
+            placement,
+            opened,
+        }
     }
 
     pub async fn take(self) -> Result<Option<Opened>> {

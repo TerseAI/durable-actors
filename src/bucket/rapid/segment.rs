@@ -43,29 +43,30 @@ impl Segment {
             id: prepared.id.clone(),
             stream,
             first_version,
-            replicas: Vec::new(),
+            replicas: prepared.candidates.clone(),
+            placement: prepared.placement,
         };
-        let Some(opened) = prepared.take().await? else {
+        let key = manifest.key()?;
+        let publication = crate::payload::encode(&manifest)?;
+        // Readers resolve the generations, so publishing need not wait for the objects to open.
+        let ((opened, open_ms), (published, manifest_ms)) = tokio::join!(
+            elapsed(started, prepared.take()),
+            elapsed(
+                started,
+                bounded(replace(storage.archive.as_ref(), &key, None, publication))
+            )
+        );
+        ensure!(published?, "conflicting log manifest");
+        let Some(opened) = opened? else {
             return Ok(None);
         };
+        manifest.replicas.clear();
         let mut writers = Vec::new();
         for (replica, writer) in opened {
             manifest.replicas.push(replica);
             writers.push(writer);
         }
         let zones = storage.replica_zones(&manifest)?;
-        let key = manifest.key()?;
-        let open_ms = started.elapsed().as_secs_f64() * 1000.0;
-        ensure!(
-            bounded(replace(
-                storage.archive.as_ref(),
-                &key,
-                None,
-                crate::payload::encode(&manifest)?
-            ))
-            .await?,
-            "conflicting log manifest"
-        );
         tracing::info!(
             event = "rapid_log_open",
             owner_epoch = manifest.stream.owner_epoch,
@@ -76,7 +77,7 @@ impl Segment {
                 .collect::<Vec<_>>()
                 .join(","),
             open_ms,
-            manifest_ms = started.elapsed().as_secs_f64() * 1000.0 - open_ms,
+            manifest_ms,
             duration_ms = started.elapsed().as_secs_f64() * 1000.0
         );
         Ok(Some(Self {
@@ -116,4 +117,9 @@ impl Segment {
         self.healthy = true;
         Ok(frame)
     }
+}
+
+async fn elapsed<T>(started: std::time::Instant, operation: impl Future<Output = T>) -> (T, f64) {
+    let output = operation.await;
+    (output, started.elapsed().as_secs_f64() * 1000.0)
 }

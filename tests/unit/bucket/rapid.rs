@@ -195,6 +195,7 @@ async fn nearest_placement_rotates_within_the_chosen_zone() -> Result<()> {
         manifests(&f)
             .await
             .iter()
+            .filter(|m| m.first_version > 1)
             .all(|m| m.replicas.len() == 1 && m.replicas[0].bucket == "b")
     );
     assert_eq!(
@@ -220,6 +221,62 @@ async fn logs_stay_recoverable_when_placement_changes() -> Result<()> {
             Some((f.stream.object(1), state(1, 1)?))
         );
     }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_first_write_waits_for_the_slower_of_opening_and_publishing_the_log() -> Result<()> {
+    struct SlowArchive(Arc<FileBucket>);
+    #[async_trait]
+    impl Bucket for SlowArchive {
+        async fn get(&self, key: &str) -> Result<Option<crate::bucket::BucketObject>> {
+            self.0.get(key).await
+        }
+        async fn range(
+            &self,
+            key: &str,
+            start: u64,
+            length: u64,
+        ) -> Result<Option<crate::bucket::BucketObject>> {
+            self.0.range(key, start, length).await
+        }
+        async fn compare_and_swap(
+            &self,
+            key: &str,
+            generation: Option<i64>,
+            bytes: Bytes,
+        ) -> Result<bool> {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.0.compare_and_swap(key, generation, bytes).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+            self.0.list(prefix).await
+        }
+    }
+    let f = Fixture::new()?;
+    for zone in &f.zones {
+        zone.open_delay_ms.store(50, Ordering::SeqCst);
+    }
+    let store = RapidSnapshots::new(
+        Arc::new(SlowArchive(f.archive.clone())),
+        Arc::new(BucketSnapshots(f.archive.clone())),
+        f.zones
+            .iter()
+            .map(|zone| zone.clone() as Arc<dyn LogZone>)
+            .collect(),
+        f.placement,
+        crate::bucket::ArchiveBatchConfig::default(),
+        Arc::new(crate::litestream::compaction::RustCompactor),
+        CancellationToken::new(),
+    )?;
+    let started = tokio::time::Instant::now();
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(
+        f.store()?.latest(&f.stream.prefix).await?,
+        Some((f.stream.object(1), state(1, 1)?))
+    );
     Ok(())
 }
 
@@ -1082,6 +1139,15 @@ impl LogZone for MemoryZone {
                 fence: 0,
             }),
         ))
+    }
+    async fn generation(&self, object: &str) -> Result<Option<i64>> {
+        ensure!(!self.offline.load(Ordering::SeqCst), "zone offline");
+        Ok(self
+            .objects
+            .lock()
+            .unwrap()
+            .contains_key(object)
+            .then_some(1))
     }
     async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes> {
         ensure!(!self.offline.load(Ordering::SeqCst), "zone offline");
