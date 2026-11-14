@@ -383,7 +383,7 @@ paths:
             operationId: listActorResidency
             tags: [Observability]
             summary: Get instance residency over time
-            description: Lifecycle periods clipped to the selected range. Missing reports become unknown after 35 seconds. Stops remain dormant until the next report. Periods come from reports in the range and the 35 seconds before it, so an instance whose last earlier report is an older stop has no period until it reports again. Keeps the latest 100000 stretches of unchanged status. Time before retained evidence is omitted.
+            description: Lifecycle periods in the range, built from reports in it and the 35 seconds before. An instance turns unknown 35 seconds after its last report, or stays dormant after a stop. Keeps the newest 100000 stretches of unchanged status.
             parameters:
                 - name: actorName
                   in: query
