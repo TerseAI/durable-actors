@@ -8,29 +8,43 @@ import type { SocketEffect, SocketLookup, SocketQuery } from "../actor/socketPro
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
 import type { JsonValue } from "../json.js"
 
-import type { DatabaseCall, DatabaseResult } from "./database.js"
+import { ActorExecutor, captureConsole } from "./actor-executor.js"
+import type { ActorSessionPort } from "./actor-executor.js"
+import { loadActorEntrypoint } from "./actor-loading.js"
+import { FileDescriptorDatabaseChannel } from "./database-channel.js"
+import type { DatabaseChannel } from "./database-channel.js"
 import { parseActorSessionServerMessage } from "./protocol.js"
-import type { ActorCallRequest, ActorExecutorReply, ActorSessionClientMessage } from "./protocol.js"
-import type { ActorHostSettings, ActorSessionSupervisor, ActorWorkerSupervisorFactory } from "./types.js"
-import { ActorWorkerSupervisor } from "./worker-supervisor.js"
+import type { ActorCallRequest, ActorExecutorReply, ActorSessionClientMessage, LogLevel } from "./protocol.js"
+import type { ActorHostSettings } from "./types.js"
 
 async function runActorHost(): Promise<never> {
     const session = new ActorSession()
     await session.start()
+    return serveUntilDisconnected(session)
+}
 
+// Actor code shares this thread, so a stray throw resets the actor instead of exiting the host.
+// Startup failures and the final disconnect still exit the process so Rust sees them.
+async function serveUntilDisconnected(session: ActorSession): Promise<never> {
+    const fail = (error: unknown) => session.fail(error)
+    process.on("uncaughtException", fail).on("unhandledRejection", fail)
     await session.waitUntilDisconnected()
+    process.off("uncaughtException", fail).off("unhandledRejection", fail)
     throw new ActorSessionError("Rust host disconnected from actor session")
 }
 
 class ActorSession {
     private startup: Promise<void> | undefined
     private connection: ActorSessionConnection | undefined
+    private readonly executor: ActorExecutor
 
     constructor(
         private readonly settings: ActorHostSettings = parseHostSettings(process.env),
-        private readonly createSupervisor: ActorWorkerSupervisorFactory = options => new ActorWorkerSupervisor(options),
+        database: DatabaseChannel = databaseChannel(settings),
         private readonly socket?: Socket
-    ) {}
+    ) {
+        this.executor = new ActorExecutor(database)
+    }
 
     start(): Promise<void> {
         this.startup ??= this.initialize()
@@ -42,34 +56,35 @@ class ActorSession {
         return this.connection.closed()
     }
 
+    fail(error: unknown): void {
+        this.executor.fail(error)
+    }
+
     private async initialize(): Promise<void> {
         const actorEntrypointUrl = await resolveActorEntrypoint(this.settings.actorEntrypoint)
-        const supervisor = this.createSupervisor({ actorEntrypointUrl })
+        const releaseConsole = captureConsole(this.executor)
         try {
-            const actorNames = await discoverActorNames(supervisor, this.settings.startupTimeoutMs)
+            const actorNames = await loadActorNames(actorEntrypointUrl, this.settings.startupTimeoutMs)
             this.connection = await ActorSessionConnection.open(
                 this.settings.socketPath,
                 actorNames,
-                supervisor,
+                this.executor,
                 this.settings.startupTimeoutMs,
                 this.socket
             )
-            void this.connection.closed().then(() => supervisor.close())
+            void this.connection.closed().then(releaseConsole)
         } catch (error) {
-            supervisor.close()
+            releaseConsole()
             throw error
         }
     }
 }
 
-async function discoverActorNames(
-    supervisor: Pick<ActorWorkerSupervisor, "ready">,
-    timeoutMs: number
-): Promise<readonly string[]> {
+async function loadActorNames(moduleUrl: string, timeoutMs: number): Promise<readonly string[]> {
     let timer: NodeJS.Timeout | undefined
     try {
         return await Promise.race([
-            supervisor.ready(),
+            loadActorEntrypoint(moduleUrl),
             new Promise<never>((_, reject) => {
                 timer = setTimeout(
                     () => reject(new ActorSessionError(`actor module loading timed out after ${timeoutMs}ms`)),
@@ -82,20 +97,15 @@ async function discoverActorNames(
     }
 }
 
-class ActorSessionConnection {
-    private unsubscribeActivity: (() => void) | undefined
-    private activityTimer: NodeJS.Timeout | undefined
+class ActorSessionConnection implements ActorSessionPort {
+    private unsubscribeResidency: (() => void) | undefined
+    private residencyTimer: NodeJS.Timeout | undefined
     private buffer = ""
     private attachedResolve: (() => void) | undefined
     private attachedReject: ((error: Error) => void) | undefined
     private readonly attachedPromise: Promise<void>
     private closedResolve: (() => void) | undefined
     private readonly closedPromise: Promise<void>
-    private readonly databaseCalls = new Map<
-        number,
-        { resolve: (result: DatabaseResult) => void; reject: (error: Error) => void }
-    >()
-    private nextDatabaseCallId = 0
     private readonly actorCalls = new Map<
         number,
         { resolve: (outcome: JsonValue) => void; reject: (error: Error) => void }
@@ -109,14 +119,14 @@ class ActorSessionConnection {
     static async open(
         socketPath: string,
         actorNames: readonly string[],
-        supervisor: ActorSessionSupervisor,
+        executor: ActorExecutor,
         timeoutMs: number,
         connectedSocket?: Socket
     ): Promise<ActorSessionConnection> {
         if (actorNames.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = connectedSocket ?? (await connectSocket(socketPath))
-        const connection = new ActorSessionConnection(socket, supervisor)
+        const connection = new ActorSessionConnection(socket, executor)
         connection.send({
             type: "attach",
             protocol: 32,
@@ -130,9 +140,49 @@ class ActorSessionConnection {
         return this.closedPromise
     }
 
+    allowNextInvocation(messageId: number): void {
+        this.send({ type: "ready_for_invocation", message_id: messageId })
+    }
+
+    publish(messageId: number, effects: readonly SocketEffect[]): void {
+        this.send({ type: "socket_effects", message_id: messageId, effects })
+    }
+
+    connections(messageId: number, query?: SocketQuery): Promise<SocketLookup> {
+        return new Promise((resolve, reject) => {
+            if (this.loadingConnections.has(messageId))
+                throw new ActorProtocolError("actor connections are already being loaded")
+            this.loadingConnections.set(messageId, { resolve, reject })
+            try {
+                this.send({ type: "get_connections", message_id: messageId, query })
+            } catch (error) {
+                this.loadingConnections.delete(messageId)
+                reject(sessionError(error))
+            }
+        })
+    }
+
+    callActor(call: ActorCallRequest): Promise<JsonValue> {
+        return new Promise((resolve, reject) => {
+            if (this.socket.destroyed) throw new ActorSessionError("Rust host disconnected before the actor call")
+            const callId = ++this.nextActorCallId
+            this.actorCalls.set(callId, { resolve, reject })
+            try {
+                this.send({ type: "actor_call", call_id: callId, call })
+            } catch (error) {
+                this.actorCalls.delete(callId)
+                reject(sessionError(error))
+            }
+        })
+    }
+
+    log(messageId: number | undefined, level: LogLevel, message: string): void {
+        this.send({ type: "log", message_id: messageId, level, message })
+    }
+
     private constructor(
         private readonly socket: Socket,
-        private readonly supervisor: ActorSessionSupervisor
+        private readonly executor: ActorExecutor
     ) {
         this.attachedPromise = new Promise<void>((resolve, reject) => {
             this.attachedResolve = resolve
@@ -187,44 +237,15 @@ class ActorSessionConnection {
             const message = parseActorSessionServerMessage(rawMessage)
             switch (message.type) {
                 case "attached":
-                    this.supervisor.assign(
-                        message.actor,
-                        call => this.callDatabase(call),
-                        call => this.callActor(call),
-                        log =>
-                            this.send({
-                                type: "log",
-                                message_id: log.messageId,
-                                level: log.level,
-                                message: log.message
-                            })
-                    )
+                    this.executor.assign(message.actor, this)
                     this.reportResidency()
                     this.attachedResolve?.()
                     this.attachedResolve = undefined
                     this.attachedReject = undefined
                     break
                 case "command":
-                    await this.reply(
-                        message.message_id,
-                        await this.supervisor.handle(
-                            message.command,
-                            () => this.send({ type: "ready_for_invocation", message_id: message.message_id }),
-                            call => this.callDatabase(call, message.message_id),
-                            effects => this.publish(message.message_id, effects),
-                            query => this.getConnections(message.message_id, query)
-                        )
-                    )
+                    this.reply(message.message_id, await this.executor.handle(message.message_id, message.command))
                     break
-                case "database_result": {
-                    const pending = this.databaseCalls.get(message.call_id)
-                    if (pending === undefined)
-                        throw new ActorProtocolError("Rust host replied to unknown database call")
-                    this.databaseCalls.delete(message.call_id)
-                    if (message.result === undefined) pending.reject(new ActorSessionError(message.error!))
-                    else pending.resolve(message.result)
-                    break
-                }
                 case "actor_result": {
                     const pending = this.actorCalls.get(message.call_id)
                     if (pending === undefined) throw new ActorProtocolError("Rust host replied to unknown actor call")
@@ -250,64 +271,18 @@ class ActorSessionConnection {
     }
 
     private reportResidency(): void {
-        if (this.activityTimer) return
+        if (this.residencyTimer) return
         const report = () => {
             try {
-                this.send({ type: "residency", resident: this.supervisor.isResident() })
+                this.send({ type: "residency", resident: this.executor.isResident() })
             } catch (error) {
                 this.fail(sessionError(error))
             }
         }
-        this.unsubscribeActivity = this.supervisor.onResidencyChange(report)
+        this.unsubscribeResidency = this.executor.onResidencyChange(report)
         report()
-        this.activityTimer = setInterval(report, 1_000)
-        this.activityTimer.unref()
-    }
-
-    private callDatabase(call: DatabaseCall, messageId?: number): Promise<DatabaseResult> {
-        return new Promise((resolve, reject) => {
-            if (this.socket.destroyed) throw new ActorSessionError("Rust host disconnected before the database call")
-            const callId = ++this.nextDatabaseCallId
-            this.databaseCalls.set(callId, { resolve, reject })
-            try {
-                this.send({ type: "database_call", call_id: callId, message_id: messageId, call })
-            } catch (error) {
-                this.databaseCalls.delete(callId)
-                reject(sessionError(error))
-            }
-        })
-    }
-
-    private callActor(call: ActorCallRequest): Promise<JsonValue> {
-        return new Promise((resolve, reject) => {
-            if (this.socket.destroyed) throw new ActorSessionError("Rust host disconnected before the actor call")
-            const callId = ++this.nextActorCallId
-            this.actorCalls.set(callId, { resolve, reject })
-            try {
-                this.send({ type: "actor_call", call_id: callId, call })
-            } catch (error) {
-                this.actorCalls.delete(callId)
-                reject(sessionError(error))
-            }
-        })
-    }
-
-    private publish(messageId: number, effects: readonly SocketEffect[]): void {
-        this.send({ type: "socket_effects", message_id: messageId, effects })
-    }
-
-    private getConnections(messageId: number, query?: SocketQuery): Promise<SocketLookup> {
-        return new Promise((resolve, reject) => {
-            if (this.loadingConnections.has(messageId))
-                throw new ActorProtocolError("actor connections are already being loaded")
-            this.loadingConnections.set(messageId, { resolve, reject })
-            try {
-                this.send({ type: "get_connections", message_id: messageId, query })
-            } catch (error) {
-                this.loadingConnections.delete(messageId)
-                reject(sessionError(error))
-            }
-        })
+        this.residencyTimer = setInterval(report, 1_000)
+        this.residencyTimer.unref()
     }
 
     private reply(messageId: number, reply: ActorExecutorReply): void {
@@ -326,12 +301,9 @@ class ActorSessionConnection {
     }
 
     private close(): void {
-        clearInterval(this.activityTimer)
-        this.unsubscribeActivity?.()
-        this.unsubscribeActivity = undefined
-        for (const pending of this.databaseCalls.values())
-            pending.reject(new ActorSessionError("Rust host disconnected during a database call"))
-        this.databaseCalls.clear()
+        clearInterval(this.residencyTimer)
+        this.unsubscribeResidency?.()
+        this.unsubscribeResidency = undefined
         for (const pending of this.actorCalls.values())
             pending.reject(new ActorSessionError("Rust host disconnected during an actor call"))
         this.actorCalls.clear()
@@ -367,6 +339,12 @@ function sessionError(error: unknown): Error {
     return error instanceof Error ? error : new ActorSessionError(String(error))
 }
 
+function databaseChannel(settings: ActorHostSettings): DatabaseChannel {
+    if (settings.databaseFd === undefined)
+        throw new ActorConfigurationError("DURABLE_ACTORS_DATABASE_FD must name the Rust host's database channel")
+    return new FileDescriptorDatabaseChannel(settings.databaseFd)
+}
+
 async function resolveActorEntrypoint(configured: string | undefined): Promise<string> {
     const entrypointPath = path.resolve(configured ?? DEFAULT_ACTOR_ENTRYPOINT)
     await requireFile(
@@ -397,6 +375,7 @@ function parseHostSettings(environment: NodeJS.ProcessEnv): ActorHostSettings {
     return {
         socketPath: result.data.DURABLE_ACTORS_EXECUTOR_SOCKET,
         actorEntrypoint: result.data.DURABLE_ACTORS_ENTRYPOINT,
+        databaseFd: result.data.DURABLE_ACTORS_DATABASE_FD,
         startupTimeoutMs: parseStartupTimeout(environment.DURABLE_ACTORS_HOST_STARTUP_MS)
     }
 }
@@ -413,9 +392,10 @@ const DEFAULT_ACTOR_STARTUP_TIMEOUT_MS = 10_000
 
 const actorSessionSettingsSchema = z.object({
     DURABLE_ACTORS_EXECUTOR_SOCKET: z.string().trim().min(1),
-    DURABLE_ACTORS_ENTRYPOINT: z.string().trim().min(1).optional()
+    DURABLE_ACTORS_ENTRYPOINT: z.string().trim().min(1).optional(),
+    DURABLE_ACTORS_DATABASE_FD: z.coerce.number().int().nonnegative().optional()
 })
 
 const DEFAULT_ACTOR_ENTRYPOINT = "dist/actors.mjs"
 
-export { ActorSession, connectSocket, parseHostSettings, resolveActorEntrypoint, runActorHost }
+export { ActorSession, connectSocket, parseHostSettings, resolveActorEntrypoint, runActorHost, serveUntilDisconnected }

@@ -2,32 +2,24 @@ import assert from "node:assert/strict"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
-import type { ActorWorkerSupervisor as Supervisor } from "../../src/host/worker-supervisor.js"
+import type { ActorExecutor as Executor } from "../../src/host/actor-executor.js"
 import type { JsonValue } from "../../src/json.js"
 
 import { HostDatabase } from "./host-database.js"
+import { databaseChannel, sessionPort } from "./session-port.js"
 
 const [sdk, artifact] = process.argv.slice(2)
-const { ActorWorkerSupervisor } = await import(pathToFileURL(path.join(sdk!, "dist/host/worker-supervisor.js")).href)
-const supervisor: Supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: pathToFileURL(artifact!).href })
+const host = (module: string) => import(pathToFileURL(path.join(sdk!, "dist/host", module)).href)
+const { ActorExecutor } = await host("actor-executor.js")
+const { loadActorEntrypoint } = await host("actor-loading.js")
+assert.deepEqual(await loadActorEntrypoint(pathToFileURL(artifact!).href), ["Library"])
 const database = new HostDatabase()
 try {
-    assert.deepEqual(await supervisor.ready(), ["Library"])
-    supervisor.assign(
-        { project_id: "local", actor_name: "Library", actor_id: "library-1" },
-        async call => database.call(call),
-        async () => {
-            throw new Error("unexpected actor call")
-        }
-    )
+    const executor: Executor = new ActorExecutor(databaseChannel(database))
+    executor.assign({ project_id: "local", actor_name: "Library", actor_id: "library-1" }, sessionPort())
+    let messageId = 0
     const invoke = async (method: string, ...args: JsonValue[]) => {
-        const reply = await supervisor.handle(
-            { type: "invoke", request_id: method, method, args },
-            () => {},
-            async call => database.call(call),
-            async () => {},
-            async () => []
-        )
+        const reply = await executor.handle(++messageId, { type: "invoke", request_id: method, method, args })
         assert.equal(reply.type, "invoked", JSON.stringify(reply))
         return reply.type === "invoked" ? reply.result : undefined
     }
@@ -40,6 +32,5 @@ try {
     )
     console.log("drizzle invocation passed")
 } finally {
-    supervisor.close()
     database.close()
 }

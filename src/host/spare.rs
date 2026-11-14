@@ -51,11 +51,13 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let ipc = ActorExecutorListener::bind(&socket).await?;
     let configured_runtime = std::env::var("DURABLE_ACTORS_EXECUTOR_RUNTIME").ok();
     let runtime = executor_runtime(None, configured_runtime.as_deref())?;
-    let mut javascript = spawn_executor_process(true, &socket, runtime)?;
+    let (mut javascript, database) = spawn_executor_process(true, &socket, runtime)?;
     let (warmed, control_plane, node_cache) = tokio::join!(
         async {
             tokio::try_join!(
-                async { tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await? },
+                async {
+                    tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm(database)).await?
+                },
                 async {
                     let storage = WarmStorage::new().await?;
                     storage.preconnect().await;

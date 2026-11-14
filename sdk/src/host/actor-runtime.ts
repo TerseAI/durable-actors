@@ -18,7 +18,13 @@ import { cloneJson, cloneJsonObject, isJsonObject } from "../json.js"
 import type { DatabaseProxy } from "./database.js"
 import { DatabaseCommitError } from "./database.js"
 import { bindPersistedFields, isPersistedField } from "./persisted-fields.js"
-import type { ActorExecutorReply, ActorWorkerCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
+import type {
+    ActorExecutorReply,
+    ActorRuntimeCommand,
+    FailedReply,
+    InvokeCommand,
+    WebSocketEventCommand
+} from "./protocol.js"
 import { failedReply } from "./protocol.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 
@@ -47,7 +53,7 @@ class ActorRuntime {
             )
     }
 
-    async handle(command: ActorWorkerCommand): Promise<ActorExecutorReply> {
+    async handle(command: ActorRuntimeCommand): Promise<ActorExecutorReply> {
         if (this.fatal !== undefined) return this.fatal
         try {
             if (command.type === "hydrate") {
@@ -69,6 +75,11 @@ class ActorRuntime {
             if (this.interleaved) this.fatal = failure
             return failure
         }
+    }
+
+    /** Makes this instance answer every later call, and any still running, with the failure. */
+    fail(failure: FailedReply): void {
+        this.fatal ??= failure
     }
 
     async close(isGracefuleShutdown: boolean): Promise<void> {
@@ -212,7 +223,7 @@ class ActorRuntime {
         if (this.definition.state.interleaveMethods?.includes(method)) this.allowNextInvocation()
     }
 
-    private async prepare(command: ActorWorkerCommand): Promise<AnyActor> {
+    private async prepare(command: ActorRuntimeCommand): Promise<AnyActor> {
         if (this.instance !== undefined) return this.instance
         return await this.createInstance(command.actor, this.database.fields())
     }

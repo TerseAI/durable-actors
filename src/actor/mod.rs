@@ -16,7 +16,8 @@ pub use self::{
     },
 };
 pub(crate) use executor_connection::{
-    ActorCaller, ActorExecutorConnection, ActorExecutorListener, ActorSocketPublisher, WarmExecutor,
+    ActorCaller, ActorExecutorConnection, ActorExecutorListener, ActorSocketPublisher,
+    ExecutorDatabaseChannel, WarmExecutor,
 };
 pub(crate) use logs::{ActorLogRecord, ActorLogSink, LogLevel, StdioLogSink};
 pub(crate) use socket::{ActorSocketSource, validate_socket_effects, validate_socket_metadata};

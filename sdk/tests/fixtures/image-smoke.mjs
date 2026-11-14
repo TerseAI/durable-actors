@@ -36,8 +36,8 @@ try {
     await once(server, "listening")
     const connected = once(server, "connection")
     child = spawn(process.execPath, ["--eval", `await (await import(${JSON.stringify(pathToFileURL(path.join(sdk, "host.js")).href)})).runGenericHost()`], {
-        env: { ...process.env, DURABLE_ACTORS_EXECUTOR_SOCKET: socketPath },
-        stdio: ["ignore", "inherit", "inherit"]
+        env: { ...process.env, DURABLE_ACTORS_EXECUTOR_SOCKET: socketPath, DURABLE_ACTORS_DATABASE_FD: "3" },
+        stdio: ["ignore", "inherit", "inherit", "pipe"]
     })
     const exited = once(child, "exit")
     ;[socket] = await Promise.race([
@@ -72,13 +72,17 @@ try {
         }
         return { type: "done" }
     }
+    const database = child.stdio[3]
+    createInterface({ input: database }).on("line", line => {
+        const message = JSON.parse(line)
+        database.write(JSON.stringify({ type: "database_result", call_id: message.call_id, result: call(message.call) }) + "\n")
+    })
     const receive = async () => {
         for (;;) {
             const { value, done } = await lines.next()
             assert.equal(done, false, "executor closed its connection")
             const message = JSON.parse(value)
-            if (message.type === "database_call") send({ type: "database_result", call_id: message.call_id, result: call(message.call) })
-            else if (message.type !== "residency") return message
+            if (message.type !== "residency") return message
         }
     }
     assert.deepEqual(await receive(), { type: "warm", protocol: 32 })

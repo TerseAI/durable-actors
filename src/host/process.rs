@@ -11,7 +11,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{error, info};
 
 use crate::{
-    actor::{ActorExecutorConnection, ActorExecutorListener},
+    actor::{ActorExecutorConnection, ActorExecutorListener, ExecutorDatabaseChannel},
     bucket::RAPID_OPERATION_TIMEOUT,
     bundle::ActorRuntime,
     clock::SystemClock,
@@ -559,13 +559,13 @@ async fn connect_executor(
     javascript_spawned_at_ms: &mut Option<f64>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(&executor.socket).await?;
-    let javascript = spawn_executor_process(
+    let (javascript, database) = spawn_executor_process(
         false,
         &executor.socket.display().to_string(),
         executor.runtime,
     )?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
-    Ok((listener.accept().await?, javascript))
+    Ok((listener.accept(database).await?, javascript))
 }
 
 async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture>(
@@ -639,18 +639,28 @@ async fn stop_executor(host: &ActorHost, stop: &CancellationToken, executor: imp
     let _ = tokio::time::timeout(HOST_TASK_SHUTDOWN_TIMEOUT, executor).await;
 }
 
+/// Returns the executor and, for TypeScript, the host's end of its database channel.
 pub(super) fn spawn_executor_process(
     generic: bool,
     socket: &str,
     runtime: ActorRuntime,
-) -> Result<tokio::process::Child> {
-    executor_command(generic, socket, runtime)
-        .spawn()
-        .context("start actor executor")
+) -> Result<(tokio::process::Child, Option<tokio::net::UnixStream>)> {
+    let (mut command, database) = executor_command(generic, socket, runtime)?;
+    let child = command.spawn().context("start actor executor")?;
+    Ok((
+        child,
+        database
+            .map(ExecutorDatabaseChannel::into_host)
+            .transpose()?,
+    ))
 }
 
-fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Command {
-    let mut command = if runtime == ActorRuntime::Python {
+fn executor_command(
+    generic: bool,
+    socket: &str,
+    runtime: ActorRuntime,
+) -> Result<(Command, Option<ExecutorDatabaseChannel>)> {
+    let (mut command, database) = if runtime == ActorRuntime::Python {
         let mut command = Command::new(
             std::env::var("DURABLE_ACTORS_PYTHON").unwrap_or_else(|_| "python3".into()),
         );
@@ -658,15 +668,21 @@ fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Comma
         if generic {
             command.arg("--generic");
         }
-        command
+        (command, None)
     } else {
+        let database = ExecutorDatabaseChannel::inheritable()?;
         let mut command =
             Command::new(std::env::var("DURABLE_ACTORS_BUN").unwrap_or_else(|_| "bun".into()));
-        command.args([
-            "--eval",
-            "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runActorHost\"]())",
-        ]);
         command
+            .args([
+                "--eval",
+                "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runActorHost\"]())",
+            ])
+            .env(
+                "DURABLE_ACTORS_DATABASE_FD",
+                database.executor_fd().to_string(),
+            );
+        (command, Some(database))
     };
     command
         .env(
@@ -687,7 +703,7 @@ fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Comma
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
-    command
+    Ok((command, database))
 }
 
 #[cfg(test)]

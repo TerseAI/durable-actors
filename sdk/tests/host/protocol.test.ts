@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { ActorProtocolError } from "../../src/errors.js"
-import { parseActorSessionServerMessage } from "../../src/host/protocol.js"
+import { parseActorSessionServerMessage, parseDatabaseReply } from "../../src/host/protocol.js"
 
 test("rejects malformed actor session messages", () => {
     assert.throws(
@@ -31,7 +31,7 @@ test("parses database results", () => {
         { error: "storage rejected write" }
     ]) {
         const message = { type: "database_result", call_id: 1, ...fields }
-        assert.deepEqual(parseActorSessionServerMessage(JSON.stringify(message)), message)
+        assert.deepEqual(parseDatabaseReply(JSON.stringify(message)), message)
     }
 })
 
@@ -42,7 +42,7 @@ test("rejects ambiguous or malformed database results", () => {
         { result: { type: "rows", columns: ["value"], rows: [[{ type: "integer", value: "1.5" }]] } }
     ]) {
         assert.throws(
-            () => parseActorSessionServerMessage(JSON.stringify({ type: "database_result", call_id: 1, ...fields })),
+            () => parseDatabaseReply(JSON.stringify({ type: "database_result", call_id: 1, ...fields })),
             ActorProtocolError
         )
     }

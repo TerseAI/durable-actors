@@ -2,24 +2,31 @@ import { z } from "zod"
 
 import type { ActorIdentity } from "../actor/identity.js"
 import { actorComponentSchema, actorIdentitySchema } from "../actor/identity.js"
-import type { SocketEffect, SocketLookup, SocketQuery } from "../actor/socketProtocol.js"
+import type { SocketEffect, SocketQuery } from "../actor/socketProtocol.js"
 import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtocol.js"
 import { ActorProtocolError } from "../errors.js"
 import type { JsonValue } from "../json.js"
 import { jsonValueSchema } from "../json.js"
 
-import type { DatabaseRequest } from "./database-bridge.js"
 import type { DatabaseCall } from "./database.js"
 
 function parseActorSessionServerMessage(document: string): ActorSessionServerMessage {
+    return parseMessage(actorSessionServerMessageSchema, document, "actor session message")
+}
+
+function parseDatabaseReply(document: string): DatabaseReply {
+    return parseMessage(databaseReplySchema, document, "actor database reply")
+}
+
+function parseMessage<Schema extends z.ZodType>(schema: Schema, document: string, label: string): z.infer<Schema> {
     let value: unknown
     try {
         value = JSON.parse(document)
     } catch (error) {
-        throw new ActorProtocolError("actor session message is not valid JSON", { cause: error })
+        throw new ActorProtocolError(`${label} is not valid JSON`, { cause: error })
     }
-    const result = actorSessionServerMessageSchema.safeParse(value)
-    if (!result.success) throw new ActorProtocolError(`actor session message is invalid: ${result.error.message}`)
+    const result = schema.safeParse(value)
+    if (!result.success) throw new ActorProtocolError(`${label} is invalid: ${result.error.message}`)
     return result.data
 }
 
@@ -44,6 +51,15 @@ const databaseResultSchema = z.discriminatedUnion("type", [
     }),
     z.object({ type: z.literal("done") })
 ])
+
+const databaseReplySchema = z
+    .object({
+        type: z.literal("database_result"),
+        call_id: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        result: databaseResultSchema.optional(),
+        error: z.string().optional()
+    })
+    .refine(message => (message.result === undefined) !== (message.error === undefined))
 
 const invokeCommandSchema = z.object({
     type: z.literal("invoke"),
@@ -71,14 +87,6 @@ const executorCommandSchema = z.discriminatedUnion("type", [
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z
-        .object({
-            type: z.literal("database_result"),
-            call_id: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-            result: databaseResultSchema.optional(),
-            error: z.string().optional()
-        })
-        .refine(message => (message.result === undefined) !== (message.error === undefined)),
     z.object({ type: z.literal("attached"), protocol: z.literal(32), actor: actorIdentitySchema }),
     z.object({
         type: z.literal("actor_result"),
@@ -101,18 +109,12 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
 type InvokeCommand = z.infer<typeof invokeCommandSchema> & AssignedActor
 type EvictCommand = z.infer<typeof evictCommandSchema>
 type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
-type ActorExecutionCommand = Exclude<ActorExecutorCommand, EvictCommand>
-type ActorWorkerCommand = ActorExecutorCommand & AssignedActor
+type ActorRuntimeCommand = ActorExecutorCommand & AssignedActor
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
+type DatabaseReply = z.infer<typeof databaseReplySchema>
 type ActorExecutorReply =
     InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "hydrated" }
 type ActorSessionClientMessage =
-    | {
-          readonly type: "database_call"
-          readonly call_id: number
-          readonly message_id?: number
-          readonly call: DatabaseCall
-      }
     | { readonly type: "actor_call"; readonly call_id: number; readonly call: ActorCallRequest }
     | { readonly type: "residency"; readonly resident: boolean }
     | AttachMessage
@@ -121,6 +123,13 @@ type ActorSessionClientMessage =
     | { readonly type: "get_connections"; readonly message_id: number; readonly query?: SocketQuery }
     | { readonly type: "socket_effects"; readonly message_id: number; readonly effects: readonly SocketEffect[] }
     | { readonly type: "log"; readonly message_id?: number; readonly level: LogLevel; readonly message: string }
+
+interface DatabaseCallMessage {
+    readonly type: "database_call"
+    readonly call_id: number
+    readonly message_id?: number
+    readonly call: DatabaseCall
+}
 
 interface AttachMessage {
     readonly type: "attach"
@@ -169,70 +178,21 @@ interface EvictedReply {
     readonly type: "evicted"
 }
 
-interface ActorWorkerData {
-    readonly moduleUrl: string
-    readonly environment?: Readonly<Record<string, string>>
-}
-
-type ActorWorkerRequest =
-    | { readonly type: "load"; readonly data: ActorWorkerData }
-    | {
-          readonly type: "execute"
-          readonly messageId: number
-          readonly command: ActorWorkerCommand
-      }
-    | {
-          readonly type: "socket_connections"
-          readonly messageId: number
-          readonly connections: SocketLookup
-          readonly error?: string
-      }
-    | { readonly type: "actor_result"; readonly callId: number; readonly outcome: JsonValue }
-type ActorWorkerMessage =
-    | {
-          readonly type: "database_call"
-          readonly messageId?: number
-          readonly call: DatabaseCall
-          readonly request: DatabaseRequest
-      }
-    | { readonly type: "actor_call"; readonly callId: number; readonly call: ActorCallRequest }
-    | { readonly type: "warm" }
-    | {
-          readonly type: "ready"
-          readonly actorNames: readonly string[]
-      }
-    | { readonly type: "reply"; readonly messageId: number; readonly reply: ActorExecutorReply }
-    | FailedReply
-    | { readonly type: "ready_for_invocation"; readonly messageId: number }
-    | { readonly type: "socket_effects"; readonly messageId: number; readonly effects: readonly SocketEffect[] }
-    | { readonly type: "get_connections"; readonly messageId: number; readonly query?: SocketQuery }
-    | ActorLog
-
 type LogLevel = "debug" | "info" | "warn" | "error"
 
-interface ActorLog {
-    readonly type: "log"
-    readonly messageId?: number
-    readonly level: LogLevel
-    readonly message: string
-}
-
 type WebSocketEventCommand = z.infer<typeof websocketEventCommandSchema> & AssignedActor
-export { failedReply, parseActorSessionServerMessage }
+export { failedReply, parseActorSessionServerMessage, parseDatabaseReply }
 export type {
     ActorCallRequest,
-    ActorLog,
-    LogLevel,
-    ActorExecutionCommand,
     ActorExecutorCommand,
     ActorExecutorReply,
+    ActorRuntimeCommand,
     ActorSessionClientMessage,
     ActorSessionServerMessage,
-    ActorWorkerData,
-    ActorWorkerCommand,
-    ActorWorkerMessage,
-    ActorWorkerRequest,
+    DatabaseCallMessage,
     EvictCommand,
+    FailedReply,
     InvokeCommand,
+    LogLevel,
     WebSocketEventCommand
 }

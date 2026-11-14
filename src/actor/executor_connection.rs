@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    os::unix::fs::FileTypeExt,
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::fs::FileTypeExt,
+    },
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -13,7 +16,7 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{
-        UnixListener,
+        UnixListener, UnixStream,
         unix::{OwnedReadHalf, OwnedWriteHalf},
     },
     sync::{mpsc, oneshot, watch},
@@ -235,8 +238,11 @@ impl ActorExecutorListener {
         })
     }
 
-    pub(crate) async fn accept(self) -> Result<ActorExecutorConnection> {
-        let result = self.accept_connection().await;
+    pub(crate) async fn accept(
+        self,
+        database: Option<UnixStream>,
+    ) -> Result<ActorExecutorConnection> {
+        let result = self.accept_connection(database).await;
         let cleanup = remove_socket(&self.socket_path).await;
         match (result, cleanup) {
             (Ok(connection), Ok(())) => Ok(connection),
@@ -245,17 +251,20 @@ impl ActorExecutorListener {
         }
     }
 
-    async fn accept_connection(&self) -> Result<ActorExecutorConnection> {
+    async fn accept_connection(
+        &self,
+        database: Option<UnixStream>,
+    ) -> Result<ActorExecutorConnection> {
         let (stream, _) =
             self.listener.accept().await.with_context(|| {
                 format!("accept actor executor at {}", self.socket_path.display())
             })?;
         let (reader, writer) = stream.into_split();
         let reader = BufReader::new(reader);
-        attach_executor(reader, writer).await
+        attach_executor(reader, writer, database).await
     }
 
-    pub(crate) async fn accept_warm(self) -> Result<WarmExecutor> {
+    pub(crate) async fn accept_warm(self, database: Option<UnixStream>) -> Result<WarmExecutor> {
         let (stream, _) = self.listener.accept().await?;
         remove_socket(&self.socket_path).await?;
         let (reader, writer) = stream.into_split();
@@ -269,13 +278,47 @@ impl ActorExecutorListener {
             ),
             "generic executor did not finish warming"
         );
-        Ok(WarmExecutor { reader, writer })
+        Ok(WarmExecutor {
+            reader,
+            writer,
+            database,
+        })
+    }
+}
+
+/// Carries the TypeScript executor's blocking database calls, apart from its session socket.
+pub(crate) struct ExecutorDatabaseChannel {
+    host: std::os::unix::net::UnixStream,
+    executor: std::os::unix::net::UnixStream,
+}
+
+impl ExecutorDatabaseChannel {
+    // Cleared CLOEXEC instead of a pre_exec dup2 keeps spawning on posix_spawn; the host
+    // spawns no other children that could inherit it.
+    pub(crate) fn inheritable() -> Result<Self> {
+        use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+        let (host, executor) =
+            std::os::unix::net::UnixStream::pair().context("create actor database channel")?;
+        fcntl(&executor, FcntlArg::F_SETFD(FdFlag::empty()))
+            .context("share actor database channel")?;
+        Ok(Self { host, executor })
+    }
+
+    pub(crate) fn executor_fd(&self) -> RawFd {
+        self.executor.as_raw_fd()
+    }
+
+    /// Closes the executor's end, which the spawned process now holds.
+    pub(crate) fn into_host(self) -> Result<UnixStream> {
+        self.host.set_nonblocking(true)?;
+        Ok(UnixStream::from_std(self.host)?)
     }
 }
 
 pub(crate) struct WarmExecutor {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
+    database: Option<UnixStream>,
 }
 
 impl WarmExecutor {
@@ -289,13 +332,14 @@ impl WarmExecutor {
         }))?;
         bytes.push(b'\n');
         self.writer.write_all(&bytes).await?;
-        attach_executor(self.reader, self.writer).await
+        attach_executor(self.reader, self.writer, self.database).await
     }
 }
 
 async fn attach_executor(
     mut reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
+    database: Option<UnixStream>,
 ) -> Result<ActorExecutorConnection> {
     let actor_names = match read_client_message(&mut reader).await? {
         Some(ActorExecutorClientMessage::Attach {
@@ -314,7 +358,7 @@ async fn attach_executor(
         }
         _ => anyhow::bail!("customer executor must attach after loading code"),
     };
-    let (executor, task) = JsActorExecutor::start(reader, writer, actor_names);
+    let (executor, task) = JsActorExecutor::start(reader, writer, database, actor_names);
     debug!(actor_names = ?executor.actor_names, "JavaScript executor connected");
     Ok(ActorExecutorConnection { executor, task })
 }
@@ -494,6 +538,7 @@ impl JsActorExecutor {
     fn start(
         reader: BufReader<OwnedReadHalf>,
         writer: OwnedWriteHalf,
+        database: Option<UnixStream>,
         actor_names: Vec<String>,
     ) -> (Arc<Self>, JoinHandle<Result<()>>) {
         let (commands, incoming) = mpsc::unbounded_channel();
@@ -510,9 +555,10 @@ impl JsActorExecutor {
         });
 
         let task = tokio::spawn(async move {
-            let result =
-                run_executor_connection(reader, writer, incoming, residency, changes, admission)
-                    .await;
+            let result = run_executor_connection(
+                reader, writer, database, incoming, residency, changes, admission,
+            )
+            .await;
 
             if let Err(error) = &result {
                 tracing::error!(
@@ -576,12 +622,14 @@ impl JsActorExecutor {
 async fn run_executor_connection(
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
+    database: Option<UnixStream>,
     commands: mpsc::UnboundedReceiver<ExecutorRequest>,
     residency: Residency,
     changes: watch::Sender<()>,
     admission: watch::Sender<()>,
 ) -> Result<()> {
     let (outbound, writes) = mpsc::unbounded_channel();
+    let (database_outbound, database_writes) = mpsc::unbounded_channel();
     let (inbound, replies) = mpsc::unbounded_channel();
     let driver = ExecutorDriver {
         admission,
@@ -590,6 +638,7 @@ async fn run_executor_connection(
         pending: HashMap::new(),
         next_message_id: 1,
         outbound,
+        database_outbound,
         publisher: None,
         sockets: None,
         database: None,
@@ -603,10 +652,33 @@ async fn run_executor_connection(
     };
     tokio::try_join!(
         driver.run(commands, replies),
-        read_executor_messages(reader, inbound),
+        read_executor_messages(reader, ExecutorChannel::Session, inbound.clone()),
+        write_executor_messages(writer, writes),
+        serve_database_channel(database, inbound, database_writes)
+    )?;
+    Ok(())
+}
+
+async fn serve_database_channel(
+    database: Option<UnixStream>,
+    inbound: mpsc::UnboundedSender<Result<(ExecutorChannel, ActorExecutorClientMessage)>>,
+    writes: mpsc::UnboundedReceiver<ExecutorWrite>,
+) -> Result<()> {
+    let Some(database) = database else {
+        return Ok(());
+    };
+    let (reader, writer) = database.into_split();
+    tokio::try_join!(
+        read_executor_messages(BufReader::new(reader), ExecutorChannel::Database, inbound),
         write_executor_messages(writer, writes)
     )?;
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExecutorChannel {
+    Session,
+    Database,
 }
 
 struct ExecutorDriver {
@@ -616,6 +688,7 @@ struct ExecutorDriver {
     pending: HashMap<u64, PendingCommand>,
     next_message_id: u64,
     outbound: mpsc::UnboundedSender<ExecutorWrite>,
+    database_outbound: mpsc::UnboundedSender<ExecutorWrite>,
     publisher: Option<Arc<dyn ActorSocketPublisher>>,
     sockets: Option<Arc<dyn ActorSocketSource>>,
     database: Option<Arc<dyn ActorDatabase>>,
@@ -623,7 +696,7 @@ struct ExecutorDriver {
     logs: Arc<dyn ActorLogSink>,
     loading_connections: JoinSet<(u64, Result<super::SocketLookup>)>,
     connection_lookup_ids: HashSet<u64>,
-    database_calls: JoinSet<(u64, Option<u64>, Result<DatabaseResult>)>,
+    database_calls: JoinSet<(ExecutorChannel, u64, Option<u64>, Result<DatabaseResult>)>,
     database_ids: HashSet<u64>,
     actor_calls: JoinSet<(u64, Value)>,
 }
@@ -632,13 +705,16 @@ impl ExecutorDriver {
     async fn run(
         mut self,
         mut commands: mpsc::UnboundedReceiver<ExecutorRequest>,
-        mut replies: mpsc::UnboundedReceiver<Result<ActorExecutorClientMessage>>,
+        mut replies: mpsc::UnboundedReceiver<Result<(ExecutorChannel, ActorExecutorClientMessage)>>,
     ) -> Result<()> {
         loop {
             tokio::select! {
                 biased;
                 reply = replies.recv() => {
-                    match reply.context("actor executor reader stopped")?? {
+                    let (channel, message) = reply.context("actor executor reader stopped")??;
+                    match message {
+                        ActorExecutorClientMessage::DatabaseCall { call_id, message_id, call } => self.call_database(channel, call_id, message_id, call)?,
+                        _ if channel == ExecutorChannel::Database => anyhow::bail!("actor database channel carries only database calls"),
                         ActorExecutorClientMessage::Residency { resident } => {
                             let mut current = self.residency.lock().unwrap();
                             let changed = current.as_ref().is_none_or(|(_, previous)| *previous != resident);
@@ -648,7 +724,6 @@ impl ExecutorDriver {
                         ActorExecutorClientMessage::ReadyForInvocation { message_id } => self.allow_next_invocation(message_id)?,
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
-                        ActorExecutorClientMessage::DatabaseCall { call_id, message_id, call } => self.call_database(call_id, message_id, call)?,
                         ActorExecutorClientMessage::GetConnections { message_id, query } => self.load_connections(message_id, query)?,
                         ActorExecutorClientMessage::ActorCall { call_id, call } => self.call_actor(call_id, call),
                         ActorExecutorClientMessage::Log { message_id, level, message } => self.log(message_id, level, message),
@@ -656,8 +731,8 @@ impl ExecutorDriver {
                     }
                 }
                 called = self.database_calls.join_next(), if !self.database_calls.is_empty() => {
-                    let (call_id, message_id, result) = called.context("actor database call stopped")??;
-                    self.database_called(call_id, message_id, result)?;
+                    let (channel, call_id, message_id, result) = called.context("actor database call stopped")??;
+                    self.database_called(channel, call_id, message_id, result)?;
                 }
                 called = self.actor_calls.join_next(), if !self.actor_calls.is_empty() => {
                     let (call_id, outcome) = called.context("actor call stopped")??;
@@ -737,6 +812,7 @@ impl ExecutorDriver {
 
     fn call_database(
         &mut self,
+        channel: ExecutorChannel,
         call_id: u64,
         message_id: Option<u64>,
         call: DatabaseCall,
@@ -757,13 +833,14 @@ impl ExecutorDriver {
                 Some(database) => database.call(call).await,
                 None => Err(anyhow::anyhow!("actor database is unavailable")),
             };
-            (call_id, message_id, result)
+            (channel, call_id, message_id, result)
         });
         Ok(())
     }
 
     fn database_called(
         &mut self,
+        channel: ExecutorChannel,
         call_id: u64,
         message_id: Option<u64>,
         result: Result<DatabaseResult>,
@@ -775,13 +852,21 @@ impl ExecutorDriver {
             Ok(result) => (Some(result), None),
             Err(error) => (None, Some(format!("{error:#}"))),
         };
-        self.write(encode_server_message(
-            &ActorExecutorServerMessage::DatabaseResult {
-                call_id,
-                result,
-                error,
-            },
-        )?)
+        let bytes = encode_server_message(&ActorExecutorServerMessage::DatabaseResult {
+            call_id,
+            result,
+            error,
+        })?;
+        match channel {
+            ExecutorChannel::Session => self.write(bytes),
+            ExecutorChannel::Database => self
+                .database_outbound
+                .send(ExecutorWrite {
+                    bytes,
+                    written: None,
+                })
+                .map_err(|_| anyhow::anyhow!("actor database channel writer stopped")),
+        }
     }
 
     fn call_actor(&mut self, call_id: u64, call: ActorCall) {
@@ -919,11 +1004,14 @@ impl ExecutorDriver {
 
 async fn read_executor_messages(
     mut reader: BufReader<OwnedReadHalf>,
-    inbound: mpsc::UnboundedSender<Result<ActorExecutorClientMessage>>,
+    channel: ExecutorChannel,
+    inbound: mpsc::UnboundedSender<Result<(ExecutorChannel, ActorExecutorClientMessage)>>,
 ) -> Result<()> {
     loop {
         let reply = match read_client_message(&mut reader).await {
-            Ok(Some(message)) => Ok(message),
+            Ok(Some(message)) => Ok((channel, message)),
+            // The session socket reports the executor's exit.
+            Ok(None) if channel == ExecutorChannel::Database => return Ok(()),
             Ok(None) => Err(anyhow::anyhow!(
                 "customer JavaScript actor executor disconnected"
             )),

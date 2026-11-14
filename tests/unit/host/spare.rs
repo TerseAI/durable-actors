@@ -73,6 +73,7 @@ async fn run_activation(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let route = format!("http://{}", listener.local_addr()?);
     let ipc = ActorExecutorListener::bind(&socket).await?;
+    let database = crate::actor::ExecutorDatabaseChannel::inheritable()?;
     let javascript = Command::new("bun")
         .args([
             "--eval",
@@ -80,12 +81,20 @@ async fn run_activation(
         ])
         .env("DURABLE_ACTORS_SDK_HOST", sdk.join("dist/host.js"))
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", &socket)
+        .env(
+            "DURABLE_ACTORS_DATABASE_FD",
+            database.executor_fd().to_string(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()?;
-    let executor = tokio::time::timeout(Duration::from_secs(10), ipc.accept_warm()).await??;
+    let executor = tokio::time::timeout(
+        Duration::from_secs(10),
+        ipc.accept_warm(Some(database.into_host()?)),
+    )
+    .await??;
     assert!(
         !code.exists(),
         "generic executor must warm without customer code"

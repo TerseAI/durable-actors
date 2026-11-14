@@ -142,10 +142,8 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     await writeFile(path.join(root, "src/increment.ts"), "export const increment = (amount: number) => amount + 1\n")
     await writeFile(
         path.join(root, "src/actors.ts"),
-        `import { isMainThread } from "node:worker_threads"
-        import { Actor, Persisted, Ephemeral, Emittable } from "durable-actors"
+        `import { Actor, Persisted, Ephemeral, Emittable } from "durable-actors"
         import { increment } from "./increment.js"
-        if (isMainThread) throw new Error("actor code must run only inside a Worker")
         export class BuiltCounter extends Actor {
             @Persisted @Emittable count = 0
             @Ephemeral calls = 0
@@ -173,12 +171,12 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     const connected = once(server, "connection")
     server.listen(socketPath)
     await once(server, "listening")
-    const environment = { ...process.env, DURABLE_ACTORS_EXECUTOR_SOCKET: socketPath }
+    const environment = { ...process.env, DURABLE_ACTORS_EXECUTOR_SOCKET: socketPath, DURABLE_ACTORS_DATABASE_FD: "3" }
     delete environment.DURABLE_ACTORS_ENTRYPOINT
     const host = spawn("bun", [bootstrap], {
         cwd: deployed,
         env: environment,
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["ignore", "pipe", "pipe", "pipe"]
     })
     let stderr = ""
     host.stderr.on("data", data => (stderr += data))
@@ -197,18 +195,11 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     const lines = createInterface({ input: socket })[Symbol.asyncIterator]()
     const database = new HostDatabase()
     t.after(() => database.close())
+    serveDatabase(host.stdio[3], database)
     const receive = async () => {
         for (;;) {
             const message = JSON.parse((await lines.next()).value)
-            if (message.type === "residency") continue
-            if (message.type !== "database_call") return message
-            let reply
-            try {
-                reply = { result: database.call(message.call) }
-            } catch (error) {
-                reply = { error: error.message }
-            }
-            send({ type: "database_result", call_id: message.call_id, ...reply })
+            if (message.type !== "residency") return message
         }
     }
     assert.deepEqual(await receive(), { type: "attach", protocol: 32, actor_names: ["BuiltCounter"] })
@@ -265,21 +256,18 @@ test("actor builds report invalid persistence annotations before deployment", as
     await assert.rejects(buildActor(path.join(root, "src/actors.ts"), path.join(root, "dist/actors.mjs")), /must declare exactly one of @Persisted or @Ephemeral/)
 })
 
-test("an exiting actor reports failure before publishing its result and state", { timeout: 15_000 }, async t => {
-    const root = await project(t)
-    await writeFile(
-        path.join(root, "src/actors.ts"),
-        'import { Actor, Persisted } from "durable-actors"; export class Exiting extends Actor { @Persisted count = 0; async stop(): Promise<void> { this.count++; process.exit(1) } }'
-    )
-    const artifact = path.join(root, "actors.mjs")
-    await buildActor(path.join(root, "src/actors.ts"), artifact)
-    const script = fileURLToPath(new URL("../fixtures/invoke-exiting-actor.mjs", import.meta.url))
-    const { stdout } = await run("bun", [script, artifact], { timeout: 10_000 })
-    const reply = JSON.parse(stdout)
-    assert.equal(reply.type, "failed")
-    assert.equal(reply.code, "actor_worker_failed")
-    assert.match(reply.message, /exited with code 1/)
-})
+function serveDatabase(channel, database) {
+    createInterface({ input: channel }).on("line", line => {
+        const message = JSON.parse(line)
+        let reply
+        try {
+            reply = { result: database.call(message.call) }
+        } catch (error) {
+            reply = { error: error.message }
+        }
+        channel.write(JSON.stringify({ type: "database_result", call_id: message.call_id, ...reply }) + "\n")
+    })
+}
 
 async function project(t, installed = sdk) {
     const root = await mkdtemp(path.join(os.tmpdir(), "actor-build-"))
