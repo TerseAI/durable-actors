@@ -117,6 +117,15 @@ test("allows extra controllers and a small warm pool", () => {
     assert.match(output, /kind: PodDisruptionBudget/)
 })
 
+test("gives the pool manager and every controller the same warm pool per actor size", () => {
+    const tiers = [{ cpuMillis: 250, memoryMiB: 256, warm: 2 }, { cpuMillis: 500, cpuLimitMillis: 1000, memoryMiB: 512, memoryLimitMiB: 768, warm: 1 }]
+    const output = manifests({ replicaCount: 2, actors: { tiers }, redis: { urlSecretKey: "redis-url" } })
+    const configured = [...output.matchAll(/DURABLE_ACTORS_SPARE_TIERS, value: (".*")\}/g)].map(match => JSON.parse(JSON.parse(match[1])))
+    assert.deepEqual(configured, [tiers, tiers])
+    assert.doesNotMatch(output, /DURABLE_ACTORS_SPARE_IDLE/)
+    assert.equal(output.match(/DURABLE_ACTORS_HOST_MEMORY_MIB, value: "256"/g).length, 2)
+})
+
 test("runs exactly one pool manager beside the serving control plane", () => {
     const deployments = manifests({ replicaCount: 3, redis: { urlSecretKey: "redis-url" } }).split("---").filter(document => document.includes("kind: Deployment"))
     const manager = deployments.find(document => document.includes("-pool-manager\n"))
@@ -156,6 +165,10 @@ for (const [name, overrides] of [
     ["shared trust namespace", { sandboxNamespace: "actors" }],
     ["missing ingress certificate", { ingress: { enabled: true } }],
     ["warm pool above fleet limit", { actors: { warm: 300 } }],
+    ["warm pool beside spare tiers", { actors: { warm: 2, tiers: [{ cpuMillis: 250, memoryMiB: 256, warm: 2 }] } }],
+    ["spare tiers above fleet limit", { actors: { tiers: [{ cpuMillis: 250, memoryMiB: 256, warm: 200 }, { cpuMillis: 250, memoryMiB: 512, warm: 57 }] } }],
+    ["spare tiers of the same size", { actors: { tiers: [{ cpuMillis: 250, memoryMiB: 256, warm: 1 }, { cpuMillis: 250, memoryMiB: 256, memoryLimitMiB: 256, warm: 1 }] } }],
+    ["spare tier without a warm count", { actors: { tiers: [{ cpuMillis: 250, memoryMiB: 256 }] } }],
     ["refill interval below 50 ms", { actors: { refillIntervalMs: 10 } }]
 ]) test(`rejects ${name}`, () => assert.notEqual(render(overrides).status, 0))
 
