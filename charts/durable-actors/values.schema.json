@@ -150,10 +150,10 @@
               "cpuMillis": {"type": "integer", "minimum": 1},
               "cpuLimitMillis": {"type": ["integer", "null"], "minimum": 1},
               "memoryMiB": {"type": "integer", "minimum": 1},
-              "memoryLimitMiB": {"type": ["integer", "null"], "minimum": 1},
+              "memoryLimitMiB": {"type": "integer", "minimum": 1},
               "warm": {"type": "integer", "minimum": 0, "maximum": 256}
             },
-            "required": ["cpuMillis", "memoryMiB", "warm"]
+            "required": ["cpuMillis", "cpuLimitMillis", "memoryMiB", "memoryLimitMiB", "warm"]
           }
         },
         "maxStarting": {

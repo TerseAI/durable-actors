@@ -25,6 +25,10 @@ function manifests(overrides) {
     return result.stdout
 }
 
+function tier(memoryMiB, warm) {
+    return { cpuMillis: 250, cpuLimitMillis: null, memoryMiB, memoryLimitMiB: memoryMiB, warm }
+}
+
 test("enables usage publishing only when a topic is configured", () => {
     assert.doesNotMatch(manifests(), /DURABLE_ACTORS_USAGE_TOPIC/)
     const output = manifests({ usage: { topic: "projects/example/topics/actor-usage" } })
@@ -118,7 +122,7 @@ test("allows extra controllers and a small warm pool", () => {
 })
 
 test("gives the pool manager and every controller the same warm pool per actor size", () => {
-    const tiers = [{ cpuMillis: 250, memoryMiB: 256, warm: 2 }, { cpuMillis: 500, cpuLimitMillis: 1000, memoryMiB: 512, memoryLimitMiB: 768, warm: 1 }]
+    const tiers = [tier(256, 2), { cpuMillis: 500, cpuLimitMillis: 1000, memoryMiB: 512, memoryLimitMiB: 768, warm: 1 }]
     const output = manifests({ replicaCount: 2, actors: { tiers }, redis: { urlSecretKey: "redis-url" } })
     const configured = [...output.matchAll(/DURABLE_ACTORS_SPARE_TIERS, value: (".*")\}/g)].map(match => JSON.parse(JSON.parse(match[1])))
     assert.deepEqual(configured, [tiers, tiers])
@@ -165,10 +169,12 @@ for (const [name, overrides] of [
     ["shared trust namespace", { sandboxNamespace: "actors" }],
     ["missing ingress certificate", { ingress: { enabled: true } }],
     ["warm pool above fleet limit", { actors: { warm: 300 } }],
-    ["warm pool beside spare tiers", { actors: { warm: 2, tiers: [{ cpuMillis: 250, memoryMiB: 256, warm: 2 }] } }],
-    ["spare tiers above fleet limit", { actors: { tiers: [{ cpuMillis: 250, memoryMiB: 256, warm: 200 }, { cpuMillis: 250, memoryMiB: 512, warm: 57 }] } }],
-    ["spare tiers of the same size", { actors: { tiers: [{ cpuMillis: 250, memoryMiB: 256, warm: 1 }, { cpuMillis: 250, memoryMiB: 256, memoryLimitMiB: 256, warm: 1 }] } }],
-    ["spare tier without a warm count", { actors: { tiers: [{ cpuMillis: 250, memoryMiB: 256 }] } }],
+    ["warm pool beside spare tiers", { actors: { warm: 2, tiers: [tier(256, 2)] } }],
+    ["spare tiers above fleet limit", { actors: { tiers: [tier(256, 200), tier(512, 57)] } }],
+    ["spare tiers of the same size", { actors: { tiers: [tier(256, 1), tier(256, 2)] } }],
+    ["spare tier without a warm count", { actors: { tiers: [{ ...tier(256, 1), warm: undefined }] } }],
+    ["spare tier without a CPU limit", { actors: { tiers: [{ ...tier(256, 1), cpuLimitMillis: undefined }] } }],
+    ["spare tier without a memory limit", { actors: { tiers: [{ ...tier(256, 1), memoryLimitMiB: undefined }] } }],
     ["refill interval below 50 ms", { actors: { refillIntervalMs: 10 } }]
 ]) test(`rejects ${name}`, () => assert.notEqual(render(overrides).status, 0))
 

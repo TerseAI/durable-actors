@@ -19,7 +19,7 @@
 {{- if and .Values.actors.tiers (gt (int .Values.actors.warm) 0) }}{{ fail "actors.tiers replaces actors.warm; set warm on each tier" }}{{ end -}}
 {{- $sizes := dict -}}{{- $warm := 0 -}}
 {{- range .Values.actors.tiers -}}
-{{- $size := printf "%v/%v/%v/%v" .cpuMillis (default "none" .cpuLimitMillis) .memoryMiB (default .memoryMiB .memoryLimitMiB) -}}
+{{- $size := printf "%v/%v/%v/%v" .cpuMillis .cpuLimitMillis .memoryMiB .memoryLimitMiB -}}
 {{- if hasKey $sizes $size }}{{ fail "actors.tiers require distinct sizes" }}{{ end -}}
 {{- $_ := set $sizes $size true -}}{{- $warm = add $warm .warm -}}
 {{- end -}}

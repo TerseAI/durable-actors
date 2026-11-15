@@ -1137,18 +1137,19 @@ fn spare_tiers(value: &str) -> Result<Vec<crate::sandbox::pool::PoolTier>> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SpareTier {
     cpu_millis: u32,
-    #[serde(default)]
+    // `deserialize_with` makes serde require the key, so leaving CPU uncapped takes an explicit
+    // `null`.
+    #[serde(deserialize_with = "serde::Deserialize::deserialize")]
     cpu_limit_millis: Option<u32>,
     #[serde(rename = "memoryMiB")]
     memory_mib: u32,
-    #[serde(default, rename = "memoryLimitMiB")]
-    memory_limit_mib: Option<u32>,
+    #[serde(rename = "memoryLimitMiB")]
+    memory_limit_mib: u32,
     warm: u32,
 }
 
 impl SpareTier {
     fn validated(self) -> Result<crate::sandbox::pool::PoolTier> {
-        let memory_limit_mib = self.memory_limit_mib.unwrap_or(self.memory_mib);
         ensure!(
             self.cpu_millis > 0 && self.memory_mib > 0,
             "DURABLE_ACTORS_SPARE_TIERS requires positive cpuMillis and memoryMiB"
@@ -1159,7 +1160,7 @@ impl SpareTier {
             "DURABLE_ACTORS_SPARE_TIERS cpuLimitMillis must be at least cpuMillis"
         );
         ensure!(
-            memory_limit_mib >= self.memory_mib,
+            self.memory_limit_mib >= self.memory_mib,
             "DURABLE_ACTORS_SPARE_TIERS memoryLimitMiB must be at least memoryMiB"
         );
         Ok(crate::sandbox::pool::PoolTier {
@@ -1167,7 +1168,7 @@ impl SpareTier {
                 cpu_millis: self.cpu_millis,
                 cpu_limit_millis: self.cpu_limit_millis,
                 memory_mib: self.memory_mib,
-                memory_limit_mib: Some(memory_limit_mib),
+                memory_limit_mib: Some(self.memory_limit_mib),
             },
             idle: self.warm,
         })

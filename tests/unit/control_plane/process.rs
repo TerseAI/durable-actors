@@ -164,7 +164,7 @@ fn spare_tiers_keep_a_pool_per_size_beside_the_default_actor_size() -> Result<()
     };
     values.insert(
         "DURABLE_ACTORS_SPARE_TIERS",
-        r#"[{"cpuMillis":250,"memoryMiB":256,"warm":8},
+        r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":8},
             {"cpuMillis":500,"cpuLimitMillis":1000,"memoryMiB":512,"memoryLimitMiB":768,"warm":2}]"#,
     );
     let configured = parse(&values)?.sandbox_provider;
@@ -191,7 +191,7 @@ fn spare_tiers_keep_a_pool_per_size_beside_the_default_actor_size() -> Result<()
     );
     values.insert(
         "DURABLE_ACTORS_SPARE_TIERS",
-        r#"[{"cpuMillis":250,"memoryMiB":512,"warm":2}]"#,
+        r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":512,"memoryLimitMiB":512,"warm":2}]"#,
     );
     let configured = parse(&values)?.sandbox_provider;
     assert_eq!(configured.default_resources.memory_mib, 256);
@@ -200,36 +200,51 @@ fn spare_tiers_keep_a_pool_per_size_beside_the_default_actor_size() -> Result<()
         ("no tiers", "[]"),
         (
             "not a list",
-            r#"{"cpuMillis":250,"memoryMiB":256,"warm":1}"#,
+            r#"{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":1}"#,
         ),
         (
             "missing spare count",
-            r#"[{"cpuMillis":250,"memoryMiB":256}]"#,
+            r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256}]"#,
+        ),
+        (
+            "missing CPU limit",
+            r#"[{"cpuMillis":250,"memoryMiB":256,"memoryLimitMiB":256,"warm":1}]"#,
+        ),
+        (
+            "missing memory limit",
+            r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"warm":1}]"#,
+        ),
+        (
+            "no memory limit",
+            r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":null,"warm":1}]"#,
         ),
         (
             "unknown field",
-            r#"[{"cpuMillis":250,"memoryMiB":256,"warm":1,"idle":1}]"#,
+            r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":1,"idle":1}]"#,
         ),
-        ("zero CPU", r#"[{"cpuMillis":0,"memoryMiB":256,"warm":1}]"#),
+        (
+            "zero CPU",
+            r#"[{"cpuMillis":0,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":1}]"#,
+        ),
         (
             "zero memory",
-            r#"[{"cpuMillis":250,"memoryMiB":0,"warm":1}]"#,
+            r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":0,"memoryLimitMiB":256,"warm":1}]"#,
         ),
         (
             "CPU limit below request",
-            r#"[{"cpuMillis":250,"cpuLimitMillis":100,"memoryMiB":256,"warm":1}]"#,
+            r#"[{"cpuMillis":250,"cpuLimitMillis":100,"memoryMiB":256,"memoryLimitMiB":256,"warm":1}]"#,
         ),
         (
             "memory limit below request",
-            r#"[{"cpuMillis":250,"memoryMiB":512,"memoryLimitMiB":256,"warm":1}]"#,
+            r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":512,"memoryLimitMiB":256,"warm":1}]"#,
         ),
         (
             "repeated size",
-            r#"[{"cpuMillis":250,"memoryMiB":256,"warm":1},{"cpuMillis":250,"memoryMiB":256,"memoryLimitMiB":256,"warm":2}]"#,
+            r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":1},{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":2}]"#,
         ),
         (
             "more spares than the fleet",
-            r#"[{"cpuMillis":250,"memoryMiB":256,"warm":200},{"cpuMillis":250,"memoryMiB":512,"warm":57}]"#,
+            r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":200},{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":512,"memoryLimitMiB":512,"warm":57}]"#,
         ),
     ] {
         values.insert("DURABLE_ACTORS_SPARE_TIERS", tiers);
@@ -237,7 +252,7 @@ fn spare_tiers_keep_a_pool_per_size_beside_the_default_actor_size() -> Result<()
     }
     values.insert(
         "DURABLE_ACTORS_SPARE_TIERS",
-        r#"[{"cpuMillis":250,"memoryMiB":256,"warm":200},{"cpuMillis":250,"memoryMiB":512,"warm":56}]"#,
+        r#"[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":200},{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":512,"memoryLimitMiB":512,"warm":56}]"#,
     );
     parse(&values)?;
     values.insert("DURABLE_ACTORS_SPARE_IDLE", "8");
