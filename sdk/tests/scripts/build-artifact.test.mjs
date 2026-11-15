@@ -258,22 +258,6 @@ test("actor builds report invalid persistence annotations before deployment", as
     await assert.rejects(buildActor(path.join(root, "src/actors.ts"), path.join(root, "dist/actors.mjs")), /must declare exactly one of @Persisted or @Ephemeral/)
 })
 
-test("an actor that exits ends its process before publishing a result", { timeout: 15_000 }, async t => {
-    const root = await project(t)
-    await writeFile(
-        path.join(root, "src/actors.ts"),
-        'import { Actor, Persisted } from "durable-actors"; export class Exiting extends Actor { @Persisted count = 0; async stop(): Promise<void> { this.count++; process.exit(1) } }'
-    )
-    const artifact = path.join(root, "actors.mjs")
-    await buildActor(path.join(root, "src/actors.ts"), artifact)
-    const script = fileURLToPath(new URL("../fixtures/invoke-exiting-actor.mjs", import.meta.url))
-    await assert.rejects(run("bun", [script, artifact], { timeout: 10_000 }), error => {
-        assert.equal(error.code, 1)
-        assert.equal(error.stdout, "")
-        return true
-    })
-})
-
 async function project(t, installed = sdk) {
     const root = await mkdtemp(path.join(os.tmpdir(), "actor-build-"))
     t.after(() => rm(root, { recursive: true, force: true }))

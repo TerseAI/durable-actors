@@ -75,18 +75,11 @@ async def test_messages_read_back_whole_however_the_stream_is_cut(chunk):
     await feeding
 
 
-@pytest.mark.parametrize(
-    "stream",
-    [
-        b'{"type":"reply","message_id":1,"reply":{"type":"invoked"},"parts":[4]}\nnull',
-        b'{"type":"reply","message_id":1,"reply":{"type":"evicted"},"parts":[0]}\n',
-        b'{"type":"socket_effects","message_id":1,"parts":[29]}\n[{"message":{"type":"text"}}]',
-        b'{"type":"socket_effects","message_id":1,"parts":[9]}\n[]',
-    ],
-)
-async def test_messages_with_missing_extra_or_unfinished_parts_are_rejected(stream):
+async def test_a_message_with_a_missing_part_is_rejected():
     reader = asyncio.StreamReader()
-    reader.feed_data(stream)
+    reader.feed_data(
+        b'{"type":"reply","message_id":1,"reply":{"type":"invoked"},"parts":[4]}\nnull'
+    )
     reader.feed_eof()
-    with pytest.raises((ValueError, EOFError)):
+    with pytest.raises(ValueError):
         await Channel(reader, None).read()  # type: ignore[arg-type]

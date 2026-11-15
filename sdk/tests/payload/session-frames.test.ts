@@ -7,17 +7,17 @@ import type { SessionFrame } from "../../src/payload/session-frames.js"
 
 const session = Buffer.concat([
     Buffer.from('{"type":"command","message_id":1}\n'),
-    Buffer.from('{"type":"database_result","call_id":2,"parts":[9]}\n'),
+    Buffer.from('{"type":"socket_effects","message_id":2,"parts":[9]}\n'),
     Buffer.from("line\none\n"),
     Buffer.from('{"type":"reply","parts":[0,3,0,5]}\n'),
     Buffer.from("caf\u00e9\u2028"),
-    Buffer.from('{"type":"database_result","call_id":3,"parts":[]}\n')
+    Buffer.from('{"type":"socket_effects","message_id":3,"parts":[]}\n')
 ])
 const expected = [
     { head: { type: "command", message_id: 1 }, parts: [] },
-    { head: { type: "database_result", call_id: 2, parts: [9] }, parts: ["line\none\n"] },
+    { head: { type: "socket_effects", message_id: 2, parts: [9] }, parts: ["line\none\n"] },
     { head: { type: "reply", parts: [0, 3, 0, 5] }, parts: ["", "caf", "", "\u00e9\u2028"] },
-    { head: { type: "database_result", call_id: 3, parts: [] }, parts: [] }
+    { head: { type: "socket_effects", message_id: 3, parts: [] }, parts: [] }
 ]
 
 test("reads the same messages however the session is cut into chunks", () => {

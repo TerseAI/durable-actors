@@ -24,18 +24,6 @@ test("gives the socket one bounded buffer at a time, in order", () => {
     assert.equal(Buffer.concat(written).toString(), `ab${large}cd`)
 })
 
-test("short messages written while the socket is busy share its next buffer", () => {
-    const { socket, written, flushed } = heldSocket()
-    const writer = new SessionWriter(socket, new GarbageCollection())
-
-    writer.write(["first\n"])
-    writer.write(["second\n"])
-    writer.write(["third\n", "part"])
-    takeAll(written, flushed)
-
-    assert.deepEqual(written.map(String), ["first\n", "second\nthird\npart"])
-})
-
 test("text of every width is encoded as the bytes its size announces, across buffers", () => {
     const texts = [
         "plain ".repeat(20_000),

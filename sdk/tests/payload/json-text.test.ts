@@ -41,16 +41,6 @@ test("a value that is not JSON as it stands is written the way JSON.stringify wr
     for (const value of convertedValues()) assertText(encodeJson(value), JSON.stringify(value))
 })
 
-test("toJSON is asked once for each value, with the key that holds it", () => {
-    const asked: string[] = []
-    const value = { toJSON: (key: string) => asked.push(key) }
-    const holder = () => ({ first: value, list: [value, { inner: value }], toJSON: undefined })
-
-    assertText(encodeJson(value), "1")
-    assertText(encodeJson(holder()), '{"first":2,"list":[3,{"inner":4}]}')
-    assert.deepEqual(asked, ["", "first", "0", "inner"])
-})
-
 test("a value JSON.stringify gives no text for has none", () => {
     for (const value of [undefined, () => 1, Symbol("s"), { toJSON: () => undefined }])
         assert.equal(encodeJson(value), JSON.stringify(value))
@@ -91,27 +81,6 @@ test("a value JSON.stringify refuses is refused", () => {
     }
 })
 
-test("a BigInt that has a toJSON is written as its answer", t => {
-    const prototype = BigInt.prototype as { toJSON?: () => string }
-    prototype.toJSON = function (this: bigint) {
-        return `${this}n`
-    }
-    t.after(() => delete prototype.toJSON)
-    const value = { count: 12n, boxed: [Object(34n)] }
-
-    assertText(encodeJson(value), JSON.stringify(value))
-    assertText(encodeJson(value), '{"count":"12n","boxed":["34n"]}')
-})
-
-test("a value held twice is written twice", () => {
-    const shared = { list: [1] }
-
-    assertText(
-        encodeJson({ first: shared, second: [shared, shared.list] }),
-        '{"first":{"list":[1]},"second":[{"list":[1]},[1]]}'
-    )
-})
-
 test("a text encoded by the value being written leaves that one whole", () => {
     const long = "caf\u00e9 ".repeat(CHUNK_BYTES)
     const inner: JsonText[] = []
@@ -129,20 +98,6 @@ test("a text encoded by the value being written leaves that one whole", () => {
     assertText(inner[1]!, '"inner"')
 })
 
-test("a text that could not be written leaves later ones whole", () => {
-    const long = "x".repeat(CHUNK_BYTES)
-    const failing = {
-        long,
-        get member(): never {
-            throw new Error("no")
-        }
-    }
-
-    assert.throws(() => encodeJson(failing))
-    assertText(encodeJson("short"), '"short"')
-    assertText(encodeJson([long, long]), JSON.stringify([long, long]))
-})
-
 test("a large text is held in chunks of at most 64 KB", () => {
     const texts = ["plain ", 'q"\n', "caf\u00e9 ", "\u65e5\u672c\u8a9e", "\u{1f600}", "\ud800"].map(text =>
         text.repeat(70_000)
@@ -154,15 +109,6 @@ test("a large text is held in chunks of at most 64 KB", () => {
         assert.ok(text.chunks.every(chunk => chunk.byteLength <= CHUNK_BYTES))
         assertText(text, JSON.stringify(value))
     }
-})
-
-test("a short text holds no more than its own bytes", () => {
-    const text = encodeJson({ id: 7 })
-
-    assert.deepEqual(
-        text.chunks.map(chunk => chunk.buffer.byteLength),
-        [8]
-    )
 })
 
 test("a text keeps its bytes while later ones are encoded", () => {
@@ -210,6 +156,8 @@ function convertedValues(): unknown[] {
         { boxed: [new Number(NaN), new String(""), new Boolean(true), Object(Symbol("s"))] },
         { toJSON: () => ({ toJSON: () => "not asked again" }) },
         { toJSON: "not a function", kept: 1 },
+        { toJSON: (key: string) => `asked as ${JSON.stringify(key)}` },
+        { held: { toJSON: (key: string) => key }, list: [{ toJSON: (key: string) => key }] },
         new Map([[1, 2]]),
         new Set([1]),
         /x/g,

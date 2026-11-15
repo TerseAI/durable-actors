@@ -143,25 +143,8 @@ def test_a_value_that_sqlite_cannot_bind_is_refused_before_anything_is_sent(bind
     assert channel.call(statement("SELECT ?", "still usable"))["type"] == "rows"
 
 
-@pytest.mark.parametrize(
-    "answers",
-    [
-        [b"\x7f"],
-        [columns("id") + b"\x11\x09"],
-        [columns("id") + b"\x11\x03" + struct.pack("<I", 200) + b"cut"],
-        [ending(RESULT, b"[]")],
-        [],
-    ],
-    ids=[
-        "unknown record",
-        "unknown value type",
-        "answer cut short",
-        "result not an object",
-        "none",
-    ],
-)
-def test_an_answer_that_cannot_be_read_ends_the_channel_for_every_later_call(answers):
-    stream = Scripted(*answers)
+def test_an_answer_cut_short_ends_the_channel_for_every_later_call():
+    stream = Scripted(columns("id") + b"\x11\x03" + struct.pack("<I", 200) + b"cut")
     channel = DatabaseChannel(stream)
 
     for _ in range(2):

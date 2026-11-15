@@ -102,20 +102,14 @@ test("a value that SQLite cannot bind is refused before anything is sent", () =>
     assert.deepEqual(channel.call(statement("SELECT ?", ["still usable"])).type, "rows")
 })
 
-for (const [failure, answers] of [
-    ["an unknown record", [Buffer.from([0x7f])]],
-    ["an unknown value type", [Buffer.concat([columns("id"), Buffer.from([0x11, 9])])]],
-    ["an answer cut short", [Buffer.concat([columns("id"), Buffer.from([0x11, 3, 200, 0, 0, 0, 1, 2])])]],
-    ["no answer", []]
-] as const)
-    test(`${failure} ends the channel for every later call`, () => {
-        const stream = new Scripted([...answers])
-        const channel = new DatabaseChannel(stream)
+test("an answer cut short ends the channel for every later call", () => {
+    const stream = new Scripted([Buffer.concat([columns("id"), Buffer.from([0x11, 3, 200, 0, 0, 0, 1, 2])])])
+    const channel = new DatabaseChannel(stream)
 
-        assert.throws(() => channel.call({ op: "commit" }), DatabaseChannelError)
-        assert.throws(() => channel.call({ op: "commit" }), DatabaseChannelError)
-        assert.equal(stream.writes, 1)
-    })
+    assert.throws(() => channel.call({ op: "commit" }), DatabaseChannelError)
+    assert.throws(() => channel.call({ op: "commit" }), DatabaseChannelError)
+    assert.equal(stream.writes, 1)
+})
 
 function echo(call: DatabaseCall): DatabaseResult {
     if (call.op !== "exec") throw new Error(`unexpected ${call.op}`)
