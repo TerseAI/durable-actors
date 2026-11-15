@@ -44,7 +44,6 @@ impl Segment {
             stream,
             first_version,
             replicas: prepared.candidates.clone(),
-            placement: prepared.placement,
         };
         let key = manifest.key()?;
         let publication = crate::payload::encode(&manifest)?;

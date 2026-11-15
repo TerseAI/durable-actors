@@ -1417,11 +1417,7 @@ impl SandboxHostProvisioner {
                 if let Some(pool) = &self.pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
-                if let Some(spare) = request.spare.as_ref().filter(|_| created)
-                    && let Err(cleanup) = self.provider.retire_spare(spare).await
-                {
-                    warn!(%cleanup, resource = %spare.resource_id, "failed to retire unclaimed sandbox");
-                }
+                self.retire_created(&request, created).await;
                 return Err(error);
             }
         };
@@ -1439,6 +1435,7 @@ impl SandboxHostProvisioner {
                 if let Some(pool) = &self.pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
+                self.retire_created(&request, created).await;
                 if !error.is::<AssignmentOutcomeUnknown>()
                     && let Err(revoke) = claims.revoke_claim(&claim).await
                 {
@@ -1597,6 +1594,15 @@ impl SandboxHostProvisioner {
         let route = spare.route.clone();
         request.spare = Some(spare);
         Ok(route)
+    }
+
+    /// The pool never records a sandbox `host_route` started, so a failed assignment retires it here.
+    async fn retire_created(&self, request: &EnsureHostRequest, created: bool) {
+        if let Some(spare) = request.spare.as_ref().filter(|_| created)
+            && let Err(cleanup) = self.provider.retire_spare(spare).await
+        {
+            warn!(%cleanup, resource = %spare.resource_id, "failed to retire an unassigned sandbox");
+        }
     }
 
     fn request(

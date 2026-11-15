@@ -560,8 +560,9 @@ impl Stack {
             auth,
             registry.clone(),
             issuer.clone(),
-            Arc::new(SocketTestProvisioner),
-        );
+            Arc::new(super::super::testing::NoHosts),
+        )
+        .with_activation_authority(runtime.activations()?);
         let gateway_listener = TcpListener::bind("127.0.0.1:0").await?;
         let gateway = format!("http://{}", gateway_listener.local_addr()?);
         let hub = super::super::socket_bus::MemorySocketHub::default();
@@ -910,42 +911,6 @@ async fn receive(socket: &mut Socket) -> Result<serde_json::Value> {
     ensure!(frame.is_text(), "unexpected socket frame: {frame:?}");
     serde_json::from_str(frame.to_text()?)
         .with_context(|| format!("invalid socket JSON: {frame:?}"))
-}
-
-struct SocketTestProvisioner;
-
-#[async_trait]
-impl HostProvisioner for SocketTestProvisioner {
-    async fn prepare_deployment(
-        &self,
-        source: &HostLaunchSpec,
-        _previous: Option<&HostLaunchSpec>,
-        _region: &str,
-    ) -> Result<(
-        HostLaunchSpec,
-        Option<crate::control_plane::contracts::PublicActorContract>,
-    )> {
-        Ok((source.clone(), None))
-    }
-
-    async fn ensure_actor_host(
-        &self,
-        _spec: &HostLaunchSpec,
-        _region: &str,
-        _actor: &ActorKey,
-        _new_actor: bool,
-        _owner_hint: Option<&crate::bucket::OwnershipHint>,
-        _: Option<&crate::sandbox::assignment::InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
-        anyhow::bail!("fixture host must be active")
-    }
-    async fn terminate_hosts(
-        &self,
-        _spec: &HostLaunchSpec,
-        _regions: &[String],
-    ) -> Result<HostTermination> {
-        anyhow::bail!("unused")
-    }
 }
 
 fn socket_key(grant: &serde_json::Value) -> Result<String> {

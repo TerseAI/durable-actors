@@ -76,8 +76,6 @@ struct Manifest {
     stream: StateStream,
     first_version: u64,
     replicas: Vec<Replica>,
-    #[serde(default)]
-    placement: super::RapidPlacement,
 }
 
 impl RapidSnapshots {

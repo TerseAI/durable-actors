@@ -22,6 +22,9 @@ mod local_watch;
 mod mcp;
 mod observe_events;
 mod process;
+#[cfg(test)]
+#[path = "../../tests/support/control_plane.rs"]
+pub(crate) mod testing;
 pub(crate) use issuer::JWKS_PATH;
 pub(crate) use process::{
     DEFAULT_AUTHORITY_AUDIENCE, DEFAULT_JWT_ISSUER, DEFAULT_JWT_TTL_SECONDS, RuntimeImages,

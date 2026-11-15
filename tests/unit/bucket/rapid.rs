@@ -946,10 +946,23 @@ async fn unavailable_rapid_at_activation_uses_standard_without_losing_state() ->
         f.archive.get(&f.stream.object(1)).await?.unwrap().bytes,
         state(1, 1)?
     );
+    f.zones[0].offline.store(false, Ordering::SeqCst);
     assert_eq!(
         f.store()?.latest(&f.stream.prefix).await?,
         Some((f.stream.object(1), state(1, 1)?))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_missing_replica_is_not_an_empty_log_while_another_zone_is_unreadable() -> Result<()> {
+    let f = Fixture::new()?;
+    let store = f.store()?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    f.zones[0].objects.lock().unwrap().clear();
+    f.zones[1].offline.store(true, Ordering::SeqCst);
+    assert!(f.store()?.latest(&f.stream.prefix).await.is_err());
     Ok(())
 }
 

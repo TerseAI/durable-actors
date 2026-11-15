@@ -14,4 +14,13 @@ impl RuntimeFixture {
         let runtime = Arc::new(RuntimeStorage::new(bucket, Arc::new(SystemClock))?);
         Ok(Self { directory, runtime })
     }
+
+    /// The control plane's view of the same bucket, which applies hosts' renewals and releases.
+    pub fn activations(&self) -> Result<Arc<super::RuntimeStorageReader>> {
+        Ok(Arc::new(super::RuntimeStorageReader::new(
+            Arc::new(FileBucket::new(self.directory.path().into())?),
+            Arc::new(SystemClock),
+            Arc::new(crate::litestream::EmbeddedRestore),
+        )?))
+    }
 }

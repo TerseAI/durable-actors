@@ -9,7 +9,6 @@ pub(super) struct Prepared {
     pub prefix: String,
     /// Every zone the log may open in, before any generation exists.
     pub candidates: Vec<Replica>,
-    pub placement: RapidPlacement,
     opened: AbortOnDropHandle<Result<Option<Opened>>>,
 }
 
@@ -35,7 +34,6 @@ impl Prepared {
             id,
             prefix,
             candidates,
-            placement,
             opened,
         }
     }

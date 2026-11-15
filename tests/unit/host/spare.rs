@@ -107,8 +107,11 @@ async fn run_activation(
         None,
     )
     .await?;
+    let mut control_plane = tokio::task::JoinSet::new();
+    let control_plane_url =
+        crate::control_plane::testing::serve_activations(data, issuer, &mut control_plane).await?;
     let environment: HashMap<String, String> = serde_json::from_value(serde_json::json!({
-        "DURABLE_ACTORS_CONTROL_PLANE_URL": "http://127.0.0.1:1",
+        "DURABLE_ACTORS_CONTROL_PLANE_URL": control_plane_url,
         "DURABLE_ACTORS_HOST_TOKEN": token,
         "DURABLE_ACTORS_JWT_PUBLIC_KEYS": issuer.verifier_keys_json()?,
         "DURABLE_ACTORS_HOST_ID": host_id.as_str(), "DURABLE_ACTORS_SESSION_ID": session,

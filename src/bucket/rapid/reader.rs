@@ -77,15 +77,16 @@ impl LogStorage {
             return Ok(archived);
         }
         let rapid = match self.read_replicas(manifest, fence).await {
-            Ok(records) => records,
-            Err(error) => {
+            Ok(Some(records)) => records,
+            // Replication may have finished and deleted the copies since the first marker check.
+            unread => {
                 if let Some(marker) = self.archive.get(&manifest.marker("replicated")?).await? {
                     let closed: archive::ClosedSegment = serde_json::from_slice(&marker.bytes)?;
                     let (end, records) = self.archived(manifest).await?;
                     closed.validate(manifest, end, &records)?;
                     return Ok(records);
                 }
-                return Err(error);
+                unread?.unwrap_or_default()
             }
         };
         let mut merged = BTreeMap::new();
@@ -214,11 +215,12 @@ impl LogStorage {
         self.mark_replicated(manifest, &closed).await
     }
 
+    /// `None` when no zone holds the log's object: the manifest landed but the log never opened.
     pub(super) async fn read_replicas(
         &self,
         manifest: &Manifest,
         fence: bool,
-    ) -> Result<Vec<Record>> {
+    ) -> Result<Option<Vec<Record>>> {
         let reads =
             futures_util::future::join_all(manifest.replicas.iter().map(|replica| async move {
                 match self.resolve(replica).await? {
@@ -238,14 +240,8 @@ impl LogStorage {
                 Err(error) => tracing::warn!(%error, "Rapid log replica unavailable during read"),
             }
         }
-        // The manifest lands before its objects open; under All, every acknowledged write reached
-        // every object, so one that never opened proves the log is empty.
-        if copies.is_empty()
-            && absent > 0
-            && (manifest.placement == crate::bucket::RapidPlacement::All
-                || absent == manifest.replicas.len())
-        {
-            return Ok(Vec::new());
+        if absent == manifest.replicas.len() {
+            return Ok(None);
         }
         ensure!(
             !copies.is_empty(),
@@ -261,7 +257,7 @@ impl LogStorage {
             }
         }
         // A complete uncertain tail is made durable in Standard before ownership advances.
-        Ok(selected)
+        Ok(Some(selected))
     }
 
     /// Each log object name is created once, so its live generation is the one the writer used.
