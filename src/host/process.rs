@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use futures_util::{FutureExt, future::FusedFuture};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{error, info};
@@ -173,7 +174,7 @@ pub(super) async fn serve_assigned_host(
             .await
             .context("serve actor host endpoints")
     });
-    let mut executor_task = Box::pin(executor_connection.run(executor_stop.clone()));
+    let mut executor_task = Box::pin(executor_connection.run(executor_stop.clone()).fuse());
     let shutdown = async {
         tokio::select! { () = shutdown => {}, () = storage.stop.cancelled() => {} }
     };
@@ -627,12 +628,19 @@ async fn serve_during<T>(
     }
 }
 
-async fn stop_executor(host: &ActorHost, stop: &CancellationToken, executor: impl Future) {
+async fn stop_executor(host: &ActorHost, stop: &CancellationToken, executor: impl FusedFuture) {
     if let Err(error) = host.drain(HOST_ACTOR_DRAIN_TIMEOUT).await {
         error!(error = %format!("{error:#}"), "actor invocations did not drain cleanly");
     }
     stop.cancel();
-    let _ = tokio::time::timeout(HOST_TASK_SHUTDOWN_TIMEOUT, executor).await;
+    executor_stopped(executor).await;
+}
+
+// The executor may be what stopped the host, and a future that has finished cannot be awaited again.
+async fn executor_stopped(executor: impl FusedFuture) {
+    if !executor.is_terminated() {
+        let _ = tokio::time::timeout(HOST_TASK_SHUTDOWN_TIMEOUT, executor).await;
+    }
 }
 
 pub(super) fn spawn_executor_process(
