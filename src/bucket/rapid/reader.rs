@@ -86,6 +86,14 @@ impl LogStorage {
                     closed.validate(manifest, end, &records)?;
                     return Ok(records);
                 }
+                if self
+                    .archive
+                    .get(&manifest.marker("unopened")?)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(archived);
+                }
                 unread?.unwrap_or_default()
             }
         };

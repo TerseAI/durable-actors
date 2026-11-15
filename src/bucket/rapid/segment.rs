@@ -57,6 +57,17 @@ impl Segment {
         );
         ensure!(published?, "conflicting log manifest");
         let Some(opened) = opened? else {
+            // Lets readers skip zones that may still be down for a log that never opened.
+            ensure!(
+                bounded(replace(
+                    storage.archive.as_ref(),
+                    &manifest.marker("unopened")?,
+                    None,
+                    Bytes::new()
+                ))
+                .await?,
+                "conflicting unopened marker"
+            );
             return Ok(None);
         };
         manifest.replicas.clear();
