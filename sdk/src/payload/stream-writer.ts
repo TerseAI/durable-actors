@@ -1,4 +1,5 @@
 import type { BlockingStream } from "./blocking-stream.js"
+import type { JsonText } from "./json-text.js"
 import { sliceEnd } from "./text-slice.js"
 
 const BUFFER_BYTES = 64 * 1024
@@ -48,13 +49,13 @@ class StreamWriter {
     /** Bytes after their `u32` size. */
     bytes(bytes: Uint8Array): void {
         this.u32(bytes.byteLength)
-        if (bytes.byteLength > BUFFER_BYTES - this.used) {
-            this.flush()
-            this.stream.write(bytes)
-        } else {
-            this.buffer.set(bytes, this.used)
-            this.used += bytes.byteLength
-        }
+        this.raw(bytes)
+    }
+
+    /** Text that is already UTF-8, after its `u32` size. */
+    encoded(text: JsonText): void {
+        this.u32(text.byteLength)
+        for (const chunk of text.chunks) this.raw(chunk)
     }
 
     flush(): void {
@@ -62,6 +63,16 @@ class StreamWriter {
         const used = this.used
         this.used = 0
         this.stream.write(this.buffer.subarray(0, used))
+    }
+
+    private raw(bytes: Uint8Array): void {
+        if (bytes.byteLength > BUFFER_BYTES - this.used) {
+            this.flush()
+            this.stream.write(bytes)
+        } else {
+            this.buffer.set(bytes, this.used)
+            this.used += bytes.byteLength
+        }
     }
 
     private encode(slice: string): number {

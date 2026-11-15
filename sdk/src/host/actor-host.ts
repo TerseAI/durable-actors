@@ -31,6 +31,8 @@ async function runActorHost(): Promise<never> {
 class ActorSession {
     private startup: Promise<void> | undefined
     private connection: ActorSessionConnection | undefined
+    // One count of what has passed, whichever connection it passed on.
+    private readonly collection = new GarbageCollection()
 
     constructor(
         private readonly settings: ActorHostSettings = parseHostSettings(process.env),
@@ -57,7 +59,7 @@ class ActorSession {
                 throw new ActorSessionError("the actor entrypoint does not export any actor classes")
             const socket = this.socket ?? (await connectSocket(this.settings.socketPath))
             // Known before the socket delivers a command, so a database failure inside one can end the session.
-            this.connection = new ActorSessionConnection(socket, actor)
+            this.connection = new ActorSessionConnection(socket, actor, this.collection)
             await this.connection.attach(actorNames, this.settings.startupTimeoutMs)
             void this.connection.closed().then(() => actor.close())
         } catch (error) {
@@ -69,7 +71,7 @@ class ActorSession {
     private openDatabase(): InvocationDatabase {
         const descriptor = this.settings.databaseDescriptor
         if (descriptor === undefined) return unavailableDatabase
-        const channel = new DatabaseChannel(new DescriptorStream(descriptor))
+        const channel = new DatabaseChannel(new DescriptorStream(descriptor), this.collection)
         return (call, invocation) => {
             try {
                 return channel.call(call, invocation)
@@ -121,7 +123,8 @@ class ActorSessionConnection {
 
     constructor(
         private readonly socket: Socket,
-        private readonly actor: SessionActor
+        private readonly actor: SessionActor,
+        collection: GarbageCollection
     ) {
         this.attachedPromise = new Promise<void>((resolve, reject) => {
             this.attachedResolve = resolve
@@ -130,7 +133,7 @@ class ActorSessionConnection {
         this.closedPromise = new Promise<void>(resolve => {
             this.closedResolve = resolve
         })
-        this.writer = new SessionWriter(socket, new GarbageCollection())
+        this.writer = new SessionWriter(socket, collection)
         this.bindSocket()
     }
 

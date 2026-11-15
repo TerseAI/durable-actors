@@ -108,15 +108,37 @@ class Counter(Actor):
 def serve_database(listener, database):
     """Answers the worker's database calls, made on the connection after the executor's.
 
-    A call is a size and that much JSON, and so is its answer, after a byte that says it is one.
+    A call is a size and that much JSON, then the JSON of the field it writes. Its answer is a row
+    for each field it reads, then how the call ended.
     """
     connection, _ = listener.accept()
     with connection, connection.makefile("rwb") as channel:
         while size := channel.read(4):
             head = json.loads(channel.read(struct.unpack("<I", size)[0]))
-            answer = json.dumps(database.call(head["call"])).encode()
-            channel.write(struct.pack("<BI", 0x12, len(answer)) + answer)
+            values = [json.loads(read_text(channel)) for _ in range(head["bindings"])]
+            channel.write(answer(database.call(head["call"], values)))
             channel.flush()
+
+
+def read_text(channel):
+    tag, size = struct.unpack("<BI", channel.read(5))
+    assert tag == 3, "these calls only carry text"
+    return channel.read(size)
+
+
+def answer(result):
+    if result["type"] != "fields":
+        return b"\x12" + sized(json.dumps(result))
+    rows = [
+        b"\x11\x03" + sized(name) + b"\x03" + sized(json.dumps(value))
+        for name, value in result["fields"].items()
+    ]
+    columns = struct.pack("<BI", 0x10, 2) + sized("name") + sized("value")
+    return b"".join([columns, *rows, b"\x12", sized('{"type":"rows"}')])
+
+
+def sized(text):
+    return struct.pack("<I", len(text.encode())) + text.encode()
 
 
 class FieldStore:
@@ -126,7 +148,7 @@ class FieldStore:
         self.committed = {}
         self.pending = {}
 
-    def call(self, call):
+    def call(self, call, values):
         op = call["op"]
         if op == "fields":
             return {"type": "fields", "fields": self.committed}
@@ -134,7 +156,7 @@ class FieldStore:
             self.pending = self.committed.copy()
             return {"type": "rows", "columns": [], "rows": []}
         if op == "persist_field":
-            self.pending[call["name"]] = call["value"]
+            self.pending[call["name"]] = values[0]
         elif op == "delete_field":
             self.pending.pop(call["name"], None)
         elif op == "commit":

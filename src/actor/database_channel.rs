@@ -1,18 +1,20 @@
 //! The connection an executor makes its database calls on, apart from its commands so that the
 //! actor's thread can block on it.
 //!
-//! One call is answered at a time. A request is a `u32` size, that much JSON, then the bound
-//! values the JSON counts under `bindings`. The answer is a stream of records: `COLUMNS` and a
-//! `ROW` per row while a statement runs, then `RESULT` or `FAILED`. Integers are little-endian,
-//! and a value is a tag followed by its eight bytes, or by a `u32` size and that many bytes.
+//! One call is answered at a time. A request is a `u32` size, that much JSON, then the values
+//! the JSON counts under `bindings`: what a statement binds, or the JSON of each field the call
+//! writes. The answer is a stream of records: `COLUMNS` and a `ROW` per row while a statement or
+//! a field read runs, then `RESULT` or `FAILED`. Integers are little-endian, and a value is a
+//! tag followed by its eight bytes, or by a `u32` size and that many bytes.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{
@@ -99,9 +101,62 @@ struct Request {
 struct RequestHead {
     #[serde(default)]
     message_id: Option<u64>,
-    call: DatabaseCall,
+    call: CallHead,
     #[serde(default)]
     bindings: usize,
+}
+
+/// A call without the values it carries. They follow the head, so a large one is never escaped
+/// into the head's JSON or parsed out of it.
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum CallHead {
+    Exec {
+        sql: String,
+        #[serde(default)]
+        immediate: bool,
+    },
+    Fields {
+        #[serde(default)]
+        names: Option<Vec<String>>,
+    },
+    InitializeFields {
+        names: Vec<String>,
+    },
+    PersistField {
+        name: String,
+        #[serde(default)]
+        immediate: bool,
+    },
+    DeleteField {
+        name: String,
+        #[serde(default)]
+        immediate: bool,
+    },
+    Alarm,
+    SetAlarm {
+        timestamp_ms: i64,
+        #[serde(default)]
+        immediate: bool,
+    },
+    DeleteAlarm {
+        #[serde(default)]
+        immediate: bool,
+    },
+    Commit,
+    Rollback,
+}
+
+impl CallHead {
+    /// How many values follow the head. Only a statement leaves that to the request.
+    fn values(&self) -> Option<usize> {
+        match self {
+            Self::Exec { .. } => None,
+            Self::InitializeFields { names } => Some(names.len()),
+            Self::PersistField { .. } => Some(1),
+            _ => Some(0),
+        }
+    }
 }
 
 type Reader = BufReader<OwnedReadHalf>;
@@ -116,19 +171,76 @@ async fn read_request(reader: &mut Reader) -> Result<Option<Request>> {
         head.bindings <= MAX_BINDINGS,
         "database call binds too many values"
     );
-    let mut call = head.call;
-    match &mut call {
-        DatabaseCall::Exec { bindings, .. } => {
-            for _ in 0..head.bindings {
-                bindings.push(read_value(reader).await?);
-            }
-        }
-        _ => ensure!(head.bindings == 0, "only a statement binds values"),
-    }
+    ensure!(
+        head.call
+            .values()
+            .is_none_or(|values| values == head.bindings),
+        "database call carries the wrong number of values"
+    );
     Ok(Some(Request {
         message_id: head.message_id,
-        call,
+        call: read_call(reader, head.call, head.bindings).await?,
     }))
+}
+
+async fn read_call(reader: &mut Reader, head: CallHead, bindings: usize) -> Result<DatabaseCall> {
+    Ok(match head {
+        CallHead::Exec { sql, immediate } => DatabaseCall::Exec {
+            sql,
+            bindings: read_bindings(reader, bindings).await?,
+            immediate,
+        },
+        CallHead::Fields { names } => DatabaseCall::Fields { names },
+        CallHead::InitializeFields { names } => DatabaseCall::InitializeFields {
+            fields: read_fields(reader, names).await?,
+        },
+        CallHead::PersistField { name, immediate } => DatabaseCall::PersistField {
+            name,
+            value: read_json(reader).await?,
+            immediate,
+        },
+        CallHead::DeleteField { name, immediate } => DatabaseCall::DeleteField { name, immediate },
+        CallHead::Alarm => DatabaseCall::Alarm,
+        CallHead::SetAlarm {
+            timestamp_ms,
+            immediate,
+        } => DatabaseCall::SetAlarm {
+            timestamp_ms,
+            immediate,
+        },
+        CallHead::DeleteAlarm { immediate } => DatabaseCall::DeleteAlarm { immediate },
+        CallHead::Commit => DatabaseCall::Commit,
+        CallHead::Rollback => DatabaseCall::Rollback,
+    })
+}
+
+async fn read_bindings(reader: &mut Reader, count: usize) -> Result<Vec<SqlValue>> {
+    let mut bindings = Vec::with_capacity(count);
+    for _ in 0..count {
+        bindings.push(read_value(reader).await?);
+    }
+    Ok(bindings)
+}
+
+async fn read_fields(
+    reader: &mut Reader,
+    names: Vec<String>,
+) -> Result<BTreeMap<String, Box<RawValue>>> {
+    let mut fields = BTreeMap::new();
+    for name in names {
+        fields.insert(name, read_json(reader).await?);
+    }
+    Ok(fields)
+}
+
+/// A field's JSON stays the text the executor wrote: it is checked, and never read into a tree.
+async fn read_json(reader: &mut Reader) -> Result<Box<RawValue>> {
+    ensure!(
+        reader.read_u8().await? == TEXT,
+        "a field's value is sent as text"
+    );
+    let text = String::from_utf8(read_sized(reader).await?).context("field value is not UTF-8")?;
+    RawValue::from_string(text).context("field value is not JSON")
 }
 
 async fn read_value(reader: &mut Reader) -> Result<SqlValue> {

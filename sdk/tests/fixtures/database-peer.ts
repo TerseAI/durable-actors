@@ -3,6 +3,7 @@ import type { Duplex } from "node:stream"
 import type { SqliteValue } from "../../src/actor/database.js"
 import type { DatabaseCall, DatabaseResult } from "../../src/host/database.js"
 import type { BlockingStream } from "../../src/payload/blocking-stream.js"
+import type { JsonText } from "../../src/payload/json-text.js"
 
 type Database = (call: DatabaseCall, invocation?: number) => DatabaseResult
 
@@ -64,7 +65,7 @@ export function serveDatabase(stream: Duplex, database: Database): void {
 
 function answerTo({ call, invocation }: Request, database: Database): Buffer {
     try {
-        const result = database(call, invocation)
+        const result = sent(database(call, invocation))
         if (result.type !== "rows") return ending(RESULT, JSON.stringify(result))
         return Buffer.concat([
             Buffer.from([COLUMNS]),
@@ -76,6 +77,13 @@ function answerTo({ call, invocation }: Request, database: Database): Buffer {
     } catch (error) {
         return ending(FAILED, (error as Error).message)
     }
+}
+
+// The host sends fields as rows: a field's name and its JSON.
+function sent(result: DatabaseResult): Exclude<DatabaseResult, { type: "fields" }> {
+    if (result.type !== "fields") return result
+    const rows = Object.entries(result.fields).map(([name, value]) => [name, JSON.stringify(value)])
+    return { type: "rows", columns: ["name", "value"], rows }
 }
 
 export function ending(record: number, body: string): Buffer {
@@ -113,16 +121,41 @@ function takeRequest(bytes: Buffer): { request: Request; length: number } | unde
     try {
         const head = JSON.parse(cursor.sized().toString()) as {
             message_id?: number
-            call: DatabaseCall
+            call: CallHead
             bindings: number
         }
-        const bindings = Array.from({ length: head.bindings }, () => cursor.value())
-        const call = head.call.op === "exec" ? { ...head.call, bindings } : head.call
-        return { request: { invocation: head.message_id, call }, length: cursor.at }
+        const values = Array.from({ length: head.bindings }, () => cursor.value())
+        return { request: { invocation: head.message_id, call: withValues(head.call, values) }, length: cursor.at }
     } catch (error) {
         if (error instanceof RangeError) return undefined
         throw error
     }
+}
+
+/** A call as its head has it: without the values that follow. */
+type CallHead =
+    | Exclude<DatabaseCall, { op: "exec" | "persist_field" | "initialize_fields" }>
+    | Omit<Extract<DatabaseCall, { op: "exec" }>, "bindings">
+    | Omit<Extract<DatabaseCall, { op: "persist_field" }>, "value">
+    | { readonly op: "initialize_fields"; readonly names: readonly string[] }
+
+function withValues(head: CallHead, values: readonly SqliteValue[]): DatabaseCall {
+    switch (head.op) {
+        case "exec":
+            return { ...head, bindings: values }
+        case "persist_field":
+            return { ...head, value: jsonText(values[0]) }
+        case "initialize_fields":
+            return { op: head.op, fields: new Map(head.names.map((name, index) => [name, jsonText(values[index])])) }
+        default:
+            return head
+    }
+}
+
+function jsonText(value: SqliteValue | undefined): JsonText {
+    if (typeof value !== "string") throw new TypeError("a field's value follows its call as text")
+    const bytes = Buffer.from(value)
+    return { byteLength: bytes.length, chunks: [bytes] }
 }
 
 // Reading past the end throws a RangeError, which means the rest of the request has not arrived.

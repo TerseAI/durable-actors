@@ -39,8 +39,8 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         let persisted = database_client::call(
             &mut database,
             json!({"message_id":hydrate["message_id"],
-                "call":{"op":"persist_field","name":"resumed","value":true,"immediate":true}}),
-            &[],
+                "call":{"op":"persist_field","name":"resumed","immediate":true}}),
+            &[SqlValue::Text("true".into())],
         )
         .await?;
         assert_eq!(persisted.ending, Ok(json!({"type":"done"})));

@@ -55,13 +55,16 @@ fn raw(value: serde_json::Value) -> Box<serde_json::value::RawValue> {
 }
 
 async fn fields(database: &SqliteDatabase) -> Result<serde_json::Value> {
-    Ok(serde_json::to_value(
-        database
-            .call(DatabaseCall::Fields { names: None }, rows::ignored())
-            .await?
-            .result?,
-    )?["fields"]
-        .clone())
+    stored(database, None).await?.fields()
+}
+
+async fn stored(database: &SqliteDatabase, names: Option<Vec<String>>) -> Result<Collected> {
+    let rows = Rows::default();
+    database
+        .call(DatabaseCall::Fields { names }, rows.sink())
+        .await?
+        .result?;
+    Ok(rows.collected())
 }
 
 #[tokio::test]
@@ -379,7 +382,7 @@ async fn sqlite_fail_conflicts_still_report_committed_rows_for_replication() -> 
 }
 
 #[tokio::test]
-async fn fields_preserve_json_text_and_replacement_removes_missing_names() -> Result<()> {
+async fn fields_are_read_as_rows_of_the_json_text_they_were_written_as() -> Result<()> {
     let (_directory, database) = database().await?;
     database
         .call(
@@ -406,34 +409,32 @@ async fn fields_preserve_json_text_and_replacement_removes_missing_names() -> Re
             rows::ignored(),
         )
         .await?;
-    let listed = serde_json::to_string(
-        &database
-            .call(DatabaseCall::Fields { names: None }, rows::ignored())
-            .await?
-            .result?,
-    )?;
-    assert!(
-        listed.contains(r#""nested":{"z":1,"a":[true,null]}"#),
-        "{listed}"
+    let text = |value: &str| SqlValue::Text(value.into());
+    let listed = stored(&database, None).await?;
+    assert_eq!(listed.columns, ["name", "value"]);
+    assert_eq!(
+        listed.rows,
+        [
+            [text("nested"), text(r#"{"z":1,"a":[true,null]}"#)],
+            [text("stale"), text(r#""old""#)]
+        ]
     );
-    assert!(listed.contains(r#""stale":"old""#), "{listed}");
-    database
-        .call(
-            DatabaseCall::ReplaceFields {
-                fields: [("count".to_string(), raw(json!(3)))].into(),
-            },
-            rows::ignored(),
-        )
-        .await?;
-    database
-        .call(
-            DatabaseCall::DeleteField {
-                name: "missing".into(),
-                immediate: false,
-            },
-            rows::ignored(),
-        )
-        .await?;
-    assert_eq!(fields(&database).await?, json!({"count": 3}));
+    let named = stored(&database, Some(vec!["stale".into(), "missing".into()])).await?;
+    assert_eq!(named.rows, [[text("stale"), text(r#""old""#)]]);
+    for name in ["stale", "missing"] {
+        database
+            .call(
+                DatabaseCall::DeleteField {
+                    name: name.into(),
+                    immediate: false,
+                },
+                rows::ignored(),
+            )
+            .await?;
+    }
+    assert_eq!(
+        fields(&database).await?,
+        json!({"nested": {"z": 1, "a": [true, null]}})
+    );
     Ok(())
 }

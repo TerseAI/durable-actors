@@ -247,8 +247,7 @@ class ActorRuntime {
         validateActorState(instance, this.definition.state)
         const stored = state === null ? {} : persistedState(state)
         if (state !== null) hydrateActorState(instance, stored, this.definition.state)
-        const unsaved = unsavedState(instance, stored, this.definition.state)
-        if (Object.keys(unsaved).length > 0) this.database.initializeFields(unsaved)
+        this.database.initializeFields(unsavedState(instance, stored, this.definition.state))
         bindPersistedFields(instance, context, this.definition.state, this.database)
         if (this.interleaved) this.lastCompletedState = this.socketState()
         this.instance = instance
@@ -370,19 +369,16 @@ function persistedState(value: JsonValue): JsonObject {
 }
 
 // Fields the database doesn't hold yet, such as a default for a field added since the last write.
-function unsavedState(instance: object, stored: JsonObject, schema: ActorSchema): JsonObject {
-    return cloneJsonObject(
-        Object.fromEntries(
-            schema.fields
-                .filter(
-                    field =>
-                        field.persistence === Persistence.Persisted &&
-                        Object.hasOwn(instance, field.name) &&
-                        !Object.hasOwn(stored, field.name)
-                )
-                .map(field => [field.name, Reflect.get(instance, field.name)])
-        ),
-        "actor state"
+function unsavedState(instance: object, stored: JsonObject, schema: ActorSchema): Record<string, unknown> {
+    return Object.fromEntries(
+        schema.fields
+            .filter(
+                field =>
+                    field.persistence === Persistence.Persisted &&
+                    Object.hasOwn(instance, field.name) &&
+                    !Object.hasOwn(stored, field.name)
+            )
+            .map(field => [field.name, Reflect.get(instance, field.name)])
     )
 }
 
@@ -396,19 +392,14 @@ function snapshotActorState(instance: object, schema: ActorSchema): JsonObject {
     return cloneJsonObject(state, "actor state")
 }
 
+// The stored values are not copied: the caller has read `state` for this instance and keeps nothing of it.
 function hydrateActorState(instance: object, state: JsonObject, schema: ActorSchema): void {
     validateActorState(instance, schema)
-    const restored = cloneJsonObject(
-        Object.fromEntries(
-            schema.fields
-                .filter(field => field.persistence === Persistence.Persisted && Object.hasOwn(state, field.name))
-                .map(field => [field.name, state[field.name]])
-        ),
-        "actor state"
-    )
-    for (const [key, value] of Object.entries(restored)) {
-        if (!Reflect.defineProperty(instance, key, { configurable: true, enumerable: true, writable: true, value }))
-            throw new ActorSerializationError(`actor field ${key} cannot be restored`)
+    for (const { name, persistence } of schema.fields) {
+        if (persistence !== Persistence.Persisted || !Object.hasOwn(state, name)) continue
+        const value = state[name]
+        if (!Reflect.defineProperty(instance, name, { configurable: true, enumerable: true, writable: true, value }))
+            throw new ActorSerializationError(`actor field ${name} cannot be restored`)
     }
 }
 

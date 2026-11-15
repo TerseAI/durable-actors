@@ -23,6 +23,19 @@ impl Rows {
     }
 }
 
+impl Collected {
+    /// What a field read wrote: each row is a field's name and its JSON.
+    pub fn fields(&self) -> Result<serde_json::Value> {
+        let fields = self.rows.iter().map(|row| match row.as_slice() {
+            [SqlValue::Text(name), SqlValue::Text(json)] => {
+                Ok((name.clone(), serde_json::from_str(json)?))
+            }
+            row => anyhow::bail!("a field is its name and its JSON, not {row:?}"),
+        });
+        Ok(serde_json::Value::Object(fields.collect::<Result<_>>()?))
+    }
+}
+
 pub fn ignored() -> Box<dyn RowSink> {
     Rows::default().sink()
 }

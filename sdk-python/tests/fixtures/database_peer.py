@@ -52,6 +52,8 @@ def answer_to(request, resolve):
         result = resolve(request["invocation"])(request["call"])
     except Exception as error:
         return ending(FAILED, str(error).encode())
+    if result["type"] == "fields":
+        result = stored_rows(result["fields"])
     if result["type"] != "rows":
         return ending(RESULT, json.dumps(result).encode())
     names = [sized(name.encode()) for name in result["columns"]]
@@ -64,6 +66,12 @@ def answer_to(request, resolve):
             ending(RESULT, b'{"type":"rows"}'),
         ]
     )
+
+
+def stored_rows(fields):
+    """The host answers a read of the fields with a row of each one's name and its JSON."""
+    rows = [[name, json.dumps(value, ensure_ascii=False)] for name, value in fields.items()]
+    return {"type": "rows", "columns": ["name", "value"], "rows": rows}
 
 
 def ending(record, body):
@@ -97,6 +105,8 @@ def take_request(asked):
     call = head["call"]
     if call["op"] == "exec":
         call["bindings"] = bindings
+    if call["op"] == "persist_field":
+        call["value"] = json.loads(*bindings)
     return {"invocation": head.get("message_id"), "call": call}, cursor.at
 
 

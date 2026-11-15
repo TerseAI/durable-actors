@@ -3,8 +3,10 @@ import { isDeepStrictEqual } from "node:util"
 
 import type { ActorAlarmState, ActorAlarmStorage } from "../actor/alarm.js"
 import type { ActorQueryResult, RuntimeActorDatabase, SqliteValue } from "../actor/database.js"
-import { errorMessage } from "../errors.js"
+import { ActorSerializationError, errorMessage } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
+import type { JsonText } from "../payload/json-text.js"
+import { encodeJson } from "../payload/json-text.js"
 
 type DatabaseCall =
     | {
@@ -14,10 +16,9 @@ type DatabaseCall =
           readonly immediate: boolean
       }
     | { readonly op: "fields"; readonly names?: readonly string[] }
-    | { readonly op: "initialize_fields"; readonly fields: JsonObject }
-    | { readonly op: "persist_field"; readonly name: string; readonly value: JsonValue; readonly immediate: boolean }
+    | { readonly op: "initialize_fields"; readonly fields: ReadonlyMap<string, JsonText> }
+    | { readonly op: "persist_field"; readonly name: string; readonly value: JsonText; readonly immediate: boolean }
     | { readonly op: "delete_field"; readonly name: string; readonly immediate: boolean }
-    | { readonly op: "replace_fields"; readonly fields: JsonObject }
     | { readonly op: "alarm" }
     | { readonly op: "set_alarm"; readonly timestamp_ms: number; readonly immediate: boolean }
     | { readonly op: "delete_alarm"; readonly immediate: boolean }
@@ -105,16 +106,24 @@ class DatabaseProxy implements RuntimeActorDatabase, ActorAlarmStorage {
         this.transport({ op: "delete_alarm", immediate: true })
     }
 
-    initializeFields(fields: JsonObject): void {
-        this.transport({ op: "initialize_fields", fields })
+    /** Stores the fields the database does not hold yet. A value JSON leaves out stores nothing. */
+    initializeFields(fields: Readonly<Record<string, unknown>>): void {
+        const stored = new Map<string, JsonText>()
+        for (const [name, value] of Object.entries(fields)) {
+            const json = encodeField(value)
+            if (json !== undefined) stored.set(name, json)
+        }
+        if (stored.size > 0) this.transport({ op: "initialize_fields", fields: stored })
     }
 
-    persistField(name: string, value: JsonValue | undefined): void {
+    /** Stores the field as the JSON of `value`, and deletes it when JSON leaves the value out. */
+    persistField(name: string, value: unknown): void {
         this.assertAccess()
+        const json = encodeField(value)
         this.transport(
-            value === undefined
+            json === undefined
                 ? { op: "delete_field", name, immediate: true }
-                : { op: "persist_field", name, value, immediate: true }
+                : { op: "persist_field", name, value: json, immediate: true }
         )
     }
 
@@ -165,6 +174,14 @@ class DatabaseProxy implements RuntimeActorDatabase, ActorAlarmStorage {
         const fields = this.fields()
         for (const [name, restore] of this.fieldRestores)
             if (written === undefined || !isDeepStrictEqual(written[name], fields[name])) restore(fields[name])
+    }
+}
+
+function encodeField(value: unknown): JsonText | undefined {
+    try {
+        return encodeJson(value)
+    } catch (error) {
+        throw new ActorSerializationError("actor state must be JSON serializable", { cause: error })
     }
 }
 

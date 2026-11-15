@@ -13,6 +13,7 @@ import { ActorSession, parseHostSettings } from "../../src/host/actor-host.js"
 import { ResidentActor } from "../../src/host/resident-actor.js"
 import type { InvocationDatabase, SessionActorFactory } from "../../src/host/types.js"
 import { DatabaseChannel } from "../../src/payload/database-channel.js"
+import { GarbageCollection } from "../../src/payload/garbage-collection.js"
 import { DatabasePeer } from "../fixtures/database-peer.js"
 import type { WireReply } from "../fixtures/detached.js"
 import { HostDatabase } from "../fixtures/host-database.js"
@@ -191,7 +192,8 @@ test("a large database result and the socket message built from it cross the ses
             call.op === "exec"
                 ? { type: "rows", columns: ["html"], rows: frames.map(frame => [frame.html]) }
                 : database.call(call)
-        )
+        ),
+        new GarbageCollection()
     )
     const replied = new Promise<{ message_id: number; reply: WireReply }>((resolve, reject) => {
         const server = createServer(socket => {

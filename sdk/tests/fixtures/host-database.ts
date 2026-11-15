@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 import type { DatabaseCall, DatabaseResult } from "../../src/host/database.js"
 import type { JsonObject, JsonValue } from "../../src/json.js"
+import type { JsonText } from "../../src/payload/json-text.js"
 
 type Binding = null | bigint | number | string | Uint8Array
 
@@ -50,10 +51,8 @@ export class HostDatabase {
 
     static with(fields: JsonObject): HostDatabase {
         const database = new HostDatabase()
-        database.call({ op: "replace_fields", fields })
-        database.call({ op: "commit" })
-        database.calls.length = 0
-        database.commits = 0
+        for (const [name, value] of Object.entries(fields)) database.persist(name, JSON.stringify(value))
+        database.synced = database.changeToken()
         return database
     }
 
@@ -74,23 +73,16 @@ export class HostDatabase {
                 return { type: "fields", fields: this.fields() }
             case "initialize_fields":
                 return this.write(() => {
-                    for (const [name, value] of Object.entries(call.fields))
+                    for (const [name, value] of call.fields)
                         this.connection
                             .prepare("INSERT INTO __terse_fields VALUES (?, ?) ON CONFLICT(name) DO NOTHING")
-                            .run(name, JSON.stringify(value))
+                            .run(name, jsonString(value))
                 })
             case "persist_field":
-                return this.write(() => this.persist(call.name, call.value))
+                return this.write(() => this.persist(call.name, jsonString(call.value)))
             case "delete_field":
                 return this.write(() => {
                     this.connection.prepare("DELETE FROM __terse_fields WHERE name = ?").run(call.name)
-                })
-            case "replace_fields":
-                return this.write(() => {
-                    for (const [name, value] of Object.entries(call.fields)) this.persist(name, value)
-                    for (const name of Object.keys(this.fields()))
-                        if (!Object.hasOwn(call.fields, name))
-                            this.connection.prepare("DELETE FROM __terse_fields WHERE name = ?").run(name)
                 })
             case "alarm":
                 return this.write(() => this.alarm())
@@ -147,12 +139,12 @@ export class HostDatabase {
         return { type: "rows", columns, rows: rows.map(row => row.map(read)) }
     }
 
-    private persist(name: string, value: JsonValue): void {
+    private persist(name: string, json: string): void {
         this.connection
             .prepare(
                 "INSERT INTO __terse_fields VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value WHERE value <> excluded.value"
             )
-            .run(name, JSON.stringify(value))
+            .run(name, json)
     }
 
     private alarm(): DatabaseResult {
@@ -195,6 +187,11 @@ export class HostDatabase {
             (_, value: unknown) => (typeof value === "bigint" ? value.toString() : value)
         )
     }
+}
+
+/** The JSON a field was sent as, which the host stores as it is. */
+export function jsonString(text: JsonText): string {
+    return Buffer.concat(text.chunks).toString()
 }
 
 // The connection reads every integer as a bigint, and binds a number as a real. A whole number is an integer

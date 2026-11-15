@@ -129,29 +129,51 @@ async fn calls_reach_the_activation_database_unless_they_name_a_command() -> Res
 }
 
 #[tokio::test]
-async fn field_calls_carry_their_values_as_json() -> Result<()> {
+async fn field_values_follow_the_call_and_stay_the_text_they_were_sent_as() -> Result<()> {
     let (requested, mut requests) = mpsc::unbounded_channel();
     let scopes = Arc::new(DatabaseScopes::default());
     scopes.activate(Some(Arc::new(DelayedDatabase {
         requested,
-        release: Arc::new(Semaphore::new(1)),
+        release: Arc::new(Semaphore::new(2)),
         fail: false,
     })));
     let (mut executor, _served) = channel(scopes)?;
-    let head = json!({"call": {"op": "replace_fields", "fields": {"count": 1, "nested": {"ready": true}}}});
-    database_client::call(&mut executor, head, &[]).await?;
-    let DatabaseCall::ReplaceFields { fields } = requests.try_recv()? else {
-        anyhow::bail!("expected replace fields");
+    let text = |json: &str| SqlValue::Text(json.into());
+    let large = format!(r#"{{"z":1,"a":"{}"}}"#, "snowman ☃".repeat(40_000));
+
+    let head = json!({"call": {"op": "persist_field", "name": "nested", "immediate": true}});
+    database_client::call(&mut executor, head, &[text(&large)]).await?;
+    assert!(matches!(
+        requests.try_recv()?,
+        DatabaseCall::PersistField { name, value, immediate: true }
+            if name == "nested" && value.get() == large
+    ));
+
+    let head = json!({"call": {"op": "initialize_fields", "names": ["count", "ready"]}});
+    database_client::call(&mut executor, head, &[text("1"), text("true")]).await?;
+    let DatabaseCall::InitializeFields { fields } = requests.try_recv()? else {
+        anyhow::bail!("expected initialize fields");
     };
     assert_eq!(fields["count"].get(), "1");
-    assert_eq!(fields["nested"].get(), r#"{"ready":true}"#);
+    assert_eq!(fields["ready"].get(), "true");
     Ok(())
 }
 
 #[tokio::test]
 async fn a_malformed_call_ends_the_channel() -> Result<()> {
+    let persist = || json!({"call": {"op": "persist_field", "name": "count"}});
     for request in [
         database_client::request(json!({"call": {"op": "commit"}}), &[SqlValue::Null])?,
+        database_client::request(
+            json!({"call": {"op": "persist_field", "name": "count", "value": 1}}),
+            &[],
+        )?,
+        database_client::request(persist(), &[SqlValue::Text("{not json".into())])?,
+        database_client::request(persist(), &[SqlValue::Integer(1)])?,
+        database_client::request(
+            json!({"call": {"op": "initialize_fields", "names": ["count", "ready"]}}),
+            &[SqlValue::Text("1".into())],
+        )?,
         database_client::request(
             json!({"call": {"op": "exec", "sql": "SELECT 1"}, "bindings": 40_000}),
             &[],

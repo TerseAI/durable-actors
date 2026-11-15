@@ -49,15 +49,15 @@ try {
     const send = message => socket.write(JSON.stringify(message) + "\n")
     let committed = {}
     let pending = {}
-    const call = request => {
+    const call = (request, values) => {
         switch (request.op) {
             case "fields":
                 return { type: "fields", fields: pending }
             case "initialize_fields":
-                pending = { ...request.fields, ...pending }
+                pending = { ...Object.fromEntries(request.names.map((name, index) => [name, values[index]])), ...pending }
                 break
             case "persist_field":
-                pending = { ...pending, [request.name]: request.value }
+                pending = { ...pending, [request.name]: values[0] }
                 if (request.immediate) committed = pending
                 break
             case "commit":
@@ -113,33 +113,53 @@ try {
 }
 
 // The executor's thread blocks on its fourth descriptor for each database call. A call is a size and that much
-// JSON, and so is its answer, after a byte that says whether it failed.
+// JSON, then the JSON of each field it writes. Its answer is a row per field it reads, then how the call ended.
 function serveDatabase(channel, call) {
     let asked = Buffer.alloc(0)
     channel.on("data", chunk => {
         asked = Buffer.concat([asked, chunk])
-        while (asked.length >= 4 && asked.length >= 4 + asked.readUInt32LE(0)) {
-            const end = 4 + asked.readUInt32LE(0)
-            const request = JSON.parse(asked.subarray(4, end).toString())
-            asked = asked.subarray(end)
-            channel.write(answer(() => call(request.call)))
+        for (let request = takeRequest(asked); request !== undefined; request = takeRequest(asked)) {
+            asked = asked.subarray(request.length)
+            channel.write(answer(() => call(request.call, request.values)))
         }
     })
 }
 
-function answer(call) {
-    const [record, body] = attempt(call)
-    const head = Buffer.alloc(5, record)
-    head.writeUInt32LE(body.length, 1)
-    return Buffer.concat([head, body])
+// The only values these calls carry are text: a tag, a size and that many bytes of a field's JSON.
+function takeRequest(asked) {
+    if (asked.length < 4 || asked.length < 4 + asked.readUInt32LE(0)) return undefined
+    let at = 4 + asked.readUInt32LE(0)
+    const head = JSON.parse(asked.subarray(4, at).toString())
+    const values = []
+    for (let index = 0; index < head.bindings; index++) {
+        if (asked.length < at + 5) return undefined
+        const end = at + 5 + asked.readUInt32LE(at + 1)
+        if (asked.length < end) return undefined
+        values.push(JSON.parse(asked.subarray(at + 5, end).toString()))
+        at = end
+    }
+    return { call: head.call, values, length: at }
 }
 
-function attempt(call) {
+function answer(call) {
     try {
-        return [0x12, Buffer.from(JSON.stringify(call()))]
+        const result = call()
+        if (result.type !== "fields") return record(0x12, JSON.stringify(result))
+        const rows = Object.entries(result.fields).map(([name, value]) => Buffer.concat([Buffer.from([0x11, 3]), sized(name), Buffer.from([3]), sized(JSON.stringify(value))]))
+        return Buffer.concat([Buffer.from([0x10, 2, 0, 0, 0]), sized("name"), sized("value"), ...rows, record(0x12, '{"type":"rows"}')])
     } catch (error) {
-        return [0x13, Buffer.from(error.message)]
+        return record(0x13, error.message)
     }
+}
+
+function record(kind, body) {
+    return Buffer.concat([Buffer.from([kind]), sized(body)])
+}
+
+function sized(text) {
+    const size = Buffer.alloc(4)
+    size.writeUInt32LE(Buffer.byteLength(text))
+    return Buffer.concat([size, Buffer.from(text)])
 }
 
 // A message is a line of JSON, then the parts whose sizes the line announces.

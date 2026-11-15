@@ -32,7 +32,8 @@ class HostDatabase:
     @classmethod
     def seeded(cls, fields):
         database = cls()
-        database.write(lambda: database.replace(fields))
+        for name, value in fields.items():
+            database.persist(name, value)
         database.commit()
         database.commits = 0
         return database
@@ -55,8 +56,6 @@ class HostDatabase:
             return self.write(lambda: self.update_alarm(call["timestamp_ms"]))
         if op == "delete_alarm":
             return self.write(lambda: self.update_alarm(None))
-        if op == "replace_fields":
-            return self.write(lambda: self.replace(call["fields"]))
         if op == "persist_field":
             return self.write(lambda: self.persist(call["name"], call["value"]))
         if op == "delete_field":
@@ -109,17 +108,6 @@ class HostDatabase:
             "columns": columns,
             "rows": [list(row) for row in cursor.fetchall()],
         }
-
-    def replace(self, fields):
-        self.connection.executemany(
-            "INSERT INTO __terse_fields VALUES (?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET value=excluded.value WHERE value<>excluded.value",
-            [(name, json.dumps(value, separators=(",", ":"))) for name, value in fields.items()],
-        )
-        self.connection.execute(
-            "DELETE FROM __terse_fields WHERE name NOT IN (SELECT value FROM json_each(?))",
-            (json.dumps(list(fields)),),
-        )
 
     def persist(self, name, value):
         self.connection.execute(

@@ -20,5 +20,30 @@ class DescriptorStream implements BlockingStream {
     }
 }
 
-export { DescriptorStream }
+/** Counts the bytes that cross a stream, in either direction. */
+class CountedStream implements BlockingStream {
+    private bytes = 0
+
+    constructor(private readonly stream: BlockingStream) {}
+
+    read(into: Uint8Array, offset: number): number {
+        const read = this.stream.read(into, offset)
+        this.bytes += read
+        return read
+    }
+
+    write(bytes: Uint8Array): void {
+        this.stream.write(bytes)
+        this.bytes += bytes.byteLength
+    }
+
+    /** The bytes that crossed since this was last asked. */
+    take(): number {
+        const bytes = this.bytes
+        this.bytes = 0
+        return bytes
+    }
+}
+
+export { CountedStream, DescriptorStream }
 export type { BlockingStream }

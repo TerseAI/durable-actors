@@ -1,4 +1,5 @@
 import io
+import json
 import struct
 
 import pytest
@@ -28,18 +29,20 @@ def row(*cells):
 
 
 class Scripted:
-    """Answers each request with the next prepared answer, then closes."""
+    """Answers each request with the next prepared answer, then closes. Keeps what each wrote."""
 
     def __init__(self, *answers):
         self.answers = list(answers)
         self.answer = io.BytesIO()
-        self.requests = 0
+        self.sent = []
+        self.writing = b""
 
     def writelines(self, chunks):
-        pass
+        self.writing += b"".join(chunks)
 
     def flush(self):
-        self.requests += 1
+        self.sent.append(self.writing)
+        self.writing = b""
         self.answer = io.BytesIO(self.answers.pop(0) if self.answers else b"")
 
     def read(self, size):
@@ -88,15 +91,37 @@ def test_a_call_names_the_command_it_belongs_to_and_nothing_outside_one():
 
 def test_results_that_are_not_rows_are_read_as_the_host_wrote_them():
     results = [
-        {"type": "fields", "fields": {"count": 1, "note": "caf\u00e9"}},
+        {"type": "alarm", "timestamp_ms": 1_000},
         {"type": "alarm", "timestamp_ms": None},
         {"type": "done"},
     ]
     channel = DatabaseChannel(DatabasePeer(lambda call: results[0]))
 
     while results:
-        assert channel.call({"op": "fields"}) == results[0]
+        assert channel.call({"op": "alarm"}) == results[0]
         results.pop(0)
+
+
+def test_a_fields_json_follows_its_call_instead_of_being_inside_it_and_fields_are_read_from_rows():
+    note = {"z": 'caf\u00e9 \U0001f600 "quoted"\n' * 20_000, "a": [1, None]}
+    text = json.dumps(note, separators=(",", ":"), ensure_ascii=False)
+    stored = columns("name", "value") + row("note", text) + row("count", "1")
+    stream = Scripted(
+        ending(RESULT, b'{"type":"done"}'), stored + ending(RESULT, b'{"type":"rows"}')
+    )
+    channel = DatabaseChannel(stream)
+
+    channel.call({"op": "persist_field", "name": "note", "value": note, "immediate": False}, 7)
+
+    head = (
+        b'{"call":{"op":"persist_field","name":"note","immediate":false},'
+        b'"bindings":1,"message_id":7}'
+    )
+    assert stream.sent == [sized(head) + value(text)]
+    assert channel.call({"op": "fields"}) == {
+        "type": "fields",
+        "fields": {"note": note, "count": 1},
+    }
 
 
 def test_a_failed_statement_raises_the_hosts_message_and_leaves_the_channel_usable():
@@ -150,4 +175,4 @@ def test_an_answer_cut_short_ends_the_channel_for_every_later_call():
     for _ in range(2):
         with pytest.raises(DatabaseChannelError, match="actor database channel failed"):
             channel.call({"op": "commit"})
-    assert stream.requests == 1
+    assert len(stream.sent) == 1
