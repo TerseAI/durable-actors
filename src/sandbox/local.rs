@@ -22,6 +22,9 @@ use crate::{
     placement::ObjectPlacementStore,
 };
 
+/// How long a claimed host may go unrecorded before `wait_ready` treats its route as stale.
+const UNRECORDED_HOST_WAIT: Duration = Duration::from_secs(5);
+
 pub(crate) struct LocalSandboxProvider {
     runtime: Arc<LocalRuntime>,
     placements: Arc<dyn ObjectPlacementStore>,
@@ -77,16 +80,16 @@ impl SandboxProvider for LocalSandboxProvider {
 
     async fn wait_ready(&self, host: &crate::host::HostId) -> Result<()> {
         let mut changes = self.runtime.changes.subscribe();
+        let started = tokio::time::Instant::now();
         loop {
-            let record = self
-                .runtime
-                .store
-                .host(host.as_str())
-                .await?
-                .ok_or(super::HostNotReady)?;
-            match record.status.as_str() {
-                "ready" => return Ok(()),
-                "starting" => self.runtime.changed(&mut changes).await?,
+            let record = self.runtime.store.host(host.as_str()).await?;
+            match record.as_ref().map(|record| record.status.as_str()) {
+                Some("ready") => return Ok(()),
+                Some("starting") => self.runtime.changed(&mut changes).await?,
+                // The control plane publishes its claim just before ensure_host records the host.
+                None if started.elapsed() < UNRECORDED_HOST_WAIT => {
+                    tokio::time::sleep(Duration::from_millis(20)).await
+                }
                 _ => return Err(super::HostNotReady.into()),
             }
         }
