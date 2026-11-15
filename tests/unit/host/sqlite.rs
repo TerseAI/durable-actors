@@ -6,14 +6,31 @@ use rows::{Collected, Rows};
 use serde_json::json;
 
 async fn database() -> Result<(tempfile::TempDir, SqliteDatabase)> {
+    database_checking("json_valid(value)").await
+}
+
+/// A database whose fields table refuses a value unless `check` holds for it.
+async fn database_checking(check: &str) -> Result<(tempfile::TempDir, SqliteDatabase)> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("actor.sqlite");
-    rusqlite::Connection::open(&path)?.execute_batch(
+    rusqlite::Connection::open(&path)?.execute_batch(&format!(
         "PRAGMA journal_mode=WAL;
-        CREATE TABLE __terse_fields (name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))",
-    )?;
+        CREATE TABLE __terse_fields (name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK({check}));
+        CREATE TRIGGER refused BEFORE INSERT ON __terse_fields WHEN new.name = 'refused'
+        BEGIN SELECT RAISE(ABORT, 'refused'); END"
+    ))?;
     let database = SqliteDatabase::open(path).await?;
     Ok((directory, database))
+}
+
+async fn persist(database: &SqliteDatabase, name: &str, value: Box<RawValue>) -> Result<()> {
+    let call = DatabaseCall::PersistField {
+        name: name.into(),
+        value,
+        immediate: false,
+    };
+    database.call(call, rows::ignored()).await?.result?;
+    Ok(())
 }
 
 async fn exec(
@@ -436,5 +453,51 @@ async fn fields_are_read_as_rows_of_the_json_text_they_were_written_as() -> Resu
         fields(&database).await?,
         json!({"nested": {"z": 1, "a": [true, null]}})
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn field_writes_skip_the_tables_check_and_leave_the_actors_own_checks_in_force() -> Result<()>
+{
+    // No value passes this check, so a field is stored only if SQLite does not run it.
+    let (_directory, database) = database_checking("0").await?;
+    let sql = "CREATE TABLE items (count INTEGER CHECK(count > 0))";
+    exec(&database, sql, vec![], false).await?;
+    let insert_refused = || async {
+        let error = exec(&database, "INSERT INTO items VALUES (0)", vec![], false).await;
+        error.unwrap_err().to_string()
+    };
+
+    let fields = [("count".to_string(), raw(json!(1)))].into();
+    let call = DatabaseCall::InitializeFields { fields };
+    database.call(call, rows::ignored()).await?.result?;
+    persist(&database, "count", raw(json!(2))).await?;
+    assert_eq!(self::fields(&database).await?, json!({"count": 2}));
+    assert!(insert_refused().await.contains("CHECK constraint failed"));
+
+    let failed = persist(&database, "refused", raw(json!(1))).await;
+    assert!(failed.unwrap_err().to_string().contains("refused"));
+    assert!(insert_refused().await.contains("CHECK constraint failed"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_field_nested_deeper_than_stored_state_is_read_is_refused() -> Result<()> {
+    let (_directory, database) = database().await?;
+    // The string holds what would close and open levels if it were read as structure.
+    let nested = |levels: usize| {
+        let (open, close) = ("[".repeat(levels - 1), "]".repeat(levels - 1));
+        RawValue::from_string(format!(r#"{open}{{"a":"]}}\"[{{"}}{close}"#)).unwrap()
+    };
+    let read = |value: &RawValue| serde_json::from_str::<serde_json::Value>(value.get());
+
+    persist(&database, "deepest", nested(127)).await?;
+    assert!(read(&nested(127)).is_ok());
+
+    let refused = persist(&database, "deeper", nested(128)).await;
+    assert!(refused.unwrap_err().to_string().contains("nests deeper"));
+    assert!(read(&nested(128)).is_err());
+    let stored = stored(&database, Some(vec!["deepest".into(), "deeper".into()])).await?;
+    assert_eq!(stored.rows.len(), 1);
     Ok(())
 }

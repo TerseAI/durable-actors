@@ -1,5 +1,5 @@
 use crate::actor::{DatabaseCall, DatabaseResult, RowSink, SqlCell, SqlValue};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 use rusqlite::{
     Connection, ToSql,
     hooks::{AuthAction, AuthContext, Authorization},
@@ -30,6 +30,8 @@ const ALLOWED_PRAGMAS: [&str; 10] = [
     "quick_check",
     "user_version",
 ];
+// What reads stored state parses it with serde_json, which reads this many levels of arrays and objects.
+const MAX_NESTING: usize = 127;
 
 pub(crate) struct SqliteDatabase {
     engine: Arc<Mutex<Engine>>,
@@ -170,24 +172,45 @@ impl Engine {
     }
 
     fn initialize(&self, fields: &BTreeMap<String, Box<RawValue>>) -> Result<()> {
-        let mut statement = self.connection.prepare(
-            "INSERT INTO __terse_fields (name, value) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
-        )?;
-        for (name, value) in fields {
-            statement.execute((name, value.get()))?;
-        }
-        Ok(())
+        fields.values().try_for_each(|value| storable(value))?;
+        self.unchecked(|| {
+            let mut statement = self.connection.prepare(
+                "INSERT INTO __terse_fields (name, value) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
+            )?;
+            for (name, value) in fields {
+                statement.execute((name, value.get()))?;
+            }
+            Ok(())
+        })
     }
 
     // The sizes are compared first because SQLite reads a size without reading the value. Comparing the texts
     // reads the whole stored value into memory beside the new one.
     fn persist(&self, name: &str, value: &RawValue) -> Result<()> {
-        self.connection.execute(
-            "INSERT INTO __terse_fields (name, value) VALUES (?, ?)
-            ON CONFLICT(name) DO UPDATE SET value = excluded.value
-            WHERE octet_length(value) <> octet_length(excluded.value) OR value <> excluded.value",
-            (name, value.get()),
-        )?;
+        storable(value)?;
+        self.unchecked(|| {
+            self.connection.execute(
+                "INSERT INTO __terse_fields (name, value) VALUES (?, ?)
+                ON CONFLICT(name) DO UPDATE SET value = excluded.value
+                WHERE octet_length(value) <> octet_length(excluded.value) OR value <> excluded.value",
+                (name, value.get()),
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Writes fields without the table's `json_valid` check. A field's value is JSON by its type, and SQLite
+    /// allocates three times the value to find that out again.
+    fn unchecked(&self, write: impl FnOnce() -> Result<()>) -> Result<()> {
+        self.ignore_checks(true)?;
+        let written = write();
+        self.ignore_checks(false)?;
+        written
+    }
+
+    fn ignore_checks(&self, ignored: bool) -> Result<()> {
+        self.connection
+            .pragma_update(None, "ignore_check_constraints", ignored)?;
         Ok(())
     }
 
@@ -203,6 +226,34 @@ impl Engine {
         }
         Ok(DatabaseResult::Done)
     }
+}
+
+fn storable(value: &RawValue) -> Result<()> {
+    ensure!(
+        nesting(value.get()) <= MAX_NESTING,
+        "actor state nests deeper than {MAX_NESTING} arrays and objects"
+    );
+    Ok(())
+}
+
+/// How deep the arrays and objects of a JSON text nest.
+fn nesting(json: &str) -> usize {
+    let (mut depth, mut deepest) = (0_usize, 0);
+    let (mut string, mut escaped) = (false, false);
+    for byte in json.bytes() {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' if string => escaped = true,
+            b'"' => string = !string,
+            b'[' | b'{' if !string => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            b']' | b'}' if !string => depth -= 1,
+            _ => {}
+        }
+    }
+    deepest
 }
 
 fn send_rows(
