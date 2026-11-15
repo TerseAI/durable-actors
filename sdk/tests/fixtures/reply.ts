@@ -11,7 +11,7 @@ export function assertReply(actual: ActorExecutorReply, expected: object): void 
 }
 
 /** A reply as the Rust host has it, with the result of an invocation as the value it encodes. */
-export function readable(reply: ActorExecutorReply): object {
+function readable(reply: ActorExecutorReply): object {
     return withResult(attachReply(detachReply(reply)))
 }
 

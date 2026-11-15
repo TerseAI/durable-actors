@@ -62,7 +62,7 @@ export function serveDatabase(stream: Duplex, database: Database): void {
     })
 }
 
-export function answerTo({ call, invocation }: Request, database: Database): Buffer {
+function answerTo({ call, invocation }: Request, database: Database): Buffer {
     try {
         const result = database(call, invocation)
         if (result.type !== "rows") return ending(RESULT, JSON.stringify(result))

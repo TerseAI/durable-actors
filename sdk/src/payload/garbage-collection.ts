@@ -21,11 +21,7 @@ function collectNow(): void {
     Bun.gc(true)
 }
 
-function byteLength(parts: readonly Uint8Array[]): number {
-    return parts.reduce((bytes, part) => bytes + part.byteLength, 0)
-}
-
 // Bun's published types redefine Node's globals for the whole program, so only the call used here is declared.
 declare const Bun: { gc(synchronous: boolean): void }
 
-export { byteLength, GarbageCollection }
+export { GarbageCollection }
