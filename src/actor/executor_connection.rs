@@ -140,6 +140,23 @@ pub enum ActorSocketEffect {
     },
 }
 
+impl ActorSocketEffect {
+    /// The one socket this effect is for; `None` when it concerns every socket of the actor.
+    pub(crate) fn connection_id(&self) -> Option<&str> {
+        match self {
+            Self::StateSnapshot { connection_id, .. }
+            | Self::Send { connection_id, .. }
+            | Self::Close { connection_id, .. }
+            | Self::Reject { connection_id, .. }
+            | Self::SetMetadata { connection_id, .. }
+            | Self::SetTags { connection_id, .. } => Some(connection_id),
+            Self::SetAutoResponse { .. } | Self::StateUpdate { .. } | Self::Broadcast { .. } => {
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ActorMethodOutcome {
     Interleaved(ActorInterleavedOutcome),
