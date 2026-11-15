@@ -46,17 +46,8 @@ class Session(Channel):
         self.next_actor_call = 0
         self.loop = asyncio.get_running_loop()
 
-    async def run(self, entrypoint: str | None, generic: bool) -> None:
+    async def run(self, entrypoint: str | None) -> None:
         try:
-            if generic:
-                await self.send({"type": "warm", "protocol": 33})
-                assignment = await self.read()
-                if (
-                    assignment.get("type") != "load"
-                    or not Path(assignment["entrypoint"]).is_absolute()
-                ):
-                    raise ValueError("invalid code assignment")
-                entrypoint = assignment["entrypoint"]
             if not entrypoint:
                 raise ValueError("DURABLE_ACTORS_ENTRYPOINT is required")
             path = Path(entrypoint)
@@ -266,7 +257,7 @@ async def main() -> None:
             # The Rust host takes each connection after its supervisor's as a database channel.
             database = DatabaseChannel.connect(os.environ["DURABLE_ACTORS_EXECUTOR_SOCKET"])
             session = Session(reader, writer, database.call)
-            await session.run(os.environ.get("DURABLE_ACTORS_ENTRYPOINT"), False)
+            await session.run(os.environ.get("DURABLE_ACTORS_ENTRYPOINT"))
         except EOFError:
             pass
         except BaseException:

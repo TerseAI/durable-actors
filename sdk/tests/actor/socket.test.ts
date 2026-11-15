@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { actorConnections, decodeSocketMessage, runWithActorSockets } from "../../src/actor/socket.js"
-import { parseSocketEffects } from "../../src/actor/socketProtocol.js"
 import { ActorProtocolError, ActorSerializationError } from "../../src/errors.js"
 import { wireEffects } from "../fixtures/detached.js"
 
@@ -65,7 +64,7 @@ test("broadcast tag matching modes survive socket transport", async () => {
             }
         },
         async effects => {
-            published.push(...parseSocketEffects(wireEffects(effects)))
+            published.push(...wireEffects(effects))
         }
     )
     assert.deepEqual(
@@ -85,19 +84,6 @@ test("invalid broadcast tag matching modes fail before publishing", async () => 
         assert.throws(() => scope.broadcast({}, { tagMatch: "either" as never }), ActorProtocolError)
     })
     assert.deepEqual(result.effects, [])
-    assert.throws(
-        () =>
-            parseSocketEffects([
-                {
-                    type: "broadcast",
-                    message: { type: "text", data: "{}" },
-                    except_connection_ids: [],
-                    tags: [],
-                    tag_match: "either"
-                }
-            ]),
-        ActorProtocolError
-    )
 })
 
 test("actor sends and broadcasts snapshot JSON values without caller serialization", async () => {
@@ -171,7 +157,7 @@ test("automatic heartbeat responses are transported and can be cleared", async (
         scope.setWebSocketAutoResponse()
         assert.throws(() => scope.setWebSocketAutoResponse({ request: "x".repeat(2049), response: "pong" }), /2048/)
     })
-    assert.deepEqual(parseSocketEffects(wireEffects(result.effects)), [
+    assert.deepEqual(wireEffects(result.effects), [
         { type: "set_auto_response", request: "ping", response: "pong" },
         { type: "set_auto_response", request: null, response: null }
     ])

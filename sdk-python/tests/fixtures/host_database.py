@@ -32,7 +32,7 @@ class HostDatabase:
     @classmethod
     def seeded(cls, fields):
         database = cls()
-        database.write(False, lambda: database.replace(fields))
+        database.write(lambda: database.replace(fields))
         database.commit()
         database.commits = 0
         return database
@@ -46,21 +46,21 @@ class HostDatabase:
         self.calls.append(call)
         op = call["op"]
         if op == "exec":
-            return self.write(call["immediate"], lambda: self.exec(call["sql"], call["bindings"]))
+            return self.write(lambda: self.exec(call["sql"], call["bindings"]))
         if op == "fields":
             return {"type": "fields", "fields": self.fields()}
         if op == "alarm":
             return {"type": "alarm", "timestamp_ms": self.alarm()}
         if op == "set_alarm":
-            return self.write(call["immediate"], lambda: self.update_alarm(call["timestamp_ms"]))
+            return self.write(lambda: self.update_alarm(call["timestamp_ms"]))
         if op == "delete_alarm":
-            return self.write(call["immediate"], lambda: self.update_alarm(None))
+            return self.write(lambda: self.update_alarm(None))
         if op == "replace_fields":
-            return self.write(False, lambda: self.replace(call["fields"]))
+            return self.write(lambda: self.replace(call["fields"]))
         if op == "persist_field":
-            return self.write(call["immediate"], lambda: self.persist(call["name"], call["value"]))
+            return self.write(lambda: self.persist(call["name"], call["value"]))
         if op == "delete_field":
-            return self.write(call["immediate"], lambda: self.delete(call["name"]))
+            return self.write(lambda: self.delete(call["name"]))
         if op == "commit":
             self.commit()
             return {"type": "done"}
@@ -95,7 +95,7 @@ class HostDatabase:
             self.connection.rollback()
         self.connection.close()
 
-    def write(self, immediate, operation):
+    def write(self, operation):
         result = operation() or {"type": "done"}
         if not self.connection.in_transaction:
             self.commit()
