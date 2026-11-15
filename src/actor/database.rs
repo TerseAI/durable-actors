@@ -9,22 +9,37 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 pub trait ActorDatabase: Send + Sync {
-    async fn call(&self, call: DatabaseCall) -> Result<DatabaseResult>;
+    /// A statement writes its rows to `rows` and returns [`DatabaseResult::Rows`].
+    async fn call(&self, call: DatabaseCall, rows: Box<dyn RowSink>) -> Result<DatabaseResult>;
 }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+/// Receives the rows of a statement as SQLite produces them, so a result is never held whole.
+pub trait RowSink: Send {
+    fn columns(&mut self, names: &[&str]) -> Result<()>;
+    fn row(&mut self, cells: &[SqlCell<'_>]) -> Result<()>;
+    /// Called once after the last row.
+    fn finish(&mut self) -> Result<()>;
+}
+
+/// A value borrowed from the row SQLite is positioned on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SqlCell<'a> {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(&'a [u8]),
+    Blob(&'a [u8]),
+}
+
+#[derive(Debug)]
 pub enum DatabaseCall {
     Exec {
         sql: String,
-        #[serde(default)]
         bindings: Vec<SqlValue>,
-        #[serde(default)]
         immediate: bool,
     },
     /// Every stored field, or only `names` when given.
     Fields {
-        #[serde(skip_serializing_if = "Option::is_none")]
         names: Option<Vec<String>>,
     },
     InitializeFields {
@@ -33,12 +48,10 @@ pub enum DatabaseCall {
     PersistField {
         name: String,
         value: Box<RawValue>,
-        #[serde(default)]
         immediate: bool,
     },
     DeleteField {
         name: String,
-        #[serde(default)]
         immediate: bool,
     },
     ReplaceFields {
@@ -47,24 +60,21 @@ pub enum DatabaseCall {
     Alarm,
     SetAlarm {
         timestamp_ms: i64,
-        #[serde(default)]
         immediate: bool,
     },
     DeleteAlarm {
-        #[serde(default)]
         immediate: bool,
     },
     Commit,
     Rollback,
 }
 
+/// A statement's bound values are not JSON: they follow the call on the database channel.
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum DatabaseCallWire {
     Exec {
         sql: String,
-        #[serde(default)]
-        bindings: Vec<SqlValue>,
         #[serde(default)]
         immediate: bool,
     },
@@ -106,13 +116,9 @@ enum DatabaseCallWire {
 impl<'de> Deserialize<'de> for DatabaseCall {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(match DatabaseCallWire::deserialize(deserializer)? {
-            DatabaseCallWire::Exec {
+            DatabaseCallWire::Exec { sql, immediate } => Self::Exec {
                 sql,
-                bindings,
-                immediate,
-            } => Self::Exec {
-                sql,
-                bindings,
+                bindings: Vec::new(),
                 immediate,
             },
             DatabaseCallWire::Fields { names } => Self::Fields { names },
@@ -182,13 +188,11 @@ impl DatabaseCall {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DatabaseResult {
-    Rows {
-        columns: Vec<String>,
-        rows: Vec<Vec<SqlValue>>,
-    },
+    /// The rows went to the call's [`RowSink`].
+    Rows,
     Fields {
         fields: BTreeMap<String, Box<RawValue>>,
     },
@@ -198,43 +202,11 @@ pub enum DatabaseResult {
     Done,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SqlValue {
     Null,
-    Integer(#[serde(with = "integer")] i64),
+    Integer(i64),
     Real(f64),
     Text(String),
-    Blob(#[serde(with = "blob")] Vec<u8>),
-}
-
-mod integer {
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
-
-    pub(super) fn serialize<S: Serializer>(value: &i64, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(value)
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(D::Error::custom)
-    }
-}
-
-mod blob {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
-
-    pub(super) fn serialize<S: Serializer>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&STANDARD.encode(value))
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<u8>, D::Error> {
-        STANDARD
-            .decode(String::deserialize(deserializer)?)
-            .map_err(D::Error::custom)
-    }
+    Blob(Vec<u8>),
 }

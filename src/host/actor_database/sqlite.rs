@@ -1,4 +1,4 @@
-use crate::actor::{DatabaseCall, DatabaseResult, SqlValue};
+use crate::actor::{DatabaseCall, DatabaseResult, RowSink, SqlCell, SqlValue};
 use anyhow::{Result, anyhow, bail};
 use rusqlite::{
     Connection, ToSql,
@@ -49,13 +49,17 @@ impl SqliteDatabase {
         })
     }
 
-    pub(crate) async fn call(&self, call: DatabaseCall) -> Result<Executed> {
+    pub(crate) async fn call(
+        &self,
+        call: DatabaseCall,
+        mut rows: Box<dyn RowSink>,
+    ) -> Result<Executed> {
         let engine = self.engine.clone();
         tokio::task::spawn_blocking(move || {
             engine
                 .lock()
                 .map_err(|_| anyhow!("actor database is poisoned"))?
-                .call(call)
+                .call(call, rows.as_mut())
         })
         .await?
     }
@@ -88,7 +92,7 @@ impl Engine {
         })
     }
 
-    fn call(&mut self, call: DatabaseCall) -> Result<Executed> {
+    fn call(&mut self, call: DatabaseCall, rows: &mut dyn RowSink) -> Result<Executed> {
         let result = match call {
             DatabaseCall::Commit => self.finish("COMMIT"),
             DatabaseCall::Rollback => self.finish("ROLLBACK"),
@@ -98,7 +102,7 @@ impl Engine {
             | DatabaseCall::DeleteAlarm { .. } => {
                 unreachable!("alarm calls are handled by the control plane")
             }
-            call => self.write(call),
+            call => self.write(call, rows),
         };
         // A statement such as INSERT OR FAIL can commit rows even when it returns an error.
         let committed =
@@ -106,9 +110,9 @@ impl Engine {
         Ok(Executed { result, committed })
     }
 
-    fn write(&self, call: DatabaseCall) -> Result<DatabaseResult> {
+    fn write(&self, call: DatabaseCall, rows: &mut dyn RowSink) -> Result<DatabaseResult> {
         match call {
-            DatabaseCall::Exec { sql, bindings, .. } => return self.exec(&sql, &bindings),
+            DatabaseCall::Exec { sql, bindings, .. } => return self.exec(&sql, &bindings, rows),
             DatabaseCall::InitializeFields { fields } => self.initialize(&fields)?,
             DatabaseCall::PersistField { name, value, .. } => self.persist(&name, &value)?,
             DatabaseCall::DeleteField { name, .. } => self.delete(&name)?,
@@ -125,23 +129,24 @@ impl Engine {
         Ok(DatabaseResult::Done)
     }
 
-    fn exec(&self, sql: &str, bindings: &[SqlValue]) -> Result<DatabaseResult> {
+    fn exec(
+        &self,
+        sql: &str,
+        bindings: &[SqlValue],
+        rows: &mut dyn RowSink,
+    ) -> Result<DatabaseResult> {
         let mut statement = self.prepare_actor_statement(sql)?;
-        let columns = statement
-            .column_names()
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>();
+        rows.columns(&statement.column_names())?;
+        let width = statement.column_count();
         let mut query = statement.query(rusqlite::params_from_iter(bindings))?;
-        let mut rows = Vec::new();
         while let Some(row) = query.next()? {
-            rows.push(
-                (0..columns.len())
-                    .map(|index| row.get_ref(index).map(SqlValue::from))
-                    .collect::<rusqlite::Result<_>>()?,
-            );
+            let cells = (0..width)
+                .map(|index| row.get_ref(index).map(SqlCell::from))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.row(&cells)?;
         }
-        Ok(DatabaseResult::Rows { columns, rows })
+        rows.finish()?;
+        Ok(DatabaseResult::Rows)
     }
 
     fn prepare_actor_statement(&self, sql: &str) -> Result<rusqlite::Statement<'_>> {
@@ -327,14 +332,14 @@ impl ToSql for SqlValue {
     }
 }
 
-impl From<ValueRef<'_>> for SqlValue {
-    fn from(value: ValueRef<'_>) -> Self {
+impl<'a> From<ValueRef<'a>> for SqlCell<'a> {
+    fn from(value: ValueRef<'a>) -> Self {
         match value {
             ValueRef::Null => Self::Null,
             ValueRef::Integer(value) => Self::Integer(value),
             ValueRef::Real(value) => Self::Real(value),
-            ValueRef::Text(value) => Self::Text(String::from_utf8_lossy(value).into_owned()),
-            ValueRef::Blob(value) => Self::Blob(value.to_vec()),
+            ValueRef::Text(value) => Self::Text(value),
+            ValueRef::Blob(value) => Self::Blob(value),
         }
     }
 }

@@ -6,15 +6,13 @@ import type { ActorQueryResult, RuntimeActorDatabase, SqliteValue } from "../act
 import { errorMessage } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
-type DatabaseValue =
-    | { readonly type: "null" }
-    | { readonly type: "integer"; readonly value: string }
-    | { readonly type: "real"; readonly value: number }
-    | { readonly type: "text"; readonly value: string }
-    | { readonly type: "blob"; readonly value: string }
-
 type DatabaseCall =
-    | { readonly op: "exec"; readonly sql: string; readonly bindings: DatabaseValue[]; readonly immediate: boolean }
+    | {
+          readonly op: "exec"
+          readonly sql: string
+          readonly bindings: readonly SqliteValue[]
+          readonly immediate: boolean
+      }
     | { readonly op: "fields"; readonly names?: readonly string[] }
     | { readonly op: "initialize_fields"; readonly fields: JsonObject }
     | { readonly op: "persist_field"; readonly name: string; readonly value: JsonValue; readonly immediate: boolean }
@@ -27,11 +25,12 @@ type DatabaseCall =
     | { readonly op: "rollback" }
 
 type DatabaseResult =
-    | { readonly type: "rows"; readonly columns: string[]; readonly rows: DatabaseValue[][] }
+    | { readonly type: "rows"; readonly columns: string[]; readonly rows: SqliteValue[][] }
     | { readonly type: "fields"; readonly fields: JsonObject }
     | { readonly type: "alarm"; readonly timestamp_ms: number | null }
     | { readonly type: "done" }
 
+/** Holds the thread until the Rust host has answered. */
 type DatabaseTransport = (call: DatabaseCall) => DatabaseResult
 
 class DatabaseCommitError extends Error {}
@@ -53,9 +52,9 @@ class DatabaseProxy implements RuntimeActorDatabase, ActorAlarmStorage {
 
     query(sql: string, ...bindings: SqliteValue[]): ActorQueryResult {
         this.assertAccess()
-        const result = this.transport({ op: "exec", sql, bindings: bindings.map(encode), immediate: true })
+        const result = this.transport({ op: "exec", sql, bindings, immediate: true })
         if (result.type !== "rows") throw unexpected(result)
-        return { columns: result.columns, rows: result.rows.map(row => row.map(decode)) }
+        return { columns: result.columns, rows: result.rows }
     }
 
     async transaction<T>(operation: () => Promise<T>): Promise<T> {
@@ -173,34 +172,9 @@ function savepoint(depth: number): string {
     return `actor_transaction_${depth}`
 }
 
-function encode(value: SqliteValue): DatabaseValue {
-    if (value === null) return { type: "null" }
-    if (typeof value === "bigint") return { type: "integer", value: value.toString() }
-    if (typeof value === "number")
-        return Number.isInteger(value) ? { type: "integer", value: value.toString() } : { type: "real", value }
-    if (typeof value === "string") return { type: "text", value }
-    return { type: "blob", value: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64") }
-}
-
-function decode(value: DatabaseValue): SqliteValue {
-    switch (value.type) {
-        case "null":
-            return null
-        case "integer": {
-            const integer = BigInt(value.value)
-            return Number.isSafeInteger(Number(integer)) ? Number(integer) : integer
-        }
-        case "real":
-        case "text":
-            return value.value
-        case "blob":
-            return new Uint8Array(Buffer.from(value.value, "base64"))
-    }
-}
-
 function unexpected(result: DatabaseResult): Error {
     return new Error(`unexpected actor database result ${result.type}`)
 }
 
 export { DatabaseCommitError, DatabaseProxy }
-export type { DatabaseCall, DatabaseResult, DatabaseTransport, DatabaseValue }
+export type { DatabaseCall, DatabaseResult, DatabaseTransport }

@@ -1,25 +1,15 @@
 import { pathToFileURL } from "node:url"
 
-import { ActorWorkerSupervisor } from "../../dist/host/worker-supervisor.js"
+import { ResidentActor } from "../../dist/host/resident-actor.js"
 
 import { HostDatabase } from "./host-database.ts"
 
-const supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: pathToFileURL(process.argv[2]).href })
-try {
-    await supervisor.ready()
-    supervisor.assign({ project_id: "local", actor_name: "Exiting", actor_id: "one" })
-    const database = new HostDatabase()
-    const reply = await supervisor.handle(
-        {
-            type: "invoke",
-            request_id: "exit",
-            method: "stop",
-            args: []
-        },
-        () => {},
-        async call => database.call(call)
-    )
-    console.log(JSON.stringify(reply))
-} finally {
-    supervisor.close()
-}
+const database = new HostDatabase()
+const actor = new ResidentActor({ actorEntrypointUrl: pathToFileURL(process.argv[2]).href, database: database.call })
+await actor.ready()
+actor.assign({ project_id: "local", actor_name: "Exiting", actor_id: "one" }, async () => {
+    throw new Error("unexpected actor call")
+})
+const reply = await actor.handle({ type: "invoke", request_id: "exit", method: "stop", args: [] }, { id: 1, allowNext() {}, publish() {}, connections: async () => [] })
+actor.close()
+console.log(JSON.stringify(reply))

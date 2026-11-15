@@ -1,4 +1,8 @@
+#[path = "../../fixtures/rows.rs"]
+mod rows;
+
 use super::*;
+use rows::{Collected, Rows};
 use serde_json::json;
 
 async fn database() -> Result<(tempfile::TempDir, SqliteDatabase)> {
@@ -19,17 +23,31 @@ async fn exec(
     immediate: bool,
 ) -> Result<Executed> {
     let executed = database
-        .call(DatabaseCall::Exec {
-            sql: sql.into(),
-            bindings,
-            immediate,
-        })
+        .call(
+            DatabaseCall::Exec {
+                sql: sql.into(),
+                bindings,
+                immediate,
+            },
+            rows::ignored(),
+        )
         .await?;
     executed
         .result
         .as_ref()
         .map_err(|error| anyhow!("{error:#}"))?;
     Ok(executed)
+}
+
+async fn select(database: &SqliteDatabase, sql: &str) -> Result<Collected> {
+    let rows = Rows::default();
+    let call = DatabaseCall::Exec {
+        sql: sql.into(),
+        bindings: vec![],
+        immediate: false,
+    };
+    database.call(call, rows.sink()).await?.result?;
+    Ok(rows.collected())
 }
 
 fn raw(value: serde_json::Value) -> Box<serde_json::value::RawValue> {
@@ -39,7 +57,7 @@ fn raw(value: serde_json::Value) -> Box<serde_json::value::RawValue> {
 async fn fields(database: &SqliteDatabase) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(
         database
-            .call(DatabaseCall::Fields { names: None })
+            .call(DatabaseCall::Fields { names: None }, rows::ignored())
             .await?
             .result?,
     )?["fields"]
@@ -66,16 +84,15 @@ async fn values_keep_their_sqlite_storage_classes() -> Result<()> {
         )
         .await?;
     }
-    let selected = exec(
+    let Collected {
+        columns,
+        rows,
+        finished,
+    } = select(
         &database,
         "SELECT value, typeof(value) AS kind FROM items ORDER BY rowid",
-        vec![],
-        false,
     )
     .await?;
-    let DatabaseResult::Rows { columns, rows } = selected.result? else {
-        anyhow::bail!("expected rows");
-    };
     assert_eq!(columns, ["value", "kind"]);
     assert_eq!(
         rows.iter().map(|row| row[0].clone()).collect::<Vec<_>>(),
@@ -85,16 +102,53 @@ async fn values_keep_their_sqlite_storage_classes() -> Result<()> {
         rows.iter().map(|row| row[1].clone()).collect::<Vec<_>>(),
         ["null", "integer", "real", "text", "blob"].map(|kind| SqlValue::Text(kind.into()))
     );
+    assert!(finished);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_statement_without_rows_still_names_its_columns_and_finishes() -> Result<()> {
+    let (_directory, database) = database().await?;
+    exec(&database, "CREATE TABLE items (value)", vec![], false).await?;
     assert_eq!(
-        serde_json::to_value(&values)?,
-        json!([
-            {"type": "null"},
-            {"type": "integer", "value": "9223372036854775807"},
-            {"type": "real", "value": 1.5},
-            {"type": "text", "value": "snowman ☃"},
-            {"type": "blob", "value": "AAH/"},
-        ])
+        select(&database, "SELECT value AS named FROM items").await?,
+        Collected {
+            columns: vec!["named".into()],
+            rows: vec![],
+            finished: true,
+        }
     );
+    assert_eq!(
+        select(&database, "INSERT INTO items VALUES (1)").await?,
+        Collected {
+            columns: vec![],
+            rows: vec![],
+            finished: true,
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rows_written_before_a_statement_fails_are_not_finished() -> Result<()> {
+    let (_directory, database) = database().await?;
+    exec(
+        &database,
+        "CREATE TABLE items (value UNIQUE)",
+        vec![],
+        false,
+    )
+    .await?;
+    let rows = Rows::default();
+    let call = DatabaseCall::Exec {
+        sql: "INSERT INTO items VALUES (1), (2), (1) RETURNING value".into(),
+        bindings: vec![],
+        immediate: false,
+    };
+    assert!(database.call(call, rows.sink()).await?.result.is_err());
+    assert!(!rows.collected().finished);
+    let kept = select(&database, "SELECT value FROM items").await?;
+    assert!(kept.rows.is_empty());
     Ok(())
 }
 
@@ -141,22 +195,16 @@ async fn single_statements_may_end_with_semicolons_comments_and_trigger_bodies()
         false,
     )
     .await?;
-    let audit = exec(
-        &database,
-        "SELECT name FROM audit ORDER BY rowid",
-        vec![],
-        false,
-    )
-    .await?;
+    let audit = select(&database, "SELECT name FROM audit ORDER BY rowid").await?;
     assert_eq!(
-        serde_json::to_value(audit.result?)?["rows"],
-        json!([[{"type": "text", "value": "created"}], [{"type": "text", "value": "after"}]])
+        audit.rows,
+        [
+            [SqlValue::Text("created".into())],
+            [SqlValue::Text("after".into())]
+        ]
     );
-    let version = exec(&database, "PRAGMA user_version", vec![], false).await?;
-    assert_eq!(
-        serde_json::to_value(version.result?)?["rows"],
-        json!([[{"type": "integer", "value": "3"}]])
-    );
+    let version = select(&database, "PRAGMA user_version").await?;
+    assert_eq!(version.rows, [[SqlValue::Integer(3)]]);
     Ok(())
 }
 
@@ -195,7 +243,12 @@ async fn ordinary_sql_autocommits_and_explicit_transactions_group_writes() -> Re
         .committed
     );
     assert!(exec(&database, "COMMIT", vec![], true).await?.committed);
-    assert!(!database.call(DatabaseCall::Commit).await?.committed);
+    assert!(
+        !database
+            .call(DatabaseCall::Commit, rows::ignored())
+            .await?
+            .committed
+    );
     Ok(())
 }
 
@@ -222,10 +275,9 @@ async fn raw_sql_savepoints_preserve_outer_writes_and_only_commit_on_outer_relea
             .await?
             .committed
     );
-    let selected = exec(&database, "SELECT body FROM notes", vec![], true).await?;
     assert_eq!(
-        serde_json::to_value(selected.result?)?["rows"],
-        json!([[{"type":"text","value":"kept"}]])
+        select(&database, "SELECT body FROM notes").await?.rows,
+        [[SqlValue::Text("kept".into())]]
     );
     Ok(())
 }
@@ -234,26 +286,36 @@ async fn raw_sql_savepoints_preserve_outer_writes_and_only_commit_on_outer_relea
 async fn rollback_discards_sql_and_persisted_writes_without_reporting_a_commit() -> Result<()> {
     let (_directory, database) = database().await?;
     database
-        .call(DatabaseCall::InitializeFields {
-            fields: [("count".into(), raw(json!(1)))].into(),
-        })
+        .call(
+            DatabaseCall::InitializeFields {
+                fields: [("count".into(), raw(json!(1)))].into(),
+            },
+            rows::ignored(),
+        )
         .await?
         .result?;
     exec(&database, "CREATE TABLE notes (body TEXT)", vec![], true).await?;
     exec(&database, "BEGIN", vec![], true).await?;
     database
-        .call(DatabaseCall::PersistField {
-            name: "count".into(),
-            value: raw(json!(2)),
-            immediate: true,
-        })
+        .call(
+            DatabaseCall::PersistField {
+                name: "count".into(),
+                value: raw(json!(2)),
+                immediate: true,
+            },
+            rows::ignored(),
+        )
         .await?
         .result?;
     exec(&database, "INSERT INTO notes VALUES ('lost')", vec![], true).await?;
     assert!(!exec(&database, "ROLLBACK", vec![], true).await?.committed);
     assert_eq!(fields(&database).await?, json!({"count":1}));
-    let selected = exec(&database, "SELECT body FROM notes", vec![], true).await?;
-    assert_eq!(serde_json::to_value(selected.result?)?["rows"], json!([]));
+    assert!(
+        select(&database, "SELECT body FROM notes")
+            .await?
+            .rows
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -277,11 +339,14 @@ async fn failed_commit_can_be_rolled_back_without_publishing() -> Result<()> {
     exec(&database, "BEGIN", vec![], true).await?;
     exec(&database, "INSERT INTO child VALUES (42)", vec![], true).await?;
     let failed = database
-        .call(DatabaseCall::Exec {
-            sql: "COMMIT".into(),
-            bindings: vec![],
-            immediate: true,
-        })
+        .call(
+            DatabaseCall::Exec {
+                sql: "COMMIT".into(),
+                bindings: vec![],
+                immediate: true,
+            },
+            rows::ignored(),
+        )
         .await?;
     assert!(failed.result.is_err());
     assert!(!failed.committed);
@@ -299,11 +364,14 @@ async fn sqlite_fail_conflicts_still_report_committed_rows_for_replication() -> 
     let (_directory, database) = database().await?;
     exec(&database, "CREATE TABLE items (value UNIQUE)", vec![], true).await?;
     let failed = database
-        .call(DatabaseCall::Exec {
-            sql: "INSERT OR FAIL INTO items VALUES (1), (1)".into(),
-            bindings: vec![],
-            immediate: true,
-        })
+        .call(
+            DatabaseCall::Exec {
+                sql: "INSERT OR FAIL INTO items VALUES (1), (1)".into(),
+                bindings: vec![],
+                immediate: true,
+            },
+            rows::ignored(),
+        )
         .await?;
     assert!(failed.result.is_err());
     assert!(failed.committed);
@@ -314,25 +382,33 @@ async fn sqlite_fail_conflicts_still_report_committed_rows_for_replication() -> 
 async fn fields_preserve_json_text_and_replacement_removes_missing_names() -> Result<()> {
     let (_directory, database) = database().await?;
     database
-        .call(DatabaseCall::InitializeFields {
-            fields: [
-                (
-                    "nested".to_string(),
-                    serde_json::value::RawValue::from_string(r#"{"z":1,"a":[true,null]}"#.into())?,
-                ),
-                ("stale".to_string(), raw(json!("old"))),
-            ]
-            .into(),
-        })
+        .call(
+            DatabaseCall::InitializeFields {
+                fields: [
+                    (
+                        "nested".to_string(),
+                        serde_json::value::RawValue::from_string(
+                            r#"{"z":1,"a":[true,null]}"#.into(),
+                        )?,
+                    ),
+                    ("stale".to_string(), raw(json!("old"))),
+                ]
+                .into(),
+            },
+            rows::ignored(),
+        )
         .await?;
     database
-        .call(DatabaseCall::InitializeFields {
-            fields: [("stale".to_string(), raw(json!("ignored")))].into(),
-        })
+        .call(
+            DatabaseCall::InitializeFields {
+                fields: [("stale".to_string(), raw(json!("ignored")))].into(),
+            },
+            rows::ignored(),
+        )
         .await?;
     let listed = serde_json::to_string(
         &database
-            .call(DatabaseCall::Fields { names: None })
+            .call(DatabaseCall::Fields { names: None }, rows::ignored())
             .await?
             .result?,
     )?;
@@ -342,15 +418,21 @@ async fn fields_preserve_json_text_and_replacement_removes_missing_names() -> Re
     );
     assert!(listed.contains(r#""stale":"old""#), "{listed}");
     database
-        .call(DatabaseCall::ReplaceFields {
-            fields: [("count".to_string(), raw(json!(3)))].into(),
-        })
+        .call(
+            DatabaseCall::ReplaceFields {
+                fields: [("count".to_string(), raw(json!(3)))].into(),
+            },
+            rows::ignored(),
+        )
         .await?;
     database
-        .call(DatabaseCall::DeleteField {
-            name: "missing".into(),
-            immediate: false,
-        })
+        .call(
+            DatabaseCall::DeleteField {
+                name: "missing".into(),
+                immediate: false,
+            },
+            rows::ignored(),
+        )
         .await?;
     assert_eq!(fields(&database).await?, json!({"count": 3}));
     Ok(())

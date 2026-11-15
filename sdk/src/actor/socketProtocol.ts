@@ -3,6 +3,7 @@ import { z } from "zod"
 import { ActorProtocolError } from "../errors.js"
 import { jsonValueSchema } from "../json.js"
 import type { JsonObject, JsonValue } from "../json.js"
+import type { JsonText } from "../payload/json-text.js"
 
 import { actorComponentSchema } from "./identity.js"
 
@@ -106,13 +107,15 @@ const socketEventSchema = z.discriminatedUnion("type", [
 ])
 
 type SocketConnection = z.infer<typeof socketConnectionSchema>
-type SocketMessage = z.infer<typeof socketMessageSchema>
+/** `Text` is how the text of a message is held: a string, or in an actor host the UTF-8 it was encoded to. */
+type SocketMessage<Text = string> =
+    { readonly type: "text"; readonly data: Text } | { readonly type: "binary"; readonly data: string }
 type SocketEvent = z.infer<typeof socketEventSchema>
 type SocketQuery = { readonly tag?: string; readonly countOnly?: boolean }
 type SocketLookup = readonly SocketConnection[] | number
 type SocketSource = (query?: SocketQuery) => Promise<SocketLookup>
 
-type SocketEffect =
+type SocketEffect<Text = string> =
     | { readonly type: "set_auto_response"; readonly request: string | null; readonly response: string | null }
     | {
           readonly type: "state_snapshot"
@@ -127,10 +130,10 @@ type SocketEffect =
           readonly except_connection_ids?: readonly string[]
           readonly version?: number
       }
-    | { readonly type: "send"; readonly connection_id: string; readonly message: SocketMessage }
+    | { readonly type: "send"; readonly connection_id: string; readonly message: SocketMessage<Text> }
     | {
           readonly type: "broadcast"
-          readonly message: SocketMessage
+          readonly message: SocketMessage<Text>
           readonly except_connection_ids: readonly string[]
           readonly tags: readonly string[]
           readonly tag_match?: "all" | "any"
@@ -144,7 +147,10 @@ type SocketEffect =
     | { readonly type: "set_metadata"; readonly connection_id: string; readonly metadata: JsonValue }
     | { readonly type: "set_tags"; readonly connection_id: string; readonly tags: readonly string[] }
 
+/** An effect as an actor host holds it, from the actor's call until the Rust host has it. */
+type HostSocketEffect = SocketEffect<JsonText>
+
 export { parseSocketEffects, socketConnectionSchema, socketEventSchema, socketTagsSchema }
-export type { SocketConnection, SocketEffect, SocketEvent, SocketMessage }
+export type { HostSocketEffect, SocketConnection, SocketEffect, SocketEvent, SocketMessage }
 
 export type { SocketQuery, SocketLookup, SocketSource }

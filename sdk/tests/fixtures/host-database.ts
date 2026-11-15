@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { createRequire } from "node:module"
 import { join } from "node:path"
 
-import type { DatabaseCall, DatabaseResult, DatabaseValue } from "../../src/host/database.js"
+import type { DatabaseCall, DatabaseResult } from "../../src/host/database.js"
 import type { JsonObject, JsonValue } from "../../src/json.js"
 
 type Binding = null | bigint | number | string | Uint8Array
@@ -67,7 +67,7 @@ export class HostDatabase {
         switch (call.op) {
             case "exec":
                 return this.write(
-                    () => this.exec(call.sql, call.bindings.map(decode)),
+                    () => this.exec(call.sql, call.bindings.map(bound)),
                     /^\s*rollback(?:\s*;)?\s*$/i.test(call.sql)
                 )
             case "fields":
@@ -144,7 +144,7 @@ export class HostDatabase {
 
     private exec(sql: string, bindings: Binding[]): DatabaseResult {
         const { columns, rows } = positionalRows(this.connection.prepare(sql), bindings)
-        return { type: "rows", columns, rows: rows.map(row => row.map(encode)) }
+        return { type: "rows", columns, rows: rows.map(row => row.map(read)) }
     }
 
     private persist(name: string, value: JsonValue): void {
@@ -197,27 +197,16 @@ export class HostDatabase {
     }
 }
 
-function decode(value: DatabaseValue): Binding {
-    switch (value.type) {
-        case "null":
-            return null
-        case "integer":
-            return BigInt(value.value)
-        case "real":
-        case "text":
-            return value.value
-        case "blob":
-            return new Uint8Array(Buffer.from(value.value, "base64"))
-    }
+// The connection reads every integer as a bigint, and binds a number as a real. A whole number is an integer
+// to the Rust host when 64 bits hold it.
+function bound(value: Binding): Binding {
+    const integer = typeof value === "number" && Number.isInteger(value) && value >= -(2 ** 63) && value < 2 ** 63
+    return integer ? BigInt(value) : value
 }
 
-function encode(value: Binding): DatabaseValue {
-    if (value === null) return { type: "null" }
-    if (typeof value === "bigint") return { type: "integer", value: value.toString() }
-    if (typeof value === "number")
-        return Number.isInteger(value) ? { type: "integer", value: value.toString() } : { type: "real", value }
-    if (typeof value === "string") return { type: "text", value }
-    return { type: "blob", value: Buffer.from(value).toString("base64") }
+// An integer reaches the actor as the Rust host sends it: a number when a number holds it exactly.
+function read(value: Binding): Binding {
+    return typeof value === "bigint" && Number.isSafeInteger(Number(value)) ? Number(value) : value
 }
 
 function positionalRows(statement: Statement, bindings: Binding[]): { columns: string[]; rows: Binding[][] } {

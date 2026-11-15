@@ -558,12 +558,8 @@ async fn connect_executor(
     started_at: Instant,
     javascript_spawned_at_ms: &mut Option<f64>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
-    let listener = ActorExecutorListener::bind(&executor.socket).await?;
-    let javascript = spawn_executor_process(
-        false,
-        &executor.socket.display().to_string(),
-        executor.runtime,
-    )?;
+    let mut listener = ActorExecutorListener::bind(&executor.socket).await?;
+    let javascript = spawn_executor_process(false, &mut listener, executor.runtime)?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -641,12 +637,17 @@ async fn stop_executor(host: &ActorHost, stop: &CancellationToken, executor: imp
 
 pub(super) fn spawn_executor_process(
     generic: bool,
-    socket: &str,
+    listener: &mut ActorExecutorListener,
     runtime: ActorRuntime,
 ) -> Result<tokio::process::Child> {
-    executor_command(generic, socket, runtime)
-        .spawn()
-        .context("start actor executor")
+    let socket = listener.socket_path().display().to_string();
+    let mut command = executor_command(generic, &socket, runtime);
+    // Bun cannot open a socket that its thread can block on, so it inherits its database channel.
+    // A Python worker process connects its own.
+    if runtime != ActorRuntime::Python {
+        listener.inherit_database_channel(&mut command)?;
+    }
+    command.spawn().context("start actor executor")
 }
 
 fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Command {

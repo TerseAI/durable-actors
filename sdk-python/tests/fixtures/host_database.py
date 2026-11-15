@@ -1,7 +1,7 @@
-import base64
 import json
 import sqlite3
 import tempfile
+import threading
 from pathlib import Path
 
 _directories = []
@@ -16,6 +16,7 @@ class HostDatabase:
         path = Path(directory.name) / "actor.sqlite"
         self.calls = []
         self.commits = 0
+        self.answering = threading.Lock()
         self.connection = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute(
@@ -36,7 +37,12 @@ class HostDatabase:
         database.commits = 0
         return database
 
-    async def call(self, call):
+    def call(self, call):
+        """Answers one call at a time, as a database channel does."""
+        with self.answering:
+            return self.answer(call)
+
+    def answer(self, call):
         self.calls.append(call)
         op = call["op"]
         if op == "exec":
@@ -96,12 +102,12 @@ class HostDatabase:
         return result
 
     def exec(self, sql, bindings):
-        cursor = self.connection.execute(sql, [decode(value) for value in bindings])
+        cursor = self.connection.execute(sql, bindings)
         columns = [column[0] for column in cursor.description or []]
         return {
             "type": "rows",
             "columns": columns,
-            "rows": [[encode(value) for value in row] for row in cursor.fetchall()],
+            "rows": [list(row) for row in cursor.fetchall()],
         }
 
     def replace(self, fields):
@@ -139,26 +145,3 @@ class HostDatabase:
             self.connection.execute("PRAGMA schema_version").fetchone()[0],
             self.connection.execute("PRAGMA user_version").fetchone()[0],
         )
-
-
-def decode(value):
-    kind = value["type"]
-    if kind == "null":
-        return None
-    if kind == "integer":
-        return int(value["value"])
-    if kind == "blob":
-        return base64.b64decode(value["value"])
-    return value["value"]
-
-
-def encode(value):
-    if value is None:
-        return {"type": "null"}
-    if isinstance(value, int):
-        return {"type": "integer", "value": str(value)}
-    if isinstance(value, float):
-        return {"type": "real", "value": value}
-    if isinstance(value, bytes):
-        return {"type": "blob", "value": base64.b64encode(value).decode()}
-    return {"type": "text", "value": value}
