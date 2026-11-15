@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Callable
 from types import TracebackType
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, Unpack, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -19,10 +19,14 @@ from .client import (
     ActorProtocolError,
     ClientConfiguration,
     SocketGrant,
+    WarmOptions,
     component,
     document,
     invocation_outcome,
     invocation_response,
+    response_document,
+    warm_body,
+    warm_status,
 )
 from .guards import is_document
 
@@ -36,6 +40,10 @@ class AsyncActorTransport(AsyncRpcTransport, Protocol):
         self, actor_name: str, actor_id: str, metadata: Any, *, home_region: str | None = None
     ) -> SocketGrant: ...
     async def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None: ...
+
+    async def warm(
+        self, actor_name: str, actor_id: str, warm_ms: int, **options: Unpack[WarmOptions]
+    ) -> dict[str, str]: ...
 
 
 class AsyncClient(ClientConfiguration):
@@ -176,6 +184,16 @@ class AsyncClient(ClientConfiguration):
                 "outcome_unknown", request_id, "broadcast delivery could not be confirmed"
             ) from error
 
+    async def warm(
+        self, actor_name: str, actor_id: str, warm_ms: int, **options: Unpack[WarmOptions]
+    ) -> dict[str, str]:
+        """Keep an actor's host up for warm_ms after it is ready, starting it if needed."""
+        self._ensure_open()
+        request_id = str(uuid.uuid4())
+        body = warm_body(request_id, warm_ms, options, self.home_region)
+        path = self.actor_path(actor_name, actor_id) + "/warm-host"
+        return warm_status(response_document(await self._post(path, request_id, body), request_id))
+
     async def get_contract(self) -> dict[str, Any]:
         self._ensure_open()
         response = await self._http.get(
@@ -200,18 +218,7 @@ class AsyncClient(ClientConfiguration):
         component(method, 255)
         json.dumps(args, allow_nan=False)
         for attempt in range(2):
-            try:
-                reply = await self._invoke_attempt(path, request_id, method, args)
-            except httpx.TransportError as error:
-                if not isinstance(error, NEVER_SENT):
-                    raise ActorInvocationError(
-                        "outcome_unknown",
-                        request_id,
-                        "invocation response was lost; execution may have occurred",
-                    ) from error
-                raise ActorInvocationError(
-                    "unavailable", request_id, f"could not connect to {self.origin}: {error}"
-                ) from error
+            reply = await self._invoke_attempt(path, request_id, method, args)
             completed, result = invocation_outcome(reply, request_id, attempt)
             if completed:
                 return result
@@ -227,13 +234,27 @@ class AsyncClient(ClientConfiguration):
         body: dict[str, Any] = {"requestId": request_id, "method": method, "args": args}
         if self.home_region:
             body["homeRegion"] = self.home_region
-        response = await self._http.post(
-            self.origin + path + "/invoke",
-            headers={**self.headers, "x-request-id": request_id},
-            json=body,
-            follow_redirects=False,
-        )
+        response = await self._post(path + "/invoke", request_id, body)
         return invocation_response(response, request_id)
+
+    async def _post(self, path: str, request_id: str, body: dict[str, Any]) -> httpx.Response:
+        try:
+            return await self._http.post(
+                self.origin + path,
+                headers={**self.headers, "x-request-id": request_id},
+                json=body,
+                follow_redirects=False,
+            )
+        except httpx.TransportError as error:
+            if not isinstance(error, NEVER_SENT):
+                raise ActorInvocationError(
+                    "outcome_unknown",
+                    request_id,
+                    "invocation response was lost; execution may have occurred",
+                ) from error
+            raise ActorInvocationError(
+                "unavailable", request_id, f"could not connect to {self.origin}: {error}"
+            ) from error
 
 
 class _DefaultTransport:
@@ -252,6 +273,12 @@ class _DefaultTransport:
     async def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None:
         async with AsyncClient() as client:
             await client.broadcast(actor_name, actor_id, message)
+
+    async def warm(
+        self, actor_name: str, actor_id: str, warm_ms: int, **options: Unpack[WarmOptions]
+    ) -> dict[str, str]:
+        async with AsyncClient() as client:
+            return await client.warm(actor_name, actor_id, warm_ms, **options)
 
 
 _default_transport: AsyncActorTransport | None = None

@@ -1,4 +1,5 @@
 import errno
+import json
 import os
 import subprocess
 import sys
@@ -6,6 +7,7 @@ import sys
 import httpx
 import pytest
 
+from durable_actors import AsyncClient
 from durable_actors.client import ActorInvocationError, Client
 
 
@@ -131,3 +133,104 @@ assert all(client is clients[0] for client in clients)
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert closed.read_text() == "closed"
+
+
+def test_warm_sends_the_duration_with_the_caller_credential():
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={"status": "OK"})
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with Client(
+            "http://control.test",
+            project_id="test",
+            api_key="key",
+            home_region="north-america-east",
+            http=http,
+        ) as client:
+            assert client.warm("Counter", "one", 30_000) == {"status": "OK"}
+    assert len(calls) == 1
+    assert calls[0].url == "http://control.test/v1/projects/test/actors/Counter/one/warm-host"
+    assert calls[0].headers["authorization"] == "Bearer key"
+    body = json.loads(calls[0].content)
+    assert body == {
+        "requestId": body["requestId"],
+        "warmMs": 30_000,
+        "homeRegion": "north-america-east",
+    }
+
+
+def test_warm_sends_wait_for_completion_and_timeout(monkeypatch):
+    monkeypatch.setenv("DURABLE_ACTORS_HOME_REGION", "north-america-east")
+    bodies = []
+
+    def handle(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(202, json={"status": "accepted"})
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with Client("http://control.test", project_id="test", api_key="key", http=http) as client:
+            assert client.warm("Counter", "one", 30_000, wait_for_completion=False) == {
+                "status": "accepted"
+            }
+            assert client.warm(
+                "Counter", "one", 30_000, wait_for_completion=False, timeout_ms=2000
+            ) == {"status": "accepted"}
+    assert [
+        {key: value for key, value in body.items() if key != "requestId"} for body in bodies
+    ] == [
+        {"warmMs": 30_000, "waitForCompletion": False, "homeRegion": "north-america-east"},
+        {
+            "warmMs": 30_000,
+            "waitForCompletion": False,
+            "timeoutMs": 2000,
+            "homeRegion": "north-america-east",
+        },
+    ]
+
+
+async def test_async_warm_sends_the_duration_and_returns_the_status():
+    calls = []
+
+    async def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={"status": "OK"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+        async with AsyncClient(
+            "http://control.test",
+            project_id="test",
+            api_key="key",
+            home_region="north-america-east",
+            http=http,
+        ) as client:
+            assert await client.warm("Counter", "one", 30_000) == {"status": "OK"}
+    assert len(calls) == 1
+    assert calls[0].url == "http://control.test/v1/projects/test/actors/Counter/one/warm-host"
+    assert calls[0].headers["authorization"] == "Bearer key"
+    body = json.loads(calls[0].content)
+    assert body == {
+        "requestId": body["requestId"],
+        "warmMs": 30_000,
+        "homeRegion": "north-america-east",
+    }
+
+
+def test_warm_accepts_0_to_86400000_and_rejects_anything_else_before_sending():
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={"status": "OK"})
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with Client("http://control.test", project_id="test", api_key="key", http=http) as client:
+            for warm_ms in [-5, 1.5, float("nan"), True, 86_400_001]:
+                with pytest.raises(ValueError):
+                    client.warm("Counter", "one", warm_ms)
+            assert calls == []
+            for warm_ms in [0, 86_400_000]:
+                client.warm("Counter", "one", warm_ms)
+    assert len(calls) == 2

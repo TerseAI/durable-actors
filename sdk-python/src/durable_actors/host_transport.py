@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Unpack
 
 from .async_client import AsyncActorTransport, default_async_client, set_default_async_client
 from .client import (
     ActorTransport,
     SocketGrant,
+    WarmOptions,
     component,
     invocation_outcome,
     set_default_client,
@@ -56,6 +57,11 @@ class AsyncHostTransport:
     async def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None:
         await self.remote.broadcast(actor_name, actor_id, message)
 
+    async def warm(
+        self, actor_name: str, actor_id: str, warm_ms: int, **options: Unpack[WarmOptions]
+    ) -> dict[str, str]:
+        return await self.remote.warm(actor_name, actor_id, warm_ms, **options)
+
 
 class HostTransport:
     """Blocks a synchronous actor's thread while the event loop forwards its call."""
@@ -90,3 +96,8 @@ class HostTransport:
 
     def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None:
         self.remote().broadcast(actor_name, actor_id, message)
+
+    def warm(
+        self, actor_name: str, actor_id: str, warm_ms: int, **options: Unpack[WarmOptions]
+    ) -> dict[str, str]:
+        return self.remote().warm(actor_name, actor_id, warm_ms, **options)

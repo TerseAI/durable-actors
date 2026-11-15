@@ -29,6 +29,7 @@ RESERVED = {
     "connect",
     "prepare_websocket",
     "subscribe",
+    "warm",
     "db",
     "alarm",
     "onAlarm",

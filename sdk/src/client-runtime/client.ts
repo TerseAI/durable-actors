@@ -1,4 +1,4 @@
-import { ActorInvocationError, ActorProtocolError } from "./errors.js"
+import { ActorInvocationError, ActorProtocolError, ActorValidationError } from "./errors.js"
 import { connectionRefused, isRecord, parseActorHostReply, responseDocument } from "./http.js"
 import type { ActorHostReply, ActorInvocation } from "./http.js"
 import { cloneJson } from "./json.js"
@@ -12,6 +12,7 @@ import {
     validateActorComponent
 } from "./settings.js"
 import type { DurableActorsClientOptions, Environment } from "./settings.js"
+import type { WarmOptions, WarmStatus } from "./stub.js"
 import { LatencyTimeline } from "./telemetry.js"
 import type { TelemetrySink } from "./telemetry.js"
 
@@ -55,6 +56,21 @@ export class HttpActorClient {
         }
     }
 
+    async warm(actorName: string, actorId: string, warmMs: number, options: WarmOptions = {}): Promise<WarmStatus> {
+        const requestId = validateActorComponent("request ID", this.requestId())
+        if (!(Number.isInteger(warmMs) && warmMs >= 0 && warmMs <= 86_400_000))
+            throw new ActorValidationError("warmMs must be a whole number from 0 to 86400000")
+        const document = await this.post(actorName, actorId, "warm-host", requestId, {
+            requestId,
+            warmMs,
+            ...options,
+            homeRegion: this.settings.homeRegion
+        })
+        if (!isRecord(document) || (document.status !== "OK" && document.status !== "accepted"))
+            throw new ActorProtocolError("control-plane response did not contain a warm status")
+        return { status: document.status }
+    }
+
     private async invokeAttempt(
         invocation: ActorInvocation,
         retryAvailable: boolean,
@@ -74,43 +90,12 @@ export class HttpActorClient {
     }
 
     private async resolveAndInvoke(invocation: ActorInvocation): Promise<ActorHostReply> {
-        let response: Response
-        try {
-            response = await this.fetchRequest(
-                `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, invocation.actorName, invocation.actorId)}/invoke`,
-                {
-                    method: "POST",
-                    redirect: "manual",
-                    headers: {
-                        accept: "application/json",
-                        ...authorizationHeaders(this.settings.credential),
-                        "x-request-id": invocation.requestId,
-                        "content-type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        requestId: invocation.requestId,
-                        method: invocation.method,
-                        args: invocation.args,
-                        homeRegion: this.settings.homeRegion
-                    })
-                }
-            )
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            if (connectionRefused(error))
-                throw new ActorInvocationError(
-                    "unavailable",
-                    invocation.requestId,
-                    `could not connect to ${this.settings.controlPlaneUrl}: ${message}`
-                )
-            throw new ActorInvocationError(
-                "outcome_unknown",
-                invocation.requestId,
-                `control-plane invocation failed after it may have been dispatched: ${message}`
-            )
-        }
-        const document = await responseDocument(response)
-        if (!response.ok) this.throwResponseFailure(response, document, invocation.requestId)
+        const document = await this.post(invocation.actorName, invocation.actorId, "invoke", invocation.requestId, {
+            requestId: invocation.requestId,
+            method: invocation.method,
+            args: invocation.args,
+            homeRegion: this.settings.homeRegion
+        })
         if (!isRecord(document))
             throw new ActorProtocolError("control-plane response did not contain an invocation outcome")
         const reply =
@@ -118,6 +103,48 @@ export class HttpActorClient {
                 ? { type: "unauthenticated" as const }
                 : parseActorHostReply(document.outcome)
         return reply
+    }
+
+    private async post(
+        actorName: string,
+        actorId: string,
+        endpoint: string,
+        requestId: string,
+        body: object
+    ): Promise<unknown> {
+        let response: Response
+        try {
+            response = await this.fetchRequest(
+                `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, actorName, actorId)}/${endpoint}`,
+                {
+                    method: "POST",
+                    redirect: "manual",
+                    headers: {
+                        accept: "application/json",
+                        ...authorizationHeaders(this.settings.credential),
+                        "x-request-id": requestId,
+                        "content-type": "application/json"
+                    },
+                    body: JSON.stringify(body)
+                }
+            )
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (connectionRefused(error))
+                throw new ActorInvocationError(
+                    "unavailable",
+                    requestId,
+                    `could not connect to ${this.settings.controlPlaneUrl}: ${message}`
+                )
+            throw new ActorInvocationError(
+                "outcome_unknown",
+                requestId,
+                `control-plane invocation failed after it may have been dispatched: ${message}`
+            )
+        }
+        const document = await responseDocument(response)
+        if (!response.ok) this.throwResponseFailure(response, document, requestId)
+        return document
     }
 
     private throwResponseFailure(response: Response, document: unknown, requestId: string): never {

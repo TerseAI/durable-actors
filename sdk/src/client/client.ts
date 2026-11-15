@@ -2,11 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks"
 
 import type { ActorConnection, ActorSocketMessage } from "../actor/socket.js"
 import type { ActorSchemas } from "../actor/socketValidation.js"
+import type { WarmOptions, WarmStatus } from "../client-runtime/stub.js"
 
 interface ActorClientTransport {
     invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
     connect(actorName: string, actorId: string, metadata: unknown, schemas?: ActorSchemas): Promise<ActorConnection>
     broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void>
+    warm?(actorName: string, actorId: string, warmMs: number, options?: WarmOptions): Promise<WarmStatus>
 }
 
 const scopedClients = new AsyncLocalStorage<ActorClientTransport>()

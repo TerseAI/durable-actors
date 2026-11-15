@@ -5,6 +5,7 @@ import { Actor, registerActorClass } from "../../src/actor/actor.js"
 import type { ActorConnection } from "../../src/actor/socket.js"
 import { runWithActorClient } from "../../src/client/client.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
+import { HostActorClient } from "../../src/host/host-actor-client.js"
 import { ActorRuntime } from "../fixtures/actor-runtime.js"
 import { assertReply } from "../fixtures/reply.js"
 
@@ -75,4 +76,41 @@ test("actors invoke, broadcast, and open sockets through the remote client", asy
     )
     assertReply(reply, { type: "invoked", result: 3 })
     assert.deepEqual(events, ["invoke", "broadcast", "connect", "close"])
+})
+
+class Warmer extends Actor {
+    async warmDestination(): Promise<unknown> {
+        return Destination.get("destination").warm(60_000)
+    }
+}
+
+test("actors warm other actors through the remote client", async () => {
+    const urls: string[] = []
+    const remote = new RemoteActorClient(
+        { controlPlaneUrl: "https://control.test", projectId: "test" },
+        {
+            telemetry: () => {},
+            fetch: async url => {
+                urls.push(String(url))
+                return Response.json({ status: "OK" })
+            }
+        }
+    )
+    const definition = registerActorClass(Warmer, { actorName: "Warmer", fields: [] })
+    const reply = await runWithActorClient(
+        new HostActorClient(
+            async () => assert.fail("a warm must not go through the host"),
+            async () => remote
+        ),
+        async () =>
+            new ActorRuntime(definition, () => {}).handle({
+                type: "invoke",
+                request_id: "parent",
+                actor: { project_id: "test", actor_name: "Warmer", actor_id: "one" },
+                method: "warmDestination",
+                args: []
+            })
+    )
+    assertReply(reply, { type: "invoked", result: { status: "OK" } })
+    assert.deepEqual(urls, ["https://control.test/v1/projects/test/actors/Destination/destination/warm-host"])
 })

@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from threading import Lock
 from types import TracebackType
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypedDict, Unpack, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -76,6 +76,13 @@ class RpcTransport(Protocol):
     def invoke(self, actor_name: str, actor_id: str, method: str, args: list[Any]) -> Any: ...
 
 
+class WarmOptions(TypedDict, total=False):
+    """wait_for_completion=False replies at once, or within timeout_ms."""
+
+    wait_for_completion: bool
+    timeout_ms: int
+
+
 class ActorTransport(RpcTransport, Protocol):
     """Transport supporting synchronous RPCs, WebSocket authorization, and broadcasts."""
 
@@ -89,6 +96,10 @@ class ActorTransport(RpcTransport, Protocol):
     ) -> SocketGrant: ...
 
     def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None: ...
+
+    def warm(
+        self, actor_name: str, actor_id: str, warm_ms: int, **options: Unpack[WarmOptions]
+    ) -> dict[str, str]: ...
 
 
 class ClientConfiguration:
@@ -320,6 +331,22 @@ class Client(ClientConfiguration):
                 "outcome_unknown", request_id, "broadcast delivery could not be confirmed"
             ) from error
 
+    def warm(
+        self, actor_name: str, actor_id: str, warm_ms: int, **options: Unpack[WarmOptions]
+    ) -> dict[str, str]:
+        """Keep an actor's host up for warm_ms after it is ready, starting it if needed.
+
+        Returns {"status": "OK"} once the host is warm, or {"status": "accepted"}
+        when wait_for_completion=False replies first.
+        """
+        self._ensure_open()
+        request_id = str(uuid.uuid4())
+        body = warm_body(request_id, warm_ms, options, self.home_region)
+        response = self._post(
+            self.actor_path(actor_name, actor_id) + "/warm-host", request_id, body
+        )
+        return warm_status(response_document(response, request_id))
+
     def get_contract(self) -> dict[str, Any]:
         """Fetch the published actor contract used to generate typed clients."""
         self._ensure_open()
@@ -345,18 +372,7 @@ class Client(ClientConfiguration):
         component(method, 255)
         json.dumps(args, allow_nan=False)
         for attempt in range(2):
-            try:
-                reply = self._invoke_attempt(path, request_id, method, args)
-            except httpx.TransportError as error:
-                if not isinstance(error, NEVER_SENT):
-                    raise ActorInvocationError(
-                        "outcome_unknown",
-                        request_id,
-                        "invocation response was lost; execution may have occurred",
-                    ) from error
-                raise ActorInvocationError(
-                    "unavailable", request_id, f"could not connect to {self.origin}: {error}"
-                ) from error
+            reply = self._invoke_attempt(path, request_id, method, args)
             completed, result = invocation_outcome(reply, request_id, attempt)
             if completed:
                 return result
@@ -372,13 +388,26 @@ class Client(ClientConfiguration):
         body: dict[str, Any] = {"requestId": request_id, "method": method, "args": args}
         if self.home_region:
             body["homeRegion"] = self.home_region
-        response = self._http.post(
-            self.origin + path + "/invoke",
-            headers={**self.headers, "x-request-id": request_id},
-            json=body,
-            follow_redirects=False,
-        )
-        return invocation_response(response, request_id)
+        return invocation_response(self._post(path + "/invoke", request_id, body), request_id)
+
+    def _post(self, path: str, request_id: str, body: dict[str, Any]) -> httpx.Response:
+        try:
+            return self._http.post(
+                self.origin + path,
+                headers={**self.headers, "x-request-id": request_id},
+                json=body,
+                follow_redirects=False,
+            )
+        except httpx.TransportError as error:
+            if not isinstance(error, NEVER_SENT):
+                raise ActorInvocationError(
+                    "outcome_unknown",
+                    request_id,
+                    "invocation response was lost; execution may have occurred",
+                ) from error
+            raise ActorInvocationError(
+                "unavailable", request_id, f"could not connect to {self.origin}: {error}"
+            ) from error
 
 
 _shared_client: Client | None = None
@@ -465,6 +494,14 @@ def invocation_outcome(reply: dict[str, Any], request_id: str, attempt: int) -> 
 
 
 def invocation_response(response: httpx.Response, request_id: str) -> dict[str, Any]:
+    reply = response_document(response, request_id).get("outcome")
+    if not isinstance(reply, dict):
+        raise ActorProtocolError("missing invocation outcome")
+    reply = cast(dict[str, Any], reply)
+    return reply
+
+
+def response_document(response: httpx.Response, request_id: str) -> dict[str, Any]:
     value = document(response)
     if not response.is_success:
         error = value.get("error", {})
@@ -478,8 +515,29 @@ def invocation_response(response: httpx.Response, request_id: str) -> dict[str, 
         if not isinstance(error.get("code"), str) or not isinstance(error.get("message"), str):
             raise ActorProtocolError(f"invalid HTTP {response.status_code} error")
         raise ActorInvocationError(error["code"], request_id, error["message"])
-    reply = value.get("outcome")
-    if not isinstance(reply, dict):
-        raise ActorProtocolError("missing invocation outcome")
-    reply = cast(dict[str, Any], reply)
-    return reply
+    return value
+
+
+def warm_body(
+    request_id: str, warm_ms: int, options: WarmOptions, home_region: str | None
+) -> dict[str, Any]:
+    if type(warm_ms) is not int or not 0 <= warm_ms <= 86_400_000:
+        raise ValueError("warm_ms must be an integer from 0 to 86400000")
+    unknown = options.keys() - {"wait_for_completion", "timeout_ms"}
+    if unknown:
+        raise TypeError(f"unexpected warm option: {', '.join(sorted(unknown))}")
+    body: dict[str, Any] = {"requestId": request_id, "warmMs": warm_ms}
+    if "wait_for_completion" in options:
+        body["waitForCompletion"] = options["wait_for_completion"]
+    if "timeout_ms" in options:
+        body["timeoutMs"] = options["timeout_ms"]
+    if home_region:
+        body["homeRegion"] = home_region
+    return body
+
+
+def warm_status(value: dict[str, Any]) -> dict[str, str]:
+    status = value.get("status")
+    if status not in ("OK", "accepted"):
+        raise ActorProtocolError("missing warm status")
+    return {"status": status}

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal, Self, Unpack
 
 from .actor_base import ActorBase, Incoming, Metadata, Outgoing, Tag
 from .database import AsyncActorAlarm, AsyncActorDatabase
@@ -11,6 +11,7 @@ from .json import JsonValue
 if TYPE_CHECKING:
     from .async_client import AsyncActorTransport
     from .async_connection import AsyncConnection
+    from .client import WarmOptions
     from .socket import ActorSocket
 
 
@@ -29,6 +30,10 @@ class AsyncActor(ActorBase[Metadata, Incoming, Outgoing, Tag]):
     ) -> AsyncConnection[Incoming, Outgoing, JsonValue, JsonValue]:
         """Open a typed WebSocket through a reference returned by get()."""
         raise RuntimeError("connect() requires an actor reference from get()")
+
+    async def warm(self, warm_ms: int, **options: Unpack[WarmOptions]) -> dict[str, str]:
+        """Keep this actor's host up for warm_ms through a reference returned by get()."""
+        raise RuntimeError("warm() requires an actor reference from get()")
 
     @property
     def db(self) -> AsyncActorDatabase:
