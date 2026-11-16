@@ -124,6 +124,7 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_CLICKHOUSE_USER` | ClickHouse application user. |
 | `DURABLE_ACTORS_CLICKHOUSE_PASSWORD` | ClickHouse application password. Supply through a secret. |
 | `DURABLE_ACTORS_USAGE_TOPIC` | Optional Pub/Sub topic, `projects/<gcp-project>/topics/<topic>`, for actor activation usage. Unset disables publishing. The control plane uses Application Default Credentials with publisher access to this topic. |
+| `DURABLE_ACTORS_EVENTS_TOPIC` | Optional Pub/Sub topic, `projects/<gcp-project>/topics/<topic>`, for [platform events](#published-events) such as sandbox kills. Unset disables publishing. The pool manager uses Application Default Credentials with publisher access to this topic. |
 | `DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS` | PostgreSQL pool size per process, default `8`, range 1–1,000. The chart sets it from `postgres.maxConnections`. Invocation routing and alarm polling share the pool. Budget the database's connection limit for this pool size times the controller replica count, plus other database clients. |
 | `DURABLE_ACTORS_REDIS_URL` | Redis that carries socket messages between processes; required with more than one. `redis://host:6379`, or `rediss://:password@host:6378` for TLS. If the connection drops, the process closes its sockets with `1012` and browsers reconnect. Unset, a single process keeps everything in memory. The chart reads it from the key named by `redis.urlSecretKey`. |
 | `DURABLE_ACTORS_REDIS_CA_CERT` | PEM CA for a `rediss://` server with a private CA, such as Memorystore. The chart reads it from the key named by `redis.caSecretKey`. |
@@ -194,6 +195,35 @@ When usage publishing is enabled, controllers retain each session's latest repor
 The next newer heartbeat or draining report reopens the usage interval (`endedAtMs: null`, `estimated: false`); a real stop replaces the estimate with the actual end time. Consumers must replace or retract the previous contribution when processing a higher revision, including reopening a previously closed interval. Duplicate and older reports do not extend the freshness window. Redis atomically coordinates reports and expiry across replicas; session records expire after 24 hours without an update. Enable Redis persistence to retain this state across Redis restarts. Without Redis, reconciliation uses a process-local cache capped at 100,000 sessions that resets on restart.
 
 Estimates affect only usage publications. ClickHouse retains the actual lifecycle reports, stale dashboard entries stay unknown, and estimated stops neither create routing hints nor release ownership. Reconciliation performs no GCS or PostgreSQL reads. Redis errors log warnings; start/stop publishing and the other lifecycle paths continue, but reconciliation and heartbeat corrections require the session state to be available.
+
+### Published events
+
+Setting `DURABLE_ACTORS_EVENTS_TOPIC` publishes platform events to Pub/Sub for services outside the control plane, such as one that sends alerts. It works with either analytics backend and without platform telemetry. Each message is one event as the `observe/events` stream sends it, with its project and an ID:
+
+```json
+{
+  "eventId": "5f0c7a…",
+  "projectId": "project-1",
+  "type": "kill",
+  "item": {
+    "actorName": "Room",
+    "actorId": "lobby",
+    "atMs": 1700000000000,
+    "reason": "out_of_memory"
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `eventId` | SHA-256 of the recorded event, in hex. The same each time one event is reported. |
+| `projectId` | The actor's project. |
+| `type` | The event's type on the stream. Only `kill` is published today. |
+| `item` | The event as the stream sends it. A `kill` has a `reason`: `out_of_memory` or `out_of_disk` when the actor passed its own limit, `evicted` when its node reclaimed the sandbox, `killed` for any other signal the platform didn't send. |
+
+Pub/Sub attributes `projectId`, `eventId` and `type` support filtering and deduplication. More types will be published on the same topic, so subscribers must ignore the types and fields they do not know.
+
+The pool manager reports kills, and only for Kubernetes sandboxes. When it restarts it publishes the kills it still sees again, each under its original `eventId`, so subscribers must skip the IDs they have handled. Publishing runs in the background, waits up to five seconds for acknowledgment, and logs a failure without retrying: a failed publication or a pool manager that exits can lose an event. So can a kill whose actor the pool manager cannot read from PostgreSQL within two seconds.
 
 ## Modal data plane
 

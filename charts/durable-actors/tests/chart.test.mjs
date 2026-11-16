@@ -35,6 +35,12 @@ test("enables usage publishing only when a topic is configured", () => {
     assert.match(output, /DURABLE_ACTORS_USAGE_TOPIC, value: "projects\/example\/topics\/actor-usage"/)
 })
 
+test("enables event publishing only when a topic is configured", () => {
+    assert.doesNotMatch(manifests(), /DURABLE_ACTORS_EVENTS_TOPIC/)
+    const output = manifests({ events: { topic: "projects/example/topics/actor-events" } })
+    assert.match(output, /DURABLE_ACTORS_EVENTS_TOPIC, value: "projects\/example\/topics\/actor-events"/)
+})
+
 test("configures ClickHouse analytics with a password from the credentials secret", () => {
     const output = manifests({ analytics: { backend: "clickhouse", clickhouse: {
         url: "https://clickhouse.example.com:8443", database: "actors", user: "writer",

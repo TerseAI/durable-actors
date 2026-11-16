@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 use crate::{
     bucket::{GcsBucket, RuntimeStorageReader},
-    platform_events::{NoPlatformEvents, PlatformEvents},
+    platform_events::{NoPlatformEvents, PlatformEvents, sandboxes::SandboxKill},
     postgres::PostgresDatabase,
     redis_client::{Redis, RedisConfig},
     request_traces::{
@@ -49,6 +49,8 @@ pub struct ControlPlaneProcessConfig {
     /// unset turns them off.
     pub platform_telemetry: Option<super::PlatformTelemetryConfig>,
     pub usage_topic: Option<String>,
+    /// Where platform events are also published for services outside the control plane.
+    pub events_topic: Option<String>,
     pub region: Option<String>,
     pub alarm_poll_interval: Duration,
     pub redis: Option<RedisConfig>,
@@ -456,10 +458,7 @@ pub async fn serve_pool_manager(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let kills = platform_events(config.platform_telemetry.as_ref())?.map(|events| KillReporting {
-        claims: Arc::new(PoolClaims(database.clone())),
-        events,
-    });
+    let kills = kill_reporting(&config, &database).await?;
     let provider = sandbox_provider(
         &config.sandbox_provider,
         crate::sandbox::connections::HostConnections::new()?,
@@ -500,6 +499,27 @@ pub async fn serve_pool_manager(
     stop.cancel();
     housekeeping.await?;
     Ok(())
+}
+
+/// Kills are reported only where something takes them: platform telemetry, the events topic, or
+/// both.
+async fn kill_reporting(
+    config: &ControlPlaneProcessConfig,
+    database: &PostgresDatabase,
+) -> Result<Option<KillReporting>> {
+    let recorded = platform_events(config.platform_telemetry.as_ref())?;
+    if recorded.is_none() && config.events_topic.is_none() {
+        return Ok(None);
+    }
+    let recorded: Arc<dyn PlatformEvents<SandboxKill>> = match recorded {
+        Some(events) => events,
+        None => Arc::new(NoPlatformEvents),
+    };
+    let topic = config.events_topic.as_deref();
+    Ok(Some(KillReporting {
+        claims: Arc::new(PoolClaims(database.clone())),
+        events: super::event_topic::published(recorded, topic).await?,
+    }))
 }
 
 impl ControlPlaneProcessConfig {
@@ -611,6 +631,7 @@ impl ControlPlaneProcessConfig {
             socket_event_sink,
             platform_telemetry: platform_telemetry_config(&mut get)?,
             usage_topic: get("DURABLE_ACTORS_USAGE_TOPIC"),
+            events_topic: get("DURABLE_ACTORS_EVENTS_TOPIC"),
             region,
             alarm_poll_interval,
             redis: redis_config(&mut get)?,
