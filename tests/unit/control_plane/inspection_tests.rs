@@ -782,6 +782,7 @@ fn request_trace(
         started_at_ms: time,
         duration_ms: 25.0,
         queue_wait_ms: Some(10.0),
+        warm_ms: None,
         host_state: HostState::Warm,
         routing_ms: 0.0,
         outcome,

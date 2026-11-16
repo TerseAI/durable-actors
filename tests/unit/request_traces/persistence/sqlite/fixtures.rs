@@ -18,6 +18,7 @@ pub(super) fn event(id: &str) -> TraceEvent {
             started_at_ms: 1,
             duration_ms: 1.0,
             queue_wait_ms: None,
+            warm_ms: None,
             host_state: HostState::Warm,
             routing_ms: 25.0,
             outcome: RequestOutcome::Completed,

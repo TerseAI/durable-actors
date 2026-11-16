@@ -340,6 +340,7 @@ fn span_rows_map_to_request_traces() {
         routing_ms: 1.5,
         duration_ms: 12.25,
         queue_wait_ms: Some(3.0),
+        warm_ms: None,
         host_state: "cold".into(),
         outcome: "completed".into(),
         state_version: Some(7),
