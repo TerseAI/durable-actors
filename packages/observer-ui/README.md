@@ -56,13 +56,15 @@ Residency uses lifecycle reports, including immediate notifications when the exe
 
 Custom observer clients can implement `listResidency` to enable the timeline. `HttpObserverClient` and the TypeScript and Python observer proxies use the authenticated project endpoint `/v1/projects/{project_id}/observe/residency?actorName=…`. `ResidencyTimeline` and its props and data types are also exported for embedding.
 
-## Instance events
+## Events
 
 An instance's page lists what happened to it below its logs, newest first. Residency changes (Live, Dormant, Unknown) come from the residency history. Sandbox kills (Out of memory, Evicted, Killed) are sandboxes that stopped under the actor without the platform asking; the pool manager reports them from its pod watch, so they need Kubernetes sandboxes. Warnings shows only the kills.
 
 An Unknown within 40 seconds after a kill is left out, because the kill explains it. An actor reloaded within 35 seconds of a kill can show no Live row, because its residency never left Live.
 
-Kills are read from the project's event history, the authenticated endpoint `/v1/projects/{project_id}/observe/events/history?types=kill&fromMs=…&toMs=…`, narrowed by `actorName` and `actorId`, and arrive live as `kill` events. The history returns each event as the stream sent it, newest first, and a read returns the latest 500. It holds the events that happen once, which is `kill` so far. The TypeScript and Python observer proxies serve the route as `events/history`.
+An actor's page lists the kills of all its instances below their residency, newest first, each with a link to its instance. It leaves residency changes to the timeline above, where they don't bury the kills.
+
+Kills are read from the project's event history, the authenticated endpoint `/v1/projects/{project_id}/observe/events/history?types=kill&fromMs=…&toMs=…`, narrowed by `actorName` and, on an instance's page, `actorId`, and arrive live as `kill` events. The history returns each event as the stream sent it, newest first, and a read returns the latest 500. It holds the events that happen once, which is `kill` so far. The TypeScript and Python observer proxies serve the route as `events/history`.
 
 ## Persisted actor state
 
