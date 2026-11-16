@@ -48,6 +48,9 @@ pub(super) async fn invoke_alarm(
     .await
     .map_err(|_| anyhow::anyhow!("alarm outcome could not be confirmed"))?;
     match outcome["type"].as_str() {
+        Some("failed") if outcome["code"] == "actor_overloaded" => {
+            anyhow::bail!("alarm was not executed: {outcome}")
+        }
         Some("completed" | "failed") => Ok(()),
         _ => anyhow::bail!("alarm was not executed: {outcome}"),
     }

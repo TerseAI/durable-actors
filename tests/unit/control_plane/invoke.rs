@@ -25,6 +25,7 @@ async fn assignment_returns_invocation_outcomes_without_a_second_host_request() 
     for outcome in [
         json!({"type":"completed", "result":7}),
         json!({"type":"failed", "code":"actor_method_failed", "message":"failed"}),
+        json!({"type":"failed", "code":"actor_overloaded", "message":"request rejected before execution"}),
     ] {
         let fixture = Fixture::start(vec![(StatusCode::OK, outcome.clone())]).await?;
         fixture.host.assign_operation.store(true, Ordering::SeqCst);
@@ -324,6 +325,11 @@ async fn combined_invocation_does_not_replay_failed_or_ambiguous_dispatches() ->
             StatusCode::OK,
             json!({"type":"failed", "code":"actor_error", "message":"boom"}),
             "actor_error",
+        ),
+        (
+            StatusCode::OK,
+            json!({"type":"failed", "code":"actor_overloaded", "message":"request rejected before execution"}),
+            "actor_overloaded",
         ),
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -817,4 +823,40 @@ impl HostProvisioner for InvocationProvisioner {
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
         anyhow::bail!("unexpected termination")
     }
+}
+
+#[tokio::test]
+async fn overloaded_alarm_is_not_consumed_as_an_executed_handler() -> Result<()> {
+    for (outcome, executed) in [
+        (
+            json!({"type":"failed", "code":"actor_overloaded", "message":"rejected before execution"}),
+            false,
+        ),
+        (
+            json!({"type":"failed", "code":"actor_error", "message":"handler failed"}),
+            true,
+        ),
+        (json!({"type":"completed", "result":null}), true),
+    ] {
+        let fixture = Fixture::start(vec![(StatusCode::OK, outcome)]).await?;
+        let alarm = crate::control_plane::alarms::ClaimedAlarm {
+            actor: ActorKey {
+                project_id: "default".into(),
+                actor_name: "ChatRoom".into(),
+                actor_id: "one".into(),
+            },
+            revision: 1,
+        };
+        let result = crate::control_plane::invocation::invoke_alarm(
+            &fixture.service,
+            &reqwest::Client::new(),
+            &alarm,
+        )
+        .await;
+        assert_eq!(result.is_ok(), executed);
+        assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
+        let requests = fixture.host.requests.lock().unwrap();
+        assert_eq!(requests[0].1["method"], "onAlarm");
+    }
+    Ok(())
 }
