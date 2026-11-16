@@ -228,8 +228,9 @@ test("the control plane reports platform events on a port sandboxes cannot reach
     assert.match(output, /\{name: otlp-internal, port: 4319, targetPort: otlp-internal, appProtocol: grpc\}/)
     assert.match(output, new RegExp(`PLATFORM_TOKEN_ISSUER, value: "${issuer}"`))
     assert.match(output, /serviceAccountToken: \{audience: durable-actors-platform-telemetry, expirationSeconds: 3600, path: token\}/)
-    // Only the control plane serves WebSockets and deployments, so the pool manager gets no token.
-    assert.equal(output.match(/DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT/g).length, 1)
+    // The control plane reports connections and deployments; the pool manager reports sandbox kills.
+    assert.equal(output.match(/DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT/g).length, 2)
+    assert.equal(output.match(/name: platform-telemetry, mountPath/g).length, 2)
     assert.doesNotMatch(output, /port: 4319\}\n[^\n]*\n[^\n]*sandbox/)
     assert.match(output, /\{protocol: TCP, port: 4317\}/)
     assert.doesNotMatch(output, /\{protocol: TCP, port: 4319\}/)

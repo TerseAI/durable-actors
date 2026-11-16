@@ -302,8 +302,155 @@ async fn finished_pods_are_reaped_once_from_the_watch() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn the_watch_reports_each_pod_killed_under_its_actor_once() -> Result<()> {
+    use crate::platform_events::sandboxes::KillReason;
+    use axum::{Router, extract::RawQuery, routing::get};
+    let assigned = |name: &str| {
+        let mut pod = pod(name, "Failed");
+        pod["metadata"]["annotations"] = json!(kills::actor_annotations(&counter()));
+        pod
+    };
+    let terminated = |reason: &str| {
+        json!([{
+            "name": "runtime",
+            "image": "runtime",
+            "imageID": "",
+            "ready": false,
+            "restartCount": 0,
+            "state": {"terminated": {
+                "exitCode": 137,
+                "reason": reason,
+                "finishedAt": "2026-01-01T00:00:00Z",
+            }},
+        }])
+    };
+    let mut killed = assigned("killed");
+    killed["status"]["containerStatuses"] = terminated("OOMKilled");
+    let mut evicted = assigned("evicted");
+    evicted["status"]["reason"] = json!("Evicted");
+    evicted["status"]["conditions"] = json!([{
+        "type": "Ready",
+        "status": "False",
+        "lastTransitionTime": "2026-01-01T00:00:05Z",
+    }]);
+    // The kubelet reports an evicted pod's containers afterwards, which moves when it stopped.
+    let mut stopped = evicted.clone();
+    stopped["status"]["containerStatuses"] = terminated("Error");
+    let items = vec![
+        pod("live", "Running"),
+        pod("crashed", "Failed"),
+        killed.clone(),
+    ];
+    let events = vec![
+        json!({"type": "MODIFIED", "object": killed}),
+        json!({"type": "ADDED", "object": evicted}),
+        json!({"type": "MODIFIED", "object": stopped}),
+        json!({"type": "ADDED", "object": pod("last", "Running")}),
+    ];
+    let routes = Router::new().route(
+        "/api/v1/namespaces/sandboxes/pods",
+        get(move |RawQuery(query): RawQuery| {
+            let response = pod_collection(query, items.clone(), events.clone()).0;
+            async move { response }
+        }),
+    );
+    let (reported, mut kills) = tokio::sync::mpsc::unbounded_channel();
+    let (cluster, _server) = reporting_cluster(routes, Arc::new(ReportedKills(reported))).await?;
+    let mut changes = cluster.changes.clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while cluster.observed_pod("last", Some("last-uid")).is_none() {
+            changes.changed().await?;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
+    let reported: Vec<_> = std::iter::from_fn(|| kills.try_recv().ok())
+        .map(|kill| (kill.actor, kill.sandbox_id, kill.reason, kill.at_ms))
+        .collect();
+    let new_year = 1_767_225_600_000;
+    assert_eq!(
+        reported,
+        [
+            (
+                counter(),
+                "sandboxes/killed/killed-uid".to_owned(),
+                KillReason::OutOfMemory,
+                new_year
+            ),
+            (
+                counter(),
+                "sandboxes/evicted/evicted-uid".to_owned(),
+                KillReason::Evicted,
+                new_year + 5000
+            ),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn naming_an_actor_annotates_the_pod_with_that_uid() -> Result<()> {
+    use axum::{Json, Router, routing::patch};
+    let patched = Arc::new(std::sync::Mutex::new(None));
+    let recorded = patched.clone();
+    let routes = Router::new().route(
+        "/api/v1/namespaces/sandboxes/pods/warm",
+        patch(move |Json(body): Json<serde_json::Value>| async move {
+            *recorded.lock().unwrap() = Some(body);
+            Json(pod("warm", "Running"))
+        }),
+    );
+    let (cluster, _server) = fake_cluster(routes).await?;
+    let mut spare = SpareHandle {
+        node: String::new(),
+        name: "warm".into(),
+        resource_id: "sandboxes/warm/warm-uid".into(),
+        route: String::new(),
+        canonical_region: String::new(),
+        control_route: String::new(),
+        control_token: String::new(),
+    };
+    cluster.name_actor(&spare, &counter()).await?;
+    assert_eq!(
+        patched.lock().unwrap().take().unwrap()["metadata"],
+        json!({"uid": "warm-uid", "annotations": {
+            "terse.ai/project-id": "project",
+            "terse.ai/actor-name": "Counter",
+            "terse.ai/actor-id": "one",
+        }})
+    );
+    spare.resource_id = "elsewhere/warm/warm-uid".into();
+    assert!(cluster.name_actor(&spare, &counter()).await.is_err());
+    assert!(patched.lock().unwrap().is_none());
+    Ok(())
+}
+
+struct ReportedKills(tokio::sync::mpsc::UnboundedSender<SandboxKill>);
+
+impl PlatformEvents<SandboxKill> for ReportedKills {
+    fn record(&self, kill: SandboxKill) {
+        let _ = self.0.send(kill);
+    }
+}
+
+fn counter() -> ActorKey {
+    ActorKey {
+        project_id: "project".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    }
+}
+
 async fn fake_cluster(
     routes: axum::Router,
+) -> Result<(Kubernetes, AbortOnDropHandle<std::io::Result<()>>)> {
+    reporting_cluster(routes, Arc::new(crate::platform_events::NoPlatformEvents)).await
+}
+
+async fn reporting_cluster(
+    routes: axum::Router,
+    kills: Arc<dyn PlatformEvents<SandboxKill>>,
 ) -> Result<(Kubernetes, AbortOnDropHandle<std::io::Result<()>>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let config = kube::Config::new(format!("http://{}", listener.local_addr()?).parse()?);
@@ -320,6 +467,7 @@ async fn fake_cluster(
             node_cache_url: None,
             runtime_class: GKE_RUNTIME_CLASS.into(),
         },
+        kills,
     );
     Ok((cluster, server))
 }

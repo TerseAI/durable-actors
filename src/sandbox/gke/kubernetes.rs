@@ -7,7 +7,7 @@ use k8s_openapi::{
 };
 use kube::{
     Api, Client, ResourceExt,
-    api::{DeleteParams, PostParams, Preconditions},
+    api::{DeleteParams, Patch, PatchParams, PostParams, Preconditions},
     runtime::{
         WatchStreamExt,
         reflector::{self, ObjectRef, Store, store::Writer},
@@ -42,11 +42,23 @@ pub(super) struct Kubernetes {
     _watch: AbortOnDropHandle<()>,
 }
 impl Kubernetes {
-    pub fn new(client: Client, config: GkeConfig) -> Self {
+    pub fn new(
+        client: Client,
+        config: GkeConfig,
+        kills: Arc<dyn PlatformEvents<SandboxKill>>,
+    ) -> Self {
         let pods = Api::namespaced(client, &config.namespace);
         let (observed, writer) = reflector::store();
         let (changed, changes) = watch::channel(());
-        let watch = AbortOnDropHandle::new(tokio::spawn(observe(pods.clone(), writer, changed)));
+        let watch = AbortOnDropHandle::new(tokio::spawn(observe(
+            pods.clone(),
+            writer,
+            changed,
+            KillReports {
+                observed: observed.clone(),
+                events: kills,
+            },
+        )));
         Self {
             pods,
             observed,
@@ -157,6 +169,21 @@ impl SandboxCluster for Kubernetes {
         })
     }
 
+    async fn name_actor(&self, spare: &SpareHandle, actor: &ActorKey) -> Result<()> {
+        let (namespace, name, uid) = resource_identity(&spare.resource_id)?;
+        ensure!(
+            namespace == self.config.namespace && name == spare.name,
+            "sandbox resource identity mismatch"
+        );
+        // A patch that names another UID is rejected, so a pod that took the name stays unnamed.
+        let patch = Patch::Merge(serde_json::json!({
+            "metadata": {"uid": uid, "annotations": kills::actor_annotations(actor)},
+        }));
+        let params = PatchParams::default();
+        retry_throttled(|| self.pods.patch_metadata(name, &params, &patch)).await?;
+        Ok(())
+    }
+
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
         if spare.resource_id.is_empty() {
             let Some(pod) = retry_throttled(|| self.pods.get_opt(&spare.name)).await? else {
@@ -221,7 +248,12 @@ impl SandboxCluster for Kubernetes {
     }
 }
 
-async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>) {
+async fn observe(
+    pods: Api<Pod>,
+    writer: Writer<Pod>,
+    changed: watch::Sender<()>,
+    kills: KillReports,
+) {
     watcher(pods, watcher::Config::default().labels(MANAGED))
         .default_backoff()
         .modify(|pod| {
@@ -230,6 +262,12 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
                 node_name: spec.node_name,
                 ..PodSpec::default()
             });
+        })
+        // Ahead of the store, which still holds each pod as it was before its event.
+        .inspect(|event| {
+            if let Ok(watcher::Event::Apply(pod) | watcher::Event::InitApply(pod)) = event {
+                kills.report(pod);
+            }
         })
         .reflect(writer)
         .for_each(|event| {
@@ -242,6 +280,28 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
             std::future::ready(())
         })
         .await;
+}
+
+/// Reports each sandbox's kill once. A killed pod shows its kill on every later update and
+/// again when the watch relists.
+struct KillReports {
+    observed: Store<Pod>,
+    events: Arc<dyn PlatformEvents<SandboxKill>>,
+}
+
+impl KillReports {
+    fn report(&self, pod: &Pod) {
+        let Some(kill) = kills::kill(pod) else {
+            return;
+        };
+        let before = self.observed.get(&ObjectRef::from_obj(pod));
+        let reported = before
+            .and_then(|pod| kills::kill(&pod))
+            .is_some_and(|before| before.sandbox_id == kill.sandbox_id);
+        if !reported {
+            self.events.record(kill);
+        }
+    }
 }
 
 /// The spare sandbox manifest, kept as YAML so its isolation settings read like any other.

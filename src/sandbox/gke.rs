@@ -8,7 +8,12 @@ use super::{
     secrets::SecretResolver,
     *,
 };
+use crate::{
+    actor::ActorKey,
+    platform_events::{PlatformEvents, sandboxes::SandboxKill},
+};
 
+mod kills;
 mod kubernetes;
 pub(crate) use super::remote::validate_image;
 pub(crate) use kubernetes::{GKE_RUNTIME_CLASS, GkeConfig};
@@ -17,7 +22,8 @@ pub(crate) async fn provider(
     config: GkeConfig,
     secrets: Arc<dyn SecretResolver>,
     connections: connections::HostConnections,
+    kills: Arc<dyn PlatformEvents<SandboxKill>>,
 ) -> Result<RemoteSandboxProvider> {
-    let cluster = kubernetes::Kubernetes::new(kube::Client::try_default().await?, config);
+    let cluster = kubernetes::Kubernetes::new(kube::Client::try_default().await?, config, kills);
     RemoteSandboxProvider::new("gke", Arc::new(cluster), secrets, connections)
 }
