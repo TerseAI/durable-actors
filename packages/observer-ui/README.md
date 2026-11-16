@@ -58,7 +58,7 @@ Custom observer clients can implement `listResidency` to enable the timeline. `H
 
 ## Events
 
-An instance's page lists what happened to it below its logs, newest first. Residency changes (Live, Dormant, Unknown) come from the residency history. Sandbox kills (Out of memory, Evicted, Killed) are sandboxes that stopped under the actor without the platform asking; the pool manager reports them from its pod watch, so they need Kubernetes sandboxes. Warnings shows only the kills.
+An instance's page lists what happened to it below its logs, newest first. Residency changes (Live, Dormant, Unknown) come from the residency history. Sandbox kills are sandboxes that stopped under the actor without the platform asking: Out of memory and Out of disk when the actor passed its own limit, Evicted when its node reclaimed the sandbox, Killed for any other signal the platform didn't send. The pool manager reports them from its pod watch, so they need Kubernetes sandboxes. Warnings shows only the kills.
 
 An Unknown within 40 seconds after a kill is left out, because the kill explains it. An actor reloaded within 35 seconds of a kill can show no Live row, because its residency never left Live.
 

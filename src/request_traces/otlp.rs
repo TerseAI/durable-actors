@@ -40,7 +40,6 @@ pub(crate) const BYTES_OUT: &str = "durable_actors.bytes_out";
 pub(crate) const DURATION_MS: &str = "durable_actors.duration_ms";
 pub(crate) const SANDBOX_ID: &str = "durable_actors.sandbox_id";
 pub(crate) const KILL_REASON: &str = "durable_actors.kill_reason";
-pub(crate) const KILL_MESSAGE: &str = "durable_actors.kill_message";
 
 const TENANT_PREFIX: &str = "durable_actors.";
 

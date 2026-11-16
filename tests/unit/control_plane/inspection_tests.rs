@@ -485,27 +485,20 @@ async fn sandbox_kills_stream_live_and_the_event_history_reads_them_back() -> Re
         fixture.telemetry.clone(),
         fixture.live.clone(),
     );
-    let storage = "exceeded its temporary storage limit";
-    for (id, reason, message, at_ms) in [
-        ("one", KillReason::OutOfMemory, None, 1000),
-        ("two", KillReason::Evicted, Some(storage), 2000),
+    for (id, reason, at_ms) in [
+        ("one", KillReason::OutOfMemory, 1000),
+        ("two", KillReason::OutOfDisk, 2000),
     ] {
         platform.record(SandboxKill {
             actor: fixture.actor(id),
             sandbox_id: format!("sandboxes/{id}/uid"),
             reason,
-            message: message.map(str::to_owned),
             at_ms,
         });
     }
-    let kill = |id: &str, at_ms: u64, reason: &str, message: Option<&str>| {
-        json!({
-            "actorName": "Room.with.dots", "actorId": id,
-            "atMs": at_ms, "reason": reason, "message": message,
-        })
-    };
-    let first = kill("one", 1000, "out_of_memory", None);
-    let second = kill("two", 2000, "evicted", Some(storage));
+    let kill = |id: &str, at_ms: u64, reason: &str| json!({"actorName": "Room.with.dots", "actorId": id, "atMs": at_ms, "reason": reason});
+    let first = kill("one", 1000, "out_of_memory");
+    let second = kill("two", 2000, "out_of_disk");
     for expected in [&first, &second] {
         let (name, streamed) = events.next().await?;
         assert_eq!((name.as_str(), &streamed[0]), ("kill", expected));

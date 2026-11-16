@@ -616,13 +616,7 @@ async fn stored_platform_events_read_back_by_name_once_each() -> Result<()> {
         // A control plane that restarts reports the killed pod it still sees.
         killed(1000, "one", "a", "out_of_memory"),
         killed(2000, "two", "b", "killed"),
-        row(
-            3000,
-            KILLED,
-            "one",
-            "'durable_actors.sandbox_id', 'c', 'durable_actors.kill_reason', 'evicted', \
-             'durable_actors.kill_message', 'exceeded its temporary storage limit'",
-        ),
+        killed(3000, "one", "c", "out_of_disk"),
         row(
             2500,
             OPENED,
@@ -682,16 +676,15 @@ async fn stored_platform_events_read_back_by_name_once_each() -> Result<()> {
         assert_eq!(events.iter().map(subject).collect::<Vec<_>>(), expected);
     }
     let kills = query(&[KILLED], None, None, None);
-    let evicted = &store.platform_events(&project, &kills).await?[0];
-    assert_eq!(evicted.name, KILLED);
-    assert_eq!(evicted.body, None);
+    let latest = &store.platform_events(&project, &kills).await?[0];
+    assert_eq!(latest.name, KILLED);
+    assert_eq!(latest.body, None);
     for (attribute, value) in [
         (otlp::ACTOR_NAME, "Room"),
         (otlp::ACTOR_ID, "one"),
-        (otlp::KILL_REASON, "evicted"),
-        (otlp::KILL_MESSAGE, "exceeded its temporary storage limit"),
+        (otlp::KILL_REASON, "out_of_disk"),
     ] {
-        assert_eq!(evicted.string(attribute).as_deref(), Some(value));
+        assert_eq!(latest.string(attribute).as_deref(), Some(value));
     }
     assert!(store.platform_events("other", &kills).await?.is_empty());
     Ok(())

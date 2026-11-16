@@ -153,7 +153,6 @@ pub(super) struct ActorKill {
     pub actor_id: String,
     pub at_ms: u64,
     pub reason: KillReason,
-    pub message: Option<String>,
 }
 
 impl ObserveEvent {
@@ -329,7 +328,6 @@ fn kill(log: &PlatformLog) -> Option<ObserveEvent> {
         actor_id: log.string(otlp::ACTOR_ID)?,
         at_ms: log.at_ms,
         reason: serde_json::from_value(Value::String(log.string(otlp::KILL_REASON)?)).ok()?,
-        message: log.string(otlp::KILL_MESSAGE),
     }))
 }
 

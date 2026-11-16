@@ -9,7 +9,6 @@ fn out_of_memory_kills_are_read_from_the_stopped_container() {
         PodKill {
             sandbox_id: "sandboxes/actor-pod/actor-uid".into(),
             reason: KillReason::OutOfMemory,
-            message: None,
             at_ms: 1_767_225_600_000,
         }
     );
@@ -37,26 +36,46 @@ fn sigkill_only_counts_when_nothing_asked_the_pod_to_stop() {
     assert_eq!(kill(&stopped("Completed", 0)), None);
 }
 
+/// The messages are the kubelet's own, from `pkg/kubelet/eviction`.
 #[test]
-fn evictions_explain_a_full_temporary_disk() {
+fn an_eviction_past_the_pods_own_disk_limit_is_out_of_disk() {
     let mut pod = pod_json(json!({
         "phase": "Failed",
         "reason": "Evicted",
-        "message": "Pod ephemeral local storage usage exceeds the total limit of containers 8Gi.",
         "conditions": [
             {"type": "Ready", "status": "False", "lastTransitionTime": "2026-01-01T00:00:03Z"},
             {"type": "PodScheduled", "status": "True", "lastTransitionTime": "2025-12-31T23:00:00Z"},
         ],
     }));
-    let evicted = kill(&parse(pod.clone())).unwrap();
-    assert_eq!(evicted.reason, KillReason::Evicted);
-    assert_eq!(
-        evicted.message.as_deref(),
-        Some("exceeded its temporary storage limit")
-    );
-    assert_eq!(evicted.at_ms, 1_767_225_603_000);
-    pod["status"]["message"] = json!("The node was low on resource: memory.");
-    assert_eq!(kill(&parse(pod)).unwrap().message, None);
+    for (message, reason) in [
+        (
+            "Usage of EmptyDir volume \"tmp\" exceeds the limit \"7Gi\". ",
+            KillReason::OutOfDisk,
+        ),
+        (
+            "Container runtime exceeded its local ephemeral storage limit \"8Gi\". ",
+            KillReason::OutOfDisk,
+        ),
+        (
+            "Pod ephemeral local storage usage exceeds the total limit of containers 8Gi. ",
+            KillReason::OutOfDisk,
+        ),
+        (
+            "The node was low on resource: ephemeral-storage. Threshold quantity: 10Gi, available: 9Gi. ",
+            KillReason::Evicted,
+        ),
+        (
+            "The node was low on resource: memory. ",
+            KillReason::Evicted,
+        ),
+    ] {
+        pod["status"]["message"] = json!(message);
+        let evicted = kill(&parse(pod.clone())).unwrap();
+        assert_eq!(evicted.reason, reason, "{message}");
+        assert_eq!(evicted.at_ms, 1_767_225_603_000);
+    }
+    pod["status"].as_object_mut().unwrap().remove("message");
+    assert_eq!(kill(&parse(pod)).unwrap().reason, KillReason::Evicted);
 }
 
 struct HungClaims;

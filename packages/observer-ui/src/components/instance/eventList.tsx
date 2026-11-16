@@ -13,15 +13,32 @@ import { LevelBadge, levelTint } from "./logList.js"
 type Kind = InstanceEvent["kind"]
 
 const previewRows = 10
-const labels: Record<Kind, string> = { live: "Live", dormant: "Dormant", unknown: "Unknown", out_of_memory: "Out of memory", evicted: "Evicted", killed: "Killed" }
-const levels: Record<Kind, LogLevel> = { live: "info", dormant: "info", unknown: "info", out_of_memory: "error", evicted: "warn", killed: "warn" }
+const labels: Record<Kind, string> = {
+    live: "Live",
+    dormant: "Dormant",
+    unknown: "Unknown",
+    out_of_memory: "Out of memory",
+    out_of_disk: "Out of disk",
+    evicted: "Evicted",
+    killed: "Killed"
+}
+const levels: Record<Kind, LogLevel> = {
+    live: "info",
+    dormant: "info",
+    unknown: "info",
+    out_of_memory: "error",
+    out_of_disk: "error",
+    evicted: "warn",
+    killed: "warn"
+}
 const messages: Record<Kind, string> = {
-    live: "Loaded into memory",
-    dormant: "Unloaded from memory",
-    unknown: "Stopped reporting its state",
-    out_of_memory: "Sandbox used more memory than its limit",
-    evicted: "Sandbox evicted by its node",
-    killed: "Sandbox killed by a signal the platform didn't send"
+    live: "Loaded into memory.",
+    dormant: "Unloaded from memory.",
+    unknown: "Stopped reporting its state.",
+    out_of_memory: "Sandbox used more memory than its limit.",
+    out_of_disk: "Sandbox used more disk than its limit.",
+    evicted: "Sandbox evicted by its node.",
+    killed: "Sandbox killed by a signal the platform didn't send."
 }
 
 export type EventListProps = {
@@ -82,7 +99,7 @@ function EventRow({ event, showInstance }: { event: InstanceEvent; showInstance:
                 {labels[event.kind]}
             </LevelBadge>
             {showInstance && <InstanceLink actorId={event.actorId} />}
-            <span className={cn("min-w-0 py-1.5", event.kill ? "text-foreground/95" : "text-muted-foreground")}>{message(event)}</span>
+            <span className={cn("min-w-0 py-1.5", event.kill ? "text-foreground/95" : "text-muted-foreground")}>{messages[event.kind]}</span>
         </li>
     )
 }
@@ -97,8 +114,4 @@ function InstanceLink({ actorId }: { actorId: string }) {
             {actorId}
         </Link>
     )
-}
-
-function message({ kind, kill }: InstanceEvent): string {
-    return kill?.message ? `${messages[kind]}: ${kill.message}.` : `${messages[kind]}.`
 }

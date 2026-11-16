@@ -109,7 +109,6 @@ impl KillReports {
 pub(super) struct PodKill {
     pub sandbox_id: String,
     pub reason: KillReason,
-    pub message: Option<String>,
     pub at_ms: u64,
 }
 
@@ -119,7 +118,6 @@ impl PodKill {
             actor,
             sandbox_id: self.sandbox_id,
             reason: self.reason,
-            message: self.message,
             at_ms: self.at_ms,
         }
     }
@@ -128,16 +126,9 @@ impl PodKill {
 pub(super) fn kill(pod: &Pod) -> Option<PodKill> {
     let status = pod.status.as_ref()?;
     let terminated = terminated(status);
-    let reason = reason(pod, status, terminated)?;
-    let storage = status
-        .message
-        .as_deref()
-        .is_some_and(|message| message.contains("ephemeral local storage"));
     Some(PodKill {
         sandbox_id: sandbox_id(pod)?,
-        reason,
-        message: (reason == KillReason::Evicted && storage)
-            .then(|| "exceeded its temporary storage limit".into()),
+        reason: reason(pod, status, terminated)?,
         at_ms: stopped_at(status, terminated)?,
     })
 }
@@ -160,7 +151,7 @@ fn reason(
     terminated: Option<&ContainerStateTerminated>,
 ) -> Option<KillReason> {
     if status.reason.as_deref() == Some("Evicted") {
-        Some(KillReason::Evicted)
+        Some(eviction(status.message.as_deref().unwrap_or_default()))
     } else if terminated.is_some_and(|state| state.reason.as_deref() == Some("OOMKilled")) {
         Some(KillReason::OutOfMemory)
     } else if terminated.is_some_and(|state| state.exit_code == 137)
@@ -169,6 +160,23 @@ fn reason(
         Some(KillReason::Killed)
     } else {
         None
+    }
+}
+
+/// What the kubelet says when it evicts a pod for passing one of the pod's own disk limits: a
+/// container's, the pod's total, or a volume's. Any other eviction is the node reclaiming what
+/// the node is short of.
+const DISK_LIMITS: [&str; 3] = [
+    "exceeded its local ephemeral storage limit",
+    "ephemeral local storage usage exceeds the total limit",
+    "Usage of EmptyDir volume",
+];
+
+fn eviction(message: &str) -> KillReason {
+    if DISK_LIMITS.iter().any(|limit| message.contains(limit)) {
+        KillReason::OutOfDisk
+    } else {
+        KillReason::Evicted
     }
 }
 
