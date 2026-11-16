@@ -36,6 +36,7 @@ pub(crate) struct RequestTrace {
     pub routing_ms: f64,
     pub duration_ms: f64,
     pub queue_wait_ms: Option<f64>,
+    pub warm_ms: Option<f64>,
     #[serde(default)]
     pub host_state: HostState,
     pub outcome: RequestOutcome,

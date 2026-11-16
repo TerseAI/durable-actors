@@ -25,6 +25,7 @@ pub(crate) const KIND: &str = "durable_actors.kind";
 pub(crate) const CONNECTION_ID: &str = "durable_actors.connection_id";
 pub(crate) const OUTCOME: &str = "durable_actors.outcome";
 pub(crate) const QUEUE_WAIT_MS: &str = "durable_actors.queue_wait_ms";
+pub(crate) const WARM_MS: &str = "durable_actors.warm_ms";
 pub(crate) const ROUTING_MS: &str = "durable_actors.routing_ms";
 pub(crate) const HOST_STATE: &str = "durable_actors.host_state";
 pub(crate) const STATE_VERSION: &str = "durable_actors.state_version";
@@ -189,6 +190,7 @@ fn trace_event(resource: &[KeyValue], span: Span) -> Option<TraceEvent> {
             routing_ms: number(attributes, ROUTING_MS).unwrap_or_default(),
             duration_ms: duration_ns as f64 / 1e6,
             queue_wait_ms: number(attributes, QUEUE_WAIT_MS),
+            warm_ms: number(attributes, WARM_MS),
             host_state: string(attributes, HOST_STATE)
                 .and_then(|value| parse(&value))
                 .unwrap_or_default(),

@@ -15,6 +15,7 @@ export interface RequestTrace {
     routingMs: number
     durationMs: number
     queueWaitMs: number | null
+    warmMs: number | null
     hostState: "cold" | "warm"
     outcome: RequestOutcome
 }

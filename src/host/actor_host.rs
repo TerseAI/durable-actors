@@ -269,13 +269,14 @@ impl ActorHost {
                 }
             },
         };
-        Some(Box::new(TraceRecorder::new(
-            tracer,
-            &operation.invocation(),
-            kind,
-            connection,
-            metadata,
-        )))
+        let recorder = TraceRecorder::new(tracer, &operation.invocation(), kind, connection, metadata);
+        Some(Box::new(match operation {
+            ActorOperation::Warm { until, .. } => recorder.with_warm_ms(
+                (until.saturating_duration_since(tokio::time::Instant::now()).as_secs_f64() * 1000.0)
+                    .round(),
+            ),
+            _ => recorder,
+        }))
     }
 }
 

@@ -260,6 +260,7 @@ pub(super) struct SpanRow {
     pub outcome: String,
     pub state_version: Option<u64>,
     pub metadata: String,
+    pub warm_ms: Option<f64>,
 }
 
 impl SpanRow {
@@ -281,6 +282,7 @@ impl SpanRow {
                 routing_ms: self.routing_ms,
                 duration_ms: self.duration_ms,
                 queue_wait_ms: self.queue_wait_ms,
+                warm_ms: self.warm_ms,
                 host_state: parse(&self.host_state).unwrap_or_default(),
                 outcome: parse(&self.outcome)?,
                 metadata: serde_json::from_str(&self.metadata).ok(),

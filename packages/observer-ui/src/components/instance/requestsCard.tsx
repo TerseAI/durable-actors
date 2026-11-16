@@ -28,7 +28,7 @@ const outcomeLabels: Record<RequestOutcome, string> = { completed: "ok", failed:
 const kindLabels: Record<RequestTrace["kind"], string> = { method: "rpc", websocket: "ws" }
 
 type Scale = { spanMs: number; ticks: number[]; unit: (typeof axisUnits)[number] }
-type MethodCalls = { key: string; kind: RequestTrace["kind"]; operation: string; calls: RequestTrace[] }
+type MethodCalls = { key: string; kind: RequestTrace["kind"]; operation: string; calls: RequestTrace[]; holds: RequestTrace[] }
 
 export type RequestsCardProps = {
     requests: RequestTrace[] | null
@@ -46,6 +46,8 @@ export function RequestsCard({ requests, failed, timeWindow, onShowLogs }: Reque
     const selected = counts && (picked !== null && picked < counts.length ? picked : latestActive(counts))
     const inSlice = traces && selected !== null ? sliceCalls(traces, timeWindow, selected) : null
     const calls = inSlice?.slice(-callLimit)
+    const sliceStartMs = selected !== null ? timeWindow.fromMs + selected * timeWindow.stepMs : 0
+    const holding = traces ? heldInto(traces, sliceStartMs) : []
 
     function inspect(call: RequestTrace, element: HTMLElement) {
         if (drawer.openKey === call.eventId) return drawer.close()
@@ -60,7 +62,7 @@ export function RequestsCard({ requests, failed, timeWindow, onShowLogs }: Reque
             ) : counts && selected !== null && inSlice && calls ? (
                 <>
                     <SliceHistogram counts={counts} selected={selected} onSelect={setPicked} timeWindow={timeWindow} />
-                    <Waterfall calls={calls} total={inSlice.length} inspectedId={drawer.openKey} onInspect={inspect} />
+                    <Waterfall calls={calls} holding={holding} sliceStartMs={sliceStartMs} total={inSlice.length} inspectedId={drawer.openKey} onInspect={inspect} />
                 </>
             ) : (
                 <WaterfallSkeleton />
@@ -72,6 +74,11 @@ export function RequestsCard({ requests, failed, timeWindow, onShowLogs }: Reque
 function latestActive(counts: number[]): number {
     const fromEnd = [...counts].reverse().findIndex(count => count > 0)
     return counts.length - 1 - Math.max(fromEnd, 0)
+}
+
+/// Warms that started before the slice and still hold the host when it begins.
+function heldInto(traces: RequestTrace[], sliceStartMs: number): RequestTrace[] {
+    return traces.filter(trace => trace.warmMs && trace.startedAtMs < sliceStartMs && trace.startedAtMs + trace.warmMs > sliceStartMs)
 }
 
 function sliceCalls(traces: RequestTrace[], timeWindow: TimeWindow, slice: number): RequestTrace[] {
@@ -88,6 +95,10 @@ function WaterfallKeys() {
             <span className="flex items-center gap-1.75">
                 <span className="h-2 w-4 rounded-xs bg-foreground" />
                 Running
+            </span>
+            <span className="flex items-center gap-1.75">
+                <span className="h-2 w-4 rounded-xs bg-foreground/20" />
+                Held
             </span>
         </div>
     )
@@ -126,11 +137,14 @@ function SliceHistogram({ counts, selected, onSelect, timeWindow }: SliceHistogr
 
 type InspectionProps = { inspectedId: string | null; onInspect: (call: RequestTrace, element: HTMLElement) => void }
 
-function Waterfall({ calls, total, inspectedId, onInspect }: { calls: RequestTrace[]; total: number } & InspectionProps) {
-    if (!calls.length) return <p className="py-6 text-[13px] text-muted-foreground">No requests in this slice.</p>
-    const origin = calls[0]!.startedAtMs
-    const scale = waterfallScale(extentMs(calls))
-    const rows = methodRows(calls)
+type WaterfallProps = { calls: RequestTrace[]; holding: RequestTrace[]; sliceStartMs: number; total: number } & InspectionProps
+
+function Waterfall({ calls, holding, sliceStartMs, total, inspectedId, onInspect }: WaterfallProps) {
+    const origin = calls[0]?.startedAtMs ?? sliceStartMs
+    const holds = holding.filter(hold => hold.startedAtMs + (hold.warmMs ?? 0) > origin)
+    if (!calls.length && !holds.length) return <p className="py-6 text-[13px] text-muted-foreground">No requests in this slice.</p>
+    const scale = waterfallScale(calls.length ? extentMs(calls) : 0)
+    const rows = methodRows(calls, holds)
     return (
         <>
             <WaterfallAxis scale={scale} />
@@ -156,15 +170,17 @@ function waterfallScale(extent: number): Scale {
     return { spanMs, ticks: Array.from({ length: spanMs / step + 1 }, (_, index) => index * step), unit: axisUnits.find(unit => spanMs < unit.below) ?? axisUnits.at(-1)! }
 }
 
-function methodRows(calls: RequestTrace[]): MethodCalls[] {
+function methodRows(calls: RequestTrace[], holds: RequestTrace[]): MethodCalls[] {
     const rows = new Map<string, MethodCalls>()
-    for (const call of calls) {
-        const key = `${call.kind}:${call.operation}`
-        const row = rows.get(key) ?? { key, kind: call.kind, operation: call.operation, calls: [] }
-        row.calls.push(call)
+    const rowOf = (trace: RequestTrace) => {
+        const key = `${trace.kind}:${trace.operation}`
+        const row = rows.get(key) ?? { key, kind: trace.kind, operation: trace.operation, calls: [], holds: [] }
         rows.set(key, row)
+        return row
     }
-    return [...rows.values()].sort((a, b) => b.calls.length - a.calls.length || a.calls[0]!.startedAtMs - b.calls[0]!.startedAtMs)
+    for (const call of calls) rowOf(call).calls.push(call)
+    for (const hold of holds) rowOf(hold).holds.push(hold)
+    return [...rows.values()].sort((a, b) => b.calls.length - a.calls.length || (a.calls[0]?.startedAtMs ?? Infinity) - (b.calls[0]?.startedAtMs ?? Infinity))
 }
 
 function WaterfallAxis({ scale: { spanMs, ticks, unit } }: { scale: Scale }) {
@@ -231,6 +247,10 @@ function MethodTrack({ row, calls, origin, scale: { spanMs, ticks }, inspectedId
             className="relative h-full bg-[linear-gradient(90deg,color-mix(in_oklab,var(--border)_55%,transparent)_1px,transparent_1px)]"
             style={{ backgroundSize: `${100 / (ticks.length - 1)}% 100%` }}
         >
+            {row.holds.map(hold => (
+                <HoldShade key={`${hold.eventId}-hold`} fromMs={0} toMs={hold.startedAtMs + (hold.warmMs ?? 0) - origin} spanMs={spanMs} />
+            ))}
+            {row.calls.map(call => (call.warmMs ? <HoldShade key={`${call.eventId}-hold`} fromMs={call.startedAtMs - origin} toMs={call.startedAtMs - origin + call.warmMs} spanMs={spanMs} /> : null))}
             {row.calls.map(call => (
                 <CallBar
                     key={call.eventId}
@@ -246,6 +266,11 @@ function MethodTrack({ row, calls, origin, scale: { spanMs, ticks }, inspectedId
     )
 }
 
+function HoldShade({ fromMs, toMs, spanMs }: { fromMs: number; toMs: number; spanMs: number }) {
+    const at = (ms: number) => `${(ms / spanMs) * 100}%`
+    return <span aria-hidden className="absolute top-1/2 h-3 -translate-y-1/2 rounded-[2px] bg-foreground/20" style={{ left: at(fromMs), width: at(Math.min(toMs, spanMs) - fromMs) }} />
+}
+
 function blockerOf(call: RequestTrace, calls: RequestTrace[]): RequestTrace | undefined {
     if (!call.queueWaitMs) return undefined
     return calls.find(other => other.eventId !== call.eventId && other.startedAtMs + (other.queueWaitMs ?? 0) <= call.startedAtMs && call.startedAtMs < other.startedAtMs + other.durationMs)
@@ -257,7 +282,7 @@ function CallBar({ call, blocker, selected, onInspect, left, width }: CallBarPro
     const queueShare = call.durationMs > 0 ? (call.queueWaitMs ?? 0) / call.durationMs : 0
     const failed = isFailed(call)
     const runMs = serviceTime(call) ?? call.durationMs
-    const label = `${call.operation}, ${call.hostState}${call.queueWaitMs ? `, waited ${formatMs(call.queueWaitMs)}` : ""}, ran ${formatMs(runMs)}${failed ? `, ${outcomeLabels[call.outcome]}` : ""}`
+    const label = `${call.operation}, ${call.hostState}${call.queueWaitMs ? `, waited ${formatMs(call.queueWaitMs)}` : ""}, ran ${formatMs(runMs)}${call.warmMs ? `, held ${formatDuration(call.warmMs)}` : ""}${failed ? `, ${outcomeLabels[call.outcome]}` : ""}`
     return (
         <Tooltip>
             <TooltipTrigger asChild>
@@ -316,6 +341,12 @@ function CallDetail({ call, blocker }: { call: RequestTrace; blocker: RequestTra
                     Ran <b className="font-medium">{formatMs(runMs)}</b>
                 </>
             )}
+            {call.warmMs ? (
+                <>
+                    {" · "}
+                    held <b className="font-medium">{formatDuration(call.warmMs)}</b>
+                </>
+            ) : null}
             {isFailed(call) && ` · ${outcomeLabels[call.outcome]}`}
         </span>
     )

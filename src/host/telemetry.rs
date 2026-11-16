@@ -124,6 +124,7 @@ pub(crate) struct TraceRecorder {
     tracer: SdkTracer,
     operation: String,
     attributes: Vec<KeyValue>,
+    warm_ms: Option<f64>,
 }
 
 impl TraceRecorder {
@@ -144,7 +145,14 @@ impl TraceRecorder {
             tracer,
             operation: invocation.method.clone(),
             attributes,
+            warm_ms: None,
         }
+    }
+
+    /// Records the hold of a warm, written only when the warm completed.
+    pub(crate) fn with_warm_ms(mut self, warm_ms: f64) -> Self {
+        self.warm_ms = Some(warm_ms);
+        self
     }
 }
 
@@ -154,6 +162,11 @@ impl RequestObserver for TraceRecorder {
         let ended = started + Duration::from_secs_f64(completion.timings.duration_ms / 1000.0);
         let mut attributes = self.attributes;
         attributes.extend(completion_attributes(completion));
+        if matches!(completion.outcome, RequestOutcome::Completed)
+            && let Some(warm_ms) = self.warm_ms
+        {
+            attributes.push(KeyValue::new(otlp::WARM_MS, warm_ms));
+        }
         let mut span = self
             .tracer
             .span_builder(self.operation)

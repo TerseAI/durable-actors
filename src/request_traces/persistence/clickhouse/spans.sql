@@ -10,7 +10,8 @@ SELECT * FROM (
         SpanAttributes['durable_actors.host_state'] AS host_state,
         SpanAttributes['durable_actors.outcome'] AS outcome,
         toUInt64OrNull(SpanAttributes['durable_actors.state_version']) AS state_version,
-        SpanAttributes['durable_actors.metadata'] AS metadata
+        SpanAttributes['durable_actors.metadata'] AS metadata,
+        toFloat64OrNull(SpanAttributes['durable_actors.warm_ms']) AS warm_ms
     FROM otel_traces
     WHERE ProjectId = {project:String}
         AND ReceivedAt > now64(3) - toIntervalSecond({retention:UInt64})
