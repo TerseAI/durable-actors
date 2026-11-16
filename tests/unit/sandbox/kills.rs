@@ -3,15 +3,10 @@ use serde_json::json;
 use super::*;
 
 #[test]
-fn out_of_memory_kills_name_the_annotated_actor() {
+fn out_of_memory_kills_are_read_from_the_stopped_container() {
     assert_eq!(
         kill(&stopped("OOMKilled", 137)).unwrap(),
-        SandboxKill {
-            actor: ActorKey {
-                project_id: "project".into(),
-                actor_name: "Counter".into(),
-                actor_id: "counter-1".into(),
-            },
+        PodKill {
             sandbox_id: "sandboxes/actor-pod/actor-uid".into(),
             reason: KillReason::OutOfMemory,
             message: None,
@@ -44,7 +39,7 @@ fn sigkill_only_counts_when_nothing_asked_the_pod_to_stop() {
 
 #[test]
 fn evictions_explain_a_full_temporary_disk() {
-    let mut pod = annotated(json!({
+    let mut pod = pod_json(json!({
         "phase": "Failed",
         "reason": "Evicted",
         "message": "Pod ephemeral local storage usage exceeds the total limit of containers 8Gi.",
@@ -64,26 +59,30 @@ fn evictions_explain_a_full_temporary_disk() {
     assert_eq!(kill(&parse(pod)).unwrap().message, None);
 }
 
-#[test]
-fn pods_without_an_actor_report_nothing() {
-    let mut pod = stopped_json("OOMKilled", 137);
-    pod["metadata"]["annotations"]
-        .as_object_mut()
-        .unwrap()
-        .remove("terse.ai/actor-id");
-    assert_eq!(kill(&parse(pod)), None);
+struct HungClaims;
+
+#[async_trait::async_trait]
+impl ClaimedActors for HungClaims {
+    async fn actor_of(&self, _: &str) -> anyhow::Result<Option<ActorKey>> {
+        std::future::pending().await
+    }
 }
 
-#[test]
-fn annotations_round_trip_the_actor() {
-    let actor = ActorKey {
-        project_id: "project".into(),
-        actor_name: "Counter".into(),
-        actor_id: "counter/1 with spaces".into(),
-    };
-    let mut pod = stopped_json("OOMKilled", 137);
-    pod["metadata"]["annotations"] = json!(actor_annotations(&actor));
-    assert_eq!(kill(&parse(pod)).unwrap().actor, actor);
+#[tokio::test(start_paused = true)]
+async fn a_claim_read_that_hangs_is_given_up_so_the_watch_moves_on() {
+    let reports = KillReports::new(
+        kube::runtime::reflector::store().0,
+        KillReporting {
+            claims: Arc::new(HungClaims),
+            events: Arc::new(crate::platform_events::NoPlatformEvents),
+        },
+    );
+    tokio::time::timeout(
+        CLAIM_READ_TIMEOUT * 2,
+        reports.report(&stopped("OOMKilled", 137)),
+    )
+    .await
+    .expect("the report gave up on the claim");
 }
 
 fn stopped(reason: &str, exit_code: i32) -> Pod {
@@ -91,7 +90,7 @@ fn stopped(reason: &str, exit_code: i32) -> Pod {
 }
 
 fn stopped_json(reason: &str, exit_code: i32) -> serde_json::Value {
-    annotated(json!({
+    pod_json(json!({
         "phase": "Failed",
         "containerStatuses": [{
             "name": "runtime",
@@ -108,7 +107,7 @@ fn stopped_json(reason: &str, exit_code: i32) -> serde_json::Value {
     }))
 }
 
-fn annotated(status: serde_json::Value) -> serde_json::Value {
+fn pod_json(status: serde_json::Value) -> serde_json::Value {
     json!({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -116,11 +115,6 @@ fn annotated(status: serde_json::Value) -> serde_json::Value {
             "name": "actor-pod",
             "namespace": "sandboxes",
             "uid": "actor-uid",
-            "annotations": {
-                "terse.ai/project-id": "project",
-                "terse.ai/actor-name": "Counter",
-                "terse.ai/actor-id": "counter-1",
-            },
         },
         "status": status,
     })

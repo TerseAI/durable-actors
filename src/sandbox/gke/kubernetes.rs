@@ -7,7 +7,7 @@ use k8s_openapi::{
 };
 use kube::{
     Api, Client, ResourceExt,
-    api::{DeleteParams, Patch, PatchParams, PostParams, Preconditions},
+    api::{DeleteParams, PostParams, Preconditions},
     runtime::{
         WatchStreamExt,
         reflector::{self, ObjectRef, Store, store::Writer},
@@ -17,7 +17,7 @@ use kube::{
 use tokio::sync::watch;
 use tokio_util::task::AbortOnDropHandle;
 
-use super::*;
+use super::{kills::KillReports, *};
 use crate::sandbox::kube_retry::retry_throttled;
 
 const MANAGED: &str = "app.kubernetes.io/managed-by=terse";
@@ -39,31 +39,27 @@ pub(super) struct Kubernetes {
     observed: Store<Pod>,
     changes: watch::Receiver<()>,
     config: GkeConfig,
+    kills: Option<Arc<KillReports>>,
     _watch: AbortOnDropHandle<()>,
 }
 impl Kubernetes {
-    pub fn new(
-        client: Client,
-        config: GkeConfig,
-        kills: Arc<dyn PlatformEvents<SandboxKill>>,
-    ) -> Self {
+    pub fn new(client: Client, config: GkeConfig, kills: Option<KillReporting>) -> Self {
         let pods = Api::namespaced(client, &config.namespace);
         let (observed, writer) = reflector::store();
         let (changed, changes) = watch::channel(());
+        let kills = kills.map(|reporting| Arc::new(KillReports::new(observed.clone(), reporting)));
         let watch = AbortOnDropHandle::new(tokio::spawn(observe(
             pods.clone(),
             writer,
             changed,
-            KillReports {
-                observed: observed.clone(),
-                events: kills,
-            },
+            kills.clone(),
         )));
         Self {
             pods,
             observed,
             changes,
             config,
+            kills,
             _watch: watch,
         }
     }
@@ -169,22 +165,10 @@ impl SandboxCluster for Kubernetes {
         })
     }
 
-    async fn name_actor(&self, spare: &SpareHandle, actor: &ActorKey) -> Result<()> {
-        let (namespace, name, uid) = resource_identity(&spare.resource_id)?;
-        ensure!(
-            namespace == self.config.namespace && name == spare.name,
-            "sandbox resource identity mismatch"
-        );
-        // A patch that names another UID is rejected, so a pod that took the name stays unnamed.
-        let patch = Patch::Merge(serde_json::json!({
-            "metadata": {"uid": uid, "annotations": kills::actor_annotations(actor)},
-        }));
-        let params = PatchParams::default();
-        retry_throttled(|| self.pods.patch_metadata(name, &params, &patch)).await?;
-        Ok(())
-    }
-
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
+        if let Some(kills) = &self.kills {
+            kills.keep_claim(&spare.name).await;
+        }
         if spare.resource_id.is_empty() {
             let Some(pod) = retry_throttled(|| self.pods.get_opt(&spare.name)).await? else {
                 return Ok(());
@@ -252,8 +236,9 @@ async fn observe(
     pods: Api<Pod>,
     writer: Writer<Pod>,
     changed: watch::Sender<()>,
-    kills: KillReports,
+    kills: Option<Arc<KillReports>>,
 ) {
+    let kills = kills.as_deref();
     watcher(pods, watcher::Config::default().labels(MANAGED))
         .default_backoff()
         .modify(|pod| {
@@ -263,11 +248,14 @@ async fn observe(
                 ..PodSpec::default()
             });
         })
-        // Ahead of the store, which still holds each pod as it was before its event.
-        .inspect(|event| {
-            if let Ok(watcher::Event::Apply(pod) | watcher::Event::InitApply(pod)) = event {
-                kills.report(pod);
+        // Ahead of the store, as `KillReports::report` needs.
+        .then(|event| async move {
+            if let (Some(kills), Ok(watcher::Event::Apply(pod) | watcher::Event::InitApply(pod))) =
+                (kills, &event)
+            {
+                kills.report(pod).await;
             }
+            event
         })
         .reflect(writer)
         .for_each(|event| {
@@ -280,28 +268,6 @@ async fn observe(
             std::future::ready(())
         })
         .await;
-}
-
-/// Reports each sandbox's kill once. A killed pod shows its kill on every later update and
-/// again when the watch relists.
-struct KillReports {
-    observed: Store<Pod>,
-    events: Arc<dyn PlatformEvents<SandboxKill>>,
-}
-
-impl KillReports {
-    fn report(&self, pod: &Pod) {
-        let Some(kill) = kills::kill(pod) else {
-            return;
-        };
-        let before = self.observed.get(&ObjectRef::from_obj(pod));
-        let reported = before
-            .and_then(|pod| kills::kill(&pod))
-            .is_some_and(|before| before.sandbox_id == kill.sandbox_id);
-        if !reported {
-            self.events.record(kill);
-        }
-    }
 }
 
 /// The spare sandbox manifest, kept as YAML so its isolation settings read like any other.

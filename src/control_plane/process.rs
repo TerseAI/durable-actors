@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 use crate::{
     bucket::{GcsBucket, RuntimeStorageReader},
-    platform_events::{NoPlatformEvents, PlatformEvents, sandboxes::SandboxKill},
+    platform_events::{NoPlatformEvents, PlatformEvents},
     postgres::PostgresDatabase,
     redis_client::{Redis, RedisConfig},
     request_traces::{
@@ -15,8 +15,9 @@ use crate::{
     },
     sandbox::{
         HostSandboxRuntimeConfig,
-        gke::{GKE_RUNTIME_CLASS, GkeConfig},
+        gke::{GKE_RUNTIME_CLASS, GkeConfig, KillReporting},
         modal::ModalConfig,
+        pool::claims::PoolClaims,
     },
 };
 
@@ -396,7 +397,7 @@ async fn sandbox_provisioner(
     connections: crate::sandbox::connections::HostConnections,
 ) -> Result<super::service::SandboxHostProvisioner> {
     // Every replica watches the same pods, so only the pool manager reports their kills.
-    let provider = sandbox_provider(&config, connections, Arc::new(NoPlatformEvents)).await?;
+    let provider = sandbox_provider(&config, connections, None).await?;
     let pool = crate::sandbox::pool::SparePool::with_runtime_images(
         database,
         provider.clone(),
@@ -419,7 +420,7 @@ async fn sandbox_provisioner(
 async fn sandbox_provider(
     config: &SandboxProviderConfig,
     connections: crate::sandbox::connections::HostConnections,
-    kills: Arc<dyn PlatformEvents<SandboxKill>>,
+    kills: Option<KillReporting>,
 ) -> Result<Arc<dyn crate::sandbox::SandboxProvider>> {
     let secrets = Arc::new(crate::sandbox::secrets::KubernetesSecrets::new(
         config.secret_namespace.clone(),
@@ -455,11 +456,10 @@ pub async fn serve_pool_manager(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let kills: Arc<dyn PlatformEvents<SandboxKill>> =
-        match platform_events(config.platform_telemetry.as_ref())? {
-            Some(events) => events,
-            None => Arc::new(NoPlatformEvents),
-        };
+    let kills = platform_events(config.platform_telemetry.as_ref())?.map(|events| KillReporting {
+        claims: Arc::new(PoolClaims(database.clone())),
+        events,
+    });
     let provider = sandbox_provider(
         &config.sandbox_provider,
         crate::sandbox::connections::HostConnections::new()?,

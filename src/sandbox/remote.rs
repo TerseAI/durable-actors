@@ -39,7 +39,6 @@ impl RemoteSandboxProvider {
         );
         let secrets = self.secrets.resolve(&request.secret_refs).await?;
         let environment = assignment_environment(request, spare, secrets)?;
-        self.name_actor(request, spare);
         let handle = self
             .assignment
             .assign(spare, environment, request.initial_operation.clone())
@@ -70,19 +69,6 @@ impl RemoteSandboxProvider {
             }
         })?;
         Ok(handle)
-    }
-
-    /// Runs beside the assignment, which must not wait on the cluster's API.
-    fn name_actor(&self, request: &EnsureHostRequest, spare: &SpareHandle) {
-        let Some(actor) = request.actor.clone() else {
-            return;
-        };
-        let (cluster, spare) = (self.cluster.clone(), spare.clone());
-        tokio::spawn(async move {
-            if let Err(error) = cluster.name_actor(&spare, &actor).await {
-                tracing::warn!(error = %format!("{error:#}"), resource = %spare.resource_id, "sandbox was not named after its actor");
-            }
-        });
     }
 }
 
@@ -274,14 +260,6 @@ pub(super) trait SandboxCluster: Send + Sync {
         Ok(())
     }
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
-    /// Records on the sandbox which actor it now runs, for what observes it from outside.
-    async fn name_actor(
-        &self,
-        _spare: &SpareHandle,
-        _actor: &crate::actor::ActorKey,
-    ) -> Result<()> {
-        Ok(())
-    }
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()>;
 }
 

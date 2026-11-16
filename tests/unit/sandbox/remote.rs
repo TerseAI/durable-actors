@@ -86,43 +86,6 @@ async fn prewarmed_assignment_uses_ready_host_without_creating_a_pod() -> Result
     Ok(())
 }
 
-struct NamedActors(tokio::sync::mpsc::UnboundedSender<(String, crate::actor::ActorKey)>);
-#[async_trait]
-impl SandboxCluster for NamedActors {
-    async fn stopped_spares(&self, _: &[SpareHandle]) -> Result<Vec<String>> {
-        Ok(Vec::new())
-    }
-    async fn create_spare(&self, _: &CreateSpareRequest) -> Result<SpareHandle> {
-        anyhow::bail!("unexpected pod creation")
-    }
-    async fn name_actor(&self, spare: &SpareHandle, actor: &crate::actor::ActorKey) -> Result<()> {
-        let _ = self.0.send((spare.resource_id.clone(), actor.clone()));
-        Ok(())
-    }
-    async fn retire_spare(&self, _: &SpareHandle) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn assignment_names_the_actor_on_its_sandbox() -> Result<()> {
-    let (named, mut names) = tokio::sync::mpsc::unbounded_channel();
-    let provider = RemoteSandboxProvider {
-        name: "gke",
-        cluster: Arc::new(NamedActors(named)),
-        secrets: Arc::new(Secrets),
-        assignment: Arc::new(Assign),
-    };
-    let request = request()?;
-    provider.ensure_host(&request).await?;
-    let (sandbox, actor) = tokio::time::timeout(Duration::from_secs(5), names.recv())
-        .await?
-        .context("the cluster went away")?;
-    assert_eq!(sandbox, "sandboxes/warm/uid");
-    assert_eq!(Some(actor), request.actor);
-    Ok(())
-}
-
 fn request() -> Result<EnsureHostRequest> {
     let manifest = crate::bundle::ActorBundle {
         bucket: "code-bucket".into(),
