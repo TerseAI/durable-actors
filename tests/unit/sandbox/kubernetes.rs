@@ -1,4 +1,7 @@
+use serde_json::json;
+
 use super::*;
+use crate::actor::ActorKey;
 
 #[test]
 fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
@@ -24,6 +27,8 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
             "us-west4-c".into(),
         ],
         "test-token",
+        Some("http://node-cache:7103"),
+        GKE_RUNTIME_CLASS,
     )?;
     assert_eq!(
         pod.metadata
@@ -80,6 +85,10 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
             .allow_privilege_escalation,
         Some(false)
     );
+    assert!(spec.containers[0].env.as_ref().unwrap().iter().any(|var| {
+        var.name == "DURABLE_ACTORS_NODE_CACHE_URL"
+            && var.value.as_deref() == Some("http://node-cache:7103")
+    }));
     Ok(())
 }
 
@@ -101,6 +110,7 @@ async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -
     let (cluster, _server) = fake_cluster(routes).await?;
     cluster
         .retire_spare(&SpareHandle {
+            node: String::new(),
             name: "reserved-pod".into(),
             resource_id: String::new(),
             route: String::new(),
@@ -168,6 +178,7 @@ async fn spares_start_from_one_shared_watch_and_retry_throttled_creates() -> Res
     .await?;
     assert_eq!(first.resource_id, "sandboxes/warm-a/warm-a-uid");
     assert_eq!(first.route, "http://10.0.0.1:7101");
+    assert_eq!(first.node, "sandbox-node-1");
     assert_eq!(second.control_route, "http://10.0.0.2:7102");
     let mut requests = requests.lock().unwrap().clone();
     requests.sort();
@@ -218,6 +229,7 @@ async fn stopped_spares_reads_the_watch_and_confirms_pods_it_has_not_seen() -> R
     ]
     .into_iter()
     .map(|name| SpareHandle {
+        node: String::new(),
         name: name.into(),
         resource_id: format!(
             "sandboxes/{name}/{}-uid",
@@ -291,8 +303,195 @@ async fn finished_pods_are_reaped_once_from_the_watch() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn the_watch_reports_each_pod_killed_under_its_actor_once() -> Result<()> {
+    use crate::platform_events::sandboxes::KillReason;
+    use axum::{Router, extract::RawQuery, routing::get};
+    let killed = out_of_memory("killed");
+    let mut evicted = pod("evicted", "Failed");
+    evicted["status"]["reason"] = json!("Evicted");
+    evicted["status"]["conditions"] = json!([{
+        "type": "Ready",
+        "status": "False",
+        "lastTransitionTime": "2026-01-01T00:00:05Z",
+    }]);
+    // The kubelet reports an evicted pod's containers afterwards, which moves when it stopped.
+    let mut stopped = evicted.clone();
+    stopped["status"]["containerStatuses"] = terminated("Error");
+    let items = vec![
+        pod("live", "Running"),
+        pod("crashed", "Failed"),
+        out_of_memory("unclaimed"),
+        killed.clone(),
+    ];
+    let events = vec![
+        json!({"type": "MODIFIED", "object": killed}),
+        json!({"type": "ADDED", "object": evicted}),
+        json!({"type": "MODIFIED", "object": stopped}),
+        json!({"type": "ADDED", "object": pod("last", "Running")}),
+    ];
+    let routes = Router::new().route(
+        "/api/v1/namespaces/sandboxes/pods",
+        get(move |RawQuery(query): RawQuery| {
+            let response = pod_collection(query, items.clone(), events.clone()).0;
+            async move { response }
+        }),
+    );
+    let (reported, mut kills) = tokio::sync::mpsc::unbounded_channel();
+    let reporting = KillReporting {
+        claims: Arc::new(Claimed::sandboxes(["killed", "evicted"])),
+        events: Arc::new(ReportedKills(reported)),
+    };
+    let (cluster, _server) = reporting_cluster(routes, Some(reporting)).await?;
+    let mut changes = cluster.changes.clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while cluster.observed_pod("last", Some("last-uid")).is_none() {
+            changes.changed().await?;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
+    let reported: Vec<_> = std::iter::from_fn(|| kills.try_recv().ok())
+        .map(|kill| (kill.actor, kill.sandbox_id, kill.reason, kill.at_ms))
+        .collect();
+    let new_year = 1_767_225_600_000;
+    assert_eq!(
+        reported,
+        [
+            (
+                counter(),
+                "sandboxes/killed/killed-uid".to_owned(),
+                KillReason::OutOfMemory,
+                new_year
+            ),
+            (
+                counter(),
+                "sandboxes/evicted/evicted-uid".to_owned(),
+                KillReason::Evicted,
+                new_year + 5000
+            ),
+        ]
+    );
+    Ok(())
+}
+
+/// The pool forgets a failed assignment's claim as soon as it has deleted the pod, while the
+/// kubelet can take longer to say the pod ran out of memory.
+#[tokio::test]
+async fn a_kill_that_shows_after_its_sandbox_was_retired_still_names_the_actor() -> Result<()> {
+    use axum::{
+        Json, Router,
+        extract::RawQuery,
+        routing::{delete, get},
+    };
+    let (show, shown) = watch::channel(false);
+    let routes = Router::new()
+        .route(
+            "/api/v1/namespaces/sandboxes/pods",
+            get(move |RawQuery(query): RawQuery| {
+                let response = pod_collection(query, vec![out_of_memory("failed")], Vec::new()).0;
+                let mut shown = shown.clone();
+                async move {
+                    let _ = shown.wait_for(|shown| *shown).await;
+                    response
+                }
+            }),
+        )
+        .route(
+            "/api/v1/namespaces/sandboxes/pods/failed",
+            delete(|| async {
+                Json(json!({"apiVersion":"v1","kind":"Status","status":"Success"}))
+            }),
+        );
+    let (reported, mut kills) = tokio::sync::mpsc::unbounded_channel();
+    let claims = Arc::new(Claimed::sandboxes(["failed"]));
+    let reporting = KillReporting {
+        claims: claims.clone(),
+        events: Arc::new(ReportedKills(reported)),
+    };
+    let (cluster, _server) = reporting_cluster(routes, Some(reporting)).await?;
+    cluster
+        .retire_spare(&SpareHandle {
+            node: String::new(),
+            name: "failed".into(),
+            resource_id: "sandboxes/failed/failed-uid".into(),
+            route: String::new(),
+            canonical_region: String::new(),
+            control_route: String::new(),
+            control_token: String::new(),
+        })
+        .await?;
+    claims.0.lock().unwrap().clear();
+    show.send_replace(true);
+    let kill = tokio::time::timeout(Duration::from_secs(5), kills.recv())
+        .await?
+        .context("the watch stopped")?;
+    assert_eq!(kill.actor, counter());
+    Ok(())
+}
+
+struct ReportedKills(tokio::sync::mpsc::UnboundedSender<SandboxKill>);
+
+impl PlatformEvents<SandboxKill> for ReportedKills {
+    fn record(&self, kill: SandboxKill) {
+        let _ = self.0.send(kill);
+    }
+}
+
+/// The sandboxes claimed for `counter()`.
+struct Claimed(std::sync::Mutex<Vec<&'static str>>);
+
+impl Claimed {
+    fn sandboxes(names: impl IntoIterator<Item = &'static str>) -> Self {
+        Self(names.into_iter().collect::<Vec<_>>().into())
+    }
+}
+
+#[async_trait]
+impl ClaimedActors for Claimed {
+    async fn actor_of(&self, sandbox: &str) -> Result<Option<ActorKey>> {
+        Ok(self.0.lock().unwrap().contains(&sandbox).then(counter))
+    }
+}
+
+fn counter() -> ActorKey {
+    ActorKey {
+        project_id: "project".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    }
+}
+
+fn out_of_memory(name: &str) -> serde_json::Value {
+    let mut pod = pod(name, "Failed");
+    pod["status"]["containerStatuses"] = terminated("OOMKilled");
+    pod
+}
+
+fn terminated(reason: &str) -> serde_json::Value {
+    json!([{
+        "name": "runtime",
+        "image": "runtime",
+        "imageID": "",
+        "ready": false,
+        "restartCount": 0,
+        "state": {"terminated": {
+            "exitCode": 137,
+            "reason": reason,
+            "finishedAt": "2026-01-01T00:00:00Z",
+        }},
+    }])
+}
+
 async fn fake_cluster(
     routes: axum::Router,
+) -> Result<(Kubernetes, AbortOnDropHandle<std::io::Result<()>>)> {
+    reporting_cluster(routes, None).await
+}
+
+async fn reporting_cluster(
+    routes: axum::Router,
+    kills: Option<KillReporting>,
 ) -> Result<(Kubernetes, AbortOnDropHandle<std::io::Result<()>>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let config = kube::Config::new(format!("http://{}", listener.local_addr()?).parse()?);
@@ -306,7 +505,10 @@ async fn fake_cluster(
             namespace: "sandboxes".into(),
             zones: BTreeMap::from([("north-america-west".into(), vec!["us-west4-a".into()])]),
             reap_concurrency: 4,
+            node_cache_url: None,
+            runtime_class: GKE_RUNTIME_CLASS.into(),
         },
+        kills,
     );
     Ok((cluster, server))
 }
@@ -337,6 +539,7 @@ fn ready_event(name: &str, ip: &str) -> serde_json::Value {
     let mut pod = pod(name, "Running");
     pod["status"]["podIP"] = json!(ip);
     pod["status"]["conditions"] = json!([{"type":"Ready","status":"True"}]);
+    pod["spec"] = json!({"nodeName":"sandbox-node-1","containers":[]});
     json!({"type":"ADDED","object":pod})
 }
 
@@ -354,17 +557,7 @@ fn spare_request(name: &str) -> CreateSpareRequest {
 
 #[test]
 fn temporary_storage_is_disk_backed_and_bounded() {
-    let pod = base_pod(
-        "actor",
-        "image",
-        &["us-west4-a".into()],
-        &ResourceLimits {
-            cpu_millis: 500,
-            cpu_limit_millis: None,
-            memory_mib: 143,
-            memory_limit_mib: Some(143),
-        },
-    );
+    let pod = spare_json();
     let resources = &pod["spec"]["containers"][0]["resources"];
     assert_eq!(resources["requests"]["ephemeral-storage"], "256Mi");
     assert_eq!(resources["limits"]["ephemeral-storage"], "8Gi");
@@ -372,4 +565,81 @@ fn temporary_storage_is_disk_backed_and_bounded() {
         assert!(volume["emptyDir"]["medium"].is_null());
         assert!(volume["emptyDir"]["sizeLimit"].is_string());
     }
+}
+
+#[test]
+fn runtime_binaries_run_from_a_read_only_copy() {
+    let pod = spare_json();
+    let runtime = &pod["spec"]["containers"][0];
+    assert_eq!(runtime["command"][0], "/runtime/durable-actors");
+    assert!(
+        runtime["volumeMounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mount| mount["mountPath"] == "/runtime" && mount["readOnly"] == true)
+    );
+    let copy = &pod["spec"]["initContainers"][0];
+    assert_eq!(copy["volumeMounts"][0]["mountPath"], "/runtime");
+    assert_eq!(copy["resources"], runtime["resources"]);
+}
+
+#[test]
+fn spare_pod_manifest_only_uses_fields_kubernetes_knows() {
+    let written: serde_json::Value = serde_yaml::from_str(SPARE_POD).unwrap();
+    let parsed: Pod = serde_yaml::from_str(SPARE_POD).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), written);
+}
+
+fn spare_json() -> serde_json::Value {
+    serde_json::to_value(spare_under(GKE_RUNTIME_CLASS)).unwrap()
+}
+
+fn spare_under(runtime_class: &str) -> Pod {
+    spare_pod(
+        &spare_request("actor"),
+        &["us-west4-a".into()],
+        "token",
+        None,
+        runtime_class,
+    )
+    .unwrap()
+}
+
+/// The expected values are what GKE writes on a spare under its own class.
+#[test]
+fn a_spare_under_another_runtime_class_carries_the_mount_annotations_gke_would_add() {
+    assert_eq!(gvisor_mounts(spare_under(GKE_RUNTIME_CLASS)), []);
+    let spare = spare_under("gvisor-with-overhead");
+    assert_eq!(
+        spare.spec.as_ref().unwrap().runtime_class_name.as_deref(),
+        Some("gvisor-with-overhead")
+    );
+    assert_eq!(
+        gvisor_mounts(spare),
+        [
+            ("customer.options", "rw,rprivate"),
+            ("customer.share", "container"),
+            ("customer.type", "bind"),
+            ("runtime.options", "rw,rprivate"),
+            ("runtime.share", "pod"),
+            ("runtime.type", "bind"),
+            ("tmp.options", "rw,rprivate"),
+            ("tmp.share", "container"),
+            ("tmp.type", "bind"),
+        ]
+        .map(|(mount, value)| (mount.to_owned(), value.to_owned()))
+    );
+}
+
+fn gvisor_mounts(pod: Pod) -> Vec<(String, String)> {
+    pod.metadata
+        .annotations
+        .unwrap()
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let mount = name.strip_prefix("dev.gvisor.spec.mount.")?;
+            Some((mount.to_owned(), value))
+        })
+        .collect()
 }

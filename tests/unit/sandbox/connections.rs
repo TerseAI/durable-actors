@@ -27,6 +27,7 @@ async fn assignment_reuses_the_warmed_http2_connection() -> Result<()> {
     let connections = HostConnections::new()?;
     connections
         .prewarm(&SpareHandle {
+            node: String::new(),
             name: "spare".into(),
             resource_id: "sandbox".into(),
             route: route.clone(),

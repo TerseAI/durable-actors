@@ -1,4 +1,5 @@
 import type { ActorInventory } from "../types/Actors.js"
+import type { EventHistory, RecordedEvent } from "../types/Events.js"
 import type { ActorLogPage, LogFilter, LogHistogram } from "../types/Logs.js"
 import type { RequestHistoryQuery, RequestTrace, RequestTracePage } from "../types/Requests.js"
 import type { ResidencyHistory } from "../types/Residency.js"
@@ -17,7 +18,8 @@ type totalActorInstancesPayload = Map<string, ActorInventory>
 export interface ObserverClient {
     listActorTypes(): Promise<ActorInventory>
     listRequests(query: RequestHistoryQuery): Promise<RequestTracePage>
-    listResidency(actorName: string, bounds: TimeBounds): Promise<ResidencyHistory>
+    listResidency(actorName: string, bounds: TimeBounds, actorId?: string): Promise<ResidencyHistory>
+    listEventHistory(types: RecordedEvent["type"][], bounds: TimeBounds, actorName?: string, actorId?: string): Promise<EventHistory>
     listWebSockets(): Promise<SocketSession[]>
     listLogs(filter: LogFilter, bounds: TimeBounds, cursor: string | null): Promise<ActorLogPage>
     getLogHistogram(filter: LogFilter, bounds: TimeBounds, bucketMs: number): Promise<LogHistogram>
@@ -40,9 +42,17 @@ export class HttpObserverClient implements ObserverClient {
         return await this.get<RequestTracePage>(`requests?${query}`)
     }
 
-    async listResidency(actorName: string, { fromMs, toMs }: TimeBounds): Promise<ResidencyHistory> {
+    async listResidency(actorName: string, { fromMs, toMs }: TimeBounds, actorId?: string): Promise<ResidencyHistory> {
         const query = new URLSearchParams({ actorName, fromMs: String(fromMs), toMs: String(toMs) })
+        if (actorId) query.set("actorId", actorId)
         return await this.get<ResidencyHistory>(`residency?${query}`)
+    }
+
+    async listEventHistory(types: RecordedEvent["type"][], { fromMs, toMs }: TimeBounds, actorName?: string, actorId?: string): Promise<EventHistory> {
+        const query = new URLSearchParams({ types: types.join(), fromMs: String(fromMs), toMs: String(toMs) })
+        if (actorName) query.set("actorName", actorName)
+        if (actorId) query.set("actorId", actorId)
+        return await this.get<EventHistory>(`events/history?${query}`)
     }
 
     async listWebSockets(): Promise<SocketSession[]> {

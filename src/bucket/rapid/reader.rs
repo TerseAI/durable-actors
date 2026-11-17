@@ -211,14 +211,6 @@ impl LogStorage {
         if length > 0 {
             self.put_batch(manifest, through, batch.finish()?).await?;
         }
-        if self
-            .archive
-            .get(&manifest.marker("closed")?)
-            .await?
-            .is_none()
-        {
-            self.close_segment(manifest, &closed).await?;
-        }
         self.mark_replicated(manifest, &closed).await
     }
 

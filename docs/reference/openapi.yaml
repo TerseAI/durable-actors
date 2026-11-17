@@ -6,6 +6,9 @@ info:
         Manage durable-actors deployments, invoke actors, find actor hosts, and inspect activity.
         When DURABLE_ACTORS_SECRET is set on the server, authenticate backend requests
         with that bearer API key; never expose it to browsers. When unset, no API key is required.
+        DURABLE_ACTORS_INVOKE_API_KEY optionally adds a long-lived key that only findActor,
+        invokeActor, and findWebSocket accept; it requires DURABLE_ACTORS_SECRET. Its actor
+        invocations are limited to published RPC methods.
         Project-scoped actor routes work in development and production. Run `durable-actors dev`
         and copy the printed connection settings into your backend's environment. The default
         local project ID is `local`; use it as `project_id` in requests.
@@ -194,8 +197,8 @@ paths:
             operationId: findActor
             tags: [Actors]
             summary: Find an actor host
-            security: [{ ApiKey: [] }, { ActorSession: [] }, {}]
-            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment. Accepts the administrative secret or a runtime-issued actor:session credential for this project. Sessions produce actor-specific tickets containing all of the actor's published RPC methods. These tickets cannot outlive the session.
+            security: [{ ApiKey: [] }, { InvokeApiKey: [] }, { ActorSession: [] }, {}]
+            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment. Accepts the administrative secret, the invoke API key, or a runtime-issued actor:session credential for this project. Sessions and the invoke API key produce actor-specific tickets containing all of the actor's published RPC methods. These tickets cannot outlive the session.
             requestBody: { $ref: "#/components/requestBodies/FindActor" }
             responses:
                 "200": { $ref: "#/components/responses/ActorTarget" }
@@ -235,7 +238,7 @@ paths:
                   description: Cached invocation through the gateway (or local host) with a signed ticket and ownership epoch.
                   variables:
                       actorHost: { default: "http://127.0.0.1:7101" }
-            security: [{ ApiKey: [] }, { ActorSession: [] }, { ActorTicket: [] }, {}]
+            security: [{ ApiKey: [] }, { InvokeApiKey: [] }, { ActorSession: [] }, { ActorTicket: [] }, {}]
             description: |
                 Without a valid cached target, the SDK sends requestId, method, args and an optional homeRegion to the control plane.
                 The control plane resolves placement, forwards one call and returns its outcome together with a scoped host target.
@@ -343,7 +346,8 @@ paths:
             operationId: findWebSocket
             tags: [Actors]
             summary: Find an authorized WebSocket URL
-            description: Issues a fresh connection URL. Authorize the application user before requesting it. Requires an active deployment.
+            security: [{ ApiKey: [] }, { InvokeApiKey: [] }, {}]
+            description: Issues a fresh connection URL. Authorize the application user before requesting it. Requires an active deployment. Accepts the administrative secret or the invoke API key.
             requestBody: { $ref: "#/components/requestBodies/FindWebSocket" }
             responses:
                 "200": { $ref: "#/components/responses/WebSocketGrant" }
@@ -379,17 +383,21 @@ paths:
             operationId: listActorResidency
             tags: [Observability]
             summary: Get instance residency over time
-            description: Lifecycle periods clipped to the selected range. Missing reports become unknown after 35 seconds. Stops remain dormant until reactivation. Reads at most the latest 10000 reports, including the last report before the range for each instance. Time before retained evidence is omitted.
+            description: Lifecycle periods in the range, built from reports in it and the 35 seconds before. An instance turns unknown 35 seconds after its last report, or stays dormant after a stop. Keeps the newest 100000 stretches of unchanged status.
             parameters:
                 - name: actorName
                   in: query
                   required: true
                   schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
+                - name: actorId
+                  in: query
+                  description: Only this instance.
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
                 - { $ref: "#/components/parameters/FromMs" }
                 - { $ref: "#/components/parameters/ToMs" }
             responses:
                 "200":
-                    description: Residency periods and whether the report limit was reached.
+                    description: Residency periods, and whether older ones were left out to stay within the limit.
                     headers:
                         Cache-Control: { $ref: "#/components/headers/NoStore" }
                     content:
@@ -403,13 +411,81 @@ paths:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
         get:
-            operationId: streamActorInventory
+            operationId: streamProjectEvents
             tags: [Observability]
-            summary: Stream actor activity
-            description: "SSE: inventory events contain Inventory JSON; error events contain text and close the stream."
+            summary: Stream observability events
+            description: |
+                SSE of the project's live channels, as the collector publishes them. Read each view
+                from its endpoint first, then apply these events; they never include history.
+                Each message names one event type, and its data is a JSON array of that type's
+                records in arrival order:
+
+                - request (signal requests): RequestTrace records, deduplicated by eventId.
+                - log (signal logs): ActorLog records matching the log filters, deduplicated by logId.
+                - instance (signal platform): an instance as its latest lifecycle report leaves it,
+                  with actorName, actorId, status, occurredAtMs, reportedAtMs, staleAtMs (when the
+                  status turns unknown without another report; null once stopped), lastActiveAtMs
+                  and waiting.
+                - connectionOpened, connectionClosed (signal platform): connectionId, actorName,
+                  actorId, gatewayId, openedAtMs, plus metadata when opened, or closedAtMs,
+                  closeCode, closeReason, messagesIn and messagesOut when closed.
+                - gatewayAlive (signal platform): gatewayId and atMs. A gateway reports every 10
+                  seconds for each project it holds connections for; after 30 seconds without a
+                  report, its open connections are lost.
+                - deployment (signal platform): atMs and actors, the deployed classes with their
+                  methods; empty once the deployment is removed.
+                - kill (signal platform): a SandboxKill, sent once per sandbox. A pool manager that
+                  restarts sends the kills it still sees again, each unchanged.
+            parameters:
+                - name: signals
+                  in: query
+                  required: true
+                  description: Comma-separated live channels to receive.
+                  schema: { type: string, example: "requests,platform" }
+                - { $ref: "#/components/parameters/LogActorName" }
+                - { $ref: "#/components/parameters/LogActorId" }
+                - { $ref: "#/components/parameters/LogRequestId" }
+                - { $ref: "#/components/parameters/LogLevel" }
+                - { $ref: "#/components/parameters/LogSearch" }
             responses:
                 "200": { $ref: "#/components/responses/EventStream" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/observe/events/history:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: listEventHistory
+            tags: [Observability]
+            summary: Get past events
+            description: Past events in the range, newest first, each as the event stream sends it. Holds the event types that happen once, which is kill so far; the other types keep their history in their own views. Keeps the newest 500 in the range.
+            parameters:
+                - name: types
+                  in: query
+                  description: Comma-separated event types to read. Every type with a history when left out.
+                  schema: { type: string, example: "kill" }
+                - name: actorName
+                  in: query
+                  description: Only this actor class.
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
+                - name: actorId
+                  in: query
+                  description: Only this instance; requires actorName.
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Events in the range, and whether older ones were left out to stay within the limit.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/EventHistory" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
     /v1/projects/{project_id}/observe/state:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -518,16 +594,7 @@ paths:
                             schema: { $ref: "#/components/schemas/TracePage" }
                             examples:
                                 empty:
-                                    value:
-                                        {
-                                            epoch: "history-1",
-                                            cursor: 0,
-                                            capacity: 100,
-                                            records: [],
-                                            nextCursor: null,
-                                            resumeCursor: "opaque-cursor",
-                                            reset: false
-                                        }
+                                    value: { records: [], nextCursor: null }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -588,7 +655,7 @@ paths:
             operationId: listWebSocketSessions
             tags: [Observability]
             summary: Get WebSocket session history
-            description: Up to 500 sessions ordered by latest start. Selects sessions whose retained activity span overlaps the inclusive range, keeping their full retained events and connect metadata.
+            description: Up to 500 sessions, newest first, as gateways reported them, selecting those open at any point in the inclusive range.
             parameters:
                 - { $ref: "#/components/parameters/FromMs" }
                 - { $ref: "#/components/parameters/ToMs" }
@@ -603,33 +670,6 @@ paths:
                                 type: array
                                 maxItems: 500
                                 items: { $ref: "#/components/schemas/SocketSession" }
-                "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { $ref: "#/components/responses/Unauthenticated" }
-                "500": { $ref: "#/components/responses/Internal" }
-    /v1/projects/{project_id}/observe/requests/events:
-        parameters:
-            - { $ref: "#/components/parameters/ProjectId" }
-        get:
-            operationId: streamRequestHistory
-            tags: [Observability]
-            summary: Stream request history
-            description: |
-                SSE requests events contain TracePage JSON. Resume with resumeCursor;
-                when reset=true or snapshot=true, replace previous records. The stream sends
-                an initial snapshot followed by live batches, with reconciliation every
-                30 seconds. Live batches can arrive before storage commits them; deduplicate
-                records by eventId. Error events contain text and close the stream.
-            parameters:
-                - name: after
-                  in: query
-                  description: resumeCursor; overrides Last-Event-ID.
-                  schema: { type: string, maxLength: 4096 }
-                - name: Last-Event-ID
-                  in: header
-                  description: Previous SSE event ID.
-                  schema: { type: string, maxLength: 4096 }
-            responses:
-                "200": { $ref: "#/components/responses/EventStream" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -697,28 +737,6 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
-    /v1/projects/{project_id}/observe/logs/events:
-        parameters:
-            - { $ref: "#/components/parameters/ProjectId" }
-        get:
-            operationId: streamActorLogs
-            tags: [Observability]
-            summary: Stream actor logs
-            description: |
-                SSE logs events contain {"records": ActorLog[]} for new lines matching the filters.
-                The stream carries only live lines; read history from the logs endpoint and
-                deduplicate by logId.
-            parameters:
-                - { $ref: "#/components/parameters/LogActorName" }
-                - { $ref: "#/components/parameters/LogActorId" }
-                - { $ref: "#/components/parameters/LogRequestId" }
-                - { $ref: "#/components/parameters/LogLevel" }
-                - { $ref: "#/components/parameters/LogSearch" }
-            responses:
-                "200": { $ref: "#/components/responses/EventStream" }
-                "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { $ref: "#/components/responses/Unauthenticated" }
-                "500": { $ref: "#/components/responses/Internal" }
     /v1/socket:
         get:
             operationId: openWebSocket
@@ -771,6 +789,10 @@ components:
             type: http
             scheme: bearer
             description: Required when DURABLE_ACTORS_SECRET is set on the server. Never send it to browsers.
+        InvokeApiKey:
+            type: http
+            scheme: bearer
+            description: Long-lived key set by DURABLE_ACTORS_INVOKE_API_KEY. Requires DURABLE_ACTORS_SECRET. Accepted only by findActor, invokeActor, and findWebSocket. Actor invocations are limited to published RPC methods; findWebSocket accepts caller-supplied connection metadata, as with ApiKey. Never send it to browsers.
         ActorTicket:
             type: http
             scheme: bearer
@@ -990,18 +1012,20 @@ components:
                 maxMs: { type: number, minimum: 0 }
         SocketSession:
             type: object
-            required: [connectionId, actorName, actorId, hostId, openedAtMs, closedAtMs, lastSeenMs, messages, failures]
+            required: [connectionId, actorName, actorId, gatewayId, status, openedAtMs, closedAtMs]
             properties:
                 connectionId: { type: string }
                 actorName: { type: string }
                 actorId: { type: string }
-                hostId: { type: [string, "null"] }
-                openedAtMs: { type: [integer, "null"], minimum: 0 }
-                closedAtMs: { type: [integer, "null"], minimum: 0 }
-                lastSeenMs: { type: [integer, "null"], minimum: 0 }
-                messages: { type: integer, minimum: 0 }
-                failures: { type: integer, minimum: 0 }
-                metadata: { description: Metadata saved with a retained onConnect event. }
+                gatewayId: { type: string, description: The gateway holding the connection; matches gatewayAlive events. }
+                status: { type: string, enum: [open, closed, lost], description: "lost: the gateway stopped reporting before the connection closed." }
+                openedAtMs: { type: integer, minimum: 0 }
+                closedAtMs: { type: [integer, "null"], minimum: 0, description: When it closed, or for a lost session when its gateway last reported. }
+                closeCode: { type: integer, minimum: 0 }
+                closeReason: { type: string }
+                messagesIn: { type: integer, minimum: 0 }
+                messagesOut: { type: integer, minimum: 0 }
+                metadata: { description: Metadata the connection was opened with. }
         ActorBundle:
             type: object
             additionalProperties: false
@@ -1321,11 +1345,15 @@ components:
                 connectByMs: { type: integer, format: int64, description: Connect before this time. }
         Inventory:
             type: object
-            required: [actors, connectionsComplete]
+            required: [actors, connectionsComplete, gateways]
             properties:
                 connectionsComplete:
                     type: boolean
                     description: False when a gateway could not be queried; connection lists and counts may be incomplete.
+                gateways:
+                    type: object
+                    additionalProperties: { type: integer, minimum: 0 }
+                    description: When each gateway holding an open connection last showed it was alive, by gateway ID. Its connections are lost 30 seconds after.
                 actors:
                     type: array
                     items:
@@ -1352,13 +1380,22 @@ components:
                                             type: [integer, "null"]
                                             minimum: 0
                                             description: Most recent request admission or completion in Unix milliseconds. Null when unavailable; lifecycle heartbeats do not update it.
+                                        reportedAtMs:
+                                            type: [integer, "null"]
+                                            minimum: 0
+                                            description: When the control plane received the latest lifecycle report; null for an instance known only from its connections.
+                                        staleAtMs:
+                                            type: [integer, "null"]
+                                            minimum: 0
+                                            description: When the status turns unknown unless another report arrives; null once stopped.
                                         connections:
                                             type: array
                                             items:
                                                 type: object
-                                                required: [id, metadata]
+                                                required: [id, gatewayId, metadata]
                                                 properties:
                                                     id: { type: string }
+                                                    gatewayId: { type: string }
                                                     metadata: {}
                                         waiting:
                                             type: [array, "null"]
@@ -1383,18 +1420,41 @@ components:
                             status: { type: string, enum: [live, dormant, unknown] }
                             fromMs: { type: integer, minimum: 0 }
                             toMs: { type: integer, minimum: 0 }
+        EventHistory:
+            type: object
+            required: [events, truncated]
+            properties:
+                truncated: { type: boolean }
+                events:
+                    type: array
+                    maxItems: 500
+                    items:
+                        type: object
+                        description: One event under the type the event stream sends it as.
+                        required: [type, item]
+                        properties:
+                            type: { type: string, enum: [kill] }
+                            item: { $ref: "#/components/schemas/SandboxKill" }
+        SandboxKill:
+            type: object
+            required: [actorName, actorId, atMs, reason]
+            properties:
+                actorName: { type: string }
+                actorId: { type: string }
+                atMs:
+                    type: integer
+                    minimum: 0
+                    description: When the sandbox stopped.
+                reason:
+                    type: string
+                    enum: [out_of_memory, out_of_disk, evicted, killed]
+                    description: out_of_memory when the actor exceeded its memory limit, out_of_disk when it exceeded its disk limit, evicted when its node reclaimed the sandbox for something the node was short of, killed for any other SIGKILL the platform didn't send.
         TracePage:
             type: object
-            required: [epoch, cursor, capacity, records, nextCursor, resumeCursor, reset]
+            required: [records, nextCursor]
             properties:
-                epoch: { type: string }
-                cursor: { type: integer, minimum: 0 }
-                capacity: { type: integer, minimum: 0 }
                 records: { type: array, items: { $ref: "#/components/schemas/TraceRecord" } }
                 nextCursor: { type: [string, "null"] }
-                resumeCursor: { type: string }
-                reset: { type: boolean }
-                snapshot: { type: boolean, description: "Replace the live list with this page. Used for ClickHouse initial history and reconciliation." }
         ActorLog:
             type: object
             required: [logId, actorName, actorId, hostId, requestId, timestampMs, level, message]

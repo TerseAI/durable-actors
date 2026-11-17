@@ -1,6 +1,6 @@
+use crate::payload::JsonText;
 use crate::request_tracking::HostState;
 use crate::sandbox::assignment::{AssignmentOutcomeUnknown, InitialOperation};
-use serde_json::Value;
 use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, ensure};
@@ -11,6 +11,7 @@ use tracing::{info, warn};
 use crate::{
     actor::{ActorKey, ActorSocketEvent},
     bucket::OwnershipHint,
+    clock::{Clock, SystemClock},
     grpc::proto::{
         ControlPlaneReply, ControlPlaneRequest,
         actor_control_plane_service_server::{
@@ -20,6 +21,7 @@ use crate::{
     host::HostId,
     host_leases::HostLease,
     placement::{ObjectPlacement, ObjectPlacementStore},
+    platform_events::{NoPlatformEvents, PlatformEvents, deployments::DeploymentEvent},
     sandbox::{
         EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, SandboxProvider,
         TerminateHostsRequest,
@@ -40,7 +42,6 @@ const FALLBACK_REGION: &str = "north-america-central";
 #[derive(Clone)]
 pub struct ControlPlaneService {
     pub(super) lifecycle: crate::actor_lifecycle::LifecycleStore,
-    pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     pub(super) routes: Arc<dyn super::routes::RouteStore>,
@@ -52,6 +53,7 @@ pub struct ControlPlaneService {
     provisioner: Arc<dyn HostProvisioner>,
     alarms: Arc<dyn super::alarms::AlarmStore>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
+    deployments: Arc<dyn PlatformEvents<DeploymentEvent>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
     hosts: reqwest::Client,
 }
@@ -82,7 +84,6 @@ impl ControlPlaneService {
     ) -> Self {
         Self {
             lifecycle: Default::default(),
-            changes: Default::default(),
             runtime_access: None,
             gateway: None,
             routes: Arc::new(super::routes::MemoryRoutes::default()),
@@ -94,6 +95,7 @@ impl ControlPlaneService {
             provisioner,
             alarms: Arc::new(super::alarms::MemoryAlarmStore::default()),
             socket_events: None,
+            deployments: Arc::new(NoPlatformEvents),
             local_builds: None,
             hosts: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -113,6 +115,30 @@ impl ControlPlaneService {
     pub(super) fn with_alarm_store(mut self, alarms: Arc<dyn super::alarms::AlarmStore>) -> Self {
         self.alarms = alarms;
         self
+    }
+
+    pub(super) fn with_deployment_events(
+        mut self,
+        deployments: Arc<dyn PlatformEvents<DeploymentEvent>>,
+    ) -> Self {
+        self.deployments = deployments;
+        self
+    }
+
+    /// Republishes every current deployment, covering those made before the analytics store
+    /// received deployments and any whose event was lost.
+    pub(super) async fn republish_deployments(&self) -> Result<()> {
+        // Stamped before the read, so a deploy committed after it still wins.
+        let at_ms = SystemClock.now_ms()?;
+        for spec in self.registry.launch_specs().await? {
+            let contract = self.registry.deployment_contract(&spec.project_id).await?;
+            self.deployments.record(DeploymentEvent::Published {
+                project_id: spec.project_id,
+                contract: contract.map(|contract| contract.contract),
+                at_ms,
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn start_alarm_scheduler(
@@ -165,8 +191,12 @@ impl ControlPlaneService {
             self.terminate_deployment_hosts(&previous).await?;
         }
         let changed = update.register(spec, contract).await?;
+        self.deployments.record(DeploymentEvent::Published {
+            project_id: spec.project_id.clone(),
+            contract: contract.map(|contract| contract.document().clone()),
+            at_ms: SystemClock.now_ms()?,
+        });
         self.routes.remove_project(&spec.project_id).await;
-        self.changes.notify().await;
         Ok(changed || replacing)
     }
 
@@ -240,8 +270,11 @@ impl ControlPlaneService {
         };
         self.terminate_deployment_hosts(&previous).await?;
         update.remove().await?;
+        self.deployments.record(DeploymentEvent::Removed {
+            project_id: project_id.to_owned(),
+            at_ms: SystemClock.now_ms()?,
+        });
         self.routes.remove_project(project_id).await;
-        self.changes.notify().await;
         Ok(true)
     }
 
@@ -427,7 +460,7 @@ impl ControlPlaneService {
 
 #[derive(Clone)]
 pub(super) struct ActorTarget {
-    pub initial_reply: Option<Value>,
+    pub initial_reply: Option<JsonText>,
     pub host_state: HostState,
     pub home_region: String,
     pub route: String,
@@ -599,7 +632,29 @@ impl ControlPlaneService {
                 self.routes.renew(actor, &identity).await
             }
             LifecycleKind::Draining => self.routes.put(actor, RouteEntry::Draining(identity)).await,
-            LifecycleKind::Stopped => self.routes.put(actor, RouteEntry::Stopped(identity)).await,
+            LifecycleKind::Stopped => {
+                self.routes.put(actor, RouteEntry::Stopped(identity)).await;
+                self.keep_sealed_owner(principal).await;
+            }
+        }
+    }
+
+    /// Hosts report `Stopped` after sealing, so this read replaces the next activation's.
+    async fn keep_sealed_owner(&self, principal: &ActorPrincipal) {
+        let actor = &principal.actor;
+        match self
+            .placements
+            .get_owner_with_hint(&actor.storage_key())
+            .await
+        {
+            Ok((_, Some(owner))) if owner.sealed() => {
+                let node = self.provisioner.host_node(&principal.host_id).await;
+                self.routes
+                    .keep_sealed_owner(actor, &owner.on_node(node))
+                    .await
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "sealed ownership read failed"),
         }
     }
 
@@ -683,10 +738,7 @@ impl ControlPlaneService {
         if let Some(timings) = timings.as_deref_mut() {
             timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
         }
-        let (current, owner_hint) = self
-            .placements
-            .get_owner_with_hint(&actor.storage_key())
-            .await?;
+        let (current, owner_hint) = self.current_owner(actor).await?;
         if let (Some(assigned), Some(placement)) = (home_region, current.as_ref())
             && assigned != placement.home_region
         {
@@ -730,6 +782,18 @@ impl ControlPlaneService {
             .remember(actor, target.cached(overrides_regions), generation)
             .await;
         Ok(target)
+    }
+
+    async fn current_owner(
+        &self,
+        actor: &ActorKey,
+    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
+        if let Some(owner) = self.routes.take_sealed_owner(actor).await {
+            return Ok((Some(owner.placement()), Some(owner)));
+        }
+        self.placements
+            .get_owner_with_hint(&actor.storage_key())
+            .await
     }
 
     async fn provision_in_regions(
@@ -971,6 +1035,10 @@ pub(crate) trait HostProvisioner: Send + Sync {
         Ok(())
     }
 
+    async fn host_node(&self, _host: &HostId) -> Option<String> {
+        None
+    }
+
     async fn ensure_actor_host(
         &self,
         spec: &HostLaunchSpec,
@@ -979,7 +1047,7 @@ pub(crate) trait HostProvisioner: Send + Sync {
         new_actor: bool,
         owner_hint: Option<&OwnershipHint>,
         operation: Option<&InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<Value>)>;
+    ) -> Result<(HostLease, u64, Option<JsonText>)>;
     async fn terminate_hosts(
         &self,
         spec: &HostLaunchSpec,
@@ -991,6 +1059,7 @@ pub(crate) struct SandboxHostProvisioner {
     admission: Option<Arc<super::organization_limits::ActorAdmission>>,
     runtime_images: Option<super::process::RuntimeImages>,
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
+    default_resources: crate::sandbox::ResourceLimits,
     resource_bounds: Option<crate::sandbox::ResourceBounds>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     provider: Arc<dyn SandboxProvider>,
@@ -1009,6 +1078,15 @@ impl SandboxHostProvisioner {
 
     pub(crate) fn with_pool(mut self, pool: Arc<crate::sandbox::pool::SparePool>) -> Self {
         self.pool = Some(pool);
+        self
+    }
+
+    /// The size of an actor whose deployment leaves its `@Compute` resources unset.
+    pub(crate) fn with_default_resources(
+        mut self,
+        resources: crate::sandbox::ResourceLimits,
+    ) -> Self {
+        self.default_resources = resources;
         self
     }
 
@@ -1034,6 +1112,7 @@ impl SandboxHostProvisioner {
             runtime_images,
             admission: None,
             pool: None,
+            default_resources: Default::default(),
             resource_bounds: None,
             runtime_access: None,
             provider,
@@ -1093,6 +1172,15 @@ impl HostProvisioner for SandboxHostProvisioner {
         }
     }
 
+    async fn host_node(&self, host: &HostId) -> Option<String> {
+        let pool = self.pool.as_ref()?;
+        pool.host_node(host.as_str())
+            .await
+            .inspect_err(|error| tracing::warn!(%error, "host node lookup failed"))
+            .ok()
+            .flatten()
+    }
+
     async fn ensure_actor_host(
         &self,
         spec: &HostLaunchSpec,
@@ -1101,7 +1189,7 @@ impl HostProvisioner for SandboxHostProvisioner {
         new_actor: bool,
         owner_hint: Option<&OwnershipHint>,
         operation: Option<&InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<Value>)> {
+    ) -> Result<(HostLease, u64, Option<JsonText>)> {
         self.launch(spec, region, actor, new_actor, owner_hint, operation)
             .await
     }
@@ -1135,15 +1223,16 @@ impl SandboxHostProvisioner {
         new_actor: bool,
         owner_hint: Option<&OwnershipHint>,
         operation: Option<&InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<Value>)> {
+    ) -> Result<(HostLease, u64, Option<JsonText>)> {
         let started_at = Instant::now();
         let mut request = self.request(spec, region, actor)?;
         request.initial_operation = operation.cloned();
         request.actor_is_new = new_actor;
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
+        let node = owner_hint.and_then(OwnershipHint::node);
         let Some(admission) = &self.admission else {
             return self
-                .provision(spec, region, actor, request, started_at)
+                .provision(spec, region, actor, request, node, started_at)
                 .await;
         };
         let (host, session) = (request.host_id.clone(), request.session_id.clone());
@@ -1152,7 +1241,7 @@ impl SandboxHostProvisioner {
             .reserve(organization, actor, &host, &session)
             .await?;
         let launched = self
-            .provision(spec, region, actor, request, started_at)
+            .provision(spec, region, actor, request, node, started_at)
             .await;
         if launched.is_err() {
             admission
@@ -1168,8 +1257,9 @@ impl SandboxHostProvisioner {
         region: &str,
         actor: &ActorKey,
         mut request: EnsureHostRequest,
+        node: Option<&str>,
         started_at: Instant,
-    ) -> Result<(HostLease, u64, Option<Value>)> {
+    ) -> Result<(HostLease, u64, Option<JsonText>)> {
         let token = async {
             match &self.runtime_access {
                 Some(access) => Ok(Some(
@@ -1183,8 +1273,15 @@ impl SandboxHostProvisioner {
         let spare = async {
             match &self.pool {
                 Some(pool) => {
-                    pool.claim(spec, region, request.host_id.as_str(), &request.resources)
-                        .await
+                    pool.claim(
+                        spec,
+                        region,
+                        request.host_id.as_str(),
+                        &request.resources,
+                        node,
+                        Some(actor),
+                    )
+                    .await
                 }
                 None => Ok(None),
             }
@@ -1197,6 +1294,7 @@ impl SandboxHostProvisioner {
                     &request.session_id,
                     request.host_id.as_str(),
                     &spec.host_config_key(),
+                    Some(actor),
                 )
                 .await?;
             }
@@ -1255,6 +1353,11 @@ impl SandboxHostProvisioner {
                     lease.id.as_str(),
                     &spec.host_config_key(),
                     &crate::sandbox::SpareHandle {
+                        node: request
+                            .spare
+                            .as_ref()
+                            .map(|spare| spare.node.clone())
+                            .unwrap_or_default(),
                         control_route: String::new(),
                         control_token: String::new(),
                         name: request
@@ -1294,6 +1397,8 @@ impl SandboxHostProvisioner {
             provider = provisioning.as_ref().map(|value| value.provider.as_str()).unwrap_or("unknown"),
             provider_resource_id = provisioning.as_ref().map(|value| value.resource_id.as_str()).unwrap_or(""),
             provider_reused = provisioning.as_ref().is_some_and(|value| value.reused),
+            preferred_node = node.unwrap_or(""),
+            spare_node = request.spare.as_ref().map(|spare| spare.node.as_str()).unwrap_or(""),
             started_at_ms = 0,
             provider_process_spawned_at_ms = provisioning.as_ref().and_then(|value| value.command_spawned_at_ms),
             provider_request_written_at_ms = provisioning.as_ref().and_then(|value| value.request_written_at_ms),
@@ -1327,11 +1432,6 @@ impl SandboxHostProvisioner {
             .cloned()
             .unwrap_or_default();
         options.validate()?;
-        let defaults = self
-            .pool
-            .as_ref()
-            .map(|pool| pool.config.resources.clone())
-            .unwrap_or_default();
         let config_key = spec.host_config_key();
         let host_id = HostId::new(format!("host.v3.{}.{}", config_key, uuid::Uuid::new_v4()));
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -1353,7 +1453,7 @@ impl SandboxHostProvisioner {
             actor: Some(actor.clone()),
             code_snapshot: spec.code_snapshot.clone(),
             spare: None,
-            resources: options.resources(defaults),
+            resources: options.resources(self.default_resources.clone()),
             runtime_config: None,
             host_config_key: config_key,
             canonical_region: region.to_owned(),
@@ -1406,14 +1506,14 @@ fn ready_lease(
     ensure!(
         lease.expires_at_ms > now
             && lease.expires_at_ms
-                <= now.saturating_add(crate::host_leases::MAX_HOST_LEASE_DURATION_MS + 5_000),
+                <= now.saturating_add(crate::host_leases::max_host_lease_duration_ms()? + 5_000),
         "sandbox readiness lease expired or invalid"
     );
     Ok(lease)
 }
 
 struct RoutedActor {
-    initial_reply: Option<Value>,
+    initial_reply: Option<JsonText>,
     host_state: HostState,
     placement: ObjectPlacement,
     host_config_key: String,

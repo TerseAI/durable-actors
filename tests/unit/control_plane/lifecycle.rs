@@ -4,7 +4,7 @@ use crate::actor_lifecycle::{
 };
 
 #[tokio::test]
-async fn lifecycle_reports_use_authenticated_identity_without_reading_ownership() -> Result<()> {
+async fn lifecycle_reports_use_authenticated_identity() -> Result<()> {
     let issuer = test_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -25,7 +25,7 @@ async fn lifecycle_reports_use_authenticated_identity_without_reading_ownership(
         .token;
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
     let mut service = ControlPlaneService::new(
-        Arc::new(UnusedPlacement),
+        Arc::new(NoOwner),
         auth,
         Arc::new(LocalAdminRegistry::default()),
         issuer,
@@ -87,15 +87,15 @@ impl LifecyclePersistence for Persistence {
     }
 }
 
-struct UnusedPlacement;
+struct NoOwner;
 
 #[async_trait]
-impl ObjectPlacementStore for UnusedPlacement {
+impl ObjectPlacementStore for NoOwner {
     async fn get_owner_with_hint(
         &self,
         _: &ActorStorageKey,
     ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
-        unreachable!("lifecycle telemetry must not read ownership")
+        Ok((None, None))
     }
 
     async fn get(&self, _: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {

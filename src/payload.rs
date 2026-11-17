@@ -1,14 +1,29 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result, anyhow, ensure};
+use axum::{
+    body::Body,
+    http::header,
+    response::{IntoResponse, Response},
+};
 use bytes::Bytes;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use futures_util::{Stream, StreamExt, stream::BoxStream};
+use http_body::{Frame, SizeHint};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de, de::DeserializeOwned};
+use serde_json::value::RawValue;
 use std::{
+    collections::VecDeque,
     fmt,
     fs::File,
     io::{self, Read, Write},
     ops::Deref,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, ready},
 };
+use tokio::sync::oneshot;
 
 pub(crate) const BUFFER_BYTES: usize = 64 * 1024;
+/// Results larger than this are passed on as they arrive, rather than held whole.
+pub(crate) const ARRIVING_BYTES: usize = 1024 * 1024;
 pub(crate) const IO_BUFFER_BYTES: usize = 256 * 1024;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
@@ -132,6 +147,317 @@ impl<'de> Deserialize<'de> for Text {
             }
         }
         deserializer.deserialize_str(Visitor)
+    }
+}
+
+/// A JSON document kept as its text, which passes through without being parsed. Clones share the
+/// text.
+// Boxed because `Arc<RawValue>` would copy the text out of its box.
+#[derive(Clone, Debug)]
+pub struct JsonText(Arc<Box<RawValue>>);
+
+impl JsonText {
+    /// Checks that `bytes` hold one JSON document and keeps them as its text, without a copy.
+    pub fn from_vec(bytes: Vec<u8>) -> Result<Self> {
+        Ok(RawValue::from_string(String::from_utf8(bytes)?)?.into())
+    }
+
+    pub fn encode(value: &impl Serialize) -> Result<Self> {
+        Ok(serde_json::value::to_raw_value(value)?.into())
+    }
+
+    pub fn null() -> Self {
+        RawValue::NULL.to_owned().into()
+    }
+
+    pub fn get(&self) -> &str {
+        self.0.get()
+    }
+
+    pub fn decode<T: DeserializeOwned>(&self) -> Result<T> {
+        Ok(serde_json::from_str(self.get())?)
+    }
+
+    /// The text as a buffer that shares it.
+    pub fn bytes(&self) -> Bytes {
+        Bytes::from_owner(self.clone())
+    }
+}
+
+impl Default for JsonText {
+    fn default() -> Self {
+        Self::null()
+    }
+}
+impl From<Box<RawValue>> for JsonText {
+    fn from(value: Box<RawValue>) -> Self {
+        Self(Arc::new(value))
+    }
+}
+impl From<serde_json::Value> for JsonText {
+    fn from(value: serde_json::Value) -> Self {
+        serde_json::value::to_raw_value(&value)
+            .expect("a JSON value always encodes")
+            .into()
+    }
+}
+impl AsRef<[u8]> for JsonText {
+    fn as_ref(&self) -> &[u8] {
+        self.get().as_bytes()
+    }
+}
+impl PartialEq for JsonText {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+impl Eq for JsonText {}
+impl Serialize for JsonText {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for JsonText {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Box::<RawValue>::deserialize(deserializer).map(Self::from)
+    }
+}
+
+/// A JSON document that is either whole or still arriving.
+pub enum JsonPayload {
+    Whole(JsonText),
+    Arriving(JsonStream),
+}
+
+impl JsonPayload {
+    pub fn whole(&self) -> Option<&JsonText> {
+        match self {
+            Self::Whole(text) => Some(text),
+            Self::Arriving(_) => None,
+        }
+    }
+
+    pub async fn into_text(self) -> Result<JsonText> {
+        match self {
+            Self::Whole(text) => Ok(text),
+            Self::Arriving(stream) => stream.into_text().await,
+        }
+    }
+}
+
+impl Default for JsonPayload {
+    fn default() -> Self {
+        Self::Whole(JsonText::null())
+    }
+}
+impl From<JsonText> for JsonPayload {
+    fn from(text: JsonText) -> Self {
+        Self::Whole(text)
+    }
+}
+impl From<JsonStream> for JsonPayload {
+    fn from(stream: JsonStream) -> Self {
+        Self::Arriving(stream)
+    }
+}
+impl From<serde_json::Value> for JsonPayload {
+    fn from(value: serde_json::Value) -> Self {
+        JsonText::from(value).into()
+    }
+}
+impl fmt::Debug for JsonPayload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Whole(text) => text.fmt(formatter),
+            Self::Arriving(stream) => stream.fmt(formatter),
+        }
+    }
+}
+/// A document still arriving equals nothing, since its text is not known yet.
+impl PartialEq for JsonPayload {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self.whole(), other.whole()), (Some(text), Some(other)) if text == other)
+    }
+}
+
+/// A JSON document's text as it arrives, in chunks that add up to a length announced before them.
+pub struct JsonStream {
+    chunks: BoxStream<'static, Result<Bytes>>,
+    remaining: usize,
+    finished: Option<oneshot::Sender<()>>,
+}
+
+impl JsonStream {
+    pub fn new(chunks: impl Stream<Item = Result<Bytes>> + Send + 'static, len: usize) -> Self {
+        Self {
+            chunks: chunks.boxed(),
+            remaining: len,
+            finished: None,
+        }
+    }
+
+    /// Resolves once the document has been passed on or dropped.
+    pub fn finished(&mut self) -> oneshot::Receiver<()> {
+        let (finished, receiver) = oneshot::channel();
+        self.finished = Some(finished);
+        receiver
+    }
+
+    async fn into_text(self) -> Result<JsonText> {
+        let mut text = Vec::new();
+        text.try_reserve_exact(self.remaining)?;
+        self.read_into(&mut text).await?;
+        JsonText::from_vec(text)
+    }
+
+    async fn read_into(mut self, text: &mut Vec<u8>) -> Result<()> {
+        while let Some(chunk) = std::future::poll_fn(|context| self.poll_chunk(context)).await {
+            text.extend_from_slice(&chunk?);
+        }
+        Ok(())
+    }
+
+    fn poll_chunk(&mut self, context: &mut Context<'_>) -> Poll<Option<Result<Bytes>>> {
+        if self.remaining == 0 {
+            return Poll::Ready(None);
+        }
+        let chunk = ready!(self.chunks.poll_next_unpin(context))
+            .unwrap_or_else(|| Err(anyhow!("a JSON document ended before all of it arrived")))
+            .and_then(|chunk| {
+                self.remaining = (self.remaining.checked_sub(chunk.len()))
+                    .context("a JSON document arrived longer than announced")?;
+                Ok(chunk)
+            });
+        Poll::Ready(Some(chunk))
+    }
+}
+
+impl fmt::Debug for JsonStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JsonStream")
+            .field("remaining", &self.remaining)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A JSON body sent from shared buffers and arriving documents, so the documents inside it are
+/// never copied.
+pub(crate) struct JsonBody(VecDeque<Piece>);
+
+impl JsonBody {
+    pub fn encode(value: &impl Serialize) -> Result<Self> {
+        Ok(Self(VecDeque::from([Piece::Ready(
+            serde_json::to_vec(value)?.into(),
+        )])))
+    }
+
+    /// `object` with `value` added as its last `field`.
+    pub fn with_field(object: &impl Serialize, field: &str, value: JsonPayload) -> Result<Self> {
+        let mut head = serde_json::to_vec(object)?;
+        ensure!(head.pop() == Some(b'}'), "a JSON body needs an object");
+        if head.len() > 1 {
+            head.push(b',');
+        }
+        serde_json::to_writer(&mut head, field)?;
+        head.push(b':');
+        let value = match value {
+            JsonPayload::Whole(text) => Piece::Ready(text.bytes()),
+            JsonPayload::Arriving(stream) => Piece::Arriving(stream),
+        };
+        Ok(Self(VecDeque::from([
+            Piece::Ready(head.into()),
+            value,
+            Piece::Ready(Bytes::from_static(b"}")),
+        ])))
+    }
+
+    pub async fn into_text(self) -> Result<JsonText> {
+        let mut text = Vec::new();
+        text.try_reserve_exact(self.len())?;
+        for piece in self.0 {
+            match piece {
+                Piece::Ready(bytes) => text.extend_from_slice(&bytes),
+                Piece::Arriving(stream) => stream.read_into(&mut text).await?,
+            }
+        }
+        JsonText::from_vec(text)
+    }
+
+    fn len(&self) -> usize {
+        self.0.iter().map(Piece::len).sum()
+    }
+
+    fn poll_bytes(&mut self, context: &mut Context<'_>) -> Poll<Option<Result<Bytes>>> {
+        while let Some(piece) = self.0.front_mut() {
+            match ready!(piece.poll_next(context)) {
+                Some(bytes) => return Poll::Ready(Some(bytes)),
+                None => drop(self.0.pop_front()),
+            }
+        }
+        Poll::Ready(None)
+    }
+}
+
+enum Piece {
+    Ready(Bytes),
+    Arriving(JsonStream),
+}
+
+impl Piece {
+    fn len(&self) -> usize {
+        match self {
+            Self::Ready(bytes) => bytes.len(),
+            Self::Arriving(stream) => stream.remaining,
+        }
+    }
+
+    /// The piece's next bytes, or `None` once all of them are sent.
+    fn poll_next(&mut self, context: &mut Context<'_>) -> Poll<Option<Result<Bytes>>> {
+        match self {
+            Self::Ready(bytes) if bytes.is_empty() => Poll::Ready(None),
+            Self::Ready(bytes) => Poll::Ready(Some(Ok(std::mem::take(bytes)))),
+            Self::Arriving(stream) => stream.poll_chunk(context),
+        }
+    }
+}
+
+impl IntoResponse for JsonBody {
+    fn into_response(self) -> Response {
+        (
+            [(header::CONTENT_TYPE, "application/json")],
+            Body::new(self),
+        )
+            .into_response()
+    }
+}
+
+impl http_body::Body for JsonBody {
+    type Data = Bytes;
+    type Error = anyhow::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>>>> {
+        self.poll_bytes(context)
+            .map(|bytes| bytes.map(|bytes| bytes.map(Frame::data)))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.len() as u64)
+    }
+}
+
+impl From<JsonBody> for reqwest::Body {
+    fn from(mut body: JsonBody) -> Self {
+        Self::wrap_stream(futures_util::stream::poll_fn(move |context| {
+            body.poll_bytes(context)
+        }))
     }
 }
 

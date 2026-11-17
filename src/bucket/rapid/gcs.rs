@@ -220,8 +220,10 @@ impl LogWriter for GcsWriter {
     }
 }
 
+/// The control plane archives abandoned logs within hours, so a week leaves ample margin.
 pub(crate) fn validate_retention(bucket: &google_cloud_storage::model::Bucket) -> Result<()> {
     const PREFIX: &str = "durable-actors-v3-logs-";
+    const MIN_AGE_DAYS: i32 = 7;
     if let Some(lifecycle) = &bucket.lifecycle {
         for rule in &lifecycle.rule {
             if rule
@@ -231,17 +233,20 @@ pub(crate) fn validate_retention(bucket: &google_cloud_storage::model::Bucket) -
             {
                 continue;
             }
-            let prefixes = rule
-                .condition
-                .as_ref()
+            let condition = rule.condition.as_ref();
+            let prefixes = condition
                 .map(|condition| condition.matches_prefix.as_slice())
                 .unwrap_or_default();
+            let covers_logs = prefixes.is_empty()
+                || prefixes
+                    .iter()
+                    .any(|prefix| PREFIX.starts_with(prefix) || prefix.starts_with(PREFIX));
             ensure!(
-                !prefixes.is_empty()
-                    && prefixes
-                        .iter()
-                        .all(|prefix| !PREFIX.starts_with(prefix) && !prefix.starts_with(PREFIX)),
-                "Rapid log objects must be excluded from automatic lifecycle deletion"
+                !covers_logs
+                    || condition
+                        .and_then(|condition| condition.age_days)
+                        .is_some_and(|age| age >= MIN_AGE_DAYS),
+                "Rapid log objects must stay at least {MIN_AGE_DAYS} days before lifecycle deletion"
             );
         }
     }

@@ -36,13 +36,19 @@ class ControlPlaneClient {
         return this.requestJson("GET", `${this.projectPath()}/observe/residency?${query}`, undefined, 30_000, signal)
     }
 
-    async openActorStream(signal: AbortSignal): Promise<Response> {
-        return this.openStream(`${this.projectPath()}/observe/events`, signal)
+    // The query names the live channels (`signals`) and filters logs.
+    async openEventStream(signal: AbortSignal, query: URLSearchParams): Promise<Response> {
+        return this.openStream(`${this.projectPath()}/observe/events?${query}`, signal)
     }
 
-    async openRequestStream(signal: AbortSignal, after?: string): Promise<Response> {
-        const query = after ? `?${new URLSearchParams({ after })}` : ""
-        return this.openStream(`${this.projectPath()}/observe/requests/events${query}`, signal)
+    listEventHistory(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
+        return this.requestJson(
+            "GET",
+            `${this.projectPath()}/observe/events/history${query.size ? `?${query}` : ""}`,
+            undefined,
+            30_000,
+            signal
+        )
     }
 
     getState(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
@@ -109,10 +115,6 @@ class ControlPlaneClient {
         )
     }
 
-    async openLogStream(signal: AbortSignal, query: URLSearchParams): Promise<Response> {
-        return this.openStream(`${this.projectPath()}/observe/logs/events${query.size ? `?${query}` : ""}`, signal)
-    }
-
     listWebSockets(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
         return this.requestJson(
             "GET",
@@ -131,7 +133,7 @@ class ControlPlaneClient {
         })
         if (!response.ok || !response.headers.get("content-type")?.startsWith("text/event-stream") || !response.body) {
             await response.body?.cancel()
-            throw new Error("Live inventory is unavailable")
+            throw new Error("Live events are unavailable")
         }
         return response
     }

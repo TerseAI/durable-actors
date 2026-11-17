@@ -3,9 +3,12 @@ use super::{
     PreparedActivation, PreparedInvocation, sqlite::SqliteDatabase,
 };
 use crate::host::HostEndpoint;
+use crate::node_cache::NodeCacheClient;
+use crate::payload::JsonText;
 use crate::{
     actor::{
-        ActorExecutionResult, ActorInvocation, ActorInvocationFailure, DatabaseCall, DatabaseResult,
+        ActorExecutionResult, ActorInvocation, ActorInvocationFailure, DatabaseCall,
+        DatabaseResult, RowSink,
     },
     litestream::{Replicator, storage::SqliteCapture},
     request_tracking::RequestStage,
@@ -13,7 +16,6 @@ use crate::{
     storage::{SnapshotRef, WritePlan},
 };
 use anyhow::{Context, Result, ensure};
-use serde_json::Value;
 use std::{sync::Arc, time::Instant};
 use tracing::{info, warn};
 
@@ -22,6 +24,7 @@ pub(super) struct DatabaseSession {
     storage: Arc<dyn ActorStorage>,
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
     replication: Arc<dyn Replicator>,
+    node_cache: Option<NodeCacheClient>,
     cached_state: Option<ResidentDatabase>,
     prepared_activation: Option<ActorActivation>,
     activation: Option<ActorActivation>,
@@ -33,12 +36,14 @@ impl DatabaseSession {
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         replication: Arc<dyn Replicator>,
+        node_cache: Option<NodeCacheClient>,
     ) -> Self {
         Self {
             endpoint,
             storage,
             state,
             replication,
+            node_cache,
             cached_state: None,
             prepared_activation: None,
             activation: None,
@@ -88,7 +93,7 @@ impl DatabaseSession {
         }
         Ok(match result {
             Some(result) => PreparedInvocation::Completed(ActorExecutionResult::Completed {
-                result,
+                result: result.into(),
                 effects: vec![],
             }),
             None => PreparedInvocation::Execute,
@@ -101,6 +106,7 @@ impl DatabaseSession {
         owner_epoch: Option<u64>,
         origin: CommitOrigin,
         call: DatabaseCall,
+        rows: Box<dyn RowSink>,
     ) -> Result<DatabaseReply> {
         let Some(mut cached) = self.cached_state.take() else {
             return Ok(DatabaseReply::Rejected(anyhow::anyhow!(
@@ -108,7 +114,7 @@ impl DatabaseSession {
             )));
         };
         let reply = self
-            .execute_database_call(invocation, owner_epoch, origin, &mut cached, call)
+            .execute_database_call(invocation, owner_epoch, origin, &mut cached, call, rows)
             .await;
         self.cached_state = Some(cached);
         reply
@@ -121,6 +127,7 @@ impl DatabaseSession {
         origin: CommitOrigin,
         cached: &mut ResidentDatabase,
         call: DatabaseCall,
+        rows: Box<dyn RowSink>,
     ) -> Result<DatabaseReply> {
         ensure!(
             owner_epoch.is_none_or(|owner_epoch| cached.owner_epoch == owner_epoch),
@@ -153,7 +160,7 @@ impl DatabaseSession {
         }
         let immediate = call.immediate();
         let commit = matches!(call, DatabaseCall::Commit);
-        let executed = match cached.database.call(call).await {
+        let executed = match cached.database.call(call, rows).await {
             Ok(executed) => executed,
             Err(error) => return Ok(DatabaseReply::Rejected(error)),
         };
@@ -252,7 +259,7 @@ impl DatabaseSession {
         &mut self,
         invocation: &ActorInvocation,
         owner_epoch: Option<u64>,
-        result: Value,
+        result: Option<JsonText>,
         committed: Option<u64>,
         origin: CommitOrigin,
     ) -> Result<u64> {
@@ -265,12 +272,15 @@ impl DatabaseSession {
             cached.owner_epoch == owner_epoch,
             "database completion ownership changed"
         );
-        let publication = match cached.unpublished(committed) {
-            Some(txid) => {
+        let publication = match (cached.unpublished(committed), result) {
+            (Some(txid), Some(result)) => {
                 self.publish_result(invocation, owner_epoch, &mut cached, result, txid, origin)
                     .await
             }
-            None => Ok(()),
+            (Some(_), None) => Err(anyhow::anyhow!(
+                "a result passed on as it arrived cannot be kept with its state"
+            )),
+            (None, _) => Ok(()),
         };
         let version = cached.state_version;
         if publication.is_err() {
@@ -284,6 +294,36 @@ impl DatabaseSession {
         publication.context(super::PublicationError)?;
         self.storage.ensure_authority()?;
         Ok(version)
+    }
+
+    pub(super) async fn save_to_node_cache(&self) -> Result<Option<u64>> {
+        let (Some(cache), Some(cached)) = (&self.node_cache, &self.cached_state) else {
+            return Ok(None);
+        };
+        let Some(snapshot) = cached.published_snapshot() else {
+            return Ok(None);
+        };
+        let database = async {
+            let Some(database) = cached
+                .sqlite
+                .export(crate::node_cache::MAX_DATABASE_BYTES)
+                .await?
+            else {
+                return Ok(None);
+            };
+            cache
+                .store_database(&snapshot.digest, database.path())
+                .await?;
+            Ok(Some(database.as_file().metadata()?.len()))
+        };
+        let (stored, database) = tokio::join!(
+            cache.store_snapshot(&snapshot.digest, snapshot.bytes.clone()),
+            database
+        );
+        if let Err(error) = stored {
+            warn!(error = %format!("{error:#}"), "node cache snapshot save failed");
+        }
+        database
     }
 
     pub(super) fn reset(&mut self) {
@@ -324,7 +364,7 @@ impl DatabaseSession {
         &self,
         owner_epoch: u64,
         state_version: u64,
-        loaded: &[u8],
+        loaded: &bytes::Bytes,
     ) -> Result<ResidentDatabase> {
         let snapshot = StateSnapshot::decode(loaded)?;
         ensure!(
@@ -336,27 +376,60 @@ impl DatabaseSession {
             "actor snapshot belongs to a newer owner epoch"
         );
         let started = std::time::Instant::now();
-        let sqlite = self.storage.read_sqlite(loaded).await?;
-        let history_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let apply_started = std::time::Instant::now();
+        let digest = SnapshotRef::digest_of(loaded);
         let parent = self.storage.resume_parent(&snapshot, loaded)?;
-        let capture = SqliteCapture::restore(
-            self.replication.clone(),
-            &sqlite.files,
-            sqlite.txid,
-            self.storage.full_snapshots(),
-            parent.is_some(),
-        )
-        .await?;
+        let (capture, source) = self
+            .open_sqlite(&snapshot, loaded, &digest, parent.is_some())
+            .await?;
         tracing::info!(event = "actor_sqlite_restored", host_id = %self.endpoint.id, state_version,
-            history_ms, apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0,
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0);
+            source, duration_ms = started.elapsed().as_secs_f64() * 1000.0);
         let mut cached = ResidentDatabase::open(owner_epoch, capture).await?;
         cached.sqlite_head = parent.filter(|_| cached.synced > 0);
         cached.state_version = state_version;
         cached.published = Some(cached.synced);
+        cached.snapshot = Some(PublishedSnapshot {
+            digest,
+            bytes: loaded.clone(),
+        });
         cached.set_completion(snapshot.request_id, snapshot.completion);
         Ok(cached)
+    }
+
+    async fn open_sqlite(
+        &self,
+        snapshot: &StateSnapshot,
+        loaded: &[u8],
+        digest: &str,
+        resume: bool,
+    ) -> Result<(SqliteCapture, &'static str)> {
+        let full_snapshots = self.storage.full_snapshots();
+        if let Some(database) = self.storage.take_saved_database(digest) {
+            match SqliteCapture::adopt(
+                self.replication.clone(),
+                database,
+                snapshot.sqlite.txid,
+                full_snapshots,
+                resume,
+            )
+            .await
+            {
+                Ok(capture) => return Ok((capture, "node_cache")),
+                Err(error) => tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "cached database could not be opened, restoring from history"
+                ),
+            }
+        }
+        let sqlite = self.storage.read_sqlite(loaded).await?;
+        let capture = SqliteCapture::restore(
+            self.replication.clone(),
+            &sqlite.files,
+            sqlite.txid,
+            full_snapshots,
+            resume,
+        )
+        .await?;
+        Ok((capture, "history"))
     }
 
     async fn publish_result(
@@ -364,7 +437,7 @@ impl DatabaseSession {
         invocation: &ActorInvocation,
         owner_epoch: u64,
         cached: &mut ResidentDatabase,
-        result: Value,
+        result: JsonText,
         txid: u64,
         origin: CommitOrigin,
     ) -> Result<()> {
@@ -567,11 +640,17 @@ impl DatabaseSession {
             .context("state version overflow")?;
         next_write.object_name = stream.object(next_write.state_version);
         let pending = cached.pending.take().expect("pending commit checked above");
-        cached.sqlite_head = Some(SnapshotRef::new(
+        let bytes = pending.snapshot.encode()?;
+        let head = SnapshotRef::new(
             pending.ticket.object_name.clone(),
             &pending.snapshot,
-            &pending.snapshot.encode()?,
-        ));
+            &bytes,
+        );
+        cached.snapshot = Some(PublishedSnapshot {
+            digest: head.digest.clone(),
+            bytes,
+        });
+        cached.sqlite_head = Some(head);
         cached.state_version = pending.snapshot.state_version;
         cached.published = Some(pending.txid);
         cached.set_completion(pending.snapshot.request_id, pending.snapshot.completion);
@@ -584,14 +663,20 @@ struct ResidentDatabase {
     database: SqliteDatabase,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
+    snapshot: Option<PublishedSnapshot>,
     owner_epoch: u64,
     state_version: u64,
     published: Option<u64>,
     synced: u64,
     last_request_id: Option<String>,
-    last_result: Option<Value>,
+    last_result: Option<JsonText>,
     next_write: Option<WritePlan>,
     pending: Option<PendingStateCommit>,
+}
+
+struct PublishedSnapshot {
+    digest: String,
+    bytes: bytes::Bytes,
 }
 
 struct PendingStateCommit {
@@ -608,6 +693,7 @@ impl ResidentDatabase {
             synced: sqlite.txid(),
             sqlite,
             sqlite_head: None,
+            snapshot: None,
             owner_epoch,
             state_version: 0,
             published: None,
@@ -616,6 +702,13 @@ impl ResidentDatabase {
             next_write: None,
             pending: None,
         })
+    }
+
+    fn published_snapshot(&self) -> Option<&PublishedSnapshot> {
+        if self.pending.is_some() || self.published != Some(self.synced) {
+            return None;
+        }
+        self.snapshot.as_ref()
     }
 
     fn unpublished(&self, committed: Option<u64>) -> Option<u64> {
@@ -652,7 +745,7 @@ impl ResidentDatabase {
         self.last_result = completion.map(|completion| completion.result);
     }
 
-    fn replay(&self, request_id: &str) -> Option<Value> {
+    fn replay(&self, request_id: &str) -> Option<JsonText> {
         (self.last_request_id.as_deref() == Some(request_id))
             .then(|| self.last_result.clone())
             .flatten()

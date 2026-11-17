@@ -60,11 +60,15 @@ func (e *liveExporter) pushTraces(ctx context.Context, traces ptrace.Traces) err
 }
 
 func (e *liveExporter) pushLogs(ctx context.Context, logs plog.Logs) error {
-	payloads, err := logsByProject(logs)
+	payloads, err := logsByProject(logs, e.config.ProjectFromRecords)
 	if err != nil {
 		return err
 	}
-	return e.publish(ctx, "logs", payloads)
+	channel := e.config.LogsChannel
+	if channel == "" {
+		channel = "logs"
+	}
+	return e.publish(ctx, channel, payloads)
 }
 
 func (e *liveExporter) publish(ctx context.Context, signal string, payloads map[string][]byte) error {
@@ -105,20 +109,23 @@ func tracesByProject(traces ptrace.Traces) (map[string][]byte, error) {
 	return payloads, nil
 }
 
-func logsByProject(logs plog.Logs) (map[string][]byte, error) {
+func logsByProject(logs plog.Logs, fromRecords bool) (map[string][]byte, error) {
 	batches := map[string]plog.Logs{}
+	batch := func(project string) plog.Logs {
+		found, ok := batches[project]
+		if !ok {
+			found = plog.NewLogs()
+			batches[project] = found
+		}
+		return found
+	}
 	for i := 0; i < logs.ResourceLogs().Len(); i++ {
 		records := logs.ResourceLogs().At(i)
-		project := projectOf(records.Resource().Attributes().Get(projectAttribute))
-		if project == "" {
-			continue
+		if project := projectOf(records.Resource().Attributes().Get(projectAttribute)); project != "" {
+			records.CopyTo(batch(project).ResourceLogs().AppendEmpty())
+		} else if fromRecords {
+			splitRecords(records, batch)
 		}
-		batch, found := batches[project]
-		if !found {
-			batch = plog.NewLogs()
-			batches[project] = batch
-		}
-		records.CopyTo(batch.ResourceLogs().AppendEmpty())
 	}
 	payloads := make(map[string][]byte, len(batches))
 	for project, batch := range batches {
@@ -129,6 +136,25 @@ func logsByProject(logs plog.Logs) (map[string][]byte, error) {
 		payloads[project] = payload
 	}
 	return payloads, nil
+}
+
+// splitRecords files each record under its own project, keeping its resource and scope.
+func splitRecords(records plog.ResourceLogs, batch func(string) plog.Logs) {
+	for j := 0; j < records.ScopeLogs().Len(); j++ {
+		scope := records.ScopeLogs().At(j)
+		for k := 0; k < scope.LogRecords().Len(); k++ {
+			record := scope.LogRecords().At(k)
+			project := projectOf(record.Attributes().Get(projectAttribute))
+			if project == "" {
+				continue
+			}
+			target := batch(project).ResourceLogs().AppendEmpty()
+			records.Resource().CopyTo(target.Resource())
+			scoped := target.ScopeLogs().AppendEmpty()
+			scope.Scope().CopyTo(scoped.Scope())
+			record.CopyTo(scoped.LogRecords().AppendEmpty())
+		}
+	}
 }
 
 func projectOf(value interface{ AsString() string }, found bool) string {

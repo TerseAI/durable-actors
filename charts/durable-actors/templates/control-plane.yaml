@@ -58,6 +58,9 @@ spec:
             {{- toYaml $.Values.resources | nindent 12 }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- if and $.Values.telemetry.collector.enabled $.Values.telemetry.collector.platform.issuer }}
+            - {name: platform-telemetry, mountPath: /var/run/secrets/durable-actors/platform-telemetry, readOnly: true}
+            {{- end }}
           {{- if eq $workload.role "control_plane" }}
           startupProbe:
             httpGet: {path: /healthz, port: http}
@@ -80,9 +83,17 @@ spec:
             {{- if $.Values.telemetry.collector.enabled }}
             - name: DURABLE_ACTORS_OTLP_ENDPOINT
               value: {{ printf "http://%s.%s.svc.cluster.local:4317" (include "actors.collectorName" $) $.Release.Namespace | quote }}
+            {{- if $.Values.telemetry.collector.platform.issuer }}
+            - name: DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT
+              value: {{ printf "http://%s.%s.svc.cluster.local:4319" (include "actors.collectorName" $) $.Release.Namespace | quote }}
+            - {name: DURABLE_ACTORS_PLATFORM_TELEMETRY_TOKEN_FILE, value: /var/run/secrets/durable-actors/platform-telemetry/token}
+            {{- end }}
             {{- end }}
             {{- with $.Values.usage.topic }}
             - {name: DURABLE_ACTORS_USAGE_TOPIC, value: {{ . | quote }}}
+            {{- end }}
+            {{- with $.Values.events.topic }}
+            - {name: DURABLE_ACTORS_EVENTS_TOPIC, value: {{ . | quote }}}
             {{- end }}
             {{- if eq $.Values.analytics.backend "clickhouse" }}
             - {name: DURABLE_ACTORS_CLICKHOUSE_URL, value: {{ $.Values.analytics.clickhouse.url | quote }}}
@@ -103,6 +114,10 @@ spec:
             - {name: DURABLE_ACTORS_PYTHON_IMAGE, value: {{ include "actors.image" $.Values.images.python | quote }}}
             - {name: DURABLE_ACTORS_GKE_NAMESPACE, value: {{ include "actors.sandboxNamespace" $ | quote }}}
             - {name: DURABLE_ACTORS_GKE_ZONE, value: {{ $.Values.placement.zone | quote }}}
+            {{- if $.Values.nodeCache.enabled }}
+            - name: DURABLE_ACTORS_GKE_NODE_CACHE_URL
+              value: {{ printf "http://%s.%s.svc.cluster.local:7103" (include "actors.nodeCacheName" $) $.Release.Namespace | quote }}
+            {{- end }}
             - {name: DURABLE_ACTORS_PERSISTENCE, value: {{ $.Values.storage.mode | quote }}}
             - {name: DURABLE_ACTORS_BUCKET, value: {{ $.Values.storage.bucket | quote }}}
             - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ $.Values.storage.bucket | quote }}}
@@ -111,7 +126,11 @@ spec:
             - {name: DURABLE_ACTORS_RAPID_BUCKETS, value: {{ $.Values.storage.rapid.buckets | toJson | quote }}}
             - {name: DURABLE_ACTORS_RAPID_PLACEMENT, value: {{ $.Values.storage.rapid.placement | quote }}}
             {{- end }}
+            {{- if $.Values.actors.tiers }}
+            - {name: DURABLE_ACTORS_SPARE_TIERS, value: {{ $.Values.actors.tiers | toJson | quote }}}
+            {{- else }}
             - {name: DURABLE_ACTORS_SPARE_IDLE, value: {{ $.Values.actors.warm | quote }}}
+            {{- end }}
             - {name: DURABLE_ACTORS_SPARE_MAX_STARTING, value: {{ $.Values.actors.maxStarting | quote }}}
             - {name: DURABLE_ACTORS_SPARE_REFILL_INTERVAL_MS, value: {{ $.Values.actors.refillIntervalMs | quote }}}
             - {name: DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY, value: {{ $.Values.actors.retireConcurrency | quote }}}
@@ -147,6 +166,9 @@ spec:
             - name: DURABLE_ACTORS_SECRET
               valueFrom:
                 secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: api-key}
+            - name: DURABLE_ACTORS_INVOKE_API_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: invoke-api-key, optional: true}
             {{- with $.Values.redis.urlSecretKey }}
             - name: DURABLE_ACTORS_REDIS_URL
               valueFrom:
@@ -160,6 +182,13 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if and $.Values.telemetry.collector.enabled $.Values.telemetry.collector.platform.issuer }}
+        # The collector accepts platform events only with a token for this audience.
+        - name: platform-telemetry
+          projected:
+            sources:
+              - serviceAccountToken: {audience: durable-actors-platform-telemetry, expirationSeconds: 3600, path: token}
+        {{- end }}
 {{- end }}
 ---
 apiVersion: v1

@@ -51,9 +51,8 @@ class Observer {
             Partial<
                 Pick<
                     ControlPlaneClient,
-                    | "openActorStream"
-                    | "openRequestStream"
-                    | "openLogStream"
+                    | "openEventStream"
+                    | "listEventHistory"
                     | "listRequests"
                     | "listResidency"
                     | "listLogs"
@@ -140,29 +139,18 @@ class Observer {
             return
         }
         if (pathname === "/api/observe/events") {
-            await this.proxyEvents(request, response, this.client.openActorStream?.bind(this.client))
-            return
-        }
-        if (pathname === "/api/observe/requests/events") {
             await this.proxyEvents(
                 request,
                 response,
-                this.client.openRequestStream
-                    ? signal => this.client.openRequestStream!(signal, url.searchParams.get("after") ?? undefined)
+                this.client.openEventStream
+                    ? signal => this.client.openEventStream!(signal, url.searchParams)
                     : undefined
-            )
-            return
-        }
-        if (pathname === "/api/observe/logs/events") {
-            await this.proxyEvents(
-                request,
-                response,
-                this.client.openLogStream ? signal => this.client.openLogStream!(signal, url.searchParams) : undefined
             )
             return
         }
         const history = {
             "/api/observe/residency": this.client.listResidency,
+            "/api/observe/events/history": this.client.listEventHistory,
             "/api/observe/state": this.client.getState,
             "/api/observe/state/history": this.client.listStateHistory,
             "/api/observe/requests": this.client.listRequests,
@@ -222,11 +210,11 @@ class Observer {
             response.end()
         } catch {
             if (!response.destroyed) {
-                if (response.headersSent) response.end("event: error\ndata: Inventory unavailable\n\n")
+                if (response.headersSent) response.end("event: error\ndata: Live events unavailable\n\n")
                 else
                     response
                         .writeHead(503, { "content-type": "application/json" })
-                        .end(JSON.stringify({ error: "Live inventory unavailable" }))
+                        .end(JSON.stringify({ error: "Live events unavailable" }))
             }
         } finally {
             controller.abort()

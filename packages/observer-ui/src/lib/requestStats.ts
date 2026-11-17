@@ -5,8 +5,6 @@ import { bucketCount, bucketIndex } from "./timeRange.js"
 
 export type TimingStats = {
     average: number
-    p95: number
-    max: number
     series: number[]
 }
 
@@ -18,11 +16,8 @@ export const queueTime: TimingPick = trace => trace.queueWaitMs
 export const serviceTime: TimingPick = trace => trace.durationMs - (trace.queueWaitMs ?? 0)
 
 export function timingStats(requests: RequestTrace[], timeWindow: TimeWindow, pick: TimingPick): TimingStats {
-    const values = picked(requests, pick)
     return {
-        average: average(values),
-        p95: percentile(values, 0.95),
-        max: values.length ? Math.max(...values) : 0,
+        average: average(picked(requests, pick)),
         series: bucketAverages(requests, timeWindow, pick)
     }
 }
@@ -66,14 +61,8 @@ export function averageOf(requests: RequestTrace[], pick: TimingPick): number | 
     return values.length ? average(values) : null
 }
 
-export function average(values: number[]): number {
+function average(values: number[]): number {
     return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
-}
-
-function percentile(values: number[], rank: number): number {
-    if (!values.length) return 0
-    const sorted = [...values].sort((a, b) => a - b)
-    return sorted[Math.min(sorted.length - 1, Math.ceil(rank * sorted.length) - 1)]!
 }
 
 function picked(requests: RequestTrace[], pick: TimingPick): number[] {

@@ -113,7 +113,12 @@ class ClientConfiguration:
         key = (
             api_key
             if api_key is not None
-            else os.environ.get("DURABLE_ACTORS_SECRET", os.environ.get("DURABLE_ACTORS_API_KEY"))
+            else os.environ.get(
+                "DURABLE_ACTORS_SECRET",
+                os.environ.get(
+                    "DURABLE_ACTORS_API_KEY", os.environ.get("DURABLE_ACTORS_INVOKE_API_KEY")
+                ),
+            )
         )
         if key is not None and not key.strip():
             raise ValueError("API key must not be empty")
@@ -159,7 +164,7 @@ class Client(ClientConfiguration):
             project_id: Project identity. Defaults to DURABLE_ACTORS_PROJECT_ID,
                 or "local" for localhost origins. Required for other origins.
             api_key: Bearer credential. Defaults to DURABLE_ACTORS_SECRET,
-                falling back to DURABLE_ACTORS_API_KEY.
+                then DURABLE_ACTORS_API_KEY, then DURABLE_ACTORS_INVOKE_API_KEY.
             home_region: Optional placement preference, falling back to
                 DURABLE_ACTORS_HOME_REGION.
             http: Optional caller-owned httpx.Client. When omitted, this transport

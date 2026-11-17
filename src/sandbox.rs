@@ -70,6 +70,8 @@ pub struct SpareHandle {
     pub resource_id: String,
     pub route: String,
     pub canonical_region: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -136,7 +138,7 @@ pub struct EnsureHostRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ActorHostHandle {
     #[serde(default)]
-    pub(crate) initial_reply: Option<serde_json::Value>,
+    pub(crate) initial_reply: Option<crate::payload::JsonText>,
     pub lease: Option<crate::host_leases::HostLease>,
     #[serde(default)]
     pub owner_epoch: u64,

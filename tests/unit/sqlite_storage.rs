@@ -45,6 +45,50 @@ async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Re
 }
 
 #[tokio::test]
+async fn exported_databases_resume_the_history_they_were_saved_at() -> Result<()> {
+    let replication = Arc::new(Litestream::default());
+    let mut capture = SqliteCapture::new(replication.clone(), None).await?;
+    let db = rusqlite::Connection::open(capture.path())?;
+    db.execute_batch(
+        "CREATE TABLE entries(id INTEGER PRIMARY KEY, value BLOB);
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 64)
+        INSERT INTO entries SELECT i, zeroblob(4000) FROM n;
+        DELETE FROM entries WHERE id % 2 = 0;",
+    )?;
+    let first = replication.sync(&capture.path()).await?;
+    let mut files = capture.capture(first).await?;
+
+    assert!(capture.export(1).await?.is_none());
+    let exported = capture.export(u64::MAX).await?.unwrap();
+    let restored = SqliteCapture::restore(replication.clone(), &files, first, None, false).await?;
+    assert_eq!(
+        std::fs::read(exported.path())?,
+        std::fs::read(restored.path())?
+    );
+    let mut adopted =
+        SqliteCapture::adopt(replication.clone(), exported, first, None, true).await?;
+    assert_eq!(adopted.txid(), first);
+    let db = rusqlite::Connection::open(adopted.path())?;
+    db.execute("INSERT INTO entries(value) VALUES (x'01')", [])?;
+    let second = replication.sync(&adopted.path()).await?;
+    let delta = adopted.capture(second).await?;
+    assert_eq!(delta.first().map(|file| file.first), Some(first + 1));
+
+    files.extend(delta);
+    let restored = SqliteCapture::restore(replication, &files, second, None, false).await?;
+    let db = rusqlite::Connection::open(restored.path())?;
+    assert_eq!(
+        db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))?,
+        "ok"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM entries", [], |r| r.get::<_, i64>(0))?,
+        33
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn missing_replication_files_cannot_be_acknowledged() -> Result<()> {
     let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone(), None).await?;

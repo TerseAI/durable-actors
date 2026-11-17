@@ -1,7 +1,8 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, Path, Request, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
@@ -179,7 +180,7 @@ async fn find_websocket(
     headers: HeaderMap,
     request: Result<Json<FindWebSocketRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
+    authorized_socket_discovery(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
     state
         .invocations
@@ -526,6 +527,15 @@ pub(super) fn project_id(path: Path<ProjectPath>) -> Result<String, ApiError> {
     Ok(project)
 }
 
+pub(super) async fn require_admin(
+    State(admin): State<AdminService>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authorized_admin(&admin, request.headers())?;
+    Ok(next.run(request).await)
+}
+
 pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Result<(), ApiError> {
     let authorization = headers
         .get(header::AUTHORIZATION)
@@ -534,6 +544,17 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
     admin
         .authenticate(authorization)
         .map_err(|_| ApiError::unauthorized("admin credential was rejected"))?;
+    Ok(())
+}
+
+fn authorized_socket_discovery(admin: &AdminService, headers: &HeaderMap) -> Result<(), ApiError> {
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    admin
+        .authorize_socket_discovery(authorization)
+        .map_err(|_| ApiError::unauthorized("socket discovery credential was rejected"))?;
     Ok(())
 }
 

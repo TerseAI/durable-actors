@@ -34,14 +34,13 @@ async fn every_replica_warms_ready_spares_without_claiming_them() -> Result<()> 
             otlp_endpoint: None,
             control_plane_url: None,
             kind: SpareKind::Actor,
-            idle: 2,
             fleet_maximum: 4,
             max_starting: 2,
             idle_ttl_seconds: 600,
             refill_interval: Duration::from_secs(1), retire_concurrency: 8, reap_interval: Duration::from_secs(30),
             pod_reap_interval: Duration::from_secs(1),
             regions: vec!["north-america-west".into()],
-            resources: ResourceLimits::default(),
+            tiers: vec![PoolTier { resources: ResourceLimits::default(), idle: 2 }],
         };
         let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
         let pool = SparePool::new(database.clone(), Arc::new(Provider(send)), config.clone());
@@ -50,7 +49,7 @@ async fn every_replica_warms_ready_spares_without_claiming_them() -> Result<()> 
         let stop = CancellationToken::new();
         let first = tokio::spawn(pool.clone().prewarm(stop.child_token()));
         let second = tokio::spawn(other.prewarm(stop.child_token()));
-        let handle = SpareHandle {
+        let handle = SpareHandle { node: String::new(),
             name: "spare".into(),
             resource_id: "sandbox".into(),
             route: "https://invoke.test".into(),

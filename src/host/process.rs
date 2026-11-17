@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use futures_util::{FutureExt, future::FusedFuture};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{error, info};
@@ -28,6 +29,7 @@ use super::{
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_ACTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const NODE_CACHE_SAVE_BUDGET: Duration = Duration::from_secs(30);
 /// How long the executor waits for its host to attach. Falling back from Rapid can
 /// spend two operation timeouts before Standard starts: the failed open, then
 /// deleting the replicas that did open.
@@ -37,7 +39,7 @@ const EXECUTOR_STARTUP_TIMEOUT: Duration = RAPID_OPERATION_TIMEOUT.saturating_mu
 #[serde(rename_all = "camelCase")]
 pub(super) struct HostReadiness {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub initial_reply: Option<serde_json::Value>,
+    pub initial_reply: Option<crate::payload::JsonText>,
     pub host_id: super::HostId,
     pub session_id: String,
     pub route: String,
@@ -172,7 +174,7 @@ pub(super) async fn serve_assigned_host(
             .await
             .context("serve actor host endpoints")
     });
-    let mut executor_task = Box::pin(executor_connection.run(executor_stop.clone()));
+    let mut executor_task = Box::pin(executor_connection.run(executor_stop.clone()).fuse());
     let shutdown = async {
         tokio::select! { () = shutdown => {}, () = storage.stop.cancelled() => {} }
     };
@@ -200,6 +202,9 @@ pub(super) async fn serve_assigned_host(
         let result = storage
             .finish(shutdown_deadline - Duration::from_secs(2))
             .await;
+        if result.is_ok() {
+            database.save_to_node_cache(NODE_CACHE_SAVE_BUDGET).await;
+        }
         lifecycle.stop().await;
         result
     })
@@ -275,15 +280,17 @@ async fn prepare_actor_host(
     timings.replication_ready_at_ms = Some(timings.elapsed_ms());
     let invocation_auth = invocation_verifier(&config.invocation_auth)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
-        Some(warm) => (
-            Some(warm.listener),
-            Some((warm.executor, warm.javascript)),
-            Some(warm.storage),
-            warm.control_plane,
-        ),
-        None => (None, None, None, None),
-    };
+    let (warm_listener, warm_executor, warm_storage, warm_control_plane, warm_node_cache) =
+        match warm {
+            Some(warm) => (
+                Some(warm.listener),
+                Some((warm.executor, warm.javascript)),
+                Some(warm.storage),
+                warm.control_plane,
+                warm.node_cache,
+            ),
+            None => (None, None, None, None, None),
+        };
     let access = &config.control_plane;
     let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
         async {
@@ -296,6 +303,11 @@ async fn prepare_actor_host(
     )?;
     timings.control_plane_ready_at_ms = Some(timings.elapsed_ms());
     let control_plane = Arc::new(control_plane);
+    let node_cache = match warm_node_cache {
+        Some(connection) => Some(connection),
+        None => crate::node_cache::NodeCacheConnection::from_env()?,
+    }
+    .map(|connection| connection.authorize(control_plane.authorization()));
     let stop = CancellationToken::new();
     let credentials = stop.clone().drop_guard();
     let assignment = &config.assignment;
@@ -310,11 +322,17 @@ async fn prepare_actor_host(
             assignment.actor.clone(),
         )
         .await?
-        .with_activation(assignment.new_actor, assignment.owner_hint.clone()),
+        .with_activation(assignment.new_actor, assignment.owner_hint.clone())
+        .with_node_cache(node_cache.clone()),
     );
     let persistence = super::persistence::ActorPersistence::new(storage.clone());
-    let database =
-        super::HostDatabase::new(endpoint.clone(), storage.clone(), persistence, replication);
+    let database = super::HostDatabase::new(
+        endpoint.clone(),
+        storage.clone(),
+        persistence,
+        replication,
+        node_cache.clone(),
+    );
     let started = timings.started_at;
     let storage_ready = async {
         let result = prepare_storage(
@@ -334,7 +352,7 @@ async fn prepare_actor_host(
     };
     let executor_ready = async {
         if let Some(bundle) = &config.executor.bundle {
-            storage.install_code(bundle).await?;
+            storage.install_code(bundle, node_cache.as_ref()).await?;
         }
         let result = if let Some((executor, javascript)) = warm_executor {
             let entrypoint = config
@@ -541,12 +559,8 @@ async fn connect_executor(
     started_at: Instant,
     javascript_spawned_at_ms: &mut Option<f64>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
-    let listener = ActorExecutorListener::bind(&executor.socket).await?;
-    let javascript = spawn_executor_process(
-        false,
-        &executor.socket.display().to_string(),
-        executor.runtime,
-    )?;
+    let mut listener = ActorExecutorListener::bind(&executor.socket).await?;
+    let javascript = spawn_executor_process(false, &mut listener, executor.runtime)?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -614,22 +628,34 @@ async fn serve_during<T>(
     }
 }
 
-async fn stop_executor(host: &ActorHost, stop: &CancellationToken, executor: impl Future) {
+async fn stop_executor(host: &ActorHost, stop: &CancellationToken, executor: impl FusedFuture) {
     if let Err(error) = host.drain(HOST_ACTOR_DRAIN_TIMEOUT).await {
         error!(error = %format!("{error:#}"), "actor invocations did not drain cleanly");
     }
     stop.cancel();
-    let _ = tokio::time::timeout(HOST_TASK_SHUTDOWN_TIMEOUT, executor).await;
+    executor_stopped(executor).await;
+}
+
+// The executor may be what stopped the host, and a future that has finished cannot be awaited again.
+async fn executor_stopped(executor: impl FusedFuture) {
+    if !executor.is_terminated() {
+        let _ = tokio::time::timeout(HOST_TASK_SHUTDOWN_TIMEOUT, executor).await;
+    }
 }
 
 pub(super) fn spawn_executor_process(
     generic: bool,
-    socket: &str,
+    listener: &mut ActorExecutorListener,
     runtime: ActorRuntime,
 ) -> Result<tokio::process::Child> {
-    executor_command(generic, socket, runtime)
-        .spawn()
-        .context("start actor executor")
+    let socket = listener.socket_path().display().to_string();
+    let mut command = executor_command(generic, &socket, runtime);
+    // Bun cannot open a socket that its thread can block on, so it inherits its database channel.
+    // A Python worker process connects its own.
+    if runtime != ActorRuntime::Python {
+        listener.inherit_database_channel(&mut command)?;
+    }
+    command.spawn().context("start actor executor")
 }
 
 fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Command {
@@ -643,7 +669,8 @@ fn executor_command(generic: bool, socket: &str, runtime: ActorRuntime) -> Comma
         }
         command
     } else {
-        let mut command = Command::new("bun");
+        let mut command =
+            Command::new(std::env::var("DURABLE_ACTORS_BUN").unwrap_or_else(|_| "bun".into()));
         command.args([
             "--eval",
             "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runActorHost\"]())",

@@ -58,11 +58,14 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
         watch: false,
         project_id: "default".into(),
         api_key: Some("test-key".into()),
+        invoke_api_key: None,
         project: cwd.clone(),
         port: 0,
         data_dir: Some(relative.into()),
         entrypoint: Some("actors.ts".into()),
         storage: DevStorage::Local,
+        host_binary: None,
+        host_ready_timeout_ms: 30_000,
         ready_fd: None,
         sdk_host: None,
     };
@@ -116,7 +119,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
         .await?;
     let event_id = state
         .traces
-        .replay("default", &Default::default())
+        .history("default", &Default::default())
         .await?
         .records[0]
         .event
@@ -127,7 +130,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
     assert_eq!(
         restored
             .traces
-            .replay("default", &Default::default())
+            .history("default", &Default::default())
             .await?
             .records[0]
             .event

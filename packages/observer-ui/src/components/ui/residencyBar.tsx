@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react"
 
-import { formatCount, formatPercent } from "../../format.js"
+import { formatCount } from "../../format.js"
 import { cn } from "../../lib/utils.js"
 
 import { Skeleton } from "./skeleton.js"
@@ -24,13 +24,11 @@ export function ResidencyBar({ liveShare, label, pulse, className, style }: Resi
     )
 }
 
-export function ResidencyLegend({ live, dormant, showCounts }: { live: number; dormant: number; showCounts?: boolean }) {
-    const total = live + dormant
-    const liveShare = total ? live / total : 0
+export function ResidencyLegend({ live, dormant }: { live?: number; dormant?: number }) {
     return (
         <div className="mt-3 flex justify-between gap-4 text-[13px] tabular-nums">
-            <LegendItem swatch="bg-success" label="Live" count={showCounts ? live : undefined} share={liveShare} />
-            <LegendItem swatch="bg-border" label="Dormant" count={showCounts ? dormant : undefined} share={total ? 1 - liveShare : 0} />
+            <LegendItem swatch="bg-success" label="Live" count={live} />
+            <LegendItem swatch="bg-border" label="Dormant" count={dormant} />
         </div>
     )
 }
@@ -47,11 +45,11 @@ export function ResidencyBarSkeleton() {
     )
 }
 
-function LegendItem({ swatch, label, count, share }: { swatch: string; label: string; count?: number; share: number }) {
+function LegendItem({ swatch, label, count }: { swatch: string; label: string; count?: number }) {
     return (
         <span className="flex items-center gap-1.75 text-muted-foreground">
             <span className={`size-2 rounded-xs ${swatch}`} />
-            {label} {count !== undefined && <b className="font-bold text-foreground">{formatCount(count)}</b>} · {formatPercent(share)}
+            {label} {count !== undefined && <b className="font-bold text-foreground">{formatCount(count)}</b>}
         </span>
     )
 }

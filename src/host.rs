@@ -5,6 +5,7 @@ mod config;
 pub(crate) mod http;
 mod lease_maintenance;
 mod lifecycle;
+mod memory;
 mod persistence;
 mod process;
 pub(crate) mod sockets;
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub(crate) use self::config::host_idle_timeout_ms;
+pub use self::memory::return_large_allocations_when_freed;
 pub use self::process::serve_actor_host;
 pub use self::spare::serve_spare;
 pub(crate) use self::{
@@ -23,6 +25,18 @@ pub(crate) use self::{
     actor_host::ActorHost,
     lease_maintenance::{HostLeaseMaintainer, LeaseRenewalTask},
 };
+
+pub async fn serve_role(
+    role: &str,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    return_large_allocations_when_freed()?;
+    match role {
+        "spare" => serve_spare(shutdown).await,
+        "host" => serve_actor_host(shutdown).await,
+        role => anyhow::bail!("unsupported DURABLE_ACTORS_PROCESS_ROLE {role:?}"),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct HostId(String);

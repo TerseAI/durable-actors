@@ -69,7 +69,7 @@ function ActorTypeLane({ row, largest }: { row: ActorTypeSummary; largest: numbe
                 <div className="grid grid-cols-2 gap-5 text-right">
                     <div>
                         <b className="block text-lg leading-tight font-bold tracking-tight">{formatCount(row.live)}</b>
-                        <span className="mt-0.75 block text-xs text-success">live · {formatPercent(liveShare)}</span>
+                        <span className="mt-0.75 block text-xs text-success">live</span>
                     </div>
                     <div>
                         <b className="block text-lg leading-tight font-medium tracking-tight text-foreground/85">{formatCount(row.dormant)}</b>

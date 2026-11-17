@@ -1,23 +1,21 @@
-import useSWR from "swr"
 import useSWRInfinite from "swr/infinite"
-import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
 
-import { logEventsKey, logHistogramKey, logsKey } from "../client/cacheKeys.js"
-import { HttpObserverClient } from "../client/observerClient.js"
-import { subscribeToLogs } from "../client/streams/logStream.js"
+import { logHistogramKey, logLinesKey, logsKey } from "../client/cacheKeys.js"
+import { HttpObserverClient, logFilterParams } from "../client/observerClient.js"
 import { alignBounds, chartBucketMs } from "../lib/logs.js"
+import { currentBounds, windowKey } from "../lib/timeRange.js"
+import { applyHistogramEvents, applyLogEvents, histogramFor, liveHistogram } from "../lib/views/logs.js"
 import type { ActorLog, ActorLogPage, LogFilter } from "../types/Logs.js"
 import type { TimeWindow } from "../types/TimeRange.js"
 
-import { currentBounds, windowKey } from "./useWindowedSWR.js"
-
-const liveRefreshMs = 5_000
-const streamedLimit = 2_000
+import { useEventStream, useLiveView } from "./useLiveView.js"
 
 export function useLogs(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter) {
+    // Every level streams so the histogram counts them all; the list shows the chosen ones.
+    const events = useEventStream(baseUrl, timeWindow.live ? logStreamQuery(filter) : null)
     const history = useLogHistory(baseUrl, timeWindow, filter)
-    const streamed = useLogStream(baseUrl, timeWindow.live, filter)
-    const { data: histogram } = useLogHistogram(baseUrl, timeWindow, filter)
+    const { data: streamed } = useLiveView(logLinesKey(baseUrl, filter), async (): Promise<ActorLog[]> => [], applyLogEvents(filter.level), events)
+    const histogram = useLogHistogram(baseUrl, timeWindow, filter, events)
     const pages = history.data
     return {
         lines: pages ? newestFirst([...(streamed ?? []), ...pages.flatMap(page => page.records)]) : null,
@@ -29,6 +27,12 @@ export function useLogs(baseUrl: string, timeWindow: TimeWindow, filter: LogFilt
     }
 }
 
+function logStreamQuery(filter: LogFilter): URLSearchParams {
+    const query = logFilterParams({ ...filter, level: null })
+    query.set("signals", "logs")
+    return query
+}
+
 function useLogHistory(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter) {
     const client = new HttpObserverClient(baseUrl)
     return useSWRInfinite<ActorLogPage>(
@@ -38,20 +42,20 @@ function useLogHistory(baseUrl: string, timeWindow: TimeWindow, filter: LogFilte
     )
 }
 
-function useLogStream(baseUrl: string, live: boolean, filter: LogFilter): ActorLog[] | undefined {
-    const { data } = useSWRSubscription(live ? logEventsKey(baseUrl, filter) : null, (_key, { next }: SWRSubscriptionOptions<ActorLog[]>) =>
-        subscribeToLogs(baseUrl, filter, records => next(null, lines => [...records, ...(lines ?? [])].slice(0, streamedLimit)))
-    )
-    return data
-}
-
-function useLogHistogram(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter) {
-    const client = new HttpObserverClient(baseUrl)
+function useLogHistogram(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter, events: ReturnType<typeof useEventStream>) {
     const bucketMs = chartBucketMs(timeWindow.toMs - timeWindow.fromMs)
-    return useSWR([...logHistogramKey(baseUrl, filter), ...windowKey(timeWindow), bucketMs], () => client.getLogHistogram(filter, alignBounds(currentBounds(timeWindow), bucketMs), bucketMs), {
-        refreshInterval: timeWindow.live ? liveRefreshMs : 0,
-        keepPreviousData: true
-    })
+    const { data } = useLiveView(
+        [...logHistogramKey(baseUrl, filter), ...windowKey(timeWindow), bucketMs],
+        async () => {
+            const readAtMs = Date.now()
+            const read = await new HttpObserverClient(baseUrl).getLogHistogram(filter, alignBounds(currentBounds(timeWindow), bucketMs), bucketMs)
+            return liveHistogram(read, readAtMs)
+        },
+        applyHistogramEvents,
+        events,
+        { keepPreviousData: true }
+    )
+    return data && histogramFor(data, alignBounds(currentBounds(timeWindow), bucketMs))
 }
 
 function newestFirst(lines: ActorLog[]): ActorLog[] {

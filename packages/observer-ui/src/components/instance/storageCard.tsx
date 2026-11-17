@@ -8,7 +8,7 @@ export function StorageCard({ storage, failed }: { storage: StorageUsage | null;
     const loading = !storage && !failed
     const value = storage ? formatMegabytes(storage.bytes) : loading ? <Skeleton className="h-11 w-20" /> : "—"
     return (
-        <StatCard label="SQLite Storage" aside={<span className="shrink-0 text-xs font-normal">on disk</span>} value={value} unit="MB" busy={loading}>
+        <StatCard label="SQLite Storage" value={value} unit="MB" busy={loading}>
             {storage ? <StorageHistory {...storage} /> : <ResourceSkeleton failed={failed} />}
         </StatCard>
     )

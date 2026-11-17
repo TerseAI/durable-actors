@@ -9,6 +9,7 @@ Configuration uses environment variables. Precedence is to use exported variable
 | `DURABLE_ACTORS_PROJECT_ID`        | `local` on localhost; required remotely | Actor project ID; use the same value in the server registration and backend.                                                |
 | `DURABLE_ACTORS_CONTROL_PLANE_URL` | `http://127.0.0.1:7100`                 | HTTP(S) server origin. Paths, query strings, fragments, and embedded credentials are not allowed.                           |
 | `DURABLE_ACTORS_SECRET`            | Unset                                   | Optional shared secret. Set the same value on the server and backend to enable authentication. Keep it out of browser code. |
+| `DURABLE_ACTORS_INVOKE_API_KEY`    | Unset                                   | Optional long-lived key for backends that only call actors. Accepted solely by `invoke`, `find-actor`, and `find-websocket`; it cannot deploy, issue sessions, read contracts, observe, or publish socket effects. Invocations are limited to published RPC methods like a session; WebSocket URLs carry the metadata the backend supplies, as with the secret. The server requires `DURABLE_ACTORS_SECRET` alongside it, and the two must differ. On a backend, set it instead of `DURABLE_ACTORS_SECRET`; the SDKs send it when no secret is set. |
 
 ## Diagnostics and runtime overrides
 
@@ -28,6 +29,9 @@ Configuration uses environment variables. Precedence is to use exported variable
 | `DURABLE_ACTORS_PORT`       | `7100`                             | Listening port; `0` selects a free port. `--port` overrides it for one run.                                           |
 | `DURABLE_ACTORS_DATA_DIR`   | `<project>/.durable-actors`        | Persistent local state directory.                                                                                     |
 | `DURABLE_ACTORS_STORAGE`    | `local`                            | `local` for file storage or `gcs` for a GCS bucket. GCS also requires `DURABLE_ACTORS_BUCKET` and Google credentials. |
+| `DURABLE_ACTORS_LOCAL_HOST_BINARY` | The runtime | Executable run for each actor host; it must not exit before the host does. |
+| `DURABLE_ACTORS_LOCAL_HOST_READY_TIMEOUT_MS` | `30000` | Time a new actor host has to become ready. |
+| `DURABLE_ACTORS_LOCAL_HOST_LEASE_MS` | Unset | Actor host lease, which may exceed 60000 ms for debugging. Leases of exited hosts are then released. |
 
 ## WebSockets
 
@@ -41,18 +45,19 @@ Configuration uses environment variables. Precedence is to use exported variable
 | --------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`   | `10000` | Actor idle time before eviction; 1–86400000 ms. Applies locally too. Method calls and WebSocket handlers reset the timer; running handlers defer eviction. Open WebSockets remain at the gateway and do not keep the sandbox alive. Automatic gateway replies do not reset actor idle time. |
 | `DURABLE_ACTORS_HOST_STARTUP_MS`        | `30000` | Executor startup timeout in milliseconds. Actor hosts set it to three times the Rapid operation timeout.                                                                                                                                                                                    |
-| `DURABLE_ACTORS_SPARE_IDLE`             | `64`    | Ready actor sandboxes per image and configured compute region; must not exceed the fleet budget. Zero creates hosts on demand. Control-plane replicas must share pool settings. Customer secrets are installed at assignment.                                                               |
-| `DURABLE_ACTORS_SPARE_FLEET_MAX`        | `256`   | Maximum unassigned spares across pools. Active actors do not count against this budget.                                                                                                                                                                                                     |
-| `DURABLE_ACTORS_SPARE_MAX_STARTING`     | `32`    | Maximum simultaneous spare starts across control-plane replicas.                                                                                                                                                                                                                            |
+| `DURABLE_ACTORS_SPARE_IDLE` | `64` | Ready actor sandboxes of the default actor size per image and configured compute region; must not exceed the fleet budget. Zero creates hosts on demand. Control-plane replicas must share pool settings. Customer secrets are installed at assignment. |
+| `DURABLE_ACTORS_SPARE_TIERS` | Unset | Spare sizes as a JSON list, replacing `DURABLE_ACTORS_SPARE_IDLE`: `[{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":256,"memoryLimitMiB":256,"warm":2},{"cpuMillis":250,"cpuLimitMillis":null,"memoryMiB":512,"memoryLimitMiB":512,"warm":1}]`. Each tier keeps `warm` ready sandboxes per image and region. Every field is required; a `null` `cpuLimitMillis` leaves CPU uncapped. An actor starts on a spare only when its requests and limits equal a tier, counting the limits it inherits from the default actor size; other sizes start a new sandbox. Tiers must differ, and their `warm` counts together must not exceed the fleet budget. |
+| `DURABLE_ACTORS_SPARE_FLEET_MAX` | `256` | Maximum unassigned spares across pools and tiers. Active actors do not count against this budget. |
+| `DURABLE_ACTORS_SPARE_MAX_STARTING` | `32` | Maximum simultaneous spare starts across pools and tiers. The pool that has waited longest starts first, so a busy tier cannot starve another. |
 | `DURABLE_ACTORS_SPARE_REFILL_INTERVAL_MS` | `1000` | How often the pool manager refills spare pools; 50–60000 ms. Shorter intervals replace claimed spares sooner and query PostgreSQL more often. |
 | `DURABLE_ACTORS_SPARE_RETIRE_CONCURRENCY` | `64` | Retired spares the pool manager deletes at once; 1–1024. Retiring spares count against the fleet maximum until deleted. |
 | `DURABLE_ACTORS_SPARE_REAP_INTERVAL_MS` | `30000` | How often the pool manager drops stopped spares and hosts from the registry; 500–600000 ms. Each pass inspects every registered sandbox: a Modal API call, but only a local read on GKE. |
 | `DURABLE_ACTORS_SPARE_POD_REAP_INTERVAL_MS` | `1000` | How often the pool manager deletes finished sandboxes; 100–60000 ms. On GKE each pass reads the shared pod watch and only finished pods cost an API call; Modal sandboxes end on their own. |
 | `DURABLE_ACTORS_GKE_REAP_CONCURRENCY` | `64` | Finished GKE pods the pool manager deletes at once; 1–1024. |
 | `DURABLE_ACTORS_SPARE_TTL_SECONDS`      | `600`   | Unassigned host lifetime; 30–3600 seconds.                                                                                                                                                                                                                                                  |
-| `DURABLE_ACTORS_HOST_CPU_MILLIS`        | `250`   | Default actor CPU request in millicores; spares use it.                                                                                                                                                                                                                                     |
+| `DURABLE_ACTORS_HOST_CPU_MILLIS` | `250` | Default actor CPU request in millicores, for actors that set none. Spares use it unless tiers are set. |
 | `DURABLE_ACTORS_HOST_CPU_LIMIT_MILLIS`  | Unset   | Default actor CPU limit; at least the request. Unset leaves CPU uncapped.                                                                                                                                                                                                                   |
-| `DURABLE_ACTORS_HOST_MEMORY_MIB`        | `256`   | Default actor memory request in MiB; spares use it.                                                                                                                                                                                                                                         |
+| `DURABLE_ACTORS_HOST_MEMORY_MIB` | `256` | Default actor memory request in MiB, for actors that set none. Spares use it unless tiers are set. |
 | `DURABLE_ACTORS_HOST_MEMORY_LIMIT_MIB`  | Request | Default actor memory limit; at least the request.                                                                                                                                                                                                                                           |
 | `DURABLE_ACTORS_SANDBOX_MIN_CPU_MILLIS` | `125`   | Smallest `@Compute` CPU request or limit a deployment may set, in millicores.                                                                                                                                                                                                               |
 | `DURABLE_ACTORS_SANDBOX_MAX_CPU_MILLIS` | `4000`  | Largest `@Compute` CPU request or limit a deployment may set, in millicores.                                                                                                                                                                                                                |
@@ -103,7 +108,7 @@ Every deployment must have a valid `organization_id`; local development uses `lo
 
 ## Kubernetes hosting
 
-Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/durable-actors/README.md) to run on GKE Sandbox with PostgreSQL and one Standard GCS bucket. One controller handles HTTP and WebSockets, and actor pods start on demand. The chart sets `DURABLE_ACTORS_SPARE_IDLE=0`; the runtime's standalone default above remains 64.
+Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/durable-actors/README.md) to run on GKE Sandbox with PostgreSQL and one Standard GCS bucket. One controller handles HTTP and WebSockets, and actor pods start on demand. The chart sets `DURABLE_ACTORS_SPARE_IDLE=0`, or `DURABLE_ACTORS_SPARE_TIERS` from `actors.tiers`; the runtime's standalone default above remains 64.
 
 | Variable | Description |
 | --- | --- |
@@ -116,11 +121,13 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry and spare bookkeeping database; the user needs migration privileges. |
 | `DURABLE_ACTORS_ANALYTICS_BACKEND` | Telemetry backend: `none` (default) or `clickhouse`. ClickHouse stores request spans, actor logs, and actor inventory; with `none`, request and log endpoints return empty results. PostgreSQL remains required for control-plane bookkeeping. |
 | `DURABLE_ACTORS_OTLP_ENDPOINT` | OpenTelemetry Collector gRPC endpoint passed to actor hosts as `OTEL_EXPORTER_OTLP_ENDPOINT`. Hosts export request spans and actor logs there with their host token; unset disables export. |
+| `DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT` | Collector gRPC endpoint where the control plane reports deployments, WebSocket opens and closes, and a gateway heartbeat every 10 seconds. It republishes every current deployment on startup. Requires `DURABLE_ACTORS_PLATFORM_TELEMETRY_TOKEN_FILE`, a projected service-account token sent on every export. The chart sets both when `telemetry.collector.platform.issuer` is set; unset disables reporting. |
 | `DURABLE_ACTORS_CLICKHOUSE_URL` | ClickHouse HTTP(S) endpoint, required for the ClickHouse backend. |
 | `DURABLE_ACTORS_CLICKHOUSE_DATABASE` | Existing ClickHouse database. The application user needs SELECT, INSERT, CREATE TABLE, CREATE VIEW, and ALTER TABLE privileges in it. |
 | `DURABLE_ACTORS_CLICKHOUSE_USER` | ClickHouse application user. |
 | `DURABLE_ACTORS_CLICKHOUSE_PASSWORD` | ClickHouse application password. Supply through a secret. |
 | `DURABLE_ACTORS_USAGE_TOPIC` | Optional Pub/Sub topic, `projects/<gcp-project>/topics/<topic>`, for actor activation usage. Unset disables publishing. The control plane uses Application Default Credentials with publisher access to this topic. |
+| `DURABLE_ACTORS_EVENTS_TOPIC` | Optional Pub/Sub topic, `projects/<gcp-project>/topics/<topic>`, for [platform events](#published-events) such as sandbox kills. Unset disables publishing. The pool manager uses Application Default Credentials with publisher access to this topic. |
 | `DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS` | PostgreSQL pool size per process, default `8`, range 1–1,000. The chart sets it from `postgres.maxConnections`. Invocation routing and alarm polling share the pool. Budget the database's connection limit for this pool size times the controller replica count, plus other database clients. |
 | `DURABLE_ACTORS_REDIS_URL` | Redis that carries socket messages between processes; required with more than one. `redis://host:6379`, or `rediss://:password@host:6378` for TLS. If the connection drops, the process closes its sockets with `1012` and browsers reconnect. Unset, a single process keeps everything in memory. The chart reads it from the key named by `redis.urlSecretKey`. |
 | `DURABLE_ACTORS_REDIS_CA_CERT` | PEM CA for a `rediss://` server with a private CA, such as Memorystore. The chart reads it from the key named by `redis.caSecretKey`. |
@@ -135,6 +142,7 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace; the chart defaults to `<release-namespace>-<release-name>`. |
 | `DURABLE_ACTORS_GKE_ZONE` | Actor placement zone, for example `us-west4-a`; the runtime infers the canonical compute region. The chart sets this from `placement.zone`. |
 | `DURABLE_ACTORS_GKE_ZONES` | Advanced alternative to `GKE_ZONE`: JSON map from canonical compute region to eligible Google zones, such as `{"north-america-west":["us-west4-a","us-west4-b"]}`. A single zone string per region is also accepted. Configure only one of the two placement variables. |
+| `DURABLE_ACTORS_GKE_RUNTIME_CLASS` | RuntimeClass of sandbox pods, default `gvisor` (the class GKE provides). gVisor's own memory counts against a pod's limit, and GKE's class declares no overhead for it. To add it on top of the limit, create a RuntimeClass with the `gvisor` handler, the same scheduling as GKE's class and an `overhead.podFixed.memory`, and name it here. Under any other class than `gvisor` the pods carry the volume mount annotations GKE adds only for its own. |
 | `DURABLE_ACTORS_TYPESCRIPT_IMAGE` | TypeScript actor OCI image pinned by SHA-256 digest; selected for compiled `.mjs` artifacts. |
 | `DURABLE_ACTORS_PYTHON_IMAGE` | Python actor OCI image pinned by SHA-256 digest; selected for compiled `.pyz` artifacts. |
 | `DURABLE_ACTORS_EXECUTOR_RUNTIME` | Set by actor images to `typescript` or `python`; selects the executor before a warm spare is assigned. Native hosts infer it from the compiled entrypoint. |
@@ -149,11 +157,9 @@ Upgraded hosts report `started` after activation, `heartbeat` every 10 seconds, 
 
 The control plane derives project, actor, host, session, and region from the authenticated host token without reading ownership. This allows a stop report after ownership release. All dashboard inventory comes from lifecycle reports. Without ClickHouse, and in local development, inventory uses a bounded in-memory cache (10,000 actors, 24-hour idle expiry). This POC cache is local to each control-plane process, resets on restart, and contains only reports received by that replica. Use ClickHouse for shared, persistent inventory across replicas.
 
-With `DURABLE_ACTORS_ANALYTICS_BACKEND=clickhouse`, the control plane's bounded lifecycle writer batches reports into `actor_lifecycle`. A materialized view maintains `actor_inventory`, ordered by ownership epoch and report sequence so late reports from an old activation cannot overwrite its replacement. Raw reports use the configured analytics retention period; latest inventory records have no TTL, keeping stopped actors visible.
+With ClickHouse enabled, dashboard inventory and request analytics come from ClickHouse, deployed actor classes from the deployments the control plane reports, and WebSocket connections from the events gateways report. PostgreSQL stays the source of truth for running deployments. A connection without a recorded close is open while its gateway keeps reporting, and lost once it has been silent for 30 seconds. Inventory reads never fall back to GCS in any mode: an actor without a report is absent from lifecycle inventory, while a ClickHouse read error is returned to the dashboard. A report older than 35 seconds is shown as unknown unless it is a confirmed `stopped` report, which remains dormant. Explicit state inspection and authoritative ownership still use GCS.
 
-With ClickHouse enabled, dashboard inventory and request analytics come from ClickHouse, deployment metadata from PostgreSQL, and current sockets from the gateway/Redis. Inventory reads never fall back to GCS in any mode: an actor without a report is absent from lifecycle inventory, while a ClickHouse read error is returned to the dashboard. A report older than 35 seconds is shown as unknown unless it is a confirmed `stopped` report, which remains dormant. Explicit state inspection and authoritative ownership still use GCS.
-
-Hosts register ownership immediately and renew on the configured lease schedule. Ownership records no longer carry residency or waiting operations, and changes to either no longer trigger extra GCS renewals. Ownership expiry, self-fencing, and shutdown release are unchanged. The `InventoryChanged` command has been removed. The dashboard's existing 15-second inventory refresh picks up lifecycle reports without a PostgreSQL notification per host renewal.
+Hosts register ownership immediately and renew on the configured lease schedule. Residency and waiting operations travel only in lifecycle reports, not in ownership records, so changes to them cause no GCS renewals. The dashboard applies each lifecycle report from its live event stream.
 
 `draining` and `stopped` reports also record routing hints in the configured Redis, independently of analytics persistence. Hints identify the actor, host, session, and ownership epoch; late heartbeats cannot clear them, and a late draining report cannot undo a stop. All control-plane replicas must use the same Redis. Hints expire after the configured maximum JWT lifetime plus 60 seconds. Without Redis, hints use a process-local cache capped at 100,000 sessions; a Redis error logs a warning and uses the existing lease and host checks.
 
@@ -192,6 +198,28 @@ When usage publishing is enabled, controllers retain each session's latest repor
 The next newer heartbeat or draining report reopens the usage interval (`endedAtMs: null`, `estimated: false`); a real stop replaces the estimate with the actual end time. Consumers must replace or retract the previous contribution when processing a higher revision, including reopening a previously closed interval. Duplicate and older reports do not extend the freshness window. Redis atomically coordinates reports and expiry across replicas; session records expire after 24 hours without an update. Enable Redis persistence to retain this state across Redis restarts. Without Redis, reconciliation uses a process-local cache capped at 100,000 sessions that resets on restart.
 
 Estimates affect only usage publications. ClickHouse retains the actual lifecycle reports, stale dashboard entries stay unknown, and estimated stops neither create routing hints nor release ownership. Reconciliation performs no GCS or PostgreSQL reads. Redis errors log warnings; start/stop publishing and the other lifecycle paths continue, but reconciliation and heartbeat corrections require the session state to be available.
+
+### Published events
+
+Setting `DURABLE_ACTORS_EVENTS_TOPIC` publishes platform events to Pub/Sub for services outside the control plane. Each message is one event as the `observe/events` stream sends it, with its project and an ID:
+
+```json
+{
+  "eventId": "5f0c7a…",
+  "projectId": "project-1",
+  "type": "kill",
+  "item": {
+    "actorName": "Room",
+    "actorId": "lobby",
+    "atMs": 1700000000000,
+    "reason": "out_of_memory"
+  }
+}
+```
+
+`eventId` is the SHA-256 of the recorded event, the same each time one event is reported; the Pub/Sub attributes `projectId`, `eventId` and `type` repeat the message's. Only `kill` is published today, with a `reason` of `out_of_memory`, `out_of_disk`, `evicted` or `killed`. Subscribers must ignore the types and fields they do not know.
+
+The pool manager reports kills, and only for Kubernetes sandboxes. When it restarts it publishes the kills it still sees again under their original `eventId`, so subscribers must skip the IDs they have handled. Publishing is best effort: a failed publication, a pool manager that exits, or a kill whose actor takes over two seconds to read can lose an event.
 
 ## Modal data plane
 

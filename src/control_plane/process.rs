@@ -5,6 +5,7 @@ use tracing::{info, warn};
 
 use crate::{
     bucket::{GcsBucket, RuntimeStorageReader},
+    platform_events::{NoPlatformEvents, PlatformEvents, sandboxes::SandboxKill},
     postgres::PostgresDatabase,
     redis_client::{Redis, RedisConfig},
     request_traces::{
@@ -12,15 +13,20 @@ use crate::{
         live::{InProcessFeed, LiveFeed, RedisFeed},
         persistence::{NoTraceQueries, clickhouse::ClickHouseTracePersistence},
     },
-    sandbox::{HostSandboxRuntimeConfig, gke::GkeConfig, modal::ModalConfig},
+    sandbox::{
+        HostSandboxRuntimeConfig,
+        gke::{GKE_RUNTIME_CLASS, GkeConfig, KillReporting},
+        modal::ModalConfig,
+        pool::claims::PoolClaims,
+    },
 };
 
 use super::{ActorJwtVerifier, ControlPlaneService};
 
-const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
-const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
+pub(crate) const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
+pub(crate) const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-actors-invoke";
-const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
+pub(crate) const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
 /// Bump the version when the bus's messages change.
 const SOCKET_BUS_NAMESPACE: &str = "durable-actors:v1:sockets";
 
@@ -35,10 +41,16 @@ pub struct ControlPlaneProcessConfig {
     pub invocation_audience: String,
     pub jwt_max_lifetime: Duration,
     pub api_key: Option<String>,
+    pub invoke_api_key: Option<String>,
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
+    /// Where the control plane exports platform events (WebSocket connections and deployments);
+    /// unset turns them off.
+    pub platform_telemetry: Option<super::PlatformTelemetryConfig>,
     pub usage_topic: Option<String>,
+    /// Where platform events are also published for services outside the control plane.
+    pub events_topic: Option<String>,
     pub region: Option<String>,
     pub alarm_poll_interval: Duration,
     pub redis: Option<RedisConfig>,
@@ -97,6 +109,7 @@ impl RuntimeImages {
 pub struct SandboxProviderConfig {
     pub runtime_images: RuntimeImages,
     pub(super) pool: crate::sandbox::pool::PoolConfig,
+    pub(super) default_resources: crate::sandbox::ResourceLimits,
     pub(crate) backend: SandboxBackend,
     pub(crate) secret_namespace: String,
     pub(crate) public_origin: String,
@@ -179,12 +192,6 @@ async fn control_plane_routes(
         &config.storage.postgres_url,
         config.storage.postgres_max_connections,
     )?;
-    let changes = crate::postgres::notifications::ChangeFeed::postgres(
-        database.clone(),
-        &config.storage.postgres_url,
-        stop.clone(),
-    )
-    .await?;
     let (traces, lifecycle) = telemetry_stores(&config.storage, redis.clone(), stop.clone())?;
     let retention = config
         .jwt_max_lifetime
@@ -233,6 +240,9 @@ async fn control_plane_routes(
         )?
         .with_persistence(config.storage.persistence, snapshots)?,
     );
+    if storage.persistence.rapid_settings().is_some() {
+        storage.clone().start_abandoned_recovery(stop.child_token());
+    }
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::Gcs {
             artifact_bucket: config.storage.artifact_bucket.clone(),
@@ -249,14 +259,24 @@ async fn control_plane_routes(
             config.max_socket_connections,
             config.gateway_accept_connections,
             stop.child_token(),
-        ),
+        )?,
         None => super::socket_bus::MemorySocketHub::default().join(config.max_socket_connections),
     };
+    let platform_events = platform_events(config.platform_telemetry.as_ref())?;
+    let socket_events: Arc<dyn PlatformEvents<crate::platform_events::sockets::SocketEvent>> =
+        match &platform_events {
+            Some(events) => events.clone(),
+            None => Arc::new(NoPlatformEvents),
+        };
+    if let Some(events) = &platform_events {
+        lifecycle = lifecycle.with_events(events.clone());
+    }
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         socket_bus,
         config.gateway_accept_connections,
         stop.child_token(),
         connections.client.clone(),
+        socket_events,
     )?;
     let public_origin = config.sandbox_provider.public_origin.clone();
     let gateway = super::gateway::Gateway::new(&issuer, public_origin.clone(), socket_gateway)?;
@@ -297,24 +317,30 @@ async fn control_plane_routes(
         ));
     }
     service.lifecycle = lifecycle;
-    service.changes = changes;
     service.gateway = Some(gateway);
     service.region = config.region;
+    if let Some(events) = platform_events {
+        service = service.with_deployment_events(events);
+        republish_deployments(service.clone());
+    }
     service.lifecycle.start_reconciliation(stop.clone());
     service.start_access_reconciliation(stop.clone());
     service.start_alarm_scheduler(config.alarm_poll_interval, stop);
-    let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
+    let inventory = Arc::new(super::socket_inventory::ConnectionInventoryReader::new(
         Arc::new(service.lifecycle.clone()),
-        service.gateway.as_ref().unwrap().connections.clone(),
+        traces.clone(),
     ));
     let discovery = super::discovery::router(&issuer, &public_origin)?;
-    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
+    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
+        .with_invoke_api_key(config.invoke_api_key)?;
     let inspector =
-        super::inspection::ActorInspector::new(inventory, storage.clone(), service.changes.clone())
-            .with_traces(traces);
+        super::inspection::ActorInspector::new(inventory, storage.clone()).with_traces(traces);
     let public_api = super::public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::router(inspector, admin))
+        .merge(super::inspection::router(inspector, admin.clone()))
         .merge(discovery);
+    let public_api = public_api
+        .clone()
+        .merge(super::mcp::router(public_api, admin));
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
@@ -348,7 +374,7 @@ fn telemetry_stores(
     match &storage.analytics {
         AnalyticsBackend::None => Ok((
             TraceStore::new(Arc::new(NoTraceQueries), live),
-            Default::default(),
+            crate::actor_lifecycle::LifecycleStore::default(),
         )),
         AnalyticsBackend::ClickHouse(config) => {
             let persistence = Arc::new(ClickHouseTracePersistence::start(
@@ -372,7 +398,8 @@ async fn sandbox_provisioner(
     stop: tokio_util::sync::CancellationToken,
     connections: crate::sandbox::connections::HostConnections,
 ) -> Result<super::service::SandboxHostProvisioner> {
-    let provider = sandbox_provider(&config, connections).await?;
+    // Every replica watches the same pods, so only the pool manager reports their kills.
+    let provider = sandbox_provider(&config, connections, None).await?;
     let pool = crate::sandbox::pool::SparePool::with_runtime_images(
         database,
         provider.clone(),
@@ -388,19 +415,21 @@ async fn sandbox_provisioner(
     )
     .with_runtime_access(access)
     .with_pool(pool)
+    .with_default_resources(config.default_resources)
     .with_resource_bounds(config.resource_bounds))
 }
 
 async fn sandbox_provider(
     config: &SandboxProviderConfig,
     connections: crate::sandbox::connections::HostConnections,
+    kills: Option<KillReporting>,
 ) -> Result<Arc<dyn crate::sandbox::SandboxProvider>> {
     let secrets = Arc::new(crate::sandbox::secrets::KubernetesSecrets::new(
         config.secret_namespace.clone(),
     ));
     Ok(Arc::new(match &config.backend {
         SandboxBackend::Gke(gke) => {
-            crate::sandbox::gke::provider(gke.clone(), secrets, connections).await?
+            crate::sandbox::gke::provider(gke.clone(), secrets, connections, kills).await?
         }
         SandboxBackend::Modal(modal) => {
             crate::sandbox::modal::provider(
@@ -429,9 +458,11 @@ pub async fn serve_pool_manager(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
+    let kills = kill_reporting(&config, &database).await?;
     let provider = sandbox_provider(
         &config.sandbox_provider,
         crate::sandbox::connections::HostConnections::new()?,
+        kills,
     )
     .await?;
     let pool = crate::sandbox::pool::SparePool::with_runtime_images(
@@ -470,6 +501,27 @@ pub async fn serve_pool_manager(
     Ok(())
 }
 
+/// Kills are reported only where something takes them: platform telemetry, the events topic, or
+/// both.
+async fn kill_reporting(
+    config: &ControlPlaneProcessConfig,
+    database: &PostgresDatabase,
+) -> Result<Option<KillReporting>> {
+    let recorded = platform_events(config.platform_telemetry.as_ref())?;
+    if recorded.is_none() && config.events_topic.is_none() {
+        return Ok(None);
+    }
+    let recorded: Arc<dyn PlatformEvents<SandboxKill>> = match recorded {
+        Some(events) => events,
+        None => Arc::new(NoPlatformEvents),
+    };
+    let topic = config.events_topic.as_deref();
+    Ok(Some(KillReporting {
+        claims: Arc::new(PoolClaims(database.clone())),
+        events: super::event_topic::published(recorded, topic).await?,
+    }))
+}
+
 impl ControlPlaneProcessConfig {
     fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let bind = get("DURABLE_ACTORS_CONTROL_PLANE_BIND")
@@ -504,6 +556,25 @@ impl ControlPlaneProcessConfig {
             ensure!(
                 api_key.trim() == api_key,
                 "DURABLE_ACTORS_SECRET has surrounding whitespace"
+            );
+        }
+        let invoke_api_key = get("DURABLE_ACTORS_INVOKE_API_KEY");
+        if let Some(invoke_api_key) = &invoke_api_key {
+            ensure!(
+                !invoke_api_key.is_empty(),
+                "DURABLE_ACTORS_INVOKE_API_KEY must not be empty"
+            );
+            ensure!(
+                invoke_api_key.trim() == invoke_api_key,
+                "DURABLE_ACTORS_INVOKE_API_KEY has surrounding whitespace"
+            );
+            ensure!(
+                api_key.is_some(),
+                "DURABLE_ACTORS_INVOKE_API_KEY requires DURABLE_ACTORS_SECRET"
+            );
+            ensure!(
+                api_key.as_ref() != Some(invoke_api_key),
+                "DURABLE_ACTORS_INVOKE_API_KEY must differ from DURABLE_ACTORS_SECRET"
             );
         }
         let bucket = required(&mut get, "DURABLE_ACTORS_BUCKET")?;
@@ -554,10 +625,13 @@ impl ControlPlaneProcessConfig {
             invocation_audience,
             jwt_max_lifetime,
             api_key,
+            invoke_api_key,
             storage,
             sandbox_provider,
             socket_event_sink,
+            platform_telemetry: platform_telemetry_config(&mut get)?,
             usage_topic: get("DURABLE_ACTORS_USAGE_TOPIC"),
+            events_topic: get("DURABLE_ACTORS_EVENTS_TOPIC"),
             region,
             alarm_poll_interval,
             redis: redis_config(&mut get)?,
@@ -702,6 +776,44 @@ fn alarm_poll_interval(get: &mut impl FnMut(&str) -> Option<String>) -> Result<D
     Ok(Duration::from_millis(milliseconds))
 }
 
+fn republish_deployments(service: ControlPlaneService) {
+    tokio::spawn(async move {
+        if let Err(error) = service.republish_deployments().await {
+            warn!(error = %format!("{error:#}"), "deployments were not republished");
+        }
+    });
+}
+
+// A fresh ID per process: a restarted gateway must not vouch for the connections it lost.
+fn platform_events(
+    config: Option<&super::PlatformTelemetryConfig>,
+) -> Result<Option<Arc<super::platform_telemetry::OtlpPlatformEvents>>> {
+    config
+        .map(|telemetry| {
+            super::platform_telemetry::OtlpPlatformEvents::connect(
+                telemetry,
+                &uuid::Uuid::new_v4().to_string(),
+            )
+            .map(Arc::new)
+        })
+        .transpose()
+}
+
+fn platform_telemetry_config(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<Option<super::PlatformTelemetryConfig>> {
+    let Some(endpoint) = get("DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT") else {
+        return Ok(None);
+    };
+    let token_file = get("DURABLE_ACTORS_PLATFORM_TELEMETRY_TOKEN_FILE").context(
+        "DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT requires DURABLE_ACTORS_PLATFORM_TELEMETRY_TOKEN_FILE",
+    )?;
+    Ok(Some(super::PlatformTelemetryConfig {
+        endpoint: validated_http_url(&endpoint, "DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT")?,
+        token_file: token_file.into(),
+    }))
+}
+
 fn socket_event_sink_config(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<Option<SocketEventSinkConfig>> {
@@ -737,12 +849,9 @@ fn sandbox_provider_config(
         &required(get, "DURABLE_ACTORS_CONTROL_PLANE_URL")?,
         "DURABLE_ACTORS_CONTROL_PLANE_URL",
     )?;
-    let idle = pool_number(get, "DURABLE_ACTORS_SPARE_IDLE", 64, 0, u32::MAX)?;
+    let default_resources = host_resources(get)?;
     let fleet_maximum = pool_number(get, "DURABLE_ACTORS_SPARE_FLEET_MAX", 256, 0, u32::MAX)?;
-    ensure!(
-        idle <= fleet_maximum,
-        "DURABLE_ACTORS_SPARE_IDLE must not exceed DURABLE_ACTORS_SPARE_FLEET_MAX"
-    );
+    let tiers = pool_tiers(get, &default_resources, fleet_maximum)?;
     let (backend, regions) = sandbox_backend(get, &control_plane_url)?;
     let otlp_endpoint = get("DURABLE_ACTORS_OTLP_ENDPOINT")
         .filter(|endpoint| !endpoint.is_empty())
@@ -757,7 +866,6 @@ fn sandbox_provider_config(
             control_plane_url: Some(control_plane_url.clone()),
             otlp_endpoint: otlp_endpoint.clone(),
             kind: crate::sandbox::SpareKind::Actor,
-            idle,
             fleet_maximum,
             max_starting: pool_number(get, "DURABLE_ACTORS_SPARE_MAX_STARTING", 32, 1, u32::MAX)?,
             idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
@@ -799,8 +907,9 @@ fn sandbox_provider_config(
                 .into(),
             ),
             regions,
-            resources: host_resources(get)?,
+            tiers,
         },
+        default_resources,
         backend,
         secret_namespace: get("DURABLE_ACTORS_GKE_NAMESPACE")
             .unwrap_or_else(|| "terse-sandboxes".into()),
@@ -839,6 +948,10 @@ fn sandbox_backend(
                         1,
                         1024,
                     )? as usize,
+                    node_cache_url: node_cache_url(get)?,
+                    runtime_class: get("DURABLE_ACTORS_GKE_RUNTIME_CLASS")
+                        .filter(|class| !class.is_empty())
+                        .unwrap_or_else(|| GKE_RUNTIME_CLASS.into()),
                 }),
                 regions,
             ))
@@ -886,6 +999,15 @@ fn sandbox_backend(
         }
         provider => anyhow::bail!("unsupported DURABLE_ACTORS_SANDBOX_PROVIDER {provider:?}"),
     }
+}
+
+fn node_cache_url(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Option<String>> {
+    get("DURABLE_ACTORS_GKE_NODE_CACHE_URL")
+        .map(|url| {
+            reqwest::Url::parse(&url).context("DURABLE_ACTORS_GKE_NODE_CACHE_URL must be a URL")?;
+            Ok(url)
+        })
+        .transpose()
 }
 
 fn modal_region(region: &str) -> Option<&'static str> {
@@ -1000,6 +1122,97 @@ fn host_resources(
         memory_mib,
         memory_limit_mib: Some(memory_limit_mib),
     })
+}
+
+/// `DURABLE_ACTORS_SPARE_TIERS` lists every spare size. Without it, one tier of the default actor
+/// size keeps `DURABLE_ACTORS_SPARE_IDLE` spares.
+fn pool_tiers(
+    get: &mut impl FnMut(&str) -> Option<String>,
+    default_resources: &crate::sandbox::ResourceLimits,
+    fleet_maximum: u32,
+) -> Result<Vec<crate::sandbox::pool::PoolTier>> {
+    let tiers = match get("DURABLE_ACTORS_SPARE_TIERS") {
+        Some(tiers) => {
+            ensure!(
+                get("DURABLE_ACTORS_SPARE_IDLE").is_none(),
+                "configure DURABLE_ACTORS_SPARE_IDLE or DURABLE_ACTORS_SPARE_TIERS, not both"
+            );
+            spare_tiers(&tiers)?
+        }
+        None => vec![crate::sandbox::pool::PoolTier {
+            resources: default_resources.clone(),
+            idle: pool_number(get, "DURABLE_ACTORS_SPARE_IDLE", 64, 0, u32::MAX)?,
+        }],
+    };
+    let idle = tiers
+        .iter()
+        .try_fold(0u32, |idle, tier| idle.checked_add(tier.idle));
+    ensure!(
+        idle.is_some_and(|idle| idle <= fleet_maximum),
+        "ready spares across all tiers must not exceed DURABLE_ACTORS_SPARE_FLEET_MAX"
+    );
+    Ok(tiers)
+}
+
+fn spare_tiers(value: &str) -> Result<Vec<crate::sandbox::pool::PoolTier>> {
+    let configured: Vec<SpareTier> =
+        serde_json::from_str(value).context("invalid DURABLE_ACTORS_SPARE_TIERS")?;
+    ensure!(
+        !configured.is_empty(),
+        "DURABLE_ACTORS_SPARE_TIERS requires at least one tier"
+    );
+    let mut tiers = Vec::<crate::sandbox::pool::PoolTier>::new();
+    for tier in configured {
+        let tier = tier.validated()?;
+        ensure!(
+            tiers.iter().all(|other| other.resources != tier.resources),
+            "DURABLE_ACTORS_SPARE_TIERS repeats a size"
+        );
+        tiers.push(tier);
+    }
+    Ok(tiers)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SpareTier {
+    cpu_millis: u32,
+    // `deserialize_with` makes serde require the key, so leaving CPU uncapped takes an explicit
+    // `null`.
+    #[serde(deserialize_with = "serde::Deserialize::deserialize")]
+    cpu_limit_millis: Option<u32>,
+    #[serde(rename = "memoryMiB")]
+    memory_mib: u32,
+    #[serde(rename = "memoryLimitMiB")]
+    memory_limit_mib: u32,
+    warm: u32,
+}
+
+impl SpareTier {
+    fn validated(self) -> Result<crate::sandbox::pool::PoolTier> {
+        ensure!(
+            self.cpu_millis > 0 && self.memory_mib > 0,
+            "DURABLE_ACTORS_SPARE_TIERS requires positive cpuMillis and memoryMiB"
+        );
+        ensure!(
+            self.cpu_limit_millis
+                .is_none_or(|limit| limit >= self.cpu_millis),
+            "DURABLE_ACTORS_SPARE_TIERS cpuLimitMillis must be at least cpuMillis"
+        );
+        ensure!(
+            self.memory_limit_mib >= self.memory_mib,
+            "DURABLE_ACTORS_SPARE_TIERS memoryLimitMiB must be at least memoryMiB"
+        );
+        Ok(crate::sandbox::pool::PoolTier {
+            resources: crate::sandbox::ResourceLimits {
+                cpu_millis: self.cpu_millis,
+                cpu_limit_millis: self.cpu_limit_millis,
+                memory_mib: self.memory_mib,
+                memory_limit_mib: Some(self.memory_limit_mib),
+            },
+            idle: self.warm,
+        })
+    }
 }
 
 fn resource_bounds(

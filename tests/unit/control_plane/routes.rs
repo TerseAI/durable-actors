@@ -51,6 +51,15 @@ async fn routes_follow_host_lifecycle(routes: &dyn RouteStore) {
         routes.get(&actor).await,
         Some(RouteEntry::Draining(identity))
     );
+
+    let sealed = crate::placement::testing::sealed_owner(&actor, "north-america-east");
+    routes.keep_sealed_owner(&actor, &sealed).await;
+    let taken = routes
+        .take_sealed_owner(&actor)
+        .await
+        .map(|owner| owner.placement());
+    assert_eq!(taken, Some(sealed.placement()));
+    assert!(routes.take_sealed_owner(&actor).await.is_none());
 }
 
 fn route(actor: &ActorKey, epoch: u64) -> CachedRoute {

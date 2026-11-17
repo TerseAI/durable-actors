@@ -19,3 +19,4 @@
 - [CLI](reference/cli.md)
 - [Configuration](reference/configuration.md)
 - [OpenAPI](reference/openapi.md)
+- [MCP](reference/mcp.md)

@@ -26,7 +26,7 @@ RESOURCES = {
     "actors",
     "residency",
     "events",
-    "requests/events",
+    "events/history",
     "state",
     "state/history",
     "requests",
@@ -82,7 +82,7 @@ def observer_app(client: Client, assets: Path, host: str) -> Starlette:
         url = f"{client.origin}/v1/projects/{client.project_id}/observe/{upstream_resource}"
         if request.url.query:
             url += f"?{request.url.query}"
-        streaming = resource in {"events", "requests/events"}
+        streaming = resource == "events"
         if streaming and request.method == "HEAD":
             return Response(media_type="text/event-stream")
         upstream = httpx.AsyncClient(

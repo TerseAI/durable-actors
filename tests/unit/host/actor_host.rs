@@ -1,5 +1,6 @@
 #[path = "../../fixtures/spans.rs"]
 mod spans;
+use crate::payload::{JsonStream, JsonText};
 use crate::request_tracking::HostState;
 use crate::{
     actor::{
@@ -36,6 +37,8 @@ struct IncrementingExecutor {
     invocations: AtomicU64,
 }
 
+#[path = "../../fixtures/rows.rs"]
+mod rows;
 #[path = "../../fixtures/host_sqlite.rs"]
 mod sqlite;
 use sqlite::{exec, fields, persist_fields, replication, write_fields};
@@ -56,7 +59,7 @@ fn create_host(
     publisher: Arc<dyn ActorSocketPublisher>,
     replication: Arc<dyn crate::litestream::Replicator>,
 ) -> ActorHost {
-    let database = HostDatabase::new(endpoint.clone(), storage, writer, replication);
+    let database = HostDatabase::new(endpoint.clone(), storage, writer, replication, None);
     ActorHost::new(endpoint, counter(), executor, database, publisher)
 }
 
@@ -107,7 +110,7 @@ async fn commits_fields_and_sql_and_recovers_them_at_one_version() -> Result<()>
             let result = values["count"].clone();
             write_fields(&*database, values).await?;
             Ok(ActorMethodOutcome::Completed {
-                result,
+                result: result.into(),
                 effects: vec![],
             })
         }
@@ -214,7 +217,7 @@ async fn ordinary_methods_execute_and_commit_without_a_socket_gateway() -> Resul
     );
     assert!(matches!(
         invoke(&host, "request-1").await?,
-        ActorExecutionResult::Completed { result, .. } if result == json!(1)
+        ActorExecutionResult::Completed { result, .. } if result == json!(1).into()
     ));
     assert_eq!(executor.invocations.load(Ordering::Relaxed), 1);
     assert_eq!(state.writes.lock().unwrap().len(), 1);
@@ -223,6 +226,68 @@ async fn ordinary_methods_execute_and_commit_without_a_socket_gateway() -> Resul
     assert_eq!(attribution.operation, "increment");
     assert!(attribution.connection_id.is_none());
     assert!(attribution.committed_at_ms > 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn results_of_writes_are_kept_and_results_of_reads_pass_on_as_work_until_taken() -> Result<()>
+{
+    struct ArrivingExecutor;
+    #[async_trait]
+    impl ActorExecutor for ArrivingExecutor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            database: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            if invocation.request_id == "write" {
+                write_fields(&*database, json!({ "count": 1 })).await?;
+            }
+            let chunks = futures_util::stream::iter([Ok(bytes::Bytes::from_static(b"[1,2]"))]);
+            Ok(ActorMethodOutcome::Completed {
+                result: JsonStream::new(chunks, 5).into(),
+                effects: vec![],
+            })
+        }
+    }
+    let state = Arc::new(FakeStateTransport::default());
+    let host = create_host(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid/".into(),
+        },
+        Arc::new(ArrivingExecutor),
+        Arc::new(FakeAuthority::default()),
+        state.clone(),
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    );
+    assert!(matches!(
+        invoke(&host, "write").await?,
+        ActorExecutionResult::Completed { result, .. } if result == json!([1, 2]).into()
+    ));
+    let snapshot = StateSnapshot::decode(&state.writes.lock().unwrap()[0])?;
+    assert_eq!(snapshot.completion.unwrap().result, json!([1, 2]).into());
+
+    let ActorExecutionResult::Completed {
+        result: result @ JsonPayload::Arriving(_),
+        ..
+    } = invoke(&host, "read").await?
+    else {
+        anyhow::bail!("a read's result should pass on as it arrives");
+    };
+    let mut status = host.status();
+    assert!(status.borrow_and_update().idle_since.is_none());
+    assert_eq!(result.into_text().await?, json!([1, 2]).into());
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        status.wait_for(|status| status.idle_since.is_some()),
+    )
+    .await??;
+    assert_eq!(state.writes.lock().unwrap().len(), 1);
     Ok(())
 }
 
@@ -311,7 +376,7 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
             Ok(ActorMethodOutcome::Interleaved(
                 crate::actor::ActorInterleavedOutcome {
                     sequence,
-                    result: json!(sequence),
+                    result: json!(sequence).into(),
                     effects: vec![],
                 },
             ))
@@ -367,14 +432,14 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
                 .completion
                 .unwrap()
                 .result,
-            json!(1)
+            JsonText::from(json!(1))
         );
         assert_eq!(
             StateSnapshot::decode(&writes[1])?
                 .completion
                 .unwrap()
                 .result,
-            json!(2)
+            JsonText::from(json!(2))
         );
         Ok::<_, anyhow::Error>(())
     };
@@ -402,7 +467,7 @@ async fn an_unconfirmed_interleaved_commit_evicts_once_and_stops_the_actor() -> 
             Ok(ActorMethodOutcome::Interleaved(
                 crate::actor::ActorInterleavedOutcome {
                     sequence: 1,
-                    result: json!(1),
+                    result: json!(1).into(),
                     effects: vec![],
                 },
             ))
@@ -477,7 +542,7 @@ async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Re
             Ok(ActorMethodOutcome::Interleaved(
                 crate::actor::ActorInterleavedOutcome {
                     sequence,
-                    result: json!(sequence),
+                    result: json!(sequence).into(),
                     effects: vec![],
                 },
             ))
@@ -651,7 +716,7 @@ impl ActorExecutor for ControlledExecutor {
                 ActorMethodInvocation {
                     request_id: invocation.request_id,
                     method: "onMessage".into(),
-                    args: Vec::new(),
+                    args: Default::default(),
                 },
                 database,
             )
@@ -798,7 +863,7 @@ async fn interleaved_actors_replay_durable_results_without_reexecution() -> Resu
             Ok(ActorMethodOutcome::Interleaved(
                 crate::actor::ActorInterleavedOutcome {
                     sequence,
-                    result: json!(sequence),
+                    result: json!(sequence).into(),
                     effects: vec![],
                 },
             ))
@@ -849,11 +914,11 @@ async fn interleaved_admission_continues_while_database_publication_is_pending()
                 2
             };
             persist_fields(&*database, json!({"count": sequence}), self.immediate).await?;
-            database.call(DatabaseCall::Commit).await?;
+            database.call(DatabaseCall::Commit, rows::ignored()).await?;
             Ok(ActorMethodOutcome::Interleaved(
                 crate::actor::ActorInterleavedOutcome {
                     sequence,
-                    result: json!(sequence),
+                    result: json!(sequence).into(),
                     effects: vec![],
                 },
             ))
@@ -1156,7 +1221,7 @@ impl ActorExecutor for InvalidEffectsExecutor {
     ) -> Result<ActorMethodOutcome> {
         write_fields(&*database, json!({ "count": 1 })).await?;
         Ok(ActorMethodOutcome::Completed {
-            result: Value::Null,
+            result: Default::default(),
             effects: vec![ActorSocketEffect::Close {
                 connection_id: "socket-1".into(),
                 code: 1001,
@@ -1192,7 +1257,7 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
         request_id: request_id.into(),
         actor: actor.clone(),
         method: "increment".into(),
-        args: vec![],
+        args: Default::default(),
     };
     assert_eq!(
         host.invoke_actor(invoke("one"), 7, HostState::Warm, 0.0)
@@ -1294,7 +1359,7 @@ async fn activation_services_immediate_writes_during_hydration() -> Result<()> {
                     request_id: "during-hydration".into(),
                     actor: invocation_actor,
                     method: "read".into(),
-                    args: vec![],
+                    args: Default::default(),
                 },
                 7,
                 HostState::Warm,
@@ -1351,15 +1416,18 @@ async fn activation_tolerates_immediate_writes_that_leave_sqlite_unchanged() -> 
                 immediate: true,
             };
             database
-                .call(DatabaseCall::Exec {
-                    sql: "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)".into(),
-                    bindings: vec![],
-                    immediate: true,
-                })
+                .call(
+                    DatabaseCall::Exec {
+                        sql: "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)".into(),
+                        bindings: vec![],
+                        immediate: true,
+                    },
+                    rows::ignored(),
+                )
                 .await?;
-            database.call(upsert("sb-1")).await?;
-            database.call(upsert("sb-1")).await?;
-            database.call(upsert("sb-2")).await?;
+            database.call(upsert("sb-1"), rows::ignored()).await?;
+            database.call(upsert("sb-1"), rows::ignored()).await?;
+            database.call(upsert("sb-2"), rows::ignored()).await?;
             Ok(())
         }
 
@@ -1431,7 +1499,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
                 actor,
                 request_id: "next".into(),
                 method: "increment".into(),
-                args: vec![],
+                args: Default::default(),
             },
             7,
             HostState::Warm,
@@ -1481,6 +1549,7 @@ async fn early_database_preparation_restores_once_without_hydrating_customer_cod
         authority.clone(),
         Arc::new(FakeStateTransport::default()),
         replication().await,
+        None,
     );
     let executor = Arc::new(Executor(AtomicUsize::new(0)));
     for _ in 0..2 {
@@ -1504,6 +1573,35 @@ async fn early_database_preparation_restores_once_without_hydrating_customer_cod
     Ok(())
 }
 
+#[tokio::test]
+async fn unreadable_cached_database_falls_back_to_history() -> Result<()> {
+    let sqlite = crate::test_sqlite::snapshot(json!({"count": 41}))?;
+    let snapshot = StateSnapshot::new(3, 6, "previous".into(), sqlite, json!(41))?.encode()?;
+    let cached = tempfile::NamedTempFile::new()?;
+    std::fs::write(cached.path(), b"not a database")?;
+    let authority = Arc::new(FakeAuthority {
+        activation_state: Some(snapshot),
+        saved_database: Mutex::new(Some(cached)),
+        ..Default::default()
+    });
+    let database = HostDatabase::new(
+        HostEndpoint {
+            id: super::super::HostId::new("cached-host"),
+            route: "http://host".into(),
+        },
+        authority.clone(),
+        Arc::new(FakeStateTransport::default()),
+        replication().await,
+        None,
+    );
+    assert!(matches!(
+        database.activate().await?,
+        PreparedActivation::Hydrate { .. }
+    ));
+    assert_eq!(authority.sqlite_reads.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
 #[derive(Default)]
 struct FakeAuthority {
     persisted: Option<Arc<FakeStateTransport>>,
@@ -1514,6 +1612,7 @@ struct FakeAuthority {
     initial_state: Option<(u64, bytes::Bytes)>,
     activation_state: Option<bytes::Bytes>,
     preparations: Mutex<Vec<u64>>,
+    saved_database: Mutex<Option<tempfile::NamedTempFile>>,
 }
 
 #[async_trait]
@@ -1553,6 +1652,9 @@ impl ActorStorage for FakeAuthority {
             return Ok((StateSnapshot::decode(&bytes)?.state_version, bytes.into()));
         }
         Ok(self.initial_state.clone().unwrap_or_default())
+    }
+    fn take_saved_database(&self, _digest: &str) -> Option<tempfile::NamedTempFile> {
+        self.saved_database.lock().unwrap().take()
     }
     async fn read_sqlite(&self, bytes: &[u8]) -> Result<crate::state_log::SqliteSnapshot> {
         self.sqlite_reads.fetch_add(1, Ordering::SeqCst);
@@ -1690,7 +1792,7 @@ async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() 
         ) -> Result<ActorMethodOutcome> {
             self.0.fenced.store(true, Ordering::SeqCst);
             Ok(ActorMethodOutcome::Completed {
-                result: json!(8),
+                result: json!(8).into(),
                 effects: vec![],
             })
         }
@@ -1960,7 +2062,7 @@ async fn publishes_automatic_state_after_commit() -> Result<()> {
             let count = fields(&*database).await?["count"].as_u64().unwrap_or(0) + 1;
             write_fields(&*database, json!({"count": count})).await?;
             Ok(ActorMethodOutcome::Completed {
-                result: json!(count),
+                result: json!(count).into(),
                 effects: serde_json::from_value(
                     json!([{ "type":"state_update", "changes":{"count":count}, "removed":[] }]),
                 )?,
@@ -2077,7 +2179,7 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
 
     assert!(matches!(
         result,
-        ActorExecutionResult::Completed { result: Value::Null, ref effects } if effects.len() == 1
+        ActorExecutionResult::Completed { ref result, ref effects } if *result == JsonText::null().into() && effects.len() == 1
     ));
     assert_eq!(state.writes.lock().unwrap().len(), 1);
     let saved = state.writes.lock().unwrap()[0].clone();
@@ -2136,7 +2238,7 @@ impl ActorExecutor for ImmediateWriter {
         }
         write_fields(&*database, json!({ "count": count + 1 })).await?;
         Ok(ActorMethodOutcome::Completed {
-            result: json!(count + 1),
+            result: json!(count + 1).into(),
             effects: vec![],
         })
     }
@@ -2208,7 +2310,10 @@ async fn immediate_writes_wait_for_durability_and_share_atomic_versions() -> Res
     assert!(snapshots[0].completion.is_some());
     assert!(snapshots[1].completion.is_none());
     assert!(snapshots[2].completion.is_none());
-    assert_eq!(snapshots[3].completion.as_ref().unwrap().result, json!(4));
+    assert_eq!(
+        snapshots[3].completion.as_ref().unwrap().result,
+        JsonText::from(json!(4))
+    );
     for pair in snapshots.windows(2) {
         assert_eq!(
             pair[1].sqlite.parent.as_ref().unwrap().state_version,
@@ -2240,18 +2345,21 @@ impl ActorExecutor for TransactionWriter {
             persist_fields(&*database, json!({ "count": count + 1 }), true).await?;
             persist_fields(&*database, json!({ "count": count + 2 }), true).await?;
             database
-                .call(DatabaseCall::Exec {
-                    sql: "COMMIT".into(),
-                    bindings: vec![],
-                    immediate: true,
-                })
+                .call(
+                    DatabaseCall::Exec {
+                        sql: "COMMIT".into(),
+                        bindings: vec![],
+                        immediate: true,
+                    },
+                    rows::ignored(),
+                )
                 .await?;
             exec(&*database, "BEGIN").await?;
             persist_fields(&*database, json!({ "count": count + 100 }), true).await?;
             exec(&*database, "ROLLBACK").await?;
         }
         Ok(ActorMethodOutcome::Completed {
-            result: json!(fields(&*database).await?["count"].as_u64().unwrap_or(0)),
+            result: json!(fields(&*database).await?["count"].as_u64().unwrap_or(0)).into(),
             effects: vec![],
         })
     }
@@ -2344,7 +2452,7 @@ async fn delayed_interleaved_completion_cannot_rewind_an_immediate_write() -> Re
             let count = fields(&*database).await?["count"].as_u64().unwrap_or(0) + 1;
             let immediate = invocation.request_id == "newer";
             persist_fields(&*database, json!({ "count": count }), immediate).await?;
-            database.call(DatabaseCall::Commit).await?;
+            database.call(DatabaseCall::Commit, rows::ignored()).await?;
             if count <= 2 {
                 let (reply, ack) = oneshot::channel();
                 self.captured.send(reply)?;
@@ -2353,7 +2461,7 @@ async fn delayed_interleaved_completion_cannot_rewind_an_immediate_write() -> Re
             }
             Ok(ActorMethodOutcome::Interleaved(ActorInterleavedOutcome {
                 sequence: count,
-                result: json!(count),
+                result: json!(count).into(),
                 effects: vec![],
             }))
         }
@@ -2437,7 +2545,7 @@ async fn database_handles_expire_with_their_invocation() -> Result<()> {
     assert_eq!(invoke(&host, "request-1").await?, completed(1));
     let retained = executor.0.lock().unwrap().clone().unwrap();
     let error = retained
-        .call(DatabaseCall::Fields { names: None })
+        .call(DatabaseCall::Fields { names: None }, rows::ignored())
         .await
         .unwrap_err();
     assert!(error.to_string().contains("no active invocation"));
@@ -2457,6 +2565,7 @@ async fn background_database_writes_outlive_invocations() -> Result<()> {
         Arc::new(FakeAuthority::default()),
         writes.clone(),
         replication().await,
+        None,
     );
     let background = database.background(counter());
     let host = ActorHost::new(
@@ -2519,6 +2628,7 @@ async fn background_database_follows_the_owner_epoch_across_activations() -> Res
         Arc::new(FakeAuthority::default()),
         Arc::new(FakeStateTransport::default()),
         replication().await,
+        None,
     );
     let background = database.background(counter());
     let host = ActorHost::new(
@@ -2534,7 +2644,7 @@ async fn background_database_follows_the_owner_epoch_across_activations() -> Res
                 request_id: method.into(),
                 actor: counter(),
                 method: method.into(),
-                args: Vec::new(),
+                args: Default::default(),
             },
             owner_epoch,
             HostState::Warm,
@@ -2557,7 +2667,7 @@ async fn increment(database: &dyn ActorDatabase) -> Result<ActorMethodOutcome> {
     let count = fields(database).await?["count"].as_u64().unwrap_or(0) + 1;
     write_fields(database, json!({ "count": count })).await?;
     Ok(ActorMethodOutcome::Completed {
-        result: json!(count),
+        result: json!(count).into(),
         effects: Vec::new(),
     })
 }
@@ -2572,7 +2682,7 @@ async fn invoke(host: &ActorHost, request_id: &str) -> Result<ActorExecutionResu
                 actor_id: "counter-1".into(),
             },
             method: "increment".into(),
-            args: Vec::new(),
+            args: Default::default(),
         },
         1,
         HostState::Warm,
@@ -2584,7 +2694,7 @@ async fn invoke(host: &ActorHost, request_id: &str) -> Result<ActorExecutionResu
 
 fn completed(count: u64) -> ActorExecutionResult {
     ActorExecutionResult::Completed {
-        result: json!(count),
+        result: json!(count).into(),
         effects: Vec::new(),
     }
 }
@@ -2643,10 +2753,7 @@ async fn restored_request_only_returns_a_saved_result_when_completion_is_present
         if complete {
             assert!(matches!(
                 result,
-                ActorExecutionResult::Completed {
-                    result: Value::Null,
-                    ..
-                }
+                ActorExecutionResult::Completed { ref result, .. } if *result == JsonText::null().into()
             ));
             assert_eq!(executor.invocations.load(Ordering::Relaxed), 0);
         } else {

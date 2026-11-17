@@ -51,7 +51,7 @@ async fn assignment_returns_invocation_outcomes_without_a_second_host_request() 
             panic!("expected invocation")
         };
         assert_eq!(invocation.request_id, "first");
-        assert_eq!(invocation.args, vec![json!("hello")]);
+        assert_eq!(invocation.args, vec![json!("hello")].into());
         assert_eq!(grant.as_ref().unwrap().subject, "subject");
     }
     Ok(())
@@ -139,6 +139,27 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
 }
 
 #[tokio::test]
+async fn large_completed_replies_pass_through_with_their_length() -> Result<()> {
+    let host_reply = json!({"type":"completed", "result":{"rows":"x".repeat(2 * crate::payload::ARRIVING_BYTES)}});
+    let host_length = serde_json::to_vec(&host_reply)?.len();
+    let fixture = Fixture::start(vec![(StatusCode::OK, host_reply.clone())]).await?;
+    let response = fixture
+        .call(
+            "api-key",
+            json!({"requestId":"rows", "method":"clear", "args":[]}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.content_length(),
+        Some((r#"{"outcome":}"#.len() + host_length) as u64)
+    );
+    let reply: Value = response.json().await?;
+    assert_eq!(reply, json!({"outcome": host_reply}));
+    Ok(())
+}
+
+#[tokio::test]
 async fn resolving_an_existing_host_marks_the_request_warm() -> Result<()> {
     let fixture = Fixture::start_with_existing_host(
         vec![(StatusCode::OK, json!({"type":"completed", "result":1}))],
@@ -194,6 +215,87 @@ async fn combined_invocation_authenticates_and_validates_requests() -> Result<()
         .authenticate_authorization(&requests[0].0)?;
     let grant = principal.invocation.unwrap().grant.unwrap();
     assert_eq!(grant.subject, "subject");
+    Ok(())
+}
+
+#[tokio::test]
+async fn invoke_api_key_reaches_only_actor_rpc_and_socket_routes() -> Result<()> {
+    let fixture = Fixture::start(vec![(
+        StatusCode::OK,
+        json!({"type":"completed", "result":7}),
+    )])
+    .await?;
+    let request = json!({
+        "requestId": "call-1",
+        "method": "sendMessage",
+        "args": [],
+        "homeRegion": "north-america-east"
+    });
+    let response = fixture.call("invoke-key", request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = fixture.host.requests.lock().unwrap();
+    let principal = fixture
+        .verifier
+        .authenticate_authorization(&requests[0].0)?;
+    drop(requests);
+    let grant = principal.invocation.unwrap().grant.unwrap();
+    assert_eq!(grant.subject, "invoke-api-key");
+    assert!(grant.methods.iter().any(|method| method == "sendMessage"));
+    assert!(!grant.methods.iter().any(|method| method == "onMessage"));
+
+    let reply: Value = fixture
+        .post("find-actor", "invoke-key", json!({}))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(reply, json!({"homeRegion":"north-america-east"}));
+    let socket: Value = fixture
+        .post("find-websocket", "invoke-key", json!({"metadata":{}}))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(socket["websocketUrl"].as_str().is_some());
+    assert_eq!(
+        fixture
+            .post("find-websocket", "wrong-key", json!({"metadata":{}}))
+            .await?
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let response = fixture
+        .post("socket-effects", "invoke-key", broadcast())
+        .await?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let error: Value = response.json().await?;
+    assert_eq!(error["error"]["code"], "unauthenticated");
+    let client = reqwest::Client::new();
+    for (method, path) in [
+        (reqwest::Method::POST, "/v1/projects/default/sessions"),
+        (reqwest::Method::GET, "/v1/projects/default/deployment"),
+        (reqwest::Method::PUT, "/v1/projects/default/deployment"),
+        (reqwest::Method::DELETE, "/v1/projects/default/deployment"),
+        (
+            reqwest::Method::GET,
+            "/v1/projects/default/deployment/contract",
+        ),
+        (reqwest::Method::PUT, "/v1/organizations/org-test/access"),
+    ] {
+        assert_eq!(
+            client
+                .request(method, format!("{}{path}", fixture.origin))
+                .bearer_auth("invoke-key")
+                .json(&json!({}))
+                .send()
+                .await?
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
+    }
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -419,7 +521,8 @@ impl Fixture {
             Duration::from_secs(60),
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
-        let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
+        let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?
+            .with_invoke_api_key(Some("invoke-key".into()))?;
         let contract =
             super::super::super::contracts::PublicActorContract::new(serde_json::from_str(
                 include_str!("../../../sdk/tests/fixtures/public-contract.json"),
@@ -561,6 +664,7 @@ async fn serve_replica(
         true,
         tokio_util::sync::CancellationToken::new(),
         crate::sandbox::connections::HostConnections::new()?.client,
+        Arc::new(crate::platform_events::NoPlatformEvents),
     )?;
     let mut service = service.clone();
     service.gateway = Some(super::super::super::gateway::Gateway::new(
@@ -627,6 +731,10 @@ async fn host_invoke(
         .unwrap()
         .pop_front()
         .expect("unexpected replay");
+    if reply["type"] == "completed" {
+        let completed = [(crate::control_plane::OUTCOME_HEADER, "completed")];
+        return (status, completed, Json(reply)).into_response();
+    }
     (status, Json(reply)).into_response()
 }
 
@@ -678,7 +786,7 @@ impl HostProvisioner for InvocationProvisioner {
         _: bool,
         _: Option<&crate::bucket::OwnershipHint>,
         operation: Option<&crate::sandbox::assignment::InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+    ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         tokio::time::sleep(Duration::from_millis(25)).await;
         let lease = HostLease {
             route: self.route.clone(),
@@ -729,7 +837,7 @@ impl HostProvisioner for InvocationProvisioner {
         } else {
             None
         };
-        Ok((lease, owner_epoch, initial_reply))
+        Ok((lease, owner_epoch, initial_reply.map(Into::into)))
     }
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
         anyhow::bail!("unexpected termination")

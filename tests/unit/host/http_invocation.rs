@@ -49,7 +49,7 @@ fn diagnostic_logs_use_finalized_request_timing() -> Result<()> {
     tracker.mark(crate::request_tracking::RequestStage::StateCacheChecked);
     tracker.mark(crate::request_tracking::RequestStage::ActorExecutionCompleted);
     let result = Ok(ActorExecutionResult::Completed {
-        result: Value::Null,
+        result: Default::default(),
         effects: vec![],
     });
     tracker.complete(&result);
@@ -69,7 +69,7 @@ fn diagnostic_logs_use_finalized_request_timing() -> Result<()> {
             },
             request_id: "timed".into(),
             method: "increment".into(),
-            args: vec![],
+            args: Default::default(),
         },
         tracker.completion(),
         &result,

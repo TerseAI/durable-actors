@@ -26,6 +26,8 @@ use tokio_util::task::AbortOnDropHandle;
 use writer::Session;
 
 const ROTATION_INTERVAL: Duration = Duration::from_secs(60);
+/// Keeps every Rapid object a session writes far younger than the 7-day lifecycle rule.
+const IDLE_SEGMENT_REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) const RAPID_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,8 +54,6 @@ trait LogZone: Send + Sync {
 pub(crate) struct RapidSnapshots {
     storage: Arc<LogStorage>,
     session: Arc<Mutex<Option<Session>>>,
-    stop: CancellationToken,
-    cleanup: std::sync::Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 struct LogStorage {
@@ -78,29 +78,6 @@ struct Manifest {
 }
 
 impl RapidSnapshots {
-    fn start_cleanup(&self, prefix: String) {
-        let storage = self.storage.clone();
-        let stop = self.stop.clone();
-        let session = Arc::downgrade(&self.session);
-        let task = tokio::spawn(async move {
-            loop {
-                if session.upgrade().is_none() {
-                    return;
-                }
-                tokio::select! {
-                    _ = stop.cancelled() => return,
-                    result = storage.sweep(&prefix) => {
-                        if let Err(error) = result { tracing::warn!(%error, "Rapid cleanup deferred"); }
-                    }
-                }
-                tokio::select! {
-                    _ = stop.cancelled() => return,
-                    _ = tokio::time::sleep(ROTATION_INTERVAL) => {}
-                }
-            }
-        });
-        *self.cleanup.lock().unwrap() = Some(AbortOnDropHandle::new(task));
-    }
     fn prepare(&self, actor: &crate::actor::ActorKey) -> Result<()> {
         let prefix = object_name(&crate::storage_paths::snapshots(actor)?)?.replacen(
             "snapshots-",
@@ -143,13 +120,8 @@ impl RapidSnapshots {
             compactor,
         });
         let session = Arc::new(Mutex::new(None));
-        writer::start_rotation(storage.clone(), Arc::downgrade(&session), stop.clone());
-        Ok(Self {
-            storage,
-            session,
-            stop,
-            cleanup: std::sync::Mutex::new(None),
-        })
+        writer::start_rotation(storage.clone(), Arc::downgrade(&session), stop);
+        Ok(Self { storage, session })
     }
 }
 
@@ -244,8 +216,6 @@ impl SnapshotStore for RapidSnapshots {
         let mut session = self.session.lock().await;
         ensure!(session.is_none(), "log stream is already activated");
         *session = Some(Session::open(self.storage.clone(), stream.clone())?);
-        let actor = crate::storage_paths::actor_from_snapshot(&stream.object(stream.base_version))?;
-        self.start_cleanup(object_name(&crate::storage_paths::snapshots(&actor)?)?);
         Ok(())
     }
     async fn recover(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {

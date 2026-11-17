@@ -1,26 +1,9 @@
 use super::fixtures::event;
 use super::*;
 use crate::request_traces::{
-    RequestKind, RequestOutcome,
+    RequestOutcome,
     metrics::{QueueWaitQuery, TimeRange},
 };
-
-#[tokio::test]
-async fn replay_metadata_counts_only_the_requested_project() -> Result<()> {
-    let store = SqliteTracePersistence::in_memory();
-    let mut records: Vec<_> = (0..501).map(|id| event(&id.to_string())).collect();
-    let mut isolated = event("isolated");
-    isolated.trace.project_id = "other".into();
-    records.push(isolated);
-    store.append(&records).await?;
-    let page = store.replay("other", &ReplayQuery::default()).await?;
-    assert_eq!(page.records.len(), 1);
-    assert_eq!(
-        store.replay("empty", &ReplayQuery::default()).await?.cursor,
-        0
-    );
-    Ok(())
-}
 
 #[tokio::test]
 async fn overview_counts_reroutes_but_percentiles_and_success_use_attempts() -> Result<()> {
@@ -187,71 +170,6 @@ async fn queue_waits_group_admitted_attempts_and_filter_actor_and_time() -> Resu
                 &QueueWaitQuery {
                     actor_name: Some("Other".into()),
                     ..query
-                }
-            )
-            .await?
-            .is_empty()
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn websocket_history_keeps_full_sessions_overlapping_the_range_and_connect_metadata()
--> Result<()> {
-    let store = SqliteTracePersistence::in_memory();
-    let mut events = Vec::new();
-    for (id, operation, time, outcome) in [
-        ("connect", "onConnect", 1000, RequestOutcome::Completed),
-        ("message", "onMessage", 3000, RequestOutcome::Failed),
-        ("close", "onDisconnect", 5000, RequestOutcome::Completed),
-    ] {
-        let mut record = event(id);
-        record.trace.kind = RequestKind::Websocket;
-        record.trace.connection_id = Some("socket".into());
-        record.trace.operation = operation.into();
-        record.trace.started_at_ms = time;
-        record.trace.outcome = outcome;
-        record.trace.metadata =
-            (operation == "onConnect").then(|| serde_json::json!({"userId":"ada"}));
-        events.push(record);
-    }
-    store.append(&events).await?;
-    let sessions = store
-        .websockets(
-            "default",
-            &TimeRange {
-                from_ms: Some(2000),
-                to_ms: Some(4000),
-            },
-        )
-        .await?;
-    assert_eq!(sessions.len(), 1);
-    let session = &sessions[0];
-    assert_eq!(session.connection_id, "socket");
-    assert_eq!(session.opened_at_ms, Some(1000));
-    assert_eq!(session.closed_at_ms, Some(5000));
-    assert_eq!(session.last_seen_ms, Some(5000));
-    assert_eq!((session.messages, session.failures), (1, 1));
-    assert_eq!(session.metadata, Some(serde_json::json!({"userId":"ada"})));
-    assert!(
-        store
-            .websockets(
-                "default",
-                &TimeRange {
-                    from_ms: Some(5001),
-                    to_ms: None
-                }
-            )
-            .await?
-            .is_empty()
-    );
-    assert!(
-        store
-            .websockets(
-                "default",
-                &TimeRange {
-                    from_ms: None,
-                    to_ms: Some(999)
                 }
             )
             .await?

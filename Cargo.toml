@@ -1,6 +1,6 @@
 [package]
 name = "durable-actors"
-version = "0.15.0"
+version = "0.18.6"
 edition = "2024"
 rust-version = "1.91"
 default-run = "durable-actors"
@@ -15,7 +15,7 @@ include = ["/third_party/terse-litestream/LICENSE", "/third_party/terse-litestre
 [dependencies]
 clickhouse = { version = "0.15.3", features = ["rustls-tls"] }
 terse-modal = { version = "0.1.0", git = "https://github.com/TerseAI/modal-rs", rev = "2806e3136017f50c5404c85f01dcfd9bc0783be1" }
-terse-litestream = { version = "0.1.0", git = "https://github.com/TerseAI/terse-litestream", rev = "f0b35ba2b2f320493ceb6bf7e9dd99cbfb6e1c33" }
+terse-litestream = { version = "0.2.0", git = "https://github.com/TerseAI/terse-litestream", rev = "3a78cd6c8d70f1b607dbc10c4368b25eb6122731" }
 terse-ltx = { version = "0.1.0", git = "https://github.com/TerseAI/terse-ltx", rev = "fdc27e08f09a532b8f0b8d72971de4b2772ef86b" }
 walkdir = "2"
 kube = { version = "2.0.1", default-features = false, features = ["client", "rustls-tls", "aws-lc-rs", "runtime", "ws"] }
@@ -28,10 +28,11 @@ clap = { version = "4", features = ["derive", "env"] }
 tempfile = "3"
 axum = { version = "0.8", features = ["ws", "http2"] }
 bytes = "1"
+http-body = "1"
 prost = "0.14"
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
 opentelemetry = { version = "0.33", default-features = false, features = ["trace", "logs"] }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "logs"] }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace", "logs", "tls-aws-lc", "tls-webpki-roots"] }
@@ -39,12 +40,13 @@ opentelemetry-proto = { version = "0.33", default-features = false, features = [
 tower-http = { version = "0.6", features = ["trace"] }
 tonic = { version = "0.14", features = ["tls-aws-lc", "tls-webpki-roots"] }
 tonic-prost = "0.14"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "hickory-dns"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "hickory-dns", "stream"] }
 hickory-resolver = "0.26"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
+serde_yaml = "0.9"
 google-cloud-storage = "=1.20.0"
 google-cloud-auth = "1.15.0"
 google-cloud-pubsub = "1.6.0"
@@ -70,6 +72,11 @@ reqsign-core = "3.3.2"
 reqsign-http-send-reqwest = "4.0.7"
 reqsign-file-read-tokio = "3.0.7"
 reqsign-google = { version = "3.2.0", features = ["credential-access-boundary-client-side"] }
+rmcp = { version = "3.9.0", features = ["transport-streamable-http-server"] }
+tower = { version = "0.5", features = ["util"] }
+serde_urlencoded = "0.7"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+command-fds = { version = "0.3.3", features = ["tokio"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"
@@ -91,3 +98,8 @@ python-cli = []
 name = "durable-actors-native"
 path = "src/bin/durable-actors-native.rs"
 required-features = ["python-cli"]
+
+# Under gVisor each sandbox keeps a private resident copy of the binary, so code size is memory.
+[profile.release]
+lto = "fat"
+codegen-units = 1

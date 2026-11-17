@@ -65,19 +65,3 @@ pub(crate) struct QueueWaitRow {
     pub average_ms: f64,
     pub max_ms: f64,
 }
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SocketSession {
-    pub connection_id: String,
-    pub actor_name: String,
-    pub actor_id: String,
-    pub host_id: Option<String>,
-    pub opened_at_ms: Option<u64>,
-    pub closed_at_ms: Option<u64>,
-    pub last_seen_ms: Option<u64>,
-    pub messages: u64,
-    pub failures: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
-}

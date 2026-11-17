@@ -12,6 +12,14 @@ They provide _stateful serverless functions_, a foundational building block that
 
 [Live demo](https://demo.useterse.ai) · [TypeScript documentation](docs/reference/typescript-guide.md) · [Python documentation](docs/reference/python-guide.md)
 
+## Hosted version
+
+Try Durable Actors on Terse Cloud at [app.useterse.ai](https://app.useterse.ai). To get started, run:
+
+```sh
+bunx terse-cli@latest install
+```
+
 ## How it works
 
 1. Define an _actor_, a class with _durable state_ (i.e. data survives interruptions, errors, and restarts) and _serialized execution_ (i.e. concurrent callers can update it safely).

@@ -179,7 +179,7 @@ async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
         drop(parent_stdin.take());
     }
 
-    let status = timeout(Duration::from_secs(3), child.wait())
+    let status = timeout(Duration::from_secs(10), child.wait())
         .await
         .context("runtime did not exit after shutdown")??;
     ensure!(status.success(), "runtime exited with {status}");

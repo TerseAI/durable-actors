@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use futures_util::StreamExt;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::{
+    api::core::v1::{Container, EnvVar, NodeSelectorRequirement, Pod, PodSpec},
+    apimachinery::pkg::api::resource::Quantity,
+};
 use kube::{
     Api, Client, ResourceExt,
     api::{DeleteParams, PostParams, Preconditions},
@@ -11,20 +14,23 @@ use kube::{
         watcher,
     },
 };
-use serde_json::json;
 use tokio::sync::watch;
 use tokio_util::task::AbortOnDropHandle;
 
-use super::*;
+use super::{kills::KillReports, *};
 use crate::sandbox::kube_retry::retry_throttled;
 
 const MANAGED: &str = "app.kubernetes.io/managed-by=terse";
+/// The RuntimeClass GKE provides for gVisor.
+pub(crate) const GKE_RUNTIME_CLASS: &str = "gvisor";
 
 #[derive(Clone, Debug)]
 pub(crate) struct GkeConfig {
     pub namespace: String,
     pub zones: BTreeMap<String, Vec<String>>,
     pub reap_concurrency: usize,
+    pub node_cache_url: Option<String>,
+    pub runtime_class: String,
 }
 
 /// Reads pod state from one shared watch so provisioning costs a single API call per pod.
@@ -33,19 +39,27 @@ pub(super) struct Kubernetes {
     observed: Store<Pod>,
     changes: watch::Receiver<()>,
     config: GkeConfig,
+    kills: Option<Arc<KillReports>>,
     _watch: AbortOnDropHandle<()>,
 }
 impl Kubernetes {
-    pub fn new(client: Client, config: GkeConfig) -> Self {
+    pub fn new(client: Client, config: GkeConfig, kills: Option<KillReporting>) -> Self {
         let pods = Api::namespaced(client, &config.namespace);
         let (observed, writer) = reflector::store();
         let (changed, changes) = watch::channel(());
-        let watch = AbortOnDropHandle::new(tokio::spawn(observe(pods.clone(), writer, changed)));
+        let kills = kills.map(|reporting| Arc::new(KillReports::new(observed.clone(), reporting)));
+        let watch = AbortOnDropHandle::new(tokio::spawn(observe(
+            pods.clone(),
+            writer,
+            changed,
+            kills.clone(),
+        )));
         Self {
             pods,
             observed,
             changes,
             config,
+            kills,
             _watch: watch,
         }
     }
@@ -112,7 +126,13 @@ impl SandboxCluster for Kubernetes {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let pod = spare_pod(request, self.zones(&request.canonical_region)?, &token)?;
+        let pod = spare_pod(
+            request,
+            self.zones(&request.canonical_region)?,
+            &token,
+            self.config.node_cache_url.as_deref(),
+            &self.config.runtime_class,
+        )?;
         let ready = self.start(pod).await?;
         let ip: std::net::IpAddr = ready
             .status
@@ -137,10 +157,18 @@ impl SandboxCluster for Kubernetes {
             control_token: token,
             route: format!("http://{authority}:7101"),
             canonical_region: request.canonical_region.clone(),
+            node: ready
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.node_name.clone())
+                .unwrap_or_default(),
         })
     }
 
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
+        if let Some(kills) = &self.kills {
+            kills.keep_claim(&spare.name).await;
+        }
         if spare.resource_id.is_empty() {
             let Some(pod) = retry_throttled(|| self.pods.get_opt(&spare.name)).await? else {
                 return Ok(());
@@ -204,12 +232,30 @@ impl SandboxCluster for Kubernetes {
     }
 }
 
-async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>) {
+async fn observe(
+    pods: Api<Pod>,
+    writer: Writer<Pod>,
+    changed: watch::Sender<()>,
+    kills: Option<Arc<KillReports>>,
+) {
+    let kills = kills.as_deref();
     watcher(pods, watcher::Config::default().labels(MANAGED))
         .default_backoff()
         .modify(|pod| {
             pod.managed_fields_mut().clear();
-            pod.spec = None;
+            pod.spec = pod.spec.take().map(|spec| PodSpec {
+                node_name: spec.node_name,
+                ..PodSpec::default()
+            });
+        })
+        // Ahead of the store, as `KillReports::report` needs.
+        .then(|event| async move {
+            if let (Some(kills), Ok(watcher::Event::Apply(pod) | watcher::Event::InitApply(pod))) =
+                (kills, &event)
+            {
+                kills.report(pod).await;
+            }
+            event
         })
         .reflect(writer)
         .for_each(|event| {
@@ -224,61 +270,149 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
         .await;
 }
 
-fn spare_pod(request: &CreateSpareRequest, zones: &[String], token: &str) -> Result<Pod> {
-    let mut pod = base_pod(&request.name, &request.image_ref, zones, &request.resources);
-    pod["metadata"]["annotations"] =
-        json!({"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"});
-    let mut env = json!([
-        {"name":"DURABLE_ACTORS_PROCESS_ROLE", "value":"spare"},
-        {"name":"DURABLE_ACTORS_SPARE_TOKEN", "value":token},
-        {"name":"DURABLE_ACTORS_CONTROL_PLANE_URL", "value":request.control_plane_url.as_ref().context("spare control plane URL required")?}
-    ]);
-    if let Some(endpoint) = &request.otlp_endpoint {
-        env.as_array_mut()
-            .expect("env list")
-            .push(json!({"name":"OTEL_EXPORTER_OTLP_ENDPOINT", "value":endpoint}));
-    }
-    pod["spec"]["containers"][0]["env"] = env;
-    pod["spec"]["containers"][0]["readinessProbe"] = json!({"exec":{"command":["/usr/bin/test", "-f", "/tmp/durable-actors-spare-ready"]}, "periodSeconds":1, "failureThreshold":3});
-    Ok(serde_json::from_value(pod)?)
-}
+/// The spare sandbox manifest, kept as YAML so its isolation settings read like any other.
+const SPARE_POD: &str = include_str!("spare-pod.yaml");
 
-fn base_pod(
-    name: &str,
-    image: &str,
+fn spare_pod(
+    request: &CreateSpareRequest,
     zones: &[String],
-    resources: &ResourceLimits,
-) -> serde_json::Value {
-    json!({
-        "apiVersion":"v1", "kind":"Pod", "metadata":{"name":name, "labels":{"app.kubernetes.io/managed-by":"terse", "terse.ai/purpose":"actor"}},
-        "spec":{
-            "runtimeClassName":"gvisor", "automountServiceAccountToken":false, "serviceAccountName":"sandbox",
-            "restartPolicy":"Never", "terminationGracePeriodSeconds":45,
-            "nodeSelector":{"sandbox.gke.io/runtime":"gvisor"},
-            "affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"topology.kubernetes.io/zone","operator":"In","values":zones}]}]}}},
-            "topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"ScheduleAnyway","labelSelector":{"matchLabels":{"terse.ai/purpose":"actor"}}}],
-            "securityContext":{"runAsNonRoot":true, "runAsUser":10000, "runAsGroup":10000, "fsGroup":10000},
-            "containers":[{"name":"runtime", "image":image, "imagePullPolicy":"IfNotPresent", "command":["/usr/local/bin/durable-actors"],
-                "securityContext":{"allowPrivilegeEscalation":false, "readOnlyRootFilesystem":true, "capabilities":{"drop":["ALL"]}},
-                "resources":container_resources(resources),
-                "volumeMounts":[{"name":"tmp","mountPath":"/tmp"},{"name":"customer","mountPath":"/customer"}]
-            }], "volumes":[{"name":"tmp","emptyDir":{"sizeLimit":"7Gi"}},{"name":"customer","emptyDir":{"sizeLimit":"1Gi"}}]
-        }
-    })
+    token: &str,
+    node_cache_url: Option<&str>,
+    runtime_class: &str,
+) -> Result<Pod> {
+    let mut pod: Pod = serde_yaml::from_str(SPARE_POD).context("spare pod manifest")?;
+    pod.metadata.name = Some(request.name.clone());
+    let spec = pod
+        .spec
+        .as_mut()
+        .context("spare pod manifest has no spec")?;
+    zone_requirement(spec)?.values = Some(zones.to_vec());
+    for container in spec
+        .init_containers
+        .iter_mut()
+        .flatten()
+        .chain(&mut spec.containers)
+    {
+        container.image = Some(request.image_ref.clone());
+        add_compute(container, &request.resources);
+    }
+    spec.containers[0]
+        .env
+        .get_or_insert_with(Vec::new)
+        .extend(spare_env(request, token, node_cache_url)?);
+    if runtime_class != GKE_RUNTIME_CLASS {
+        spec.runtime_class_name = Some(runtime_class.to_owned());
+        let mounts = mount_annotations(spec);
+        pod.metadata
+            .annotations
+            .get_or_insert_with(BTreeMap::new)
+            .extend(mounts);
+    }
+    Ok(pod)
 }
 
-fn container_resources(resources: &ResourceLimits) -> serde_json::Value {
-    let mut limits = json!({"ephemeral-storage":"8Gi"});
+fn zone_requirement(spec: &mut PodSpec) -> Result<&mut NodeSelectorRequirement> {
+    spec.affinity
+        .as_mut()
+        .and_then(|affinity| affinity.node_affinity.as_mut())
+        .and_then(|node| {
+            node.required_during_scheduling_ignored_during_execution
+                .as_mut()
+        })
+        .and_then(|required| required.node_selector_terms.first_mut())
+        .and_then(|term| term.match_expressions.as_mut())
+        .and_then(|requirements| requirements.first_mut())
+        .context("spare pod manifest has no zone affinity")
+}
+
+fn add_compute(container: &mut Container, resources: &ResourceLimits) {
+    let requirements = container.resources.get_or_insert_with(Default::default);
+    let requests = requirements.requests.get_or_insert_with(Default::default);
+    requests.insert("cpu".into(), Quantity(format!("{}m", resources.cpu_millis)));
+    requests.insert(
+        "memory".into(),
+        Quantity(format!("{}Mi", resources.memory_mib)),
+    );
+    let limits = requirements.limits.get_or_insert_with(Default::default);
     if let Some(cpu) = resources.cpu_limit_millis {
-        limits["cpu"] = json!(format!("{cpu}m"));
+        limits.insert("cpu".into(), Quantity(format!("{cpu}m")));
     }
     if let Some(memory) = resources.memory_limit_mib {
-        limits["memory"] = json!(format!("{memory}Mi"));
+        limits.insert("memory".into(), Quantity(format!("{memory}Mi")));
     }
-    json!({
-        "requests":{"ephemeral-storage":"256Mi","cpu":format!("{}m", resources.cpu_millis),"memory":format!("{}Mi", resources.memory_mib)},
-        "limits":limits
-    })
+}
+
+fn spare_env(
+    request: &CreateSpareRequest,
+    token: &str,
+    node_cache_url: Option<&str>,
+) -> Result<Vec<EnvVar>> {
+    let control_plane = request
+        .control_plane_url
+        .as_deref()
+        .context("spare control plane URL required")?;
+    let mut env = vec![
+        env_var("DURABLE_ACTORS_SPARE_TOKEN", token),
+        env_var("DURABLE_ACTORS_CONTROL_PLANE_URL", control_plane),
+    ];
+    if let Some(endpoint) = &request.otlp_endpoint {
+        env.push(env_var("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint));
+    }
+    if let Some(url) = node_cache_url {
+        env.push(env_var("DURABLE_ACTORS_NODE_CACHE_URL", url));
+    }
+    Ok(env)
+}
+
+fn env_var(name: &str, value: &str) -> EnvVar {
+    EnvVar {
+        name: name.into(),
+        value: Some(value.into()),
+        ..Default::default()
+    }
+}
+
+/// GKE tells gVisor how to mount a pod's volumes, but only for pods under its own class. A pod
+/// under another class has to say the same itself, or its volumes are mounted straight from the
+/// node's disk.
+fn mount_annotations(spec: &PodSpec) -> BTreeMap<String, String> {
+    spec.volumes
+        .iter()
+        .flatten()
+        .filter(|volume| volume.empty_dir.is_some())
+        .flat_map(|volume| {
+            let share = match mounting_containers(spec, &volume.name) {
+                1 => "container",
+                _ => "pod",
+            };
+            [
+                ("type", "bind"),
+                ("share", share),
+                ("options", "rw,rprivate"),
+            ]
+            .map(|(hint, value)| {
+                (
+                    format!("dev.gvisor.spec.mount.{}.{hint}", volume.name),
+                    value.to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn mounting_containers(spec: &PodSpec, volume: &str) -> usize {
+    spec.init_containers
+        .iter()
+        .flatten()
+        .chain(&spec.containers)
+        .filter(|container| {
+            container
+                .volume_mounts
+                .iter()
+                .flatten()
+                .any(|mount| mount.name == volume)
+        })
+        .count()
 }
 
 fn terminal_or_ready(pod: &Pod) -> bool {

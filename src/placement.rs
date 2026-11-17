@@ -65,14 +65,20 @@ pub struct ActorInstanceOverview {
     pub actor_id: String,
     pub status: ActorResidency,
     pub last_active_at_ms: Option<u64>,
+    /// When the control plane received the instance's latest report.
+    pub reported_at_ms: Option<u64>,
+    /// When a live or dormant status turns unknown unless another report arrives; stopped
+    /// instances stay dormant.
+    pub stale_at_ms: Option<u64>,
     pub connections: Vec<ActorConnectionInventory>,
     pub waiting: Option<Vec<crate::host_leases::WaitingOperation>>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorConnectionInventory {
     pub id: String,
+    pub gateway_id: String,
     pub metadata: serde_json::Value,
 }
 
@@ -95,12 +101,19 @@ pub trait ActorInventoryReader: Send + Sync {
     async fn residency_history(
         &self,
         _project_id: &str,
-        _actor_name: &str,
-        _from_ms: u64,
-        _to_ms: u64,
+        _query: &ResidencyQuery,
     ) -> Result<ResidencyHistory> {
         Ok(ResidencyHistory::default())
     }
+}
+
+/// One actor class's instances, or one instance when `actor_id` is set, over `[from_ms, to_ms]`.
+#[derive(Clone, Debug)]
+pub struct ResidencyQuery {
+    pub actor_name: String,
+    pub actor_id: Option<String>,
+    pub from_ms: u64,
+    pub to_ms: u64,
 }
 
 #[derive(Default, Serialize)]
@@ -124,4 +137,6 @@ pub struct ResidencyPeriod {
 pub struct ActorInventorySnapshot {
     pub actors: Vec<ActorInventory>,
     pub connections_complete: bool,
+    /// When each gateway holding an open connection last showed it was alive.
+    pub gateways: std::collections::BTreeMap<String, u64>,
 }

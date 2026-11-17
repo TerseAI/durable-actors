@@ -21,9 +21,7 @@ export interface RequestTrace {
 
 export interface RequestTracePage {
     records: RequestTrace[]
-    nextCursor?: string | null
-    resumeCursor: string
-    snapshot?: boolean
+    nextCursor: string | null
 }
 
 export type RequestHistoryQuery = {

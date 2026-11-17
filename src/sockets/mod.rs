@@ -4,7 +4,7 @@ use crate::actor::{
 };
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 use tokio::sync::{RwLock, mpsc};
@@ -130,33 +130,36 @@ impl SocketRegistry {
         }
     }
 
-    pub(crate) async fn inventory(
+    /// Closes the actor's sockets held here: the `only` ones, or all of them.
+    pub(crate) async fn close_actor(
         &self,
-        project: &str,
-    ) -> Vec<crate::host_leases::ActorSocketInventory> {
-        let entries = self.entries.read().await;
-        let mut inventory = Vec::new();
-        for (actor, sockets) in entries
-            .iter()
-            .filter(|(actor, _)| actor.project_id == project)
-        {
-            let mut connections: Vec<_> = sockets
-                .values()
-                .filter(|entry| entry.open)
-                .map(|entry| entry.connection.clone())
-                .collect();
-            connections.sort_by(|a, b| a.id.cmp(&b.id));
-            if !connections.is_empty() {
-                inventory.push(crate::host_leases::ActorSocketInventory {
-                    actor: actor.clone(),
-                    connections,
-                });
+        actor: &ActorKey,
+        only: Option<&BTreeSet<String>>,
+        code: u16,
+        reason: &str,
+    ) {
+        if let Some(sockets) = self.entries.read().await.get(actor) {
+            for (id, entry) in sockets.iter() {
+                if only.is_none_or(|only| only.contains(id)) {
+                    let _ = entry.outbound.send(OutboundMessage::Close {
+                        code,
+                        reason: reason.into(),
+                    });
+                }
             }
         }
-        inventory.sort_by(|a, b| {
-            (&a.actor.actor_name, &a.actor.actor_id).cmp(&(&b.actor.actor_name, &b.actor.actor_id))
-        });
-        inventory
+    }
+
+    pub(crate) async fn holds_any(
+        &self,
+        actor: &ActorKey,
+        connection_ids: &BTreeSet<String>,
+    ) -> bool {
+        self.entries
+            .read()
+            .await
+            .get(actor)
+            .is_some_and(|sockets| connection_ids.iter().any(|id| sockets.contains_key(id)))
     }
 
     pub(crate) async fn insert(

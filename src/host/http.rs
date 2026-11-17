@@ -9,13 +9,13 @@ use axum::{
     routing::post,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::{
-    actor::{ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketPublisher},
-    control_plane::{ActorJwtVerifier, ActorPrincipal},
+    actor::{ActorArgs, ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketPublisher},
+    control_plane::{ActorJwtVerifier, ActorPrincipal, OUTCOME_HEADER},
     host::{ActorHost, HostId, sockets::HostSockets},
+    payload::{JsonBody, JsonPayload, JsonText},
 };
 
 pub(crate) struct ActorHostHttpService {
@@ -59,7 +59,7 @@ impl ActorHostHttpService {
         operation: crate::sandbox::assignment::InitialOperation,
         owner_epoch: u64,
         startup_ms: f64,
-    ) -> anyhow::Result<Value> {
+    ) -> anyhow::Result<JsonText> {
         use crate::sandbox::assignment::InitialRequest;
         let routing_ms = operation.routing_ms + startup_ms;
         match operation.request {
@@ -74,28 +74,31 @@ impl ActorHostHttpService {
                 if authorize_grant(grant.as_ref(), Some(&invocation.method)).is_err()
                     || grant.as_ref().is_some_and(|grant| grant.expires_at <= now)
                 {
-                    return Ok(serde_json::to_value(
-                        InvocationReply::failed(
-                            "forbidden",
-                            "operation is outside the actor grant",
-                        )
-                        .with_metadata(None),
-                    )?);
+                    return InvocationReply::failed(
+                        "forbidden",
+                        "operation is outside the actor grant",
+                    )
+                    .with_metadata(None)
+                    .body()?
+                    .into_text()
+                    .await;
                 }
-                Ok(serde_json::to_value(
-                    self.execute(invocation, owner_epoch, HostState::Cold, routing_ms)
-                        .await,
-                )?)
+                self.execute(invocation, owner_epoch, HostState::Cold, routing_ms)
+                    .await
+                    .body()?
+                    .into_text()
+                    .await
             }
             InitialRequest::Socket { invocation } => {
                 anyhow::ensure!(
                     invocation.actor == *self.host.actor(),
                     "assignment operation actor mismatch"
                 );
-                Ok(serde_json::to_value(
-                    self.execute_socket(invocation, owner_epoch, HostState::Cold, routing_ms)
+                JsonText::encode(
+                    &self
+                        .execute_socket(invocation, owner_epoch, HostState::Cold, routing_ms)
                         .await,
-                )?)
+                )
             }
         }
     }
@@ -252,7 +255,7 @@ async fn invoke(
     Path(actor): Path<ActorKey>,
     headers: HeaderMap,
     body: Result<Json<InvokeRequest>, JsonRejection>,
-) -> Result<Json<InvocationResponse>, HttpError> {
+) -> Result<InvocationResponse, HttpError> {
     let principal = service.authenticate(&headers)?;
     let Json(request) = body.map_err(json_error)?;
     service.authorize(&principal, &actor, request.owner_epoch)?;
@@ -261,9 +264,7 @@ async fn invoke(
         .as_ref()
         .and_then(|capability| capability.grant.as_ref());
     if let Err(error) = authorize_grant(grant, Some(&request.method)) {
-        return Ok(Json(
-            InvocationReply::failed("forbidden", &error.1).with_metadata(None),
-        ));
+        return Ok(InvocationReply::failed("forbidden", &error.1).with_metadata(None));
     }
     if let Some(grant) = grant {
         info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %actor.project_id, actor_name = %actor.actor_name, actor_id = %actor.actor_id, request_id = %request.request_id, method = %request.method);
@@ -275,16 +276,14 @@ async fn invoke(
         args: request.args,
     };
     invocation.validate().map_err(bad_request)?;
-    Ok(Json(
-        service
-            .execute(
-                invocation,
-                request.owner_epoch,
-                request.host_state,
-                request.routing_ms,
-            )
-            .await,
-    ))
+    Ok(service
+        .execute(
+            invocation,
+            request.owner_epoch,
+            request.host_state,
+            request.routing_ms,
+        )
+        .await)
 }
 
 fn authorize_grant(
@@ -352,7 +351,8 @@ struct InvokeRequest {
     request_id: String,
     owner_epoch: u64,
     method: String,
-    args: Vec<Value>,
+    #[serde(deserialize_with = "ActorArgs::deserialize_text")]
+    args: ActorArgs,
 }
 
 #[derive(Serialize)]
@@ -363,11 +363,40 @@ struct InvocationResponse {
     metadata: Option<crate::request_tracking::RequestMetadata>,
 }
 
+impl InvocationResponse {
+    /// The reply's JSON, which shares a result's text, or passes it on as it arrives, rather than
+    /// copying it.
+    fn body(mut self) -> anyhow::Result<JsonBody> {
+        match &mut self.outcome {
+            InvocationReply::Completed { result } => {
+                let result = std::mem::take(result);
+                JsonBody::with_field(&self, "result", result)
+            }
+            _ => JsonBody::encode(&self),
+        }
+    }
+}
+
+impl IntoResponse for InvocationResponse {
+    fn into_response(self) -> Response {
+        let completed = matches!(self.outcome, InvocationReply::Completed { .. });
+        match self.body() {
+            Ok(body) if completed => ([(OUTCOME_HEADER, "completed")], body).into_response(),
+            Ok(body) => body.into_response(),
+            Err(error) => {
+                HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("{error:#}")).into_response()
+            }
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum InvocationReply {
     Completed {
-        result: Value,
+        /// Written by `InvocationResponse::body`, after the rest of the reply.
+        #[serde(skip)]
+        result: JsonPayload,
     },
     Failed {
         code: String,

@@ -1,19 +1,23 @@
 import { useData } from "../client/DatatContext.js"
 import { residencyKey } from "../client/cacheKeys.js"
 import { HttpObserverClient } from "../client/observerClient.js"
+import { currentBounds, windowKey } from "../lib/timeRange.js"
+import { applyResidencyEvents } from "../lib/views/residency.js"
 import type { TimeWindow } from "../types/TimeRange.js"
 
-import { useWindowedSWR } from "./useWindowedSWR.js"
+import { useLiveView } from "./useLiveView.js"
 
-// Residency has no event stream, so live windows poll instead.
-const liveRefreshMs = 15_000
-
-export function useResidency(actorName: string, timeWindow: TimeWindow) {
-    const { baseUrl } = useData()
-    const { data, error, isLoading } = useWindowedSWR(residencyKey(baseUrl, actorName), timeWindow, bounds => new HttpObserverClient(baseUrl).listResidency(actorName, bounds), {
-        refreshInterval: timeWindow.live ? liveRefreshMs : 0
-    })
-
+/** One instance's residency when `actorId` is set, otherwise the whole class's. */
+export function useResidency(actorName: string, timeWindow: TimeWindow, actorId?: string) {
+    const { baseUrl, events } = useData()
+    const { data, error, isLoading } = useLiveView(
+        [...residencyKey(baseUrl, actorName, actorId), ...windowKey(timeWindow)],
+        // Reads from the drawn window's start, which a live read's clock has passed, so a period the read
+        // cuts off never starts inside the window and looks like a change there.
+        () => new HttpObserverClient(baseUrl).listResidency(actorName, { ...currentBounds(timeWindow), fromMs: timeWindow.fromMs }, actorId),
+        applyResidencyEvents(actorName, actorId),
+        timeWindow.live ? events : null
+    )
     return {
         residency: data ?? null,
         isLoading,

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::queries::SpanRow;
 use super::*;
 use crate::request_traces::{RequestKind, RequestOutcome};
@@ -14,18 +16,13 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
     };
     let stop = CancellationToken::new();
     let _guard = stop.clone().drop_guard();
-    let backend = || {
-        ClickHouseTracePersistence::start(
-            config(url.clone()),
-            Duration::from_secs(86400),
-            stop.clone(),
-        )
-        .map(Arc::new)
-    };
-    let persistence = backend()?;
-    // Surfaces schema errors directly; the writer would otherwise retry them silently.
-    ingestion::initialize(&persistence.client, 86400).await?;
-    let writer = LifecycleStore::new(backend()?);
+    let persistence = Arc::new(ClickHouseTracePersistence::start(
+        config(url.clone()),
+        Duration::from_secs(86400),
+        stop.clone(),
+    )?);
+    // Surfaces schema errors directly; startup would otherwise retry them silently.
+    schema::initialize(&persistence.client, 86400).await?;
     let reader = LifecycleStore::new(persistence.clone());
     let project = format!("lifecycle-{}", uuid::Uuid::new_v4());
     let mut event = LifecycleEvent {
@@ -73,7 +70,7 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
                 });
         }
         event.event_id = format!("session:{}", event.report.sequence);
-        writer.record(event.clone()).await?;
+        collect(&persistence, &event).await?;
         wait_lifecycle(&persistence, &project, &event.event_id).await?;
         let snapshot = reader.actor_inventory(&project).await?;
         assert_eq!(snapshot.actors.len(), 1);
@@ -102,13 +99,19 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
     event.report.started_at_ms = 4000;
     event.report.occurred_at_ms = 4000;
     event.report.waiting.clear();
-    writer.record(event.clone()).await?;
-    writer.record(stopped).await?;
-    writer.record(event.clone()).await?;
+    collect(&persistence, &event).await?;
+    collect(&persistence, &stopped).await?;
+    collect(&persistence, &event).await?;
     wait_lifecycle(&persistence, &project, &event.event_id).await?;
     assert_eq!(reader.actor_inventory(&project).await?.actors[0].live, 1);
+    let counters = |from_ms, to_ms| crate::placement::ResidencyQuery {
+        actor_name: "Counter".into(),
+        actor_id: None,
+        from_ms,
+        to_ms,
+    };
     let history = reader
-        .residency_history(&project, "Counter", 1500, 4500)
+        .residency_history(&project, &counters(1500, 4500))
         .await?;
     let periods: Vec<_> = history
         .periods
@@ -126,7 +129,7 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
     assert!(!history.truncated);
     assert!(
         reader
-            .residency_history("different-project", "Counter", 0, 4500)
+            .residency_history("different-project", &counters(0, 4500))
             .await?
             .periods
             .is_empty()
@@ -139,6 +142,78 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
             .is_empty()
     );
     read_collector_rows(&persistence, &project).await
+}
+
+#[tokio::test]
+async fn residency_runs_from_sql_match_the_rust_reference() -> Result<()> {
+    use crate::{
+        actor_lifecycle::{
+            LifecyclePersistence, reports_within, residency::runs, testing::random_events,
+        },
+        placement::ResidencyQuery,
+    };
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    schema::initialize(&store.client, 86400).await?;
+    let prefix = format!("residency-{}", uuid::Uuid::new_v4());
+    let fixtures: Vec<_> = (0..40)
+        .map(|seed| {
+            let project = format!("{prefix}-{seed}");
+            let events = random_events(seed, &project);
+            (project, events)
+        })
+        .collect();
+    for (_, events) in &fixtures {
+        collect_all(&store, events).await?;
+        collect_all(&store, events).await?;
+    }
+    for (seed, (project, events)) in (0u64..).zip(&fixtures) {
+        let first = events
+            .iter()
+            .map(|e| e.report.occurred_at_ms)
+            .min()
+            .unwrap();
+        let last = events
+            .iter()
+            .map(|e| e.report.occurred_at_ms)
+            .max()
+            .unwrap();
+        for window in 0..10 {
+            let pick = (seed * 31 + window) * 2_654_435_761;
+            let from_ms = first - 60_000 + pick % (last - first + 60_000);
+            let to_ms = from_ms + (pick >> 7) % (last - from_ms + 60_000);
+            for actor_id in [None, Some("room-1".to_owned())] {
+                let query = ResidencyQuery {
+                    actor_name: "Room".into(),
+                    actor_id,
+                    from_ms,
+                    to_ms,
+                };
+                let mut stored = store.residency_runs(project, &query).await?;
+                stored.sort_by_key(|run| (run.actor_id.clone(), run.owner_epoch, run.sequence));
+                assert_eq!(
+                    stored,
+                    runs(reports_within(events, &query)),
+                    "{project} {query:?}"
+                );
+            }
+        }
+    }
+    let oldest: u32 = store
+        .client
+        .query(
+            "SELECT toUInt32(min(received_at)) FROM actor_residency_reports \
+             WHERE startsWith(project_id, ?)",
+        )
+        .bind(&prefix)
+        .fetch_one()
+        .await?;
+    assert!(oldest > 1_700_000_000, "received_at is the insert time");
+    Ok(())
 }
 
 // Inserts with the exporter's column lists, so the schema stays compatible with the collector.
@@ -262,11 +337,6 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
             .admitted,
         1
     );
-    let sockets = store.websockets(project, &TimeRange::default()).await?;
-    assert_eq!(
-        sockets[0].metadata,
-        Some(serde_json::json!({"userId": "alice"}))
-    );
     assert!(
         store
             .history("different-project", &HistoryQuery::default())
@@ -282,6 +352,39 @@ fn ids(page: &TracePage) -> Vec<&str> {
         .iter()
         .map(|record| record.event.event_id.as_str())
         .collect()
+}
+
+async fn collect(
+    store: &ClickHouseTracePersistence,
+    event: &crate::actor_lifecycle::LifecycleEvent,
+) -> Result<()> {
+    collect_all(store, std::slice::from_ref(event)).await
+}
+
+/// Inserts the reports as the collector's platform pipeline does.
+async fn collect_all(
+    store: &ClickHouseTracePersistence,
+    events: &[crate::actor_lifecycle::LifecycleEvent],
+) -> Result<()> {
+    use crate::platform_events::PlatformEvent;
+    let row = "(fromUnixTimestamp64Milli(?), ?, map('durable_actors.project_id', ?, \
+               'durable_actors.actor_name', ?, 'durable_actors.actor_id', ?), ?)";
+    let mut query = store.client.query(&format!(
+        "INSERT INTO platform_events (Timestamp, EventName, LogAttributes, Body) VALUES {}",
+        vec![row; events.len()].join(", ")
+    ));
+    for event in events {
+        let record = event.to_record();
+        query = query
+            .bind(record.at_ms)
+            .bind(record.name)
+            .bind(&event.actor.project_id)
+            .bind(&event.actor.actor_name)
+            .bind(&event.actor.actor_id)
+            .bind(record.body.unwrap_or_default());
+    }
+    query.execute().await?;
+    Ok(())
 }
 
 async fn wait_lifecycle(
@@ -303,53 +406,6 @@ async fn wait_lifecycle(
         }
     })
     .await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn unavailable_clickhouse_cannot_block_lifecycle_reports_and_the_queue_is_bounded()
--> Result<()> {
-    use crate::actor_lifecycle::{LifecycleEvent, LifecyclePersistence};
-    let stop = CancellationToken::new();
-    let _guard = stop.clone().drop_guard();
-    let backend = ClickHouseTracePersistence::start(
-        config("http://127.0.0.1:9".into()),
-        Duration::from_secs(86400),
-        stop,
-    )?;
-    let event = LifecycleEvent {
-        organization_id: None,
-        event_id: "session:1".into(),
-        actor: crate::actor::ActorKey {
-            project_id: "default".into(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-        },
-        host_id: "host".into(),
-        session_id: "session".into(),
-        region: "us-east".into(),
-        received_at_ms: 1,
-        report: crate::actor_lifecycle::LifecycleReport {
-            kind: crate::actor_lifecycle::LifecycleKind::Started,
-            owner_epoch: 1,
-            sequence: 1,
-            started_at_ms: 1,
-            occurred_at_ms: 1,
-            resources: Default::default(),
-            resident: None,
-            last_active_at_ms: None,
-            waiting: Vec::new(),
-        },
-    };
-    tokio::time::timeout(Duration::from_secs(2), async {
-        for _ in 0..MAX_QUEUED_ROWS {
-            backend.record(&event).await?;
-        }
-        assert!(backend.record(&event).await.is_err());
-        assert_eq!(backend.queued_rows.available_permits(), 0);
-        anyhow::Ok(())
-    })
-    .await??;
     Ok(())
 }
 
@@ -398,4 +454,238 @@ fn config(url: String) -> ClickHouseConfig {
         user: "trace_test".into(),
         password: "local-test-only".into(),
     }
+}
+
+#[tokio::test]
+async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() -> Result<()> {
+    use crate::platform_events::sockets::{ALIVE, CLOSED, OPENED};
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    schema::initialize(&store.client, 86400).await?;
+    let project = format!("sockets-{}", uuid::Uuid::new_v4());
+    let gateway = uuid::Uuid::new_v4().to_string();
+    // As the collector's ClickHouse exporter writes them: attribute values are text.
+    let row = |at_ms: u64, event: &str, attributes: String| {
+        format!(
+            "(fromUnixTimestamp64Milli({at_ms}), '{event}', \
+             map('durable_actors.gateway_id', '{gateway}'), map({attributes}))"
+        )
+    };
+    let connection = |id: &str| {
+        format!(
+            "'durable_actors.project_id', '{project}', 'durable_actors.actor_name', 'Room', \
+             'durable_actors.actor_id', 'one', 'durable_actors.connection_id', '{id}'"
+        )
+    };
+    let values = [
+        row(1000, OPENED, format!("{}, 'durable_actors.metadata', '{{\"user\":\"closed\"}}'", connection("closed"))),
+        row(2000, OPENED, format!("{}, 'durable_actors.metadata', '{{\"user\":\"open\"}}'", connection("open"))),
+        row(
+            5000,
+            CLOSED,
+            format!(
+                "{}, 'durable_actors.close_code', '1001', 'durable_actors.close_reason', 'going away', \
+                 'durable_actors.close_clean', 'true', 'durable_actors.messages_in', '2', \
+                 'durable_actors.messages_out', '3'",
+                connection("closed")
+            ),
+        ),
+        row(7000, ALIVE, format!("'durable_actors.project_id', '{project}'")),
+    ]
+    .join(", ");
+    store
+        .client
+        .query(&format!(
+            "INSERT INTO platform_events (Timestamp, EventName, ResourceAttributes, LogAttributes) VALUES {values}"
+        ))
+        .execute()
+        .await?;
+    let records = store.socket_records(&project, u64::MAX, false, 10).await?;
+    let ids: Vec<_> = records
+        .iter()
+        .map(|record| record.connection_id.as_str())
+        .collect();
+    assert_eq!(ids, ["open", "closed"]);
+    assert_eq!(records[0].gateway_id, gateway);
+    assert_eq!(
+        records[0].metadata,
+        Some(serde_json::json!({"user": "open"}))
+    );
+    let (closed_at, close) = records[1].closed.clone().expect("a recorded close");
+    assert_eq!(
+        (
+            closed_at,
+            close.code,
+            close.reason.as_str(),
+            close.clean,
+            close.messages_in,
+            close.messages_out
+        ),
+        (5000, 1001, "going away", true, 2, 3)
+    );
+    assert_eq!(
+        store
+            .socket_records(&project, u64::MAX, true, 10)
+            .await?
+            .len(),
+        1
+    );
+    assert_eq!(
+        store.socket_records(&project, 1500, false, 10).await?.len(),
+        1
+    );
+    assert_eq!(
+        store.gateway_heartbeats(&project).await?.get(&gateway),
+        Some(&7000)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_latest_deployment_event_holds_the_deployed_contract() -> Result<()> {
+    use crate::platform_events::deployments::{PUBLISHED, REMOVED};
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    schema::initialize(&store.client, 86400).await?;
+    let project = format!("deployments-{}", uuid::Uuid::new_v4());
+    let insert = |at_ms: u64, event: &str, body: &str| {
+        store.client.query(&format!(
+            "INSERT INTO platform_events (Timestamp, EventName, LogAttributes, Body) VALUES \
+             (fromUnixTimestamp64Milli({at_ms}), '{event}', map('durable_actors.project_id', '{project}'), '{body}')"
+        ))
+    };
+    assert_eq!(store.deployed_contract(&project).await?, None);
+    // Out of order, as a startup republish and a deploy can arrive.
+    insert(2000, PUBLISHED, r#"{"version":2}"#)
+        .execute()
+        .await?;
+    insert(1000, PUBLISHED, r#"{"version":1}"#)
+        .execute()
+        .await?;
+    assert_eq!(
+        store.deployed_contract(&project).await?,
+        Some(serde_json::json!({"version": 2}))
+    );
+    insert(3000, REMOVED, "").execute().await?;
+    assert_eq!(store.deployed_contract(&project).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stored_platform_events_read_back_by_name_once_each() -> Result<()> {
+    use crate::{
+        platform_events::{sandboxes::KILLED, sockets::OPENED},
+        request_traces::otlp,
+    };
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_CLICKHOUSE_URL") else {
+        return Ok(());
+    };
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let store = ClickHouseTracePersistence::start(config(url), Duration::from_secs(86400), stop)?;
+    schema::initialize(&store.client, 86400).await?;
+    let project = format!("events-{}", uuid::Uuid::new_v4());
+    // As the collector's ClickHouse exporter writes them: attribute values are text.
+    let row = |at_ms: u64, event: &str, actor_id: &str, attributes: &str| {
+        format!(
+            "(fromUnixTimestamp64Milli({at_ms}), '{event}', map('durable_actors.project_id', \
+             '{project}', 'durable_actors.actor_name', 'Room', 'durable_actors.actor_id', \
+             '{actor_id}', {attributes}))"
+        )
+    };
+    let killed = |at_ms: u64, actor_id: &str, sandbox: &str, reason: &str| {
+        row(
+            at_ms,
+            KILLED,
+            actor_id,
+            &format!(
+                "'durable_actors.sandbox_id', '{sandbox}', 'durable_actors.kill_reason', '{reason}'"
+            ),
+        )
+    };
+    let values = [
+        killed(1000, "one", "a", "out_of_memory"),
+        // A control plane that restarts reports the killed pod it still sees.
+        killed(1000, "one", "a", "out_of_memory"),
+        killed(2000, "two", "b", "killed"),
+        killed(3000, "one", "c", "out_of_disk"),
+        row(
+            2500,
+            OPENED,
+            "one",
+            "'durable_actors.connection_id', 'open'",
+        ),
+    ]
+    .join(", ");
+    store
+        .client
+        .query(&format!(
+            "INSERT INTO platform_events (Timestamp, EventName, LogAttributes) VALUES {values}"
+        ))
+        .execute()
+        .await?;
+    let query =
+        |names: &[&'static str], actor: Option<(&str, Option<&str>)>, from_ms, to_ms| EventQuery {
+            names: names.to_vec(),
+            actor_name: actor.map(|(name, _)| name.to_owned()),
+            actor_id: actor.and_then(|(_, id)| id.map(str::to_owned)),
+            from_ms,
+            to_ms,
+        };
+    let subject = |event: &PlatformLog| {
+        let subject = event.string(otlp::SANDBOX_ID);
+        (
+            event.at_ms,
+            subject.or_else(|| event.string(otlp::CONNECTION_ID)),
+        )
+    };
+    let read = |at_ms: u64, subject: &str| (at_ms, Some(subject.to_owned()));
+    for (query, expected) in [
+        (
+            query(&[KILLED], None, None, None),
+            vec![read(3000, "c"), read(2000, "b"), read(1000, "a")],
+        ),
+        (
+            query(&[KILLED, OPENED], None, None, None),
+            vec![
+                read(3000, "c"),
+                read(2500, "open"),
+                read(2000, "b"),
+                read(1000, "a"),
+            ],
+        ),
+        (
+            query(&[KILLED], Some(("Room", Some("one"))), None, None),
+            vec![read(3000, "c"), read(1000, "a")],
+        ),
+        (query(&[KILLED], Some(("Other", None)), None, None), vec![]),
+        (
+            query(&[KILLED], None, Some(1500), Some(2500)),
+            vec![read(2000, "b")],
+        ),
+    ] {
+        let events = store.platform_events(&project, &query).await?;
+        assert_eq!(events.iter().map(subject).collect::<Vec<_>>(), expected);
+    }
+    let kills = query(&[KILLED], None, None, None);
+    let latest = &store.platform_events(&project, &kills).await?[0];
+    assert_eq!(latest.name, KILLED);
+    assert_eq!(latest.body, None);
+    for (attribute, value) in [
+        (otlp::ACTOR_NAME, "Room"),
+        (otlp::ACTOR_ID, "one"),
+        (otlp::KILL_REASON, "out_of_disk"),
+    ] {
+        assert_eq!(latest.string(attribute).as_deref(), Some(value));
+    }
+    assert!(store.platform_events("other", &kills).await?.is_empty());
+    Ok(())
 }

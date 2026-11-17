@@ -13,6 +13,7 @@ import { TimeRangeControl } from "../timeRange/timeRangeControl.js"
 import { PageHeader } from "../ui/pageHeader.js"
 import { Skeleton } from "../ui/skeleton.js"
 
+import { ActorTypeEventsCard } from "./eventsCard.js"
 import { InstancesCard } from "./instancesCard.js"
 import { LiveDormantCard } from "./liveDormantCard.js"
 import { ResidencyCard } from "./residencyCard.js"
@@ -37,7 +38,6 @@ export function ActorTypePage() {
                         <LiveDormantCard summary={actor && summarizeActorType(actor)} failed={isError} />
                         <TimingCard
                             label="Avg Queue Time"
-                            window={describeWindow(timeWindow)}
                             pick={queueTime}
                             color="var(--chart-1)"
                             chartLabel={`Average queue time, ${describeWindow(timeWindow)}`}
@@ -47,7 +47,6 @@ export function ActorTypePage() {
                         />
                         <TimingCard
                             label="Avg Request Latency"
-                            window="excl. queue"
                             pick={serviceTime}
                             color="var(--chart-2)"
                             chartLabel={`Average request latency, ${describeWindow(timeWindow)}`}
@@ -58,6 +57,7 @@ export function ActorTypePage() {
                     </div>
                     <InstancesCard actor={actor} requests={typeRequests} failed={isError} now={timeWindow.toMs} />
                     <ResidencyCard actor={actor} history={residency} requests={typeRequests} failed={isError || isResidencyError} timeWindow={timeWindow} />
+                    <ActorTypeEventsCard actorName={actorName} timeWindow={timeWindow} />
                 </div>
             )}
         </section>

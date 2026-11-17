@@ -25,6 +25,7 @@ use crate::{
         access::{BucketLocation, RuntimeAccess},
     },
     clock::SystemClock,
+    host_leases::{AbandonedLeases, local_host_lease_ms},
     sandbox::{HostSandboxRuntimeConfig, LocalSandboxProvider},
 };
 
@@ -41,6 +42,9 @@ pub struct DevOptions {
     pub project_id: String,
     #[arg(long, env = "DURABLE_ACTORS_SECRET")]
     pub api_key: Option<String>,
+    /// Long-lived key accepted only for actor invocation, discovery, and WebSocket URLs.
+    #[arg(long, env = "DURABLE_ACTORS_INVOKE_API_KEY")]
+    pub invoke_api_key: Option<String>,
     #[arg(long, env = "DURABLE_ACTORS_PROJECT", default_value = ".")]
     pub project: PathBuf,
     #[arg(long, env = "DURABLE_ACTORS_PORT", default_value_t = 7100)]
@@ -56,6 +60,14 @@ pub struct DevOptions {
         default_value = "local"
     )]
     pub storage: DevStorage,
+    #[arg(long, env = "DURABLE_ACTORS_LOCAL_HOST_BINARY")]
+    pub host_binary: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "DURABLE_ACTORS_LOCAL_HOST_READY_TIMEOUT_MS",
+        default_value_t = 30_000
+    )]
+    pub host_ready_timeout_ms: u64,
     #[arg(long, hide = true, value_parser = clap::value_parser!(i32).range(3..))]
     pub ready_fd: Option<i32>,
     #[arg(long, hide = true)]
@@ -119,13 +131,22 @@ pub async fn serve_local(
         .context("bind local runtime; use --port to select another port")?;
     let origin = format!("http://{}", listener.local_addr()?);
     let storage = local_storage(&options, &directory).await?;
+    let abandoned_leases = abandoned_leases(&options, &storage).await?;
+    let host_binary = match &options.host_binary {
+        Some(binary) => binary
+            .canonicalize()
+            .context("find the local host binary")?,
+        None => std::env::current_exe()?,
+    };
     let provider = Arc::new(
         LocalSandboxProvider::new(
-            std::env::current_exe()?,
+            host_binary,
             project.clone(),
             storage.runtime.clone(),
+            abandoned_leases,
             options.sdk_host.clone(),
             directory.join("local-hosts.sqlite3"),
+            Duration::from_millis(options.host_ready_timeout_ms),
         )
         .await?,
     );
@@ -319,6 +340,22 @@ async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalSt
     })
 }
 
+/// A long lease outlasts a killed host, so this runtime ends the leases of its hosts: each one's
+/// when its process exits, and with local storage every one it finds as it starts, since the
+/// directory lock leaves no other runtime whose hosts could hold them.
+async fn abandoned_leases(
+    options: &DevOptions,
+    storage: &LocalState,
+) -> Result<Option<Arc<dyn AbandonedLeases>>> {
+    if local_host_lease_ms()?.is_none() {
+        return Ok(None);
+    }
+    if matches!(options.storage, DevStorage::Local) {
+        storage.runtime.release_leases().await?;
+    }
+    Ok(Some(storage.runtime.clone()))
+}
+
 async fn local_routes(
     options: &DevOptions,
     project: &Path,
@@ -367,11 +404,16 @@ async fn local_routes(
     if let Some(admission) = &admission {
         provisioner = provisioner.with_actor_admission(admission.clone());
     }
+    let platform_events = Arc::new(super::local_telemetry::LocalPlatformEvents::new(
+        storage.telemetry.0.clone(),
+        storage.telemetry.1.clone(),
+    ));
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         super::socket_bus::MemorySocketHub::default().join(max_socket_connections),
         true,
         stop.child_token(),
         crate::sandbox::connections::HostConnections::new()?.client,
+        platform_events.clone(),
     )?;
     let gateway = super::gateway::Gateway::new(&issuer, origin.to_owned(), socket_gateway)?;
     let mut service = ControlPlaneService::new(
@@ -382,6 +424,7 @@ async fn local_routes(
         Arc::new(provisioner),
     )
     .with_runtime_access(storage.access.clone())
+    .with_deployment_events(platform_events.clone())
     .with_alarm_store(Arc::new(
         super::alarms::SqliteAlarmStore::open(directory.join("alarms.sqlite3")).await?,
     ))
@@ -392,23 +435,21 @@ async fn local_routes(
             options.sdk_host.clone(),
         )),
     )));
+    service.lifecycle = service.lifecycle.with_events(platform_events.clone());
     if let Some(admission) = admission {
         service.lifecycle = service.lifecycle.with_observer(admission);
     }
     service.gateway = Some(gateway);
     service.start_access_reconciliation(stop.clone());
     let telemetry_keys = issuer.verifier_keys_json()?;
-    let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
-    let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
+    let admin = AdminService::new(options.api_key.clone(), registry, issuer)?
+        .with_invoke_api_key(options.invoke_api_key.clone())?;
+    let inventory = Arc::new(super::socket_inventory::ConnectionInventoryReader::new(
         Arc::new(service.lifecycle.clone()),
-        service.gateway.as_ref().unwrap().connections.clone(),
+        storage.traces.clone(),
     ));
-    let inspector = super::inspection::ActorInspector::new(
-        inventory,
-        storage.runtime.clone(),
-        service.changes.clone(),
-    )
-    .with_traces(storage.traces.clone());
+    let inspector = super::inspection::ActorInspector::new(inventory, storage.runtime.clone())
+        .with_traces(storage.traces.clone());
     let reload = LocalReload {
         service: service.clone(),
         admin: admin.clone(),
@@ -417,7 +458,10 @@ async fn local_routes(
         alarms: std::sync::Once::new(),
     };
     let public = public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::local_router(inspector, admin));
+        .merge(super::inspection::local_router(inspector));
+    let public = public
+        .clone()
+        .merge(super::mcp::local_router(public, admin));
     let telemetry = super::local_telemetry::LocalTelemetrySink::new(
         ActorJwtVerifier::for_scope(
             telemetry_keys,

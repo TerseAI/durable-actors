@@ -38,7 +38,7 @@ When upgrading from the shared image configuration, replace `image.repository` a
 - The sandbox namespace defaults to `<release-namespace>-<release-name>`; use one unique sandbox namespace per installation.
 - gVisor, separate sandbox credentials, RBAC, and sandbox NetworkPolicy are included.
 
-A single controller can interrupt service during replacement; clients must reconnect WebSockets. Increase `replicaCount` for controller redundancy; more than one controller requires Redis (`redis.urlSecretKey`). Increase `actors.warm` to reduce cold starts. The warm count is per image/region and supports 0–256. It does not cap active actors. Node autoscaling and quotas must accommodate your active workload.
+A single controller can interrupt service during replacement; clients must reconnect WebSockets. Increase `replicaCount` for controller redundancy; more than one controller requires Redis (`redis.urlSecretKey`). Increase `actors.warm` to reduce cold starts. The warm count is per image/region and supports 0–256. To also keep spares for larger actors, set `actors.tiers` instead: each tier lists its requests, limits and its own `warm` count, all required, and an actor starts on a spare only when its requests and limits equal a tier. An actor that sets only `memoryMiB: 512` keeps the default CPU and CPU limit, so with the chart defaults its tier is `{cpuMillis: 250, cpuLimitMillis: null, memoryMiB: 512, memoryLimitMiB: 512, warm: 1}`. Tiers share the 256-spare budget. It does not cap active actors. Node autoscaling and quotas must accommodate your active workload.
 
 ## Rapid writes
 
@@ -60,7 +60,7 @@ Every configured copy must durably flush before a Rapid write is acknowledged. W
 
 ## Advanced settings
 
-`credentialsSecret` defaults to `actors-credentials`; it must contain `postgres-url`, `api-key`, and `jwt-signing-key`. For Redis, add the keys named by `redis.urlSecretKey` and, optionally, `redis.caSecretKey`. `nodeSelector` places controllers on ordinary nodes. `networkPolicy.dnsCidrs` permits specific host-networked or link-local DNS endpoints, for example a NodeLocal DNS `/32`. Add only the address your cluster uses.
+`credentialsSecret` defaults to `actors-credentials`; it must contain `postgres-url`, `api-key`, and `jwt-signing-key`. An optional `invoke-api-key` entry sets `DURABLE_ACTORS_INVOKE_API_KEY`, a long-lived key limited to actor invocation, discovery, and WebSocket URLs; the controller does not start if it equals `api-key`. For Redis, add the keys named by `redis.urlSecretKey` and, optionally, `redis.caSecretKey`. `nodeSelector` places controllers on ordinary nodes. `networkPolicy.dnsCidrs` permits specific host-networked or link-local DNS endpoints, for example a NodeLocal DNS `/32`. Add only the address your cluster uses.
 
 See [values.yaml](values.yaml) for the full values reference and [values.schema.json](values.schema.json) for validation. No database, bucket, ingress controller, DNS record, or certificate is provisioned by this chart.
 
@@ -94,7 +94,9 @@ telemetry:
     enabled: true
 ```
 
-The collector accepts only host tokens and replaces any tenant attributes with the token's verified project, actor, host, and session. It fetches the verifying keys from `/.well-known/openid-configuration` at `publicUrl` and checks each token's signature and audience but not its issuer, so the control plane keeps its token issuer and tokens held by running sandboxes stay valid. Sandboxes reach it on port 4317, and sandboxes outside the cluster use the ingress. The control plane creates `otel_traces` and `otel_logs`, and the collector inserts into them with the same ClickHouse user. The old `actor_traces` and `actor_trace_status` tables are no longer written and empty out through their TTL; drop them by hand if you want the space back sooner.
+The collector accepts only host tokens and replaces any tenant attributes with the token's verified project, actor, host, and session. It fetches the verifying keys from `/.well-known/openid-configuration` at `publicUrl` and checks each token's signature and audience but not its issuer, so the control plane keeps its token issuer and tokens held by running sandboxes stay valid. Sandboxes reach it on port 4317, and sandboxes outside the cluster use the ingress. The control plane creates `otel_traces` and `otel_logs`, and the collector inserts into them with the same ClickHouse user.
+
+The control plane reports lifecycle reports, WebSocket connections and deployments the same way. Set `telemetry.collector.platform.issuer` to your cluster's service-account token issuer (`https://container.googleapis.com/v1/projects/PROJECT/locations/LOCATION/clusters/CLUSTER` on GKE). The collector then accepts these events on port 4319, which sandboxes cannot reach, writes them to `platform_events`, and publishes them for the dashboard's live updates. Without it, ClickHouse receives no lifecycle reports, so the dashboard lists no actors, open connections or deployed actor classes.
 
 ## Usage publishing
 
@@ -108,3 +110,14 @@ usage:
 Grant the control plane's Google service account `roles/pubsub.publisher` on that topic. Hosts use the existing lifecycle reporting path and need no Pub/Sub credentials. Publishing works with either analytics backend and is disabled when `usage.topic` is empty. Consumers must handle duplicates and out-of-order delivery; see the [usage event contract](../../docs/reference/configuration.md#usage-events) for aggregation and delivery limitations.
 
 Missing-stop reconciliation uses the configured Redis to coordinate estimated usage ends and later corrections across controllers. Configure Redis persistence for restart recovery. Consumers must accept higher revisions that correct or reopen an estimated interval; estimates do not change ownership or dashboard status.
+
+## Event publishing
+
+To publish platform events, such as sandbox kills, for another service, set an existing Pub/Sub topic:
+
+```yaml
+events:
+  topic: projects/my-project/topics/actor-events
+```
+
+Grant the control plane's Google service account `roles/pubsub.publisher` on that topic. See the [event contract](../../docs/reference/configuration.md#published-events).

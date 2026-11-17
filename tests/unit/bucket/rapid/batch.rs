@@ -6,7 +6,6 @@ struct ArchiveBucket {
     stalled: AtomicBool,
     fail_batch: AtomicBool,
     batches: AtomicU64,
-    cleaned_reads: AtomicU64,
     read_requests: AtomicU64,
     read_batches: AtomicU64,
     range_bytes: AtomicU64,
@@ -40,9 +39,6 @@ impl Bucket for ArchiveBucket {
         self.read_requests.fetch_add(1, Ordering::SeqCst);
         if key.ends_with(".batch") {
             self.read_batches.fetch_add(1, Ordering::SeqCst);
-        }
-        if key.ends_with(".cleaned") {
-            self.cleaned_reads.fetch_add(1, Ordering::SeqCst);
         }
         self.inner.get(key).await
     }
@@ -94,7 +90,6 @@ fn controlled(
         stalled: AtomicBool::new(false),
         fail_batch: AtomicBool::new(false),
         batches: AtomicU64::new(0),
-        cleaned_reads: AtomicU64::new(0),
         read_requests: AtomicU64::new(0),
         read_batches: AtomicU64::new(0),
         range_bytes: AtomicU64::new(0),
@@ -143,7 +138,7 @@ async fn live_checkpoint_inputs_are_read_as_one_bounded_range() -> Result<()> {
     let (writer, _) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
     let (replication, history) = write_history(&f, &writer, 31).await?;
     let sqlite = writer
-        .restore(&f.stream.object(31), history[30].clone())
+        .restore_prefetched(&f.stream.object(31), history[30].clone(), None)
         .await?;
     assert_eq!(
         crate::litestream::storage::restored_fields(
@@ -192,7 +187,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
 
     let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
     let sqlite = reader
-        .restore(&f.stream.object(35), history[34].clone())
+        .restore_prefetched(&f.stream.object(35), history[34].clone(), None)
         .await?;
     assert_eq!(archive.read_requests.load(Ordering::SeqCst), 1);
     let source = f.stream.snapshot(&history[34])?;
@@ -252,7 +247,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
     archive.read_batches.store(0, Ordering::SeqCst);
     archive.range_bytes.store(0, Ordering::SeqCst);
     let tail = reader
-        .restore(&f.stream.object(34), history[33].clone())
+        .restore_prefetched(&f.stream.object(34), history[33].clone(), None)
         .await?;
     assert_eq!(tail.files.len(), 3);
     assert_eq!(archive.read_batches.load(Ordering::SeqCst), 1);
@@ -266,7 +261,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
     );
     archive.read_batches.store(0, Ordering::SeqCst);
     let older = reader
-        .restore(&f.stream.object(31), history[30].clone())
+        .restore_prefetched(&f.stream.object(31), history[30].clone(), None)
         .await?;
     assert_eq!(
         restored_fields(replication.as_ref(), &older.files, older.txid).await?,
@@ -306,7 +301,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
     );
     assert!(
         reader
-            .restore(&f.stream.object(35), history[34].clone())
+            .restore_prefetched(&f.stream.object(35), history[34].clone(), None)
             .await
             .is_err()
     );
@@ -334,7 +329,7 @@ async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Re
             Some(history[1].clone())
         );
         let sqlite = reader
-            .restore(&f.stream.object(2), history[1].clone())
+            .restore_prefetched(&f.stream.object(2), history[1].clone(), None)
             .await?;
         assert_eq!(
             crate::litestream::storage::restored_fields(
@@ -378,7 +373,7 @@ async fn resumed_checkpoint_retries_without_new_writes() -> Result<()> {
     };
     resumed.start(&stream).await?;
     resumed
-        .restore(&f.stream.object(33), history[32].clone())
+        .restore_prefetched(&f.stream.object(33), history[32].clone(), None)
         .await?;
     tokio::time::timeout(Duration::from_secs(2), async {
         while archive.checkpoint_attempts.load(Ordering::SeqCst) == 0 {
@@ -745,40 +740,6 @@ async fn rapid_rotation_continues_writing_while_old_archive_is_stalled() -> Resu
 }
 
 #[tokio::test]
-async fn cleanup_retries_partial_deletion_and_skips_completed_segments() -> Result<()> {
-    let f = Fixture::new()?;
-    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
-    store.start(&f.stream).await?;
-    store.put(&f.stream.object(1), state(1, 1)?).await?;
-    f.zones[1].offline.store(true, Ordering::SeqCst);
-    store
-        .finish(
-            &f.stream,
-            tokio::time::Instant::now() + Duration::from_secs(30),
-        )
-        .await?;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !f.zones[0].objects.lock().unwrap().is_empty() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
-    assert!(!f.zones[1].objects.lock().unwrap().is_empty());
-    assert_eq!(
-        f.store()?.latest(&f.stream.prefix).await?,
-        Some((f.stream.object(1), state(1, 1)?))
-    );
-    f.zones[1].offline.store(false, Ordering::SeqCst);
-    let prefix = object_name(&f.stream.prefix)?;
-    store.storage.sweep(&prefix).await?;
-    f.cleaned().await?;
-    archive.cleaned_reads.store(0, Ordering::SeqCst);
-    store.storage.sweep(&prefix).await?;
-    assert_eq!(archive.cleaned_reads.load(Ordering::SeqCst), 0);
-    Ok(())
-}
-
-#[tokio::test]
 async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
@@ -794,7 +755,7 @@ async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Resu
         .unwrap();
     let manifest: Manifest = serde_json::from_slice(&f.archive.get(&key).await?.unwrap().bytes)?;
     let mut snapshot = StateSnapshot::decode(&original)?;
-    snapshot.completion.as_mut().unwrap().result = serde_json::json!(9);
+    snapshot.completion.as_mut().unwrap().result = serde_json::json!(9).into();
     let frame = Record {
         version: 1,
         state: snapshot.encode()?.into(),
@@ -811,7 +772,7 @@ async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Resu
 }
 
 #[tokio::test]
-async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog() -> Result<()> {
+async fn archiver_finishes_when_recovery_archived_its_backlog_and_rapid_expired() -> Result<()> {
     let f = Fixture::new()?;
     let threshold = state(1, 1)?.len() + frame::HEADER;
     let (store, archive) = controlled(&f, threshold, 60_000)?;
@@ -821,9 +782,7 @@ async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog(
     let manifest = segment.manifest.clone();
     let worker = archive::Archiver::new(store.storage.clone(), manifest.clone(), 0);
     archive.stalled.store(true, Ordering::SeqCst);
-    let first = segment.append(1, state(1, 1)?).await?;
-    let mut end_offset = first.len() as u64;
-    worker.append(first, 1);
+    worker.append(segment.append(1, state(1, 1)?).await?, 1);
     tokio::time::timeout(Duration::from_secs(2), async {
         while archive.batches.load(Ordering::SeqCst) == 0 {
             tokio::task::yield_now().await;
@@ -831,27 +790,14 @@ async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog(
     })
     .await?;
     for version in 2..=4 {
-        let frame = segment.append(version, state(version, 1)?).await?;
-        end_offset += frame.len() as u64;
-        worker.append(frame, version);
+        worker.append(segment.append(version, state(version, 1)?).await?, version);
     }
     worker.close();
     let rescue = f.store()?;
-    rescue
-        .storage
-        .close_segment(
-            &manifest,
-            &archive::ClosedSegment {
-                last_version: 4,
-                end_offset,
-            },
-        )
-        .await?;
-    rescue
-        .storage
-        .sweep(&object_name(&f.stream.prefix)?)
-        .await?;
-    f.cleaned().await?;
+    rescue.storage.recover_segment(&manifest).await?;
+    for zone in &f.zones {
+        zone.objects.lock().unwrap().clear();
+    }
     archive.stalled.store(false, Ordering::SeqCst);
     tokio::time::timeout(Duration::from_secs(2), worker.finish()).await??;
     assert_eq!(
@@ -869,7 +815,7 @@ async fn large_records_archive_after_retry_and_remain_indexed() -> Result<()> {
     writer.start(&f.stream).await?;
     let mut snapshot = StateSnapshot::decode(&state(1, 1)?)?;
     snapshot.completion.as_mut().unwrap().result =
-        serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
+        serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)}).into();
     let bytes = snapshot.encode()?;
     writer.put(&f.stream.object(1), bytes.clone()).await?;
     writer.put(&f.stream.object(2), state(2, 1)?).await?;

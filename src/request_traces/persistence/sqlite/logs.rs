@@ -3,23 +3,6 @@ use rusqlite::{Connection, params, params_from_iter, types::Value};
 
 use crate::request_traces::logs::{ActorLog, LogHistogram, LogHistogramQuery, LogPage, LogQuery};
 
-pub(super) fn initialize(connection: &Connection) -> Result<()> {
-    connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS actor_logs (
-            position INTEGER PRIMARY KEY AUTOINCREMENT,
-            log_id TEXT NOT NULL UNIQUE,
-            project_id TEXT NOT NULL,
-            actor_name TEXT NOT NULL,
-            actor_id TEXT NOT NULL,
-            request_id TEXT,
-            timestamp_ms INTEGER NOT NULL,
-            log TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS actor_logs_time ON actor_logs(project_id, timestamp_ms DESC, log_id DESC);",
-    )?;
-    Ok(())
-}
-
 pub(super) fn append(
     connection: &mut Connection,
     records: &[ActorLog],

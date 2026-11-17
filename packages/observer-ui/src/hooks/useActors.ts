@@ -1,19 +1,16 @@
-import useSWR from "swr"
-import useSWRSubscription, { type SWRSubscriptionOptions } from "swr/subscription"
-
-import { actorEventsKey, actorsKey } from "../client/cacheKeys.js"
+import { actorsKey } from "../client/cacheKeys.js"
+import type { EventBus } from "../client/events.js"
 import { HttpObserverClient } from "../client/observerClient.js"
-import { subscribeToActors } from "../client/streams/actorStream.js"
-import type { ActorInventory } from "../types/Actors.js"
+import { applyActorEvents } from "../lib/views/actors.js"
 
-export function useActors(baseUrl: string) {
-    const { data, error, isLoading } = useSWR<ActorInventory>(actorsKey(baseUrl), () => new HttpObserverClient(baseUrl).listActorTypes())
-    const { data: live } = useSWRSubscription(actorEventsKey(baseUrl), (_key, { next }: SWRSubscriptionOptions<ActorInventory>) => subscribeToActors(baseUrl, inventory => next(null, inventory)))
+import { useLiveView } from "./useLiveView.js"
 
+export function useActors(baseUrl: string, events: EventBus | null) {
+    const { data, error, isLoading } = useLiveView(actorsKey(baseUrl), () => new HttpObserverClient(baseUrl).listActorTypes(), applyActorEvents, events)
     return {
-        actorTypes: live ?? data ?? null,
+        inventory: data ?? null,
         isLoading,
-        isError: !live && Boolean(error),
+        isError: !data && Boolean(error),
         error
     }
 }

@@ -31,21 +31,13 @@ function Residency({ live, dormant }: ActorResidencyMetrics) {
     const liveShare = total ? live / total : 0
     return (
         <>
-            <p className="mt-2 text-[13px] text-muted-foreground tabular-nums">
-                {formatCount(total)} {total === 1 ? "actor" : "actors"} total
-            </p>
             <ResidencyBar liveShare={liveShare} label={`${formatCount(live)} live actors, ${formatCount(dormant)} dormant actors`} pulse className="mt-auto h-10 rounded-sm" />
-            <ResidencyLegend live={live} dormant={dormant} showCounts />
+            <ResidencyLegend live={live} dormant={dormant} />
         </>
     )
 }
 
 function ResidencySkeleton({ failed }: { failed: boolean }) {
     if (failed) return <p className="mt-2 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
-    return (
-        <>
-            <Skeleton className="mt-2.5 h-3.5 w-52 max-w-full" />
-            <ResidencyBarSkeleton />
-        </>
-    )
+    return <ResidencyBarSkeleton />
 }

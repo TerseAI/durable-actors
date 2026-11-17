@@ -102,7 +102,7 @@ test("Cargo caches are restored after toolchain selection", () => {
     const dockerfile = read("Dockerfile")
     assert.match(dockerfile, /--mount=type=cache,target=\/usr\/local\/cargo/)
     assert.match(dockerfile, /--mount=type=cache,target=\/build\/target/)
-    assert.match(dockerfile, /cp target\/release\/durable-actors \/out\/durable-actors/)
+    assert.match(dockerfile, /cp target\/release\/durable-actors target\/release\/durable-actors-host \/out\//)
     assert.match(dockerfile, /COPY --from=builder \/out\/durable-actors/)
 })
 

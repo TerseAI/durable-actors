@@ -141,6 +141,21 @@
           "minimum": 0,
           "maximum": 256
         },
+        "tiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "cpuMillis": {"type": "integer", "minimum": 1},
+              "cpuLimitMillis": {"type": ["integer", "null"], "minimum": 1},
+              "memoryMiB": {"type": "integer", "minimum": 1},
+              "memoryLimitMiB": {"type": "integer", "minimum": 1},
+              "warm": {"type": "integer", "minimum": 0, "maximum": 256}
+            },
+            "required": ["cpuMillis", "cpuLimitMillis", "memoryMiB", "memoryLimitMiB", "warm"]
+          }
+        },
         "maxStarting": {
           "type": "integer",
           "minimum": 1
@@ -237,6 +252,16 @@
         }
       }
     },
+    "events": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "type": "string",
+          "pattern": "^$|^projects/[^/\\s]+/topics/[^/\\s]+$"
+        }
+      }
+    },
     "postgres": {
       "type": "object",
       "additionalProperties": false,
@@ -261,9 +286,26 @@
           "properties": {
             "enabled": {"type": "boolean"},
             "replicas": {"type": "integer", "minimum": 1},
-            "resources": {"type": "object"}
+            "resources": {"type": "object"},
+            "platform": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {"issuer": {"type": "string"}}
+            }
           }
         }
+      }
+    },
+    "nodeCache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "capacityGiB": {"type": "integer", "minimum": 1},
+        "maxEntries": {"type": "integer", "minimum": 1},
+        "hostPath": {"type": "string", "pattern": "^(/.+)?$"},
+        "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+        "resources": {"type": "object"}
       }
     },
     "redis": {

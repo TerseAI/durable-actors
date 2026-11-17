@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use moka::{future::Cache, ops::compute::Op};
 use serde::{Deserialize, Serialize};
@@ -11,8 +11,9 @@ use crate::{
     host_leases::WaitingOperation,
     placement::{
         ActorInstanceOverview, ActorInventory, ActorInventoryReader, ActorInventorySnapshot,
-        ActorResidency,
+        ActorResidency, ResidencyHistory, ResidencyQuery,
     },
+    platform_events::{NoPlatformEvents, PlatformEvents},
     sandbox::ResourceLimits,
 };
 
@@ -21,7 +22,7 @@ pub(crate) const STALE_AFTER_MS: u64 = 35_000;
 
 mod pubsub;
 pub(crate) mod reconciliation;
-mod residency;
+pub(crate) mod residency;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -103,23 +104,34 @@ impl UsageUpdate {
 pub(crate) trait LifecyclePersistence: Send + Sync {
     async fn record(&self, event: &LifecycleEvent) -> Result<()>;
     async fn latest(&self, project: &str) -> Result<Vec<LifecycleEvent>>;
-    async fn history(
+
+    /// The runs formed by the reports the query covers.
+    async fn residency_runs(
         &self,
         project: &str,
-        actor_name: &str,
-        from: u64,
-        to: u64,
-    ) -> Result<Vec<LifecycleEvent>> {
-        let _ = from;
-        Ok(self
-            .latest(project)
-            .await?
-            .into_iter()
-            .filter(|event| {
-                event.actor.actor_name == actor_name && event.report.occurred_at_ms <= to
-            })
-            .collect())
+        query: &ResidencyQuery,
+    ) -> Result<Vec<residency::ResidencyRun>> {
+        let latest = self.latest(project).await?;
+        Ok(residency::runs(reports_within(&latest, query)))
     }
+}
+
+pub(crate) fn reports_within<'a>(
+    events: impl IntoIterator<Item = &'a LifecycleEvent>,
+    query: &ResidencyQuery,
+) -> Vec<residency::ResidencyReport> {
+    events
+        .into_iter()
+        .filter(|event| {
+            event.actor.actor_name == query.actor_name
+                && query
+                    .actor_id
+                    .as_ref()
+                    .is_none_or(|actor_id| *actor_id == event.actor.actor_id)
+                && (query.from_ms..=query.to_ms).contains(&event.report.occurred_at_ms)
+        })
+        .map(residency::ResidencyReport::from)
+        .collect()
 }
 
 #[async_trait]
@@ -138,6 +150,7 @@ pub(crate) struct LifecycleStore {
     usage: Option<Arc<dyn UsagePublisher>>,
     usage_sessions: Arc<dyn reconciliation::UsageSessions>,
     observer: Option<Arc<dyn LifecycleObserver>>,
+    events: Arc<dyn PlatformEvents<LifecycleEvent>>,
 }
 
 impl Default for LifecycleStore {
@@ -152,8 +165,16 @@ impl LifecycleStore {
             persistence,
             usage: None,
             observer: None,
+            events: Arc::new(NoPlatformEvents),
             usage_sessions: Arc::new(reconciliation::MemoryUsageSessions::default()),
         }
+    }
+
+    /// Reports each recorded event to observability, which stores and publishes it like any
+    /// other platform event.
+    pub(crate) fn with_events(mut self, events: Arc<dyn PlatformEvents<LifecycleEvent>>) -> Self {
+        self.events = events;
+        self
     }
 
     pub(crate) fn with_observer(mut self, observer: Arc<dyn LifecycleObserver>) -> Self {
@@ -176,7 +197,8 @@ impl LifecycleStore {
 
     pub(crate) async fn with_usage_topic(mut self, topic: Option<&str>) -> Result<Self> {
         if let Some(topic) = topic {
-            self = self.with_publisher(Arc::new(pubsub::PubSubPublisher::connect(topic).await?));
+            let topic = crate::pubsub::Topic::connect(topic).await;
+            self = self.with_publisher(Arc::new(topic.context("usage topic")?));
         }
         Ok(self)
     }
@@ -199,8 +221,9 @@ impl LifecycleStore {
                     Some(observer) => observer.observe(&event).await,
                     None => Ok(()),
                 }
-            }
+            },
         );
+        self.events.record(event);
         persisted.and(observed)
     }
 
@@ -273,50 +296,57 @@ impl ActorInventoryReader for LifecycleStore {
         let now = SystemClock.now_ms()?;
         let mut actors = BTreeMap::<String, ActorInventory>::new();
         for event in self.persistence.latest(project).await? {
-            let status = residency(&event, now);
             let actor = actors
                 .entry(event.actor.actor_name.clone())
                 .or_insert_with(|| ActorInventory {
                     actor_name: event.actor.actor_name.clone(),
                     ..Default::default()
                 });
-            match status {
+            let instance = instance_overview(event, now);
+            match instance.status {
                 ActorResidency::Live => actor.live += 1,
                 ActorResidency::Dormant => actor.dormant += 1,
                 ActorResidency::Unknown => actor.unknown += 1,
             }
-            actor.instances.push(ActorInstanceOverview {
-                actor_id: event.actor.actor_id,
-                status,
-                last_active_at_ms: event.report.last_active_at_ms,
-                connections: Vec::new(),
-                waiting: match status {
-                    ActorResidency::Unknown => None,
-                    ActorResidency::Dormant if event.report.kind == LifecycleKind::Stopped => {
-                        Some(Vec::new())
-                    }
-                    _ => Some(event.report.waiting),
-                },
-            });
+            actor.instances.push(instance);
         }
         Ok(ActorInventorySnapshot {
             actors: actors.into_values().collect(),
             connections_complete: true,
+            gateways: BTreeMap::new(),
         })
     }
 
     async fn residency_history(
         &self,
         project: &str,
-        actor_name: &str,
-        from_ms: u64,
-        to_ms: u64,
-    ) -> Result<crate::placement::ResidencyHistory> {
-        let events = self
-            .persistence
-            .history(project, actor_name, from_ms, to_ms)
-            .await?;
-        Ok(residency::history(events, from_ms, to_ms))
+        query: &ResidencyQuery,
+    ) -> Result<ResidencyHistory> {
+        let reachable = ResidencyQuery {
+            from_ms: query.from_ms.saturating_sub(residency::LOOKBACK_MS),
+            ..query.clone()
+        };
+        let runs = self.persistence.residency_runs(project, &reachable).await?;
+        Ok(residency::history(runs, query.from_ms, query.to_ms))
+    }
+}
+
+/// The instance as its latest report leaves it at `now`, without connections.
+pub(crate) fn instance_overview(event: LifecycleEvent, now: u64) -> ActorInstanceOverview {
+    let status = residency(&event, now);
+    let stopped = event.report.kind == LifecycleKind::Stopped;
+    ActorInstanceOverview {
+        actor_id: event.actor.actor_id,
+        status,
+        last_active_at_ms: event.report.last_active_at_ms,
+        reported_at_ms: Some(event.received_at_ms),
+        stale_at_ms: (!stopped).then(|| event.received_at_ms.saturating_add(STALE_AFTER_MS)),
+        connections: Vec::new(),
+        waiting: match status {
+            ActorResidency::Unknown => None,
+            ActorResidency::Dormant if stopped => Some(Vec::new()),
+            _ => Some(event.report.waiting),
+        },
     }
 }
 
@@ -387,53 +417,25 @@ impl LifecyclePersistence for MemoryLifecyclePersistence {
         Ok(events)
     }
 
-    async fn history(
+    async fn residency_runs(
         &self,
         project: &str,
-        actor_name: &str,
-        from: u64,
-        to: u64,
-    ) -> Result<Vec<LifecycleEvent>> {
-        let mut before = BTreeMap::<String, LifecycleEvent>::new();
-        let mut events = Vec::new();
-        for event in self
+        query: &ResidencyQuery,
+    ) -> Result<Vec<residency::ResidencyRun>> {
+        let events: Vec<_> = self
             .1
             .iter()
             .map(|(_, event)| event)
             .chain(self.0.iter().map(|(_, event)| event))
-        {
-            if event.actor.project_id != project
-                || event.actor.actor_name != actor_name
-                || event.report.occurred_at_ms > to
-            {
-                continue;
-            }
-            if event.report.occurred_at_ms >= from {
-                events.push(event);
-            } else {
-                let previous = before
-                    .entry(event.actor.actor_id.clone())
-                    .or_insert_with(|| event.clone());
-                if (event.report.owner_epoch, event.report.sequence)
-                    > (previous.report.owner_epoch, previous.report.sequence)
-                {
-                    *previous = event;
-                }
-            }
-        }
-        events.extend(before.into_values());
-        events.sort_by(|a, b| {
-            (&b.report.occurred_at_ms, &b.actor.actor_id, &b.event_id).cmp(&(
-                &a.report.occurred_at_ms,
-                &a.actor.actor_id,
-                &a.event_id,
-            ))
-        });
-        events.dedup_by(|a, b| a.actor == b.actor && a.event_id == b.event_id);
-        events.truncate(residency::EVENT_LIMIT + 1);
-        Ok(events)
+            .filter(|event| event.actor.project_id == project)
+            .collect();
+        Ok(residency::runs(reports_within(&events, query)))
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/residency.rs"]
+pub(crate) mod testing;
 
 #[cfg(test)]
 #[path = "../tests/unit/actor_lifecycle.rs"]

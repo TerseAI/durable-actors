@@ -570,6 +570,7 @@ impl Stack {
             true,
             tokio_util::sync::CancellationToken::new(),
             crate::sandbox::connections::HostConnections::new()?.client,
+            Arc::new(crate::platform_events::NoPlatformEvents),
         )?;
         service.gateway = Some(super::super::gateway::Gateway::new(
             &issuer,
@@ -583,6 +584,7 @@ impl Stack {
             true,
             tokio_util::sync::CancellationToken::new(),
             crate::sandbox::connections::HostConnections::new()?.client,
+            Arc::new(crate::platform_events::NoPlatformEvents),
         )?;
         let mut second_service = service.clone();
         second_service.gateway = Some(super::super::gateway::Gateway::new(
@@ -667,6 +669,7 @@ impl Stack {
             storage.clone(),
             storage.runtime.clone(),
             replication.clone(),
+            None,
         );
         let host = Arc::new(ActorHost::new(
             endpoint,
@@ -740,7 +743,7 @@ impl Stack {
                     request_id: uuid::Uuid::new_v4().to_string(),
                     actor: self.actor.clone(),
                     method: method.into(),
-                    args,
+                    args: args.into(),
                 },
                 1,
                 HostState::Warm,
@@ -749,7 +752,9 @@ impl Stack {
             .await
             .0?;
         match result {
-            crate::actor::ActorExecutionResult::Completed { result, .. } => Ok(result),
+            crate::actor::ActorExecutionResult::Completed { result, .. } => {
+                result.into_text().await?.decode()
+            }
             other => anyhow::bail!("actor call failed: {other:?}"),
         }
     }
@@ -876,7 +881,7 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     );
     let socket_directory = tempfile::tempdir()?;
     let socket = socket_directory.path().join("executor.sock");
-    let listener = ActorExecutorListener::bind(&socket).await?;
+    let mut listener = ActorExecutorListener::bind(&socket).await?;
     let bootstrap = directory.join("host.mjs");
     std::fs::write(
         &bootstrap,
@@ -885,15 +890,17 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
             serde_json::to_string(&format!("file://{}", sdk.join("host.js").display()))?
         ),
     )?;
-    let child = tokio::process::Command::new("bun")
+    let mut command = tokio::process::Command::new("bun");
+    command
         .arg(bootstrap)
         .env("DURABLE_ACTORS_ENTRYPOINT", code.join("actors.mjs"))
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
         .env("TEST_ACTOR_SECRET", "injected")
         .kill_on_drop(true)
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+        .stderr(Stdio::inherit());
+    listener.inherit_database_channel(&mut command)?;
+    let child = command.spawn()?;
     let connection = tokio::time::timeout(Duration::from_secs(10), listener.accept()).await??;
     Ok((child, connection))
 }
@@ -931,7 +938,7 @@ impl HostProvisioner for SocketTestProvisioner {
         _new_actor: bool,
         _owner_hint: Option<&crate::bucket::OwnershipHint>,
         _: Option<&crate::sandbox::assignment::InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+    ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         anyhow::bail!("fixture host must be active")
     }
     async fn terminate_hosts(

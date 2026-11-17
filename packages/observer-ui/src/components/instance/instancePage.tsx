@@ -21,6 +21,7 @@ import { PageHeader } from "../ui/pageHeader.js"
 import { Skeleton } from "../ui/skeleton.js"
 
 import { ConnectionsCard } from "./connectionsCard.js"
+import { EventsCard } from "./eventsCard.js"
 import { LogsCard, logsCardId } from "./logsCard.js"
 // import { MemoryCard } from "./memoryCard.js"
 import { RequestsCard } from "./requestsCard.js"
@@ -32,7 +33,7 @@ export function InstancePage() {
     const { actorTypes, isError, sessions, isSocketsError } = useData()
     const timeWindow = useTimeWindow()
     const { requests: ownRequests, isError: isRequestsError } = useInstanceRequests(actorName, actorId)
-    const { residency, isError: isResidencyError } = useResidency(actorName, timeWindow)
+    const { residency, isError: isResidencyError } = useResidency(actorName, timeWindow, actorId)
     const instance = actorTypes?.actors.find(type => type.actorName === actorName)?.instances.find(candidate => candidate.actorId === actorId) ?? null
     const ownSessions = sessions?.filter(session => session.actorName === actorName && session.actorId === actorId) ?? null
     const livePeriods = residency && (groupLivePeriods(residency).get(actorId) ?? [])
@@ -57,7 +58,6 @@ export function InstancePage() {
                         <RequestRateTrend requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} color="var(--foreground)" />
                         <TimingCard
                             label="Avg Queue Wait"
-                            window={describeWindow(timeWindow)}
                             pick={queueTime}
                             color="var(--chart-1)"
                             chartLabel={`Average queue wait, ${describeWindow(timeWindow)}`}
@@ -67,7 +67,6 @@ export function InstancePage() {
                         />
                         <TimingCard
                             label="Avg Request Time"
-                            window="excl. queue"
                             pick={serviceTime}
                             color="var(--foreground)"
                             chartLabel={`Average request time excluding the queue, ${describeWindow(timeWindow)}`}
@@ -88,6 +87,7 @@ export function InstancePage() {
                         timeWindow={timeWindow}
                     />
                     <LogsCard actorName={actorName} actorId={actorId} requests={ownRequests} requestId={logRequestId} onRequestChange={setLogRequestId} timeWindow={timeWindow} />
+                    <EventsCard actorName={actorName} actorId={actorId} timeWindow={timeWindow} />
                 </div>
             )}
         </section>

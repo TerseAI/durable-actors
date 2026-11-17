@@ -1,7 +1,7 @@
 import { ArrowRight } from "lucide-react"
 
 import { useDrawer } from "../../client/DrawerContext.js"
-import { formatMs, formatMsValue, formatPreciseDateTime } from "../../format.js"
+import { formatMs, formatMsParts, formatPreciseDateTime } from "../../format.js"
 import { serviceTime } from "../../lib/requestStats.js"
 import { cn } from "../../lib/utils.js"
 import type { RequestOutcome, RequestTrace } from "../../types/Requests.js"
@@ -98,6 +98,7 @@ function LogsLink({ onShowLogs }: { onShowLogs: () => void }) {
 }
 
 function TimingValue({ label, ms }: { label: string; ms: number | null }) {
+    const [value, unit] = formatMsParts(ms ?? 0)
     return (
         <div>
             <div className="text-xs text-muted-foreground">{label}</div>
@@ -106,8 +107,8 @@ function TimingValue({ label, ms }: { label: string; ms: number | null }) {
                     "—"
                 ) : (
                     <>
-                        {formatMsValue(ms)}
-                        <span className="text-xs font-medium tracking-normal text-muted-foreground">ms</span>
+                        {value}
+                        <span className="text-xs font-medium tracking-normal text-muted-foreground">{unit}</span>
                     </>
                 )}
             </div>

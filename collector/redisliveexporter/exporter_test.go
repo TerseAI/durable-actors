@@ -35,7 +35,7 @@ func TestTelemetryIsSplitByStampedProject(t *testing.T) {
 		t.Fatalf("expected alpha and beta with both alpha spans, got %d projects", len(spanPayloads))
 	}
 
-	logPayloads, err := logsByProject(logs)
+	logPayloads, err := logsByProject(logs, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,5 +45,38 @@ func TestTelemetryIsSplitByStampedProject(t *testing.T) {
 	}
 	if len(logPayloads) != 2 || logRequest.Logs().LogRecordCount() != 1 {
 		t.Fatalf("expected alpha and beta with one beta line, got %d projects", len(logPayloads))
+	}
+}
+
+func TestGatewayRecordsAreSplitByTheirOwnProjectOnlyWhenTrusted(t *testing.T) {
+	logs := plog.NewLogs()
+	gateway := logs.ResourceLogs().AppendEmpty()
+	gateway.Resource().Attributes().PutStr("durable_actors.gateway_id", "gateway-1")
+	records := gateway.ScopeLogs().AppendEmpty().LogRecords()
+	for _, project := range []string{"alpha", "beta", "alpha", ""} {
+		record := records.AppendEmpty()
+		if project != "" {
+			record.Attributes().PutStr(projectAttribute, project)
+		}
+	}
+
+	untrusted, err := logsByProject(logs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(untrusted) != 0 {
+		t.Fatalf("records without a stamped resource project must be dropped, got %d projects", len(untrusted))
+	}
+	trusted, err := logsByProject(logs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := plogotlp.NewExportRequest()
+	if err := request.UnmarshalProto(trusted["alpha"]); err != nil {
+		t.Fatal(err)
+	}
+	gatewayID, _ := request.Logs().ResourceLogs().At(0).Resource().Attributes().Get("durable_actors.gateway_id")
+	if len(trusted) != 2 || request.Logs().LogRecordCount() != 2 || gatewayID.AsString() != "gateway-1" {
+		t.Fatalf("expected alpha and beta, alpha with both records and the gateway resource, got %d projects", len(trusted))
 	}
 }

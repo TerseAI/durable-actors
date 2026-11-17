@@ -33,7 +33,7 @@ export type ConnectionsCardProps = {
 
 export function ConnectionsCard({ instance, sessions, livePeriods, requests, failed, timeWindow }: ConnectionsCardProps) {
     const [expanded, setExpanded] = useState(false)
-    const sockets = instance && sessions && socketRows(sessions, instance, timeWindow)
+    const sockets = instance && sessions && socketRows(sessions, timeWindow)
     const shown = expanded ? sockets : sockets?.slice(0, previewRows)
     return (
         <SectionCard title="WebSocket Connections" aside={<ConnectionKeys closed={sockets?.some(row => !row.open) ?? false} />} busy={!shown && !failed} className="pb-3">
@@ -71,14 +71,13 @@ export function ConnectionsCard({ instance, sessions, livePeriods, requests, fai
     )
 }
 
-function socketRows(sessions: SocketSession[], instance: ActorInstance, timeWindow: TimeWindow): Connection[] {
-    const openIds = new Set(instance.connections.map(connection => connection.id))
+function socketRows(sessions: SocketSession[], timeWindow: TimeWindow): Connection[] {
     return sessions
         .flatMap(session => {
-            const open = openIds.has(session.connectionId)
-            const span = sessionSpan(session, open)
-            const [segment] = span ? timelineSegments([span], timeWindow, open && timeWindow.live) : []
-            return span && segment ? [{ session, open, span, segment }] : []
+            const open = session.status === "open"
+            const span = sessionSpan(session)
+            const [segment] = timelineSegments([span], timeWindow, open && timeWindow.live)
+            return segment ? [{ session, open, span, segment }] : []
         })
         .sort((a, b) => a.span.fromMs - b.span.fromMs)
 }
@@ -127,8 +126,8 @@ function InstanceRow({ instance, periods, requests, timeWindow }: InstanceRowPro
 
 function SocketRow({ row: { session, open, span, segment }, requests, timeWindow }: { row: Connection; requests: RequestTrace[] | null; timeWindow: TimeWindow }) {
     const activity = requests ? websocketActivity(requests, session.connectionId, segment) : null
-    const messages = activity?.messages ?? session.messages
-    const failures = activity?.failures ?? session.failures
+    const messages = activity?.messages ?? session.messagesIn ?? 0
+    const failures = activity?.failures ?? 0
     const failedClose = !open && failures > 0
     return (
         <div className={`${rowGrid} h-11 border-b border-border/50 last:border-b-0`}>
@@ -141,7 +140,7 @@ function SocketRow({ row: { session, open, span, segment }, requests, timeWindow
                     {failedClose && ` · ${formatPlural(failures, "failure")}`}
                 </span>
             </div>
-            <TimelineTrack label={`${session.connectionId}: ${open ? "open" : "closed"}, ${formatPreciseTimeSpan(segment.fromMs, segment.toMs)}`}>
+            <TimelineTrack label={`${session.connectionId}: ${session.status}, ${formatPreciseTimeSpan(segment.fromMs, segment.toMs)}`}>
                 <SocketSegment messages={messages} failures={failures} segment={segment} open={open} failed={failedClose} />
             </TimelineTrack>
         </div>
