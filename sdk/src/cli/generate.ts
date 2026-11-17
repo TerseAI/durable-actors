@@ -48,7 +48,12 @@ async function generateTypeScriptClient(source: unknown, directory: string): Pro
     const { generateClient } = await import("../compiler/generators/client-generator.js")
     const { parsePublicContract } = await import("../compiler/validate-public-contract.js")
     const contract = parsePublicContract(source)
-    await generateClient(contract, directory)
+    const allowBrowser = process.env.DURABLE_ACTORS_ALLOW_BROWSER === "1"
+    await generateClient(contract, directory, { allowBrowser })
+    if (allowBrowser)
+        console.warn(
+            "DURABLE_ACTORS_ALLOW_BROWSER=1: browser bundles include the server client, which sends DURABLE_ACTORS_SECRET. Use it for local testing and demos only."
+        )
     const dependencies = Object.entries(contract.typescript.dependencies)
     if (dependencies.length)
         console.log(

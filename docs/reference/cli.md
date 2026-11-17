@@ -95,6 +95,8 @@ durable-actors generate [entrypoint] [--out-dir <directory>] [--language <langua
 
 `--config` requires a TypeScript entrypoint. `--control-plane-url` applies when the contract is fetched from the server.
 
+The generated TypeScript client sends `DURABLE_ACTORS_SECRET`, so browser bundles receive a stub that throws instead. Browsers connect with the `websocketUrl` your backend gets from `prepareWebsocket`. For local testing and demos only, generate with `DURABLE_ACTORS_ALLOW_BROWSER=1` to bundle the full client for browsers.
+
 Connection settings come from the environment or `.env`:
 
 | Variable                           | Default                                                      |
