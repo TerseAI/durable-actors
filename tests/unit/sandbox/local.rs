@@ -173,6 +173,46 @@ async fn an_exited_ready_host_can_be_started_again() -> Result<()> {
 }
 
 #[tokio::test]
+async fn a_host_that_exits_has_its_lease_released() -> Result<()> {
+    let fixture = LocalFixture::new().await?;
+    let request = fixture.request("killed");
+    fixture.release(&request)?;
+    fixture.start(&request).await??;
+    assert!(fixture.leases.0.lock().unwrap().is_empty());
+    std::fs::write(fixture.marker(&request, "fail"), "")?;
+    tokio::time::timeout(DEADLINE, async {
+        while fixture.leases.0.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+    assert_eq!(
+        *fixture.leases.0.lock().unwrap(),
+        vec![(
+            request.actor.clone().unwrap(),
+            request.host_id.clone(),
+            request.session_id.clone()
+        )]
+    );
+    fixture.provider.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_host_that_is_not_ready_in_time_is_stopped() -> Result<()> {
+    let fixture = LocalFixture::with_ready_timeout(Duration::from_millis(500)).await?;
+    let request = fixture.request("slow");
+    let error = tokio::time::timeout(STARTUP_DEADLINE, fixture.start(&request))
+        .await??
+        .err()
+        .context("a host that never reported ready started")?;
+    assert!(format!("{error:#}").contains("did not become ready within 500ms"));
+    fixture.stopped(&request).await?;
+    fixture.provider.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn deployment_retirement_cancels_pending_hosts_and_allows_a_replacement() -> Result<()> {
     let fixture = LocalFixture::new().await?;
     let pending = fixture.request("pending");
@@ -242,33 +282,56 @@ async fn shutdown_reaps_every_host_in_a_pending_burst() -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct ReleasedLeases(std::sync::Mutex<Vec<(ActorKey, HostId, String)>>);
+
+#[async_trait]
+impl AbandonedLeases for ReleasedLeases {
+    async fn release(&self, actor: &ActorKey, host: &HostId, session_id: &str) -> Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((actor.clone(), host.clone(), session_id.to_owned()));
+        Ok(())
+    }
+}
+
 struct LocalFixture {
     provider: Arc<LocalSandboxProvider>,
     placements: Arc<LocalObjectPlacementStore>,
+    leases: Arc<ReleasedLeases>,
     directory: TempDir,
 }
 
 impl LocalFixture {
     async fn new() -> Result<Self> {
+        Self::with_ready_timeout(STARTUP_DEADLINE).await
+    }
+
+    async fn with_ready_timeout(ready_timeout: Duration) -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir()?;
         let executable = directory.path().join("host");
         std::fs::write(&executable, include_str!("fixtures/local-host.cjs"))?;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
         let placements = Arc::new(LocalObjectPlacementStore::default());
+        let leases = Arc::new(ReleasedLeases::default());
         let provider = Arc::new(
             LocalSandboxProvider::new(
                 executable,
                 directory.path().into(),
                 placements.clone(),
+                Some(leases.clone()),
                 None,
                 directory.path().join("hosts.sqlite3"),
+                ready_timeout,
             )
             .await?,
         );
         Ok(Self {
             provider,
             placements,
+            leases,
             directory,
         })
     }
@@ -375,7 +438,9 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         project.clone(),
         fixture.runtime,
         None,
+        None,
         project.join("hosts.sqlite3"),
+        STARTUP_DEADLINE,
     )
     .await?;
     provider.shutdown().await;

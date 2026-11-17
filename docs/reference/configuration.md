@@ -29,6 +29,9 @@ Configuration uses environment variables. Precedence is to use exported variable
 | `DURABLE_ACTORS_PORT`       | `7100`                             | Listening port; `0` selects a free port. `--port` overrides it for one run.                                           |
 | `DURABLE_ACTORS_DATA_DIR`   | `<project>/.durable-actors`        | Persistent local state directory.                                                                                     |
 | `DURABLE_ACTORS_STORAGE`    | `local`                            | `local` for file storage or `gcs` for a GCS bucket. GCS also requires `DURABLE_ACTORS_BUCKET` and Google credentials. |
+| `DURABLE_ACTORS_LOCAL_HOST_BINARY` | The runtime | Executable run for each actor host, for example a script that starts the runtime under a debugger or a memory limit. It receives the host settings in its environment and must not exit before the host does. |
+| `DURABLE_ACTORS_LOCAL_HOST_READY_TIMEOUT_MS` | `30000` | Time a new actor host has to become ready. |
+| `DURABLE_ACTORS_LOCAL_HOST_LEASE_MS` | Unset | Actor host lease, so that a host paused in a debugger keeps its actor. It may exceed the usual 60000 ms limit. When set, the runtime releases the leases of hosts that exit, and at startup with `local` storage, every lease in the store. |
 
 ## WebSockets
 
