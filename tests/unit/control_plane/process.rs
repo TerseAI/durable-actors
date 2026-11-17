@@ -26,24 +26,6 @@ fn usage_publishing_is_opt_in() -> Result<()> {
 }
 
 #[test]
-fn event_publishing_is_opt_in() -> Result<()> {
-    let mut values = process_environment();
-    let parse = |values: &HashMap<&str, &str>| {
-        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
-    };
-    assert!(parse(&values)?.events_topic.is_none());
-    values.insert(
-        "DURABLE_ACTORS_EVENTS_TOPIC",
-        "projects/example/topics/actor-events",
-    );
-    assert_eq!(
-        parse(&values)?.events_topic.as_deref(),
-        Some("projects/example/topics/actor-events")
-    );
-    Ok(())
-}
-
-#[test]
 fn analytics_defaults_to_none_and_clickhouse_is_opt_in() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {

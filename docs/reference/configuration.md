@@ -198,7 +198,7 @@ Estimates affect only usage publications. ClickHouse retains the actual lifecycl
 
 ### Published events
 
-Setting `DURABLE_ACTORS_EVENTS_TOPIC` publishes platform events to Pub/Sub for services outside the control plane, such as one that sends alerts. It works with either analytics backend and without platform telemetry. Each message is one event as the `observe/events` stream sends it, with its project and an ID:
+Setting `DURABLE_ACTORS_EVENTS_TOPIC` publishes platform events to Pub/Sub for services outside the control plane. Each message is one event as the `observe/events` stream sends it, with its project and an ID:
 
 ```json
 {
@@ -214,16 +214,9 @@ Setting `DURABLE_ACTORS_EVENTS_TOPIC` publishes platform events to Pub/Sub for s
 }
 ```
 
-| Field | Meaning |
-| --- | --- |
-| `eventId` | SHA-256 of the recorded event, in hex. The same each time one event is reported. |
-| `projectId` | The actor's project. |
-| `type` | The event's type on the stream. Only `kill` is published today. |
-| `item` | The event as the stream sends it. A `kill` has a `reason`: `out_of_memory` or `out_of_disk` when the actor passed its own limit, `evicted` when its node reclaimed the sandbox, `killed` for any other signal the platform didn't send. |
+`eventId` is the SHA-256 of the recorded event, the same each time one event is reported; the Pub/Sub attributes `projectId`, `eventId` and `type` repeat the message's. Only `kill` is published today, with a `reason` of `out_of_memory`, `out_of_disk`, `evicted` or `killed`. Subscribers must ignore the types and fields they do not know.
 
-Pub/Sub attributes `projectId`, `eventId` and `type` support filtering and deduplication. More types will be published on the same topic, so subscribers must ignore the types and fields they do not know.
-
-The pool manager reports kills, and only for Kubernetes sandboxes. When it restarts it publishes the kills it still sees again, each under its original `eventId`, so subscribers must skip the IDs they have handled. Publishing runs in the background, waits up to five seconds for acknowledgment, and logs a failure without retrying: a failed publication or a pool manager that exits can lose an event. So can a kill whose actor the pool manager cannot read from PostgreSQL within two seconds.
+The pool manager reports kills, and only for Kubernetes sandboxes. When it restarts it publishes the kills it still sees again under their original `eventId`, so subscribers must skip the IDs they have handled. Publishing is best effort: a failed publication, a pool manager that exits, or a kill whose actor takes over two seconds to read can lose an event.
 
 ## Modal data plane
 

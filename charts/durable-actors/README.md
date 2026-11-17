@@ -113,11 +113,11 @@ Missing-stop reconciliation uses the configured Redis to coordinate estimated us
 
 ## Event publishing
 
-To publish platform events for another service, such as one that sends alerts, set an existing Pub/Sub topic:
+To publish platform events, such as sandbox kills, for another service, set an existing Pub/Sub topic:
 
 ```yaml
 events:
   topic: projects/my-project/topics/actor-events
 ```
 
-Grant the control plane's Google service account `roles/pubsub.publisher` on that topic. The pool manager publishes a message each time a sandbox stops under an actor without the platform asking: out of memory, out of disk, evicted, or killed. Publishing works with either analytics backend and is disabled when `events.topic` is empty. See the [event contract](../../docs/reference/configuration.md#published-events) for the message and its delivery limits.
+Grant the control plane's Google service account `roles/pubsub.publisher` on that topic. See the [event contract](../../docs/reference/configuration.md#published-events).

@@ -58,11 +58,7 @@ Custom observer clients can implement `listResidency` to enable the timeline. `H
 
 ## Events
 
-An instance's page lists its sandbox kills below its logs, newest first: sandboxes that stopped under the actor without the platform asking. Out of memory and Out of disk mean the actor passed its own limit, Evicted that its node reclaimed the sandbox, Killed any other signal the platform didn't send. The pool manager reports them from its pod watch, so they need Kubernetes sandboxes. Loading and unloading are left out; they are routine and would bury the kills.
-
-An actor's page lists the kills of all its instances below their residency, newest first, each with a link to its instance.
-
-Kills are read from the project's event history, the authenticated endpoint `/v1/projects/{project_id}/observe/events/history?types=kill&fromMs=…&toMs=…`, narrowed by `actorName` and, on an instance's page, `actorId`, and arrive live as `kill` events. The history returns each event as the stream sent it, newest first, and a read returns the latest 500. It holds the events that happen once, which is `kill` so far. The TypeScript and Python observer proxies serve the route as `events/history`.
+An actor's page and each instance's page list its sandbox kills, newest first: sandboxes that stopped without the platform asking, which needs Kubernetes sandboxes. They are read from `/v1/projects/{project_id}/observe/events/history?types=kill`, which the TypeScript and Python observer proxies serve as `events/history`, and arrive live as `kill` events.
 
 ## Persisted actor state
 

@@ -21,6 +21,6 @@ Rules for working in this repo. Keep changes minimal and idiomatic.
 Everything the observer dashboard shows takes one path. Add new data the same way:
 
 1. **Emit an OTLP record.** Requests are host spans. Everything else is a log record named `durable_actors.<domain>.<event>`: implement `PlatformEvent` for the event and record it through `PlatformEvents<E>`. Never write ClickHouse or Redis from application code.
-2. **Read it from ClickHouse.** The collector writes `platform_events`. An event that happens once is read through `observe/events/history`: once step 3 decodes it, list its type in `RECORDED` in `src/control_plane/event_history.rs`. A view that aggregates adds a `.sql` query in `src/request_traces/persistence/clickhouse/` (a materialized view only when it needs aggregating), a `TraceQueries` method, and an `observe/<view>` route.
+2. **Read it from ClickHouse.** The collector writes `platform_events`; add a `.sql` query in `src/request_traces/persistence/clickhouse/` (a materialized view only when it needs aggregating), a `TraceQueries` method, and an `observe/<view>` route.
 3. **Decode it for the live stream.** Add a case in `src/control_plane/observe_events.rs`; `observe/events` forwards it from the project's Redis channel.
-4. **Show it with `useLiveView`.** Add the event type to `packages/observer-ui/src/types/Events.ts` and a read plus apply function in `lib/views/`; events in the history use `useEventHistory`. Views read the store when they open and apply events afterwards; no polling.
+4. **Show it with `useLiveView`.** Add the event type to `packages/observer-ui/src/types/Events.ts` and a read plus apply function in `lib/views/`. Views read the store when they open and apply events afterwards; no polling.

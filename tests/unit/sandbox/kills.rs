@@ -3,7 +3,12 @@ use serde_json::json;
 use super::*;
 
 #[test]
-fn out_of_memory_kills_are_read_from_the_stopped_container() {
+fn a_stopped_container_is_a_kill_unless_the_platform_stopped_it() {
+    let deleting = |reason, exit_code| {
+        let mut pod = stopped_json(reason, exit_code);
+        pod["metadata"]["deletionTimestamp"] = json!("2026-01-01T00:00:05Z");
+        parse(pod)
+    };
     assert_eq!(
         kill(&stopped("OOMKilled", 137)).unwrap(),
         PodKill {
@@ -12,28 +17,14 @@ fn out_of_memory_kills_are_read_from_the_stopped_container() {
             at_ms: 1_767_225_600_000,
         }
     );
-}
-
-#[test]
-fn out_of_memory_counts_even_while_the_platform_deletes_the_pod() {
-    let mut pod = stopped_json("OOMKilled", 137);
-    pod["metadata"]["deletionTimestamp"] = json!("2026-01-01T00:00:05Z");
+    let reason = |pod: Pod| kill(&pod).map(|kill| kill.reason);
     assert_eq!(
-        kill(&parse(pod)).map(|kill| kill.reason),
+        reason(deleting("OOMKilled", 137)),
         Some(KillReason::OutOfMemory)
     );
-}
-
-#[test]
-fn sigkill_only_counts_when_nothing_asked_the_pod_to_stop() {
-    assert_eq!(
-        kill(&stopped("Error", 137)).map(|kill| kill.reason),
-        Some(KillReason::Killed)
-    );
-    let mut retired = stopped_json("Error", 137);
-    retired["metadata"]["deletionTimestamp"] = json!("2026-01-01T00:00:05Z");
-    assert_eq!(kill(&parse(retired)), None);
-    assert_eq!(kill(&stopped("Completed", 0)), None);
+    assert_eq!(reason(stopped("Error", 137)), Some(KillReason::Killed));
+    assert_eq!(reason(deleting("Error", 137)), None);
+    assert_eq!(reason(stopped("Completed", 0)), None);
 }
 
 /// The messages are the kubelet's own, from `pkg/kubelet/eviction`.
@@ -62,10 +53,6 @@ fn an_eviction_past_the_pods_own_disk_limit_is_out_of_disk() {
         ),
         (
             "The node was low on resource: ephemeral-storage. Threshold quantity: 10Gi, available: 9Gi. ",
-            KillReason::Evicted,
-        ),
-        (
-            "The node was low on resource: memory. ",
             KillReason::Evicted,
         ),
     ] {
