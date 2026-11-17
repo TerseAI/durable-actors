@@ -2,39 +2,28 @@ import { Link } from "react-router"
 
 import { formatPreciseDateTime } from "../../format.js"
 import { instancePath } from "../../lib/actorTypes.js"
-import type { InstanceEvent } from "../../lib/instanceEvents.js"
 import { cn } from "../../lib/utils.js"
+import type { ActorKill, KillReason } from "../../types/Kills.js"
 import type { LogLevel } from "../../types/Logs.js"
 import { ExpandFooter } from "../ui/expandFooter.js"
 import { Skeleton } from "../ui/skeleton.js"
 
-import { LevelBadge, levelTint } from "./logList.js"
-
-type Kind = InstanceEvent["kind"]
+import { LevelBadge } from "./logList.js"
 
 const previewRows = 10
-const labels: Record<Kind, string> = {
-    live: "Live",
-    dormant: "Dormant",
-    unknown: "Unknown",
+const labels: Record<KillReason, string> = {
     out_of_memory: "Out of memory",
     out_of_disk: "Out of disk",
     evicted: "Evicted",
     killed: "Killed"
 }
-const levels: Record<Kind, LogLevel> = {
-    live: "info",
-    dormant: "info",
-    unknown: "info",
+const levels: Record<KillReason, LogLevel> = {
     out_of_memory: "error",
     out_of_disk: "error",
     evicted: "warn",
     killed: "warn"
 }
-const messages: Record<Kind, string> = {
-    live: "Loaded into memory.",
-    dormant: "Unloaded from memory.",
-    unknown: "Stopped reporting its state.",
+const messages: Record<KillReason, string> = {
     out_of_memory: "Sandbox used more memory than its limit.",
     out_of_disk: "Sandbox used more disk than its limit.",
     evicted: "Sandbox evicted by its node.",
@@ -42,7 +31,7 @@ const messages: Record<Kind, string> = {
 }
 
 export type EventListProps = {
-    events: InstanceEvent[]
+    events: ActorKill[]
     noun: string
     /** Adds a column that names each event's instance, for a list that covers more than one. */
     showInstance?: boolean
@@ -63,7 +52,7 @@ export function EventList({ events, noun, showInstance = false, expanded, onTogg
             </div>
             <ol>
                 {rows.map(event => (
-                    <EventRow key={`${event.actorId}:${event.kind}:${event.atMs}`} event={event} showInstance={showInstance} />
+                    <EventRow key={`${event.actorId}:${event.reason}:${event.atMs}`} event={event} showInstance={showInstance} />
                 ))}
             </ol>
             {events.length > previewRows && <ExpandFooter shown={rows.length} total={events.length} noun={noun} expandLabel="Show All" expanded={expanded} onToggle={onToggle} />}
@@ -90,16 +79,13 @@ function rowGrid(showInstance: boolean): string {
     return cn("grid items-center gap-x-4", showInstance ? "grid-cols-[128px_112px_minmax(0,200px)_minmax(0,1fr)]" : "grid-cols-[128px_112px_minmax(0,1fr)]")
 }
 
-function EventRow({ event, showInstance }: { event: InstanceEvent; showInstance: boolean }) {
-    const level = levels[event.kind]
+function EventRow({ event, showInstance }: { event: ActorKill; showInstance: boolean }) {
     return (
-        <li className={cn(rowGrid(showInstance), "min-h-8.5 border-b border-border/55 px-2 text-[12.5px] last:border-b-0", levelTint[level])}>
+        <li className={cn(rowGrid(showInstance), "min-h-8.5 border-b border-border/55 px-2 text-[12.5px] last:border-b-0")}>
             <span className="font-mono text-xs text-muted-foreground tabular-nums">{formatPreciseDateTime(event.atMs)}</span>
-            <LevelBadge level={level} className={cn(event.kind === "unknown" && "border-dashed")}>
-                {labels[event.kind]}
-            </LevelBadge>
+            <LevelBadge level={levels[event.reason]}>{labels[event.reason]}</LevelBadge>
             {showInstance && <InstanceLink actorId={event.actorId} />}
-            <span className={cn("min-w-0 py-1.5", event.kill ? "text-foreground/95" : "text-muted-foreground")}>{messages[event.kind]}</span>
+            <span className="min-w-0 py-1.5 text-foreground/95">{messages[event.reason]}</span>
         </li>
     )
 }

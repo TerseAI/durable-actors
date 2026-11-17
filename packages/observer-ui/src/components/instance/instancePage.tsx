@@ -87,7 +87,7 @@ export function InstancePage() {
                         timeWindow={timeWindow}
                     />
                     <LogsCard actorName={actorName} actorId={actorId} requests={ownRequests} requestId={logRequestId} onRequestChange={setLogRequestId} timeWindow={timeWindow} />
-                    <EventsCard actorName={actorName} actorId={actorId} periods={residency && residency.periods} failed={isResidencyError} timeWindow={timeWindow} />
+                    <EventsCard actorName={actorName} actorId={actorId} timeWindow={timeWindow} />
                 </div>
             )}
         </section>
