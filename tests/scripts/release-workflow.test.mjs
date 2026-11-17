@@ -69,10 +69,14 @@ test("pull requests test the newest Python and still build the SDK package", () 
 })
 
 test("main CI exercises direct host sockets with the built SDK", () => {
-    const rustJob = read(".github/workflows/ci.yml")
-        .split("    rust:\n")[1]
-        .split(/\n    [a-z-]+:\n/)[0]
-    assert.match(rustJob, /bun run --bun --cwd sdk build[\s\S]*cargo test --locked -- --ignored/)
+    assert.match(ciJob("rust"), /bun run --bun --cwd sdk build[\s\S]*cargo test --locked -- --ignored/)
+})
+
+test("Rust tests keep their own Cargo cache because Python jobs build without test features", () => {
+    const python = read(".github/workflows/python.yml")
+    const cacheKey = workflow => workflow.match(/shared-key: (.+)/)[1]
+    assert.notEqual(cacheKey(ciJob("rust")), cacheKey(python))
+    assert.match(python, /save-if: \$\{\{ github\.ref == 'refs\/heads\/main' && matrix\.python == '[\d.]+' \}\}/)
 })
 
 test("the SDK is packed once and reused by native tests and npm", () => {
@@ -145,6 +149,12 @@ test("release validates and publishes the pinned LTX crate before packaging the 
     assert.equal(job.match(/CARGO_REGISTRY_TOKEN:/g)?.length, 1)
     assert.match(job, /name: Publish terse-ltx[\s\S]*CARGO_REGISTRY_TOKEN:[\s\S]*cargo publish --locked --no-verify/)
 })
+
+function ciJob(name) {
+    return read(".github/workflows/ci.yml")
+        .split(`    ${name}:\n`)[1]
+        .split(/\n    [a-z-]+:\n/)[0]
+}
 
 function releaseJob(name) {
     const body = read(".github/workflows/release.yml").split(`    ${name}:\n`)[1]

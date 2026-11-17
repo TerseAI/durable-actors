@@ -32,6 +32,8 @@ jobs:
     rust:
         name: Rust runtime
         runs-on: blacksmith-4vcpu-ubuntu-2404
+        env:
+            CARGO_PROFILE_DEV_DEBUG: line-tables-only
         services:
             clickhouse:
                 image: clickhouse/clickhouse-server:26.6
@@ -78,7 +80,7 @@ jobs:
               run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt && rustup default 1.91.0
             - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
               with:
-                  shared-key: validation-ubuntu-24.04
+                  shared-key: rust-tests-ubuntu-24.04
                   save-if: ${{ github.ref == 'refs/heads/main' }}
             - uses: ./.github/actions/setup-test-litestream
             - name: Check formatting
