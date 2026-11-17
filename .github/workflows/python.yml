@@ -72,10 +72,3 @@ jobs:
                   assert "Install durable-actors[cli]" in result.stderr, result.stderr
                   assert "Traceback" not in result.stderr, result.stderr
                   PY
-            - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-              if: matrix.python == '3.14'
-              with:
-                  name: python-package
-                  path: sdk-python/dist/*
-                  if-no-files-found: error
-                  retention-days: 7
