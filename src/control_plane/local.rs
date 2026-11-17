@@ -60,11 +60,8 @@ pub struct DevOptions {
         default_value = "local"
     )]
     pub storage: DevStorage,
-    /// Run this executable for each actor host instead of this runtime. It receives the host's
-    /// settings in its environment and must not exit before the host does.
     #[arg(long, env = "DURABLE_ACTORS_LOCAL_HOST_BINARY")]
     pub host_binary: Option<PathBuf>,
-    /// How long to wait for a new actor host to become ready.
     #[arg(
         long,
         env = "DURABLE_ACTORS_LOCAL_HOST_READY_TIMEOUT_MS",
