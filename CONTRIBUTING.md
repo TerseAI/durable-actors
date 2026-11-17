@@ -114,7 +114,7 @@ uv build --no-sources
 
 The `native-build.yml` workflow builds `durable-actors-runtime` wheels with Maturin for Linux/macOS on x64/ARM64. It packages the same compiled executable as the native CLI tarball with `bun scripts/build-runtime.mjs --binary target/release/durable-actors-native`; both executable names use `src/main.rs`. It builds the observer UI once per wheel, includes the prebuilt assets and third-party license notices, then installs both wheels in a clean environment. CLI acceptance tests clear PATH to verify initialization, development, reloads, persistence, code generation, and the observer without Bun or Node. The release publishes runtime wheels before the SDK; configure the new runtime project's trusted publisher before its first release.
 
-Successful main and release builds cache these packages by commit SHA and runner. Releases reuse packages when the build for that exact commit has finished; cache misses build normally. Native bundle checks and Python CLI acceptance tests run on cache hits too. PR builds do not save package caches, and superseded PR CI runs are cancelled.
+Only the release workflow runs `native-build.yml`. Pull request and main CI run tests only, and superseded pull request runs are cancelled.
 
 To build and test the native Python package locally, from the repository root:
 
@@ -155,7 +155,7 @@ docker build --target typescript -t durable-actors:typescript .
 bash scripts/test-runtime-image.sh durable-actors:typescript typescript
 ```
 
-Repeat for `python` and `control-plane`. CI runs each target on amd64 and arm64. The TypeScript execution package bundles only the actor and host modules, collects dependency licenses, and is checked by `sdk package:check`. Examples, the CLI, compiler, and observer UI are excluded from that image. SQL migrations and `docs/reference/openapi.yaml` are Rust build inputs embedded in the executable; their source directories are not copied into the final images.
+Repeat for `python` and `control-plane`. Releases build and check each target on amd64 and arm64; pull request and main CI run tests only, and the WebSocket and restart integration tests run on main. The TypeScript execution package bundles only the actor and host modules, collects dependency licenses, and is checked by `sdk package:check`. Examples, the CLI, compiler, and observer UI are excluded from that image. SQL migrations and `docs/reference/openapi.yaml` are Rust build inputs embedded in the executable; their source directories are not copied into the final images.
 
 ## Open a pull request
 

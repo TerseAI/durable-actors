@@ -42,6 +42,14 @@ test("primary Python wheels cover every primary runner and leave Intel to its ow
     assert.match(releaseJob("python-runtime-intel"), /name: python-runtime-macos-15-intel/)
 })
 
+test("CI tests pull requests and main while only releases build native runtimes and images", () => {
+    const ci = read(".github/workflows/ci.yml")
+    assert.doesNotMatch(ci, /native-build\.yml|build-push-action/)
+    assert.match(ci, /if: github\.event_name == 'push'\n\s+run: cargo test --locked -- --ignored/)
+    assert.match(releaseJob("native"), /uses: \.\/\.github\/workflows\/native-build\.yml/)
+    assert.match(releaseJob("image-build"), /build-push-action/)
+})
+
 test("CI and release exercise direct host sockets with the built SDK", () => {
     for (const path of [".github/workflows/ci.yml", ".github/workflows/release.yml"]) {
         const rustJob = read(path)
@@ -96,7 +104,6 @@ test("native and image builds start independently of validation and stage artifa
 
 test("Cargo caches are restored after toolchain selection", () => {
     for (const job of ["rust", "native"]) assert.match(releaseJob(job), /rustup default 1\.91\.0[\s\S]*Swatinem\/rust-cache@/)
-    assert.match(read(".github/workflows/ci.yml"), /uses: \.\/\.github\/workflows\/native-build.yml/)
     assert.match(read(".github/workflows/native-build.yml"), /shared-key: native-\$\{\{ matrix.runner \}\}/)
     const dockerfile = read("Dockerfile")
     assert.match(dockerfile, /--mount=type=cache,target=\/usr\/local\/cargo/)
