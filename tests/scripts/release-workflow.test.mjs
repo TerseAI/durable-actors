@@ -50,6 +50,17 @@ test("CI tests pull requests and main while only releases build native runtimes 
     assert.match(releaseJob("image-build"), /build-push-action/)
 })
 
+test("pull requests test the newest Python and still build the SDK package", () => {
+    const python = read(".github/workflows/python.yml")
+    const [pullRequest, full] = python
+        .match(/github\.event_name == 'pull_request' && '(.+?)' \|\| '(.+?)'/)
+        .slice(1)
+        .map(versions => JSON.parse(versions))
+    assert.deepEqual(pullRequest, [full.at(-1)])
+    assert.match(python, new RegExp(`name: Build distributions\\n\\s+if: matrix\\.python == '${full.at(-1)}'`))
+    assert.match(python, new RegExp(`upload-artifact@.*\\n\\s+if: matrix\\.python == '${full.at(-1)}'\\n[\\s\\S]*?name: python-package`))
+})
+
 test("CI and release exercise direct host sockets with the built SDK", () => {
     for (const path of [".github/workflows/ci.yml", ".github/workflows/release.yml"]) {
         const rustJob = read(path)
