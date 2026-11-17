@@ -4690,7 +4690,7 @@ dependencies = [
 [[package]]
 name = "terse-litestream"
 version = "0.2.0"
-source = "git+https://github.com/TerseAI/terse-litestream?rev=3a78cd6c8d70f1b607dbc10c4368b25eb6122731#3a78cd6c8d70f1b607dbc10c4368b25eb6122731"
+source = "git+https://github.com/TerseAI/terse-litestream?rev=45a8ad1709c2da0adfe44082db6b7dc10fc825d2#45a8ad1709c2da0adfe44082db6b7dc10fc825d2"
 dependencies = [
  "anyhow",
  "crc",
@@ -4702,7 +4702,7 @@ dependencies = [
 [[package]]
 name = "terse-ltx"
 version = "0.1.0"
-source = "git+https://github.com/TerseAI/terse-ltx?rev=fdc27e08f09a532b8f0b8d72971de4b2772ef86b#fdc27e08f09a532b8f0b8d72971de4b2772ef86b"
+source = "git+https://github.com/TerseAI/terse-ltx?rev=e79cc43e59b978983af6010f00bbb500d428f5bf#e79cc43e59b978983af6010f00bbb500d428f5bf"
 dependencies = [
  "crc",
  "lz4_flex 0.13.1",
