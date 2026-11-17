@@ -108,7 +108,7 @@ uv run --no-sync ruff check src tests
 uv run --no-sync ruff format --check src tests
 uv run --no-sync mypy src/durable_actors
 uv run --no-sync pyright
-DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run --no-sync pytest -q
+DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run --no-sync pytest -q -n auto
 uv build --no-sources
 ```
 

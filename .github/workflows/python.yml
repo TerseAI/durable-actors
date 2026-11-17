@@ -46,7 +46,7 @@ jobs:
               working-directory: sdk-python
               env:
                   DURABLE_ACTORS_TEST_RUNTIME: ${{ github.workspace }}/target/debug/durable-actors
-              run: uv run --no-sync pytest -q
+              run: uv run --no-sync pytest -q -n auto
             - name: Check Bun CLI compatibility with Python projects
               env:
                   DURABLE_ACTORS_TEST_RUNTIME: ${{ github.workspace }}/target/debug/durable-actors

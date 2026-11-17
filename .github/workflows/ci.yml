@@ -127,7 +127,7 @@ jobs:
             - run: bun run --bun --cwd packages/observer-ui format:check
             - run: bun run --bun --cwd sdk test
             - name: Validate HTTP and build TypeScript documentation
-              run: bun run --bun docs:build
+              run: bun run --bun docs:check && bun run --bun --cwd sdk docs
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
                   name: typescript-api
@@ -136,7 +136,7 @@ jobs:
                   if-no-files-found: error
             - name: Verify npm package
               working-directory: sdk
-              run: bun pm pack --dry-run
+              run: bun pm pack --dry-run --ignore-scripts
 
     helm:
         name: Kubernetes chart

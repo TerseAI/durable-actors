@@ -72,6 +72,15 @@ test("main CI exercises direct host sockets with the built SDK", () => {
     assert.match(ciJob("rust"), /bun run --bun --cwd sdk build[\s\S]*cargo test --locked -- --ignored/)
 })
 
+test("TypeScript and Python tests run in parallel and the TypeScript job builds the SDK once", () => {
+    assert.doesNotMatch(read("sdk/package.json"), /--parallel=1/)
+    assert.match(read(".github/workflows/python.yml"), /pytest -q -n auto/)
+    const npm = ciJob("npm")
+    assert.match(npm, /bun run --bun --cwd sdk test/)
+    assert.doesNotMatch(npm, /docs:build|--cwd sdk build/)
+    assert.match(npm, /bun pm pack --dry-run --ignore-scripts/)
+})
+
 test("Rust tests keep their own Cargo cache because Python jobs build without test features", () => {
     const python = read(".github/workflows/python.yml")
     const cacheKey = workflow => workflow.match(/shared-key: (.+)/)[1]
