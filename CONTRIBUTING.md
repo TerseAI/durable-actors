@@ -112,7 +112,9 @@ DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run
 uv build --no-sources
 ```
 
-The `native-build.yml` workflow builds `durable-actors-runtime` wheels with Maturin for Linux/macOS on x64/ARM64. It builds the observer UI once per wheel, includes the prebuilt assets and third-party license notices, then installs both wheels in a clean environment. CLI acceptance tests clear PATH to verify initialization, development, reloads, persistence, code generation, and the observer without Bun or Node. The release publishes runtime wheels before the SDK; configure the new runtime project's trusted publisher before its first release.
+The `native-build.yml` workflow builds `durable-actors-runtime` wheels with Maturin for Linux/macOS on x64/ARM64. It packages the same compiled executable as the native CLI tarball with `bun scripts/build-runtime.mjs --binary target/release/durable-actors-native`; both executable names use `src/main.rs`. It builds the observer UI once per wheel, includes the prebuilt assets and third-party license notices, then installs both wheels in a clean environment. CLI acceptance tests clear PATH to verify initialization, development, reloads, persistence, code generation, and the observer without Bun or Node. The release publishes runtime wheels before the SDK; configure the new runtime project's trusted publisher before its first release.
+
+Successful main and release builds cache these packages by commit SHA and runner. Releases reuse packages when the build for that exact commit has finished; cache misses build normally. Native bundle checks and Python CLI acceptance tests run on cache hits too. PR builds do not save package caches, and superseded PR CI runs are cancelled.
 
 To build and test the native Python package locally, from the repository root:
 
