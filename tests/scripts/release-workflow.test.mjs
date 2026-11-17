@@ -31,8 +31,7 @@ test("macOS Intel publishes on its own path that primary publishing never waits 
     assert.ok(!nativeRunners("native").includes("macos-15-intel"))
     for (const job of ["native-intel", "native-intel-publish"]) assert.deepEqual(nativeRunners(job), ["macos-15-intel"])
     assert.ok(dependsOn("python-runtime-intel", "native-intel-publish"))
-    for (const job of ["native-publish", "npm", "crate", "python-runtime", "python", "helm"])
-        assert.ok(!dependsOn(job, "native-intel"), `${job} must not wait for macOS Intel`)
+    for (const job of ["native-publish", "npm", "crate", "python-runtime", "python", "helm"]) assert.ok(!dependsOn(job, "native-intel"), `${job} must not wait for macOS Intel`)
 })
 
 test("primary Python wheels cover every primary runner and leave Intel to its own job", () => {
@@ -106,11 +105,11 @@ test("Cargo caches are restored after toolchain selection", () => {
     assert.match(dockerfile, /COPY --from=builder \/out\/durable-actors/)
 })
 
-test("crate publication reuses successful verification and does not wait for npm publication", () => {
+test("crate publication reuses successful verification without waiting for native or image builds", () => {
     assert.match(releaseJob("rust"), /cargo publish --locked --dry-run/)
     assert.ok(dependsOn("crate", "rust"))
     assert.match(releaseJob("crate"), /cargo publish --locked --no-verify/)
-    assert.ok(!dependsOn("crate", "npm"))
+    for (const job of ["npm", "native", "native-publish", "image-build", "image"]) assert.ok(!dependsOn("crate", job), `crate must not wait for ${job}`)
 })
 
 test("release validates and publishes the pinned LTX crate before packaging the runtime", () => {
