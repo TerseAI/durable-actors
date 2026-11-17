@@ -291,7 +291,8 @@ impl Progress {
     fn due(&self, version: u64) -> bool {
         let logged: u64 = self.logged.iter().map(|(_, bytes)| bytes).sum();
         let max_ltx_files_reached = version.saturating_sub(self.completed) >= MAX_LOG_VERSIONS;
-        let max_log_bytes_reached = logged >= self.base_bytes.clamp(MIN_LOG_BYTES, MAX_LOG_BYTES);
+        let max_log_bytes_reached = version > self.completed
+            && logged >= self.base_bytes.clamp(MIN_LOG_BYTES, MAX_LOG_BYTES);
 
         // Trigger compaction if we have max # of ltx files, or total bytes exceeds MAX_LOG_BYTES.
         max_ltx_files_reached || max_log_bytes_reached
