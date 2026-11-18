@@ -10,14 +10,15 @@ pub struct Record {
     pub state: Payload,
 }
 
-impl Record {
-    pub fn encode(&self) -> Result<Payload> {
-        let mut spool = crate::payload::Spool::new();
-        self.write_to(&mut spool)?;
-        spool.finish()
-    }
+/// A record as it is logged: its header, checksum included, then its state.
+#[derive(Clone)]
+pub struct Frame {
+    pub header: Bytes,
+    pub state: Payload,
+}
 
-    pub fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl Record {
+    pub fn frame(self) -> Result<Frame> {
         ensure!(self.version > 0, "invalid state version");
         let length = u32::try_from(self.state.len()).context("record length overflow")?;
         let mut header = Vec::with_capacity(HEADER);
@@ -25,7 +26,24 @@ impl Record {
         header.extend_from_slice(&length.to_le_bytes());
         header.extend_from_slice(&self.version.to_le_bytes());
         header.extend_from_slice(checksum(&header, &self.state)?.as_ref());
-        writer.write_all(&header)?;
+        Ok(Frame {
+            header: header.into(),
+            state: self.state,
+        })
+    }
+
+    pub fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        self.clone().frame()?.write_to(writer)
+    }
+}
+
+impl Frame {
+    pub fn len(&self) -> usize {
+        self.header.len() + self.state.len()
+    }
+
+    pub fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        writer.write_all(&self.header)?;
         self.state.write_to(writer)?;
         Ok(())
     }

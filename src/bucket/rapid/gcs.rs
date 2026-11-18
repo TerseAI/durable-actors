@@ -1,5 +1,6 @@
 use super::*;
 use crate::bucket::{GcsBucket, SnapshotStoreConfig, gcs::GcsClients};
+use futures_util::TryStreamExt;
 use google_cloud_storage::{
     appendable_object_writer::AppendableObjectWriter, model_ext::ReadRange,
 };
@@ -214,8 +215,12 @@ impl LogZone for GcsZone {
 
 #[async_trait]
 impl LogWriter for GcsWriter {
-    async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64> {
-        self.0.append(bytes).await?;
+    async fn append_and_flush(&mut self, header: Bytes, state: Payload) -> Result<u64> {
+        self.0.append(header).await?;
+        let mut chunks = std::pin::pin!(state.chunks());
+        while let Some(chunk) = chunks.try_next().await? {
+            self.0.append(chunk).await?;
+        }
         Ok(self.0.flush().await?.try_into()?)
     }
 }

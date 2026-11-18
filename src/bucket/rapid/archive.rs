@@ -27,7 +27,7 @@ struct Pending {
     version: u64,
     since: Option<Instant>,
     cache_start: u64,
-    cache: Vec<Payload>,
+    cache: Vec<Frame>,
     cache_bytes: usize,
     closed: bool,
 }
@@ -66,7 +66,7 @@ impl Archiver {
         }
     }
 
-    pub fn append(&self, frame: Payload, version: u64) {
+    pub fn append(&self, frame: Frame, version: u64) {
         let mut pending = self.pending.lock().unwrap();
         if pending.cache_start + pending.cache_bytes as u64 == pending.end
             && pending.cache_bytes < self.batch_bytes

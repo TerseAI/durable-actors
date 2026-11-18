@@ -19,7 +19,7 @@ mod segment;
 mod standard;
 mod writer;
 
-use frame::Record;
+use frame::{Frame, Record};
 use prepared::Prepared;
 use segment::Segment;
 use tokio_util::task::AbortOnDropHandle;
@@ -39,7 +39,7 @@ struct Replica {
 
 #[async_trait]
 trait LogWriter: Send {
-    async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64>;
+    async fn append_and_flush(&mut self, header: Bytes, state: Payload) -> Result<u64>;
 }
 
 #[async_trait]

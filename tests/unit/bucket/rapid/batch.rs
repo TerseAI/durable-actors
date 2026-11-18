@@ -785,12 +785,13 @@ async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Resu
         serde_json::from_slice(&f.archive.get(&key).await?.unwrap().bytes.to_bytes()?)?;
     let mut snapshot = StateSnapshot::decode(&original)?;
     snapshot.completion.as_mut().unwrap().result = serde_json::json!(9).into();
-    let frame = Record {
+    let mut frame = Vec::new();
+    Record {
         version: 1,
         state: snapshot.encode()?,
     }
-    .encode()?;
-    store.storage.put_batch(&manifest, 0, frame).await?;
+    .write_to(&mut frame)?;
+    store.storage.put_batch(&manifest, 0, frame.into()).await?;
     assert!(f.store()?.recover(&f.stream.prefix).await.is_err());
     assert!(
         f.zones

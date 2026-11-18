@@ -850,12 +850,12 @@ async fn recovery_ignores_incomplete_tail_but_rejects_corrupt_complete_records()
     let mut snapshot = StateSnapshot::decode(&state(2, 1)?)?;
     snapshot.completion.as_mut().unwrap().result =
         serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)}).into();
-    let interrupted = Record {
+    let mut interrupted = Vec::new();
+    Record {
         version: 2,
         state: snapshot.encode()?,
     }
-    .encode()?
-    .to_bytes()?;
+    .write_to(&mut interrupted)?;
     f.zones[0]
         .objects
         .lock()
@@ -1126,7 +1126,8 @@ struct MemoryWriter {
 }
 #[async_trait]
 impl LogWriter for MemoryWriter {
-    async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64> {
+    async fn append_and_flush(&mut self, header: Bytes, state: Payload) -> Result<u64> {
+        let bytes = [header, state.to_bytes()?].concat();
         ensure!(!self.offline.load(Ordering::SeqCst), "zone offline");
         while self.stalled.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_millis(1)).await;
