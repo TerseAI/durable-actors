@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures_util::{TryStreamExt, stream::BoxStream};
 use reqwest::header::AUTHORIZATION;
 use tokio::io::AsyncWriteExt;
@@ -113,16 +113,14 @@ impl NodeCacheClient {
     }
 
     pub(crate) async fn snapshot(&self, digest: &str) -> Result<Option<Bytes>> {
-        let Some(chunks) = self.read(&format!("snapshot/{digest}")).await? else {
+        let Some(mut chunks) = self.read(&format!("snapshot/{digest}")).await? else {
             return Ok(None);
         };
-        let bytes = chunks
-            .try_fold(BytesMut::new(), |mut bytes, chunk| async move {
-                bytes.extend_from_slice(&chunk);
-                Ok(bytes)
-            })
-            .await?;
-        Ok(Some(bytes.freeze()))
+        let mut download = crate::payload::Download::new();
+        while let Some(chunk) = chunks.try_next().await? {
+            download = download.append(chunk).await?;
+        }
+        Ok(Some(download.finish().await?))
     }
 
     pub(crate) async fn store_snapshot(&self, digest: &str, bytes: Bytes) -> Result<()> {
