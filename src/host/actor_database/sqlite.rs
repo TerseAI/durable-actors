@@ -65,6 +65,13 @@ impl SqliteDatabase {
         })
         .await?
     }
+
+    pub(crate) fn in_transaction(&self) -> bool {
+        !self
+            .engine
+            .lock()
+            .is_ok_and(|engine| engine.connection.is_autocommit())
+    }
 }
 
 struct Engine {
