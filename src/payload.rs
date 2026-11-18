@@ -111,8 +111,12 @@ impl Payload {
     }
 
     pub fn reader(&self) -> io::BufReader<PayloadReader> {
+        self.reader_with_capacity(BUFFER_BYTES)
+    }
+
+    pub fn reader_with_capacity(&self, capacity: usize) -> io::BufReader<PayloadReader> {
         io::BufReader::with_capacity(
-            BUFFER_BYTES,
+            capacity,
             PayloadReader {
                 payload: self.clone(),
                 position: 0,
