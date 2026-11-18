@@ -1666,8 +1666,7 @@ impl ActorStorage for FakeAuthority {
         )?;
         Ok(crate::bucket::recovery::resolve(
             &mut FakeHistory(&self.history),
-            &object,
-            bytes.clone(),
+            crate::storage::VerifiedSnapshot::named(object, bytes.clone())?,
             None,
         )
         .await?

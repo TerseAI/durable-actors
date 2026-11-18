@@ -1,7 +1,7 @@
 use super::SnapshotStore;
 use crate::{
     state_log::{SqliteSnapshot, StateSnapshot},
-    storage::SnapshotRef,
+    storage::{SnapshotRef, VerifiedSnapshot},
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -37,14 +37,15 @@ pub(crate) struct ResolvedSqlite {
 
 pub(crate) async fn resolve(
     history: &mut dyn SnapshotHistory,
-    object: &str,
-    bytes: Bytes,
+    snapshot: VerifiedSnapshot,
     prefetched: Option<PrefetchedCheckpoint>,
 ) -> Result<ResolvedSqlite> {
-    let mut current = StateSnapshot::decode(&bytes)?;
-    current.validate_object(object)?;
+    let VerifiedSnapshot {
+        mut reference,
+        snapshot: mut current,
+        ..
+    } = snapshot;
     let txid = current.sqlite.txid;
-    let mut reference = SnapshotRef::new(object.into(), &current, &bytes);
     let mut prefetched = prefetched.filter(|checkpoint| checkpoint.source == reference);
     let mut segments = Vec::new();
     let mut checkpoint = false;
@@ -73,21 +74,16 @@ pub(crate) async fn resolve(
             .read(&parent.object)
             .await
             .with_context(|| format!("read SQLite dependency {}", parent.object))?;
-        parent
-            .verify(&bytes)
+        VerifiedSnapshot {
+            reference,
+            snapshot: current,
+            ..
+        } = VerifiedSnapshot::matching(parent.clone(), bytes)
             .with_context(|| format!("verify SQLite dependency {}", parent.object))?;
-        current = StateSnapshot::decode(&bytes)?;
-        current.validate_object(&parent.object)?;
-        ensure!(
-            current.state_version == parent.state_version
-                && current.request_id == parent.request_id,
-            "SQLite dependency identity mismatch"
-        );
         ensure!(
             current.sqlite.txid.checked_add(1) == Some(first),
             "SQLite dependency transaction gap"
         );
-        reference = parent;
         parents += 1;
     }
     let size = |files: &Vec<crate::litestream::storage::LtxFile>| {

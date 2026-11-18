@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::actor::ActorKey;
 
 mod stream;
-pub use stream::{SnapshotRef, StateStream};
+pub use stream::{SnapshotRef, StateStream, VerifiedSnapshot};
+
+pub(crate) use stream::snapshot_position;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -15,7 +15,10 @@ use crate::{
     host::HostId,
     host_leases::HostLease,
     placement::{ObjectPlacement, ObjectPlacementStore},
-    storage::{SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name},
+    storage::{
+        SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name,
+        snapshot_position,
+    },
 };
 
 use super::{Bucket, replace};
@@ -480,13 +483,6 @@ fn advance(current: &mut Option<SnapshotRef>, candidate: Option<SnapshotRef>) ->
         }
     }
     Ok(())
-}
-
-fn snapshot_position(object: &str) -> Option<(u64, u64)> {
-    let mut parts = object.rsplit('/');
-    let version = parts.next()?.strip_suffix(".json")?.parse().ok()?;
-    let epoch = u64::from_str_radix(parts.next()?, 16).ok()?;
-    Some((epoch, version))
 }
 
 fn decode_snapshot(object: String, bytes: bytes::Bytes) -> Result<LoadedSnapshot> {

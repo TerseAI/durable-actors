@@ -25,7 +25,12 @@ impl LogStorage {
             reads: 0,
             probes: 0,
         };
-        let resolved = resolve(&mut history, object, bytes, checkpoint).await?;
+        let resolved = resolve(
+            &mut history,
+            crate::storage::VerifiedSnapshot::named(object.into(), bytes)?,
+            checkpoint,
+        )
+        .await?;
         tracing::info!(
             event = "sqlite_history_restored",
             object,

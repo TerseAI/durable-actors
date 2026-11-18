@@ -161,8 +161,7 @@ pub(crate) trait SnapshotStore: Send + Sync {
     ) -> Result<crate::state_log::SqliteSnapshot> {
         Ok(recovery::resolve(
             &mut recovery::StoredHistory(self),
-            object,
-            bytes,
+            crate::storage::VerifiedSnapshot::named(object.into(), bytes)?,
             checkpoint,
         )
         .await?
