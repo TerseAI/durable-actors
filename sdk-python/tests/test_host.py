@@ -290,6 +290,50 @@ async def test_commands_during_deferred_replay_share_one_fresh_worker():
     await supervisor.stop_worker()
 
 
+async def test_deferred_command_whose_worker_fails_to_start_is_answered():
+    attempts = []
+    workers = []
+
+    async def create_worker(entrypoint, environment):
+        attempts.append(entrypoint)
+        if len(attempts) == 1:
+            raise OSError("worker failed to start")
+        worker = StubWorker()
+        workers.append(worker)
+        return worker
+
+    writer = RecordingWriter()
+    supervisor = Supervisor(asyncio.StreamReader(), writer, create_worker)
+    read = {"type": "invoke", "request_id": "r", "method": "read", "args": []}
+    supervisor.evicting = 1
+    supervisor.deferred.append({"type": "command", "message_id": 2, "command": read})
+    supervisor.deferred.append({"type": "command", "message_id": 3, "command": read})
+
+    await supervisor.finish_eviction(1)
+
+    replies = {message["message_id"]: message["reply"] for message in writer.replies()}
+    assert replies[1] == {"type": "evicted"}
+    assert replies[2] == {
+        "type": "failed",
+        "code": "actor_worker_failed",
+        "message": "worker failed to start",
+    }
+    assert not supervisor.deferred and not supervisor.replaying
+    assert [message.get("message_id") for message in workers[0].sent][1:] == [3]
+    await supervisor.stop_worker()
+
+
+class RecordingWriter(StubWriter):
+    def __init__(self):
+        self.lines = []
+
+    def write(self, data):
+        self.lines.append(json.loads(data.split(b"\n", 1)[0]))
+
+    def replies(self):
+        return [line for line in self.lines if line["type"] == "reply"]
+
+
 @pytest.mark.parametrize("action", ["evict", "kill_host"])
 async def test_worker_stops_blocked_handlers_on_eviction_and_host_death(tmp_path, action):
     project = tmp_path / "project"

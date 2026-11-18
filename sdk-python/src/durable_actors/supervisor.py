@@ -128,13 +128,14 @@ class Supervisor(Channel):
         else:
             if identifier in self.pending:
                 raise ValueError("executor message ID is duplicated")
+            # Registered before a worker starts, so a failed start still answers it.
+            self.pending[identifier] = Pending()
             if self.worker is None:
                 self.worker = await self.create_worker(self.entrypoint, self.environment)
                 if self.worker.actor_names != self.actor_names:
                     raise ValueError("worker actor definitions changed")
                 self.offset = self.sequence
                 await self.start_pump()
-            self.pending[identifier] = Pending()
             await self.worker.send(message)
 
     async def acknowledge(self, message: Document) -> None:
@@ -233,7 +234,13 @@ class Supervisor(Channel):
         self.replaying = True
         try:
             while self.deferred and self.evicting is None:
-                await self.dispatch(self.deferred.pop(0))
+                try:
+                    await self.dispatch(self.deferred.pop(0))
+                except Exception as error:
+                    # Nothing awaits this task, so a failed command is answered here and
+                    # the rest still replay rather than waiting on replies that never come.
+                    await self.stop_worker()
+                    await self.fail_pending("actor_worker_failed", str(error))
         finally:
             self.replaying = False
 
