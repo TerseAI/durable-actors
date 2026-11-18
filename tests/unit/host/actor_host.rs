@@ -1626,15 +1626,13 @@ impl ActorStorage for FakeAuthority {
     }
 
     async fn acquire_actor(&self) -> Result<ActorActivation> {
+        let state = self.activation_state.clone().map(verified).transpose()?;
         Ok(ActorActivation {
             owner_epoch: 7,
-            state_version: self
-                .activation_state
+            state_version: state
                 .as_ref()
-                .map(|bytes| StateSnapshot::decode(bytes).map(|s| s.state_version))
-                .transpose()?
-                .unwrap_or(0),
-            state: self.activation_state.clone().map(Into::into),
+                .map_or(0, |snapshot| snapshot.reference.state_version),
+            state,
         })
     }
 
@@ -1642,31 +1640,35 @@ impl ActorStorage for FakeAuthority {
         anyhow::ensure!(!self.fenced.load(Ordering::SeqCst), "host lease expired");
         Ok(())
     }
-    async fn load_actor_state(&self, _: u64) -> Result<(u64, bytes::Bytes)> {
+    async fn load_actor_state(
+        &self,
+        _: u64,
+    ) -> Result<(u64, Option<crate::storage::VerifiedSnapshot>)> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         if let Some(bytes) = self
             .persisted
             .as_ref()
             .and_then(|state| state.writes.lock().unwrap().last().cloned())
         {
-            return Ok((StateSnapshot::decode(&bytes)?.state_version, bytes.into()));
+            let snapshot = verified(bytes)?;
+            return Ok((snapshot.reference.state_version, Some(snapshot)));
         }
-        Ok(self.initial_state.clone().unwrap_or_default())
+        match self.initial_state.clone() {
+            Some((version, bytes)) => Ok((version, Some(verified(bytes)?))),
+            None => Ok((0, None)),
+        }
     }
     fn take_saved_database(&self, _digest: &str) -> Option<tempfile::NamedTempFile> {
         self.saved_database.lock().unwrap().take()
     }
-    async fn read_sqlite(&self, bytes: &bytes::Bytes) -> Result<crate::state_log::SqliteSnapshot> {
+    async fn read_sqlite(
+        &self,
+        snapshot: &crate::storage::VerifiedSnapshot,
+    ) -> Result<crate::state_log::SqliteSnapshot> {
         self.sqlite_reads.fetch_add(1, Ordering::SeqCst);
-        let snapshot = StateSnapshot::decode(bytes)?;
-        let object = crate::storage::snapshot_object_name(
-            &counter(),
-            snapshot.state_version,
-            &format!("{:032x}", snapshot.owner_epoch),
-        )?;
         Ok(crate::bucket::recovery::resolve(
             &mut FakeHistory(&self.history),
-            crate::storage::VerifiedSnapshot::named(object, bytes.clone())?,
+            snapshot.clone(),
             None,
         )
         .await?
@@ -1692,6 +1694,16 @@ impl ActorStorage for FakeAuthority {
         }
         Ok(ticket)
     }
+}
+
+fn verified(bytes: bytes::Bytes) -> Result<crate::storage::VerifiedSnapshot> {
+    let snapshot = StateSnapshot::decode(&bytes)?;
+    let object = crate::storage::snapshot_object_name(
+        &counter(),
+        snapshot.state_version,
+        &format!("{:032x}", snapshot.owner_epoch),
+    )?;
+    crate::storage::VerifiedSnapshot::named(object, bytes)
 }
 
 struct FakeHistory<'a>(&'a std::collections::HashMap<String, bytes::Bytes>);

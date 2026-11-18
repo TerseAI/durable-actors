@@ -91,10 +91,6 @@ impl SnapshotRef {
         }
     }
 
-    pub(crate) fn digest_of(bytes: &[u8]) -> String {
-        checksum(bytes)
-    }
-
     pub fn verify(&self, bytes: &[u8]) -> Result<()> {
         ensure!(checksum(bytes) == self.digest, "snapshot checksum mismatch");
         Ok(())

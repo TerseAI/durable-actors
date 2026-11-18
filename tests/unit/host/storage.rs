@@ -149,7 +149,7 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
         .await?;
     let (version, loaded) = storage.load_actor_state(1).await?;
     assert_eq!(version, 1);
-    assert_eq!(loaded.as_ref(), snapshot.as_ref());
+    assert_eq!(loaded.unwrap().bytes.as_ref(), snapshot.as_ref());
     assert!(storage.prepare_state_write(2, 1).await.is_err());
     storage.unregister(&host, "session").await?;
     assert!(storage.ensure_authority().is_err());
