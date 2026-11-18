@@ -342,19 +342,18 @@ impl DatabaseSession {
         self.activation = None;
     }
 
+    /// A due checkpoint waits for an open transaction to end, then runs before the next call.
     pub(super) fn checkpoint_due(&self) -> Option<tokio::time::Instant> {
-        self.cached_state.as_ref()?.checkpoint.due()
+        let cached = self.cached_state.as_ref()?;
+        let due = cached.checkpoint.due()?;
+        (!cached.database.in_transaction()).then_some(due)
     }
 
-    /// Skipped while the actor holds a transaction open, whose commit schedules the next one.
     pub(super) async fn checkpoint(&mut self) {
         let Some(cached) = &mut self.cached_state else {
             return;
         };
         cached.checkpoint = IdleCheckpoint::default();
-        if cached.database.in_transaction() {
-            return;
-        }
         let started = Instant::now();
         let result = self.replication.checkpoint(&cached.sqlite.path()).await;
         let duration_ms = elapsed_ms(started);
