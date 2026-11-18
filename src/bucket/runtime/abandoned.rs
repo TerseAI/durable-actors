@@ -77,7 +77,7 @@ impl RuntimeStorageReader {
             .snapshots
             .recover(&record.stream()?.prefix)
             .await?
-            .map(|(object, bytes)| decode_snapshot(object, bytes))
+            .map(|(object, bytes)| VerifiedSnapshot::named(object, bytes))
             .transpose()?;
         advance(
             &mut record.base,

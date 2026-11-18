@@ -322,7 +322,7 @@ impl ActorStorage for HostStorage {
         Ok(ActorActivation {
             owner_epoch: loaded.placement.owner_epoch,
             state_version: loaded.placement.state_version,
-            state: loaded.state,
+            state: loaded.state.map(|snapshot| snapshot.bytes),
         })
     }
 
@@ -341,7 +341,10 @@ impl ActorStorage for HostStorage {
         self.ensure_authority()?;
         Ok((
             loaded.placement.state_version,
-            loaded.state.unwrap_or_default(),
+            loaded
+                .state
+                .map(|snapshot| snapshot.bytes)
+                .unwrap_or_default(),
         ))
     }
 
@@ -445,7 +448,7 @@ impl HostStorage {
         *self.activation.lock().unwrap() = Some(ActorActivation {
             owner_epoch: loaded.placement.owner_epoch,
             state_version: loaded.placement.state_version,
-            state: loaded.state,
+            state: loaded.state.map(|snapshot| snapshot.bytes),
         });
         Ok(loaded.placement.lease)
     }

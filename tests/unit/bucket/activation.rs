@@ -140,7 +140,7 @@ async fn ownership_and_state_can_use_independent_backends() -> Result<()> {
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
-    assert_eq!(resumed.state.unwrap().as_ref(), bytes);
+    assert_eq!(resumed.state.unwrap().bytes.as_ref(), bytes);
     Ok(())
 }
 
@@ -694,7 +694,7 @@ async fn stale_owner_hint_rereads_and_preserves_the_current_owner() -> Result<()
         } else {
             let loaded = loaded?;
             assert_eq!(loaded.placement.owner_epoch, 3);
-            assert_eq!(loaded.state.unwrap().as_ref(), bytes);
+            assert_eq!(loaded.state.unwrap().bytes.as_ref(), bytes);
         }
     }
     Ok(())
@@ -763,7 +763,13 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                 .register_activation(&f.actor, &next, "us-east", false, hint.as_ref())
                 .await?;
             assert_eq!(loaded.placement.owner_epoch, epoch);
-            assert_eq!(loaded.state.as_deref(), written.then_some(bytes.as_ref()));
+            assert_eq!(
+                loaded
+                    .state
+                    .as_ref()
+                    .map(|snapshot| snapshot.bytes.as_ref()),
+                written.then_some(bytes.as_ref())
+            );
             assert_eq!(f.bucket.lists.load(Ordering::SeqCst), 0);
             assert_eq!(f.bucket.reads.load(Ordering::SeqCst), u64::from(written));
             let checkpoint = f
@@ -839,7 +845,13 @@ async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
         .await?
         .context("durable base missing")?;
     assert_eq!(resumed.placement.owner_epoch, 2);
-    assert_eq!(resumed.state.as_deref(), Some(stored.bytes.as_ref()));
+    assert_eq!(
+        resumed
+            .state
+            .as_ref()
+            .map(|snapshot| snapshot.bytes.as_ref()),
+        Some(stored.bytes.as_ref())
+    );
     Ok(())
 }
 
@@ -903,7 +915,13 @@ async fn crash_recovery_persists_the_selected_snapshot_before_claiming_the_next_
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
-    assert_eq!(resumed.state.as_deref(), Some(bytes.as_ref()));
+    assert_eq!(
+        resumed
+            .state
+            .as_ref()
+            .map(|snapshot| snapshot.bytes.as_ref()),
+        Some(bytes.as_ref())
+    );
     Ok(())
 }
 

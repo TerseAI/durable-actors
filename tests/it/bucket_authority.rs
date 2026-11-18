@@ -242,7 +242,7 @@ async fn same_named_actors_in_different_projects_recover_independent_state() -> 
             )
             .await?;
         assert_eq!(restored.placement.state_version, 1);
-        assert_eq!(restored.state.unwrap().as_ref(), bytes);
+        assert_eq!(restored.state.unwrap().bytes.as_ref(), bytes);
     }
     Ok(())
 }

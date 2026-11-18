@@ -5,7 +5,7 @@ use crate::host_leases::HostLeaseRequest;
 
 #[derive(Default)]
 struct ActivationRecovery {
-    snapshot: Option<LoadedSnapshot>,
+    snapshot: Option<VerifiedSnapshot>,
     checkpoint: Option<super::super::recovery::PrefetchedCheckpoint>,
     checkpoint_ms: Option<f64>,
     session_ms: Option<f64>,
@@ -318,7 +318,7 @@ impl RuntimeStorage {
             .snapshots
             .recover(&record.stream()?.prefix)
             .await?
-            .map(|(key, bytes)| decode_snapshot(key, bytes))
+            .map(|(key, bytes)| VerifiedSnapshot::named(key, bytes))
             .transpose()?;
         let snapshot = self.load_latest(record, recovered).await?;
         Ok(ActivationRecovery {
@@ -339,10 +339,10 @@ impl RuntimeStorage {
         let (mut recovery, (checkpoint, checkpoint_ms)) = tokio::select! {
             result = &mut snapshot => {
                 let recovery = result?;
-                let needs_checkpoint = match &recovery.snapshot {
-                    Some(snapshot) => crate::state_log::StateSnapshot::decode(&snapshot.bytes)?.sqlite.parent.is_some(),
-                    None => false,
-                };
+                let needs_checkpoint = recovery
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.snapshot.sqlite.parent.is_some());
                 if !needs_checkpoint {
                     return Ok(recovery);
                 }
@@ -366,10 +366,7 @@ impl RuntimeStorage {
             .as_ref()
             .zip(cached)
             .filter(|(base, bytes)| base.verify(bytes).is_ok())
-            .map(|(base, bytes)| LoadedSnapshot {
-                reference: base.clone(),
-                bytes: bytes.clone(),
-            });
+            .and_then(|(base, bytes)| VerifiedSnapshot::matching(base.clone(), bytes.clone()).ok());
         let snapshot = self.load_latest(record, cached).await?;
         Ok(ActivationRecovery {
             snapshot,

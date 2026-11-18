@@ -428,7 +428,10 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
         .register_activation(&actor, &request("second"), "us-west", false, None)
         .await?;
     assert_eq!(recovered.placement.owner_epoch, 2);
-    assert_eq!(recovered.state, Some(state(2, 1)?));
+    assert_eq!(
+        recovered.state.map(|snapshot| snapshot.bytes),
+        Some(state(2, 1)?)
+    );
     assert!(
         first
             .write_snapshot(
@@ -465,7 +468,10 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
         .register_activation(&actor, &request("third"), "us-west", false, None)
         .await?;
     assert_eq!(third.placement.owner_epoch, 3);
-    assert_eq!(third.state, Some(state(3, 2)?));
+    assert_eq!(
+        third.state.map(|snapshot| snapshot.bytes),
+        Some(state(3, 2)?)
+    );
     Ok(())
 }
 
@@ -551,7 +557,10 @@ async fn control_plane_archives_and_seals_an_abandoned_activation() -> Result<()
         .register_activation(&actor, &request("next"), "us-west", false, None)
         .await?;
     assert_eq!(next.placement.owner_epoch, 2);
-    assert_eq!(next.state, Some(state(2, 1)?));
+    assert_eq!(
+        next.state.map(|snapshot| snapshot.bytes),
+        Some(state(2, 1)?)
+    );
     Ok(())
 }
 

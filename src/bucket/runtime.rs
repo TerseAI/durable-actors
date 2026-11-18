@@ -92,7 +92,7 @@ impl OwnershipHint {
 
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
-    pub state: Option<Bytes>,
+    pub state: Option<VerifiedSnapshot>,
     pub(crate) checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
 }
 
@@ -105,11 +105,6 @@ struct UploadedSnapshots {
 
 pub(crate) struct SessionCheckpoint {
     snapshot: Option<SnapshotRef>,
-}
-
-struct LoadedSnapshot {
-    reference: SnapshotRef,
-    bytes: Bytes,
 }
 
 impl Ownership {
@@ -327,7 +322,7 @@ impl RuntimeStorage {
         Ok(self.remember(record, snapshot))
     }
 
-    fn remember(&self, record: Ownership, snapshot: Option<LoadedSnapshot>) -> LoadedActor {
+    fn remember(&self, record: Ownership, snapshot: Option<VerifiedSnapshot>) -> LoadedActor {
         let mut placement = record.placement();
         apply_snapshot(&mut placement, snapshot.as_ref().map(|s| &s.reference));
         if let Some(snapshot) = &snapshot {
@@ -344,7 +339,7 @@ impl RuntimeStorage {
             .insert(record.actor.storage_key().as_str().into(), record);
         LoadedActor {
             placement,
-            state: snapshot.map(|s| s.bytes),
+            state: snapshot,
             checkpoint: None,
         }
     }
@@ -364,13 +359,13 @@ impl RuntimeStorageReader {
     async fn latest(
         &self,
         record: &Ownership,
-        known: Option<LoadedSnapshot>,
-    ) -> Result<Option<LoadedSnapshot>> {
+        known: Option<VerifiedSnapshot>,
+    ) -> Result<Option<VerifiedSnapshot>> {
         let latest = self
             .snapshots
             .latest(&record.stream()?.prefix)
             .await?
-            .map(|(key, bytes)| decode_snapshot(key, bytes))
+            .map(|(key, bytes)| VerifiedSnapshot::named(key, bytes))
             .transpose()?;
         self.load_latest(record, latest.or(known)).await
     }
@@ -378,8 +373,8 @@ impl RuntimeStorageReader {
     async fn load_latest(
         &self,
         record: &Ownership,
-        mut loaded: Option<LoadedSnapshot>,
-    ) -> Result<Option<LoadedSnapshot>> {
+        mut loaded: Option<VerifiedSnapshot>,
+    ) -> Result<Option<VerifiedSnapshot>> {
         let mut candidate = record.base.clone();
         advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
         if let Some(snapshot) = candidate
@@ -389,11 +384,7 @@ impl RuntimeStorageReader {
                 .read_persisted(&snapshot.object)
                 .await?
                 .context("acknowledged snapshot is unavailable")?;
-            snapshot.verify(&bytes)?;
-            loaded = Some(LoadedSnapshot {
-                reference: snapshot,
-                bytes,
-            });
+            loaded = Some(VerifiedSnapshot::matching(snapshot, bytes)?);
         }
         Ok(loaded)
     }
@@ -481,18 +472,6 @@ fn advance(current: &mut Option<SnapshotRef>, candidate: Option<SnapshotRef>) ->
         }
     }
     Ok(())
-}
-
-fn decode_snapshot(object: String, bytes: bytes::Bytes) -> Result<LoadedSnapshot> {
-    let snapshot = crate::state_log::StateSnapshot::decode(&bytes)?;
-    ensure!(
-        snapshot_position(&object) == Some((snapshot.owner_epoch, snapshot.state_version)),
-        "snapshot identity does not match its object"
-    );
-    Ok(LoadedSnapshot {
-        reference: SnapshotRef::new(object, &snapshot, &bytes),
-        bytes: bytes.into(),
-    })
 }
 
 #[async_trait]
