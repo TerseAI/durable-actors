@@ -16,8 +16,8 @@ use crate::{
     host_leases::HostLease,
     placement::{ObjectPlacement, ObjectPlacementStore},
     storage::{
-        SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name,
-        snapshot_position,
+        SnapshotReader, SnapshotRef, StateStream, VerifiedSnapshot, WritePlan,
+        snapshot_object_name, snapshot_position,
     },
 };
 
@@ -172,20 +172,18 @@ impl std::ops::Deref for RuntimeStorage {
 impl RuntimeStorageReader {
     pub(crate) async fn read_sqlite(
         &self,
-        object: &str,
-        bytes: Bytes,
+        snapshot: VerifiedSnapshot,
     ) -> Result<crate::state_log::SqliteSnapshot> {
-        self.read_sqlite_prefetched(object, bytes, None).await
+        self.read_sqlite_prefetched(snapshot, None).await
     }
 
     pub(crate) async fn read_sqlite_prefetched(
         &self,
-        object: &str,
-        bytes: Bytes,
+        snapshot: VerifiedSnapshot,
         checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
     ) -> Result<crate::state_log::SqliteSnapshot> {
         self.snapshots
-            .restore_prefetched(object, bytes, checkpoint)
+            .restore_prefetched(snapshot, checkpoint)
             .await
     }
 

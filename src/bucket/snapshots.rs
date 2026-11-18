@@ -155,17 +155,14 @@ pub(crate) trait SnapshotStore: Send + Sync {
     }
     async fn restore_prefetched(
         &self,
-        object: &str,
-        bytes: Bytes,
+        snapshot: crate::storage::VerifiedSnapshot,
         checkpoint: Option<recovery::PrefetchedCheckpoint>,
     ) -> Result<crate::state_log::SqliteSnapshot> {
-        Ok(recovery::resolve(
-            &mut recovery::StoredHistory(self),
-            crate::storage::VerifiedSnapshot::named(object.into(), bytes)?,
-            checkpoint,
+        Ok(
+            recovery::resolve(&mut recovery::StoredHistory(self), snapshot, checkpoint)
+                .await?
+                .sqlite,
         )
-        .await?
-        .sqlite)
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>>;
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>>;

@@ -121,7 +121,9 @@ impl RuntimeStorageReader {
         };
         decode_snapshot(key.into(), bytes.clone())?;
         let snapshot = StateSnapshot::decode(&bytes)?;
-        let sqlite = self.read_sqlite(key, bytes).await?;
+        let sqlite = self
+            .read_sqlite(VerifiedSnapshot::named(key.into(), bytes)?)
+            .await?;
         let fields = crate::litestream::storage::restored_fields(
             self.restore.as_ref(),
             &sqlite.files,

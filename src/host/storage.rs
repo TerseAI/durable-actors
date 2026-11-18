@@ -355,7 +355,10 @@ impl ActorStorage for HostStorage {
         )?;
         let checkpoint = self.checkpoint.lock().unwrap().take();
         self.runtime
-            .read_sqlite_prefetched(&object, bytes.clone(), checkpoint)
+            .read_sqlite_prefetched(
+                crate::storage::VerifiedSnapshot::named(object, bytes.clone())?,
+                checkpoint,
+            )
             .await
     }
 

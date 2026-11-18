@@ -1,6 +1,6 @@
 use super::SnapshotStore;
 use crate::{
-    state_log::{SqliteSnapshot, StateSnapshot},
+    state_log::SqliteSnapshot,
     storage::{SnapshotRef, VerifiedSnapshot},
 };
 use anyhow::{Context, Result, ensure};

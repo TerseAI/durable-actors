@@ -174,17 +174,13 @@ impl SnapshotStore for RapidSnapshots {
     }
     async fn restore_prefetched(
         &self,
-        object: &str,
-        bytes: Bytes,
+        snapshot: crate::storage::VerifiedSnapshot,
         checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
     ) -> Result<crate::state_log::SqliteSnapshot> {
-        let restored = self
-            .storage
-            .restore(object, bytes.clone(), checkpoint)
-            .await?;
+        let restored = self.storage.restore(snapshot.clone(), checkpoint).await?;
         if let Some(session) = self.session.lock().await.as_mut() {
             session
-                .restored(self.storage.clone(), object, bytes, &restored)
+                .restored(self.storage.clone(), &snapshot, &restored)
                 .await?;
         }
         Ok(restored.sqlite)
