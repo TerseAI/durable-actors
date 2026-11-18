@@ -1,16 +1,16 @@
 use super::SnapshotStore;
 use crate::{
+    payload::Payload,
     state_log::SqliteSnapshot,
     storage::{SnapshotRef, VerifiedSnapshot},
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 pub(crate) struct PrefetchedCheckpoint {
     pub source: SnapshotRef,
-    pub bytes: Option<Bytes>,
+    pub bytes: Option<Payload>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -21,8 +21,8 @@ pub(crate) struct Checkpoint {
 
 #[async_trait]
 pub(crate) trait SnapshotHistory: Send {
-    async fn read(&mut self, object: &str) -> Result<Bytes>;
-    async fn checkpoint(&mut self, object: &str) -> Result<Option<Bytes>>;
+    async fn read(&mut self, object: &str) -> Result<Payload>;
+    async fn checkpoint(&mut self, object: &str) -> Result<Option<Payload>>;
 }
 
 pub(crate) struct ResolvedSqlite {
@@ -106,21 +106,21 @@ pub(crate) async fn resolve(
 }
 
 impl Checkpoint {
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut header = self.clone();
         let files = std::mem::take(&mut header.sqlite.files);
         crate::state_log::binary::encode(&header, &files)
     }
 
     /// Reads binary checkpoints and the JSON ones written before them.
-    pub fn decode(bytes: &Bytes, source: &SnapshotRef, txid: u64) -> Result<SqliteSnapshot> {
-        let checkpoint: Self = if crate::state_log::binary::is_binary(bytes) {
+    pub fn decode(bytes: &Payload, source: &SnapshotRef, txid: u64) -> Result<SqliteSnapshot> {
+        let checkpoint: Self = if crate::state_log::binary::is_binary(bytes)? {
             let (mut checkpoint, files): (Self, _) = crate::state_log::binary::decode(bytes)?;
             ensure!(checkpoint.sqlite.files.is_empty(), "duplicate LTX files");
             checkpoint.sqlite.files = files;
             checkpoint
         } else {
-            serde_json::from_slice(bytes)?
+            serde_json::from_reader(bytes.reader())?
         };
         ensure!(&checkpoint.source == source, "checkpoint source mismatch");
         checkpoint.sqlite.validate(source.state_version)?;
@@ -136,13 +136,13 @@ pub(super) struct StoredHistory<'a, T: ?Sized>(pub &'a T);
 
 #[async_trait]
 impl<T: SnapshotStore + ?Sized> SnapshotHistory for StoredHistory<'_, T> {
-    async fn read(&mut self, object: &str) -> Result<Bytes> {
+    async fn read(&mut self, object: &str) -> Result<Payload> {
         self.0
             .get(object)
             .await?
             .context("SQLite dependency missing")
     }
-    async fn checkpoint(&mut self, object: &str) -> Result<Option<Bytes>> {
+    async fn checkpoint(&mut self, object: &str) -> Result<Option<Payload>> {
         self.0.get(&format!("{object}.checkpoint")).await
     }
 }

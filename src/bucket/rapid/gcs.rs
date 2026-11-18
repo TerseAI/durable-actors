@@ -113,7 +113,7 @@ impl LogZone for GcsZone {
         Ok((replica, Box::new(GcsWriter(writer))))
     }
 
-    async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes> {
+    async fn read(&self, replica: &Replica, fence: bool) -> Result<Payload> {
         let _transfer = self.clients.transfers.acquire().await?;
         let mut writer = if fence {
             Some(
@@ -132,7 +132,7 @@ impl LogZone for GcsZone {
             None
         };
         if persisted == Some(0) {
-            return Ok(Bytes::new());
+            return Ok(Payload::default());
         }
         let descriptor = self
             .clients
@@ -144,7 +144,7 @@ impl LogZone for GcsZone {
         let size = descriptor.object().size;
         ensure!(size >= 0, "invalid log segment size");
         if size == 0 {
-            return Ok(Bytes::new());
+            return Ok(Payload::default());
         }
         let mut reader = descriptor
             .read_range(ReadRange::segment(0, size as u64))
@@ -165,7 +165,7 @@ impl LogZone for GcsZone {
         download.finish().await
     }
 
-    async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
+    async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Payload> {
         let _transfer = self.clients.transfers.acquire().await?;
         let descriptor = self
             .clients

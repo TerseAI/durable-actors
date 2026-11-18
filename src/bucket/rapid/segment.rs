@@ -88,7 +88,7 @@ impl Segment {
         }))
     }
 
-    pub async fn append(&mut self, version: u64, state: Bytes) -> Result<Bytes> {
+    pub async fn append(&mut self, version: u64, state: Payload) -> Result<Payload> {
         ensure!(
             self.healthy,
             "uncertain log append requires activation recovery"
@@ -98,13 +98,14 @@ impl Segment {
             .offset
             .checked_add(frame.len() as u64)
             .context("log offset overflow")?;
+        let bytes = frame.to_bytes()?;
         // An interrupted flush may have persisted bytes; this pair must never be reused.
         self.healthy = false;
         let flushed = bounded(async {
             Ok(futures_util::future::join_all(
                 self.writers
                     .iter_mut()
-                    .map(|writer| writer.append_and_flush(frame.clone())),
+                    .map(|writer| writer.append_and_flush(bytes.clone())),
             )
             .await)
         })

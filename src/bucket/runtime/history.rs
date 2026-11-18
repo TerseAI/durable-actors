@@ -144,7 +144,7 @@ impl RuntimeStorageReader {
     async fn history_record(&self, snapshot_key: &str) -> Result<Option<StateRecord>> {
         let key = format!("{snapshot_key}.metadata");
         if let Some(cached) = self.authority.get(&key).await? {
-            return Ok(Some(serde_json::from_slice(&cached.bytes)?));
+            return Ok(Some(serde_json::from_reader(cached.bytes.reader())?));
         }
         let Some(snapshot) = self.read_commit(snapshot_key).await? else {
             return Ok(None);

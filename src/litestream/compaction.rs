@@ -31,7 +31,7 @@ fn compact(files: Vec<LtxFile>, cancel: CancellationToken) -> Result<LtxFile> {
         .into_iter()
         .map(|file| {
             Ok(CompactionInput {
-                reader: std::io::Cursor::new(file.data),
+                reader: file.data.reader(),
                 cancel: cancel.clone(),
                 deadline,
             })
@@ -52,7 +52,7 @@ fn compact(files: Vec<LtxFile>, cancel: CancellationToken) -> Result<LtxFile> {
 }
 
 struct CompactionInput {
-    reader: std::io::Cursor<bytes::Bytes>,
+    reader: io::BufReader<crate::payload::PayloadReader>,
     cancel: CancellationToken,
     deadline: Instant,
 }

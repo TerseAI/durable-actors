@@ -76,22 +76,21 @@ async fn single_zone_writes_recover_after_an_interrupted_flush() -> Result<()> {
     Ok(())
 }
 
-fn state(version: u64, epoch: u64) -> Result<Bytes> {
+fn state(version: u64, epoch: u64) -> Result<Payload> {
     // LTX files contain timestamps; reuse captures for byte-for-byte recovery assertions.
-    static STATES: OnceLock<Mutex<BTreeMap<(u64, u64), Bytes>>> = OnceLock::new();
+    static STATES: OnceLock<Mutex<BTreeMap<(u64, u64), Payload>>> = OnceLock::new();
     let mut states = STATES.get_or_init(Mutex::default).lock().unwrap();
     if let Some(bytes) = states.get(&(version, epoch)) {
         return Ok(bytes.clone());
     }
-    let bytes: Bytes = StateSnapshot::new(
+    let bytes = StateSnapshot::new(
         version,
         epoch,
         format!("request-{version}"),
         crate::test_sqlite::snapshot(serde_json::json!({"count": version}))?,
         serde_json::json!(version),
     )?
-    .encode()?
-    .into();
+    .encode()?;
     states.insert((version, epoch), bytes.clone());
     Ok(bytes)
 }
@@ -243,7 +242,7 @@ async fn manifests_must_name_distinct_configured_zones() -> Result<()> {
             .find(|key| key.ends_with(".manifest"))
             .unwrap();
         let stored = f.archive.get(&key).await?.unwrap();
-        let mut manifest: Manifest = serde_json::from_slice(&stored.bytes)?;
+        let mut manifest: Manifest = serde_json::from_slice(&stored.bytes.to_bytes()?)?;
         tamper(&mut manifest.replicas);
         let tampered = crate::payload::encode(&manifest)?;
         assert!(
@@ -269,7 +268,7 @@ async fn manifests(f: &Fixture) -> Vec<Manifest> {
     for key in f.archive.list("").await.unwrap() {
         if key.ends_with(".manifest") {
             let bytes = f.archive.get(&key).await.unwrap().unwrap().bytes;
-            manifests.push(serde_json::from_slice(&bytes).unwrap());
+            manifests.push(serde_json::from_slice(&bytes.to_bytes().unwrap()).unwrap());
         }
     }
     manifests
@@ -326,7 +325,7 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
             &self,
             _key: &str,
             _generation: Option<i64>,
-            _bytes: bytes::Bytes,
+            _bytes: Payload,
         ) -> Result<bool> {
             anyhow::bail!("archive unavailable")
         }
@@ -633,13 +632,13 @@ async fn large_segments_reuse_streams_and_preserve_batched_history() -> Result<(
     Ok(())
 }
 
-fn large_snapshots() -> Result<BTreeMap<u64, Bytes>> {
+fn large_snapshots() -> Result<BTreeMap<u64, Payload>> {
     (1..=10)
         .map(|version| {
             let mut snapshot = StateSnapshot::decode(&state(version, 1)?)?;
             snapshot.completion.as_mut().unwrap().result =
                 serde_json::json!({"data": "x".repeat(1_000_000)}).into();
-            Ok((version, snapshot.encode()?.into()))
+            Ok((version, snapshot.encode()?))
         })
         .collect()
 }
@@ -682,13 +681,13 @@ async fn large_records_and_subsequent_small_writes_stay_on_rapid() -> Result<()>
     let mut snapshot = StateSnapshot::decode(&state(2, 1)?)?;
     snapshot.completion.as_mut().unwrap().result =
         serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)}).into();
-    let bytes: Bytes = snapshot.encode()?.into();
+    let bytes = snapshot.encode()?;
     store.put(&f.stream.object(2), bytes.clone()).await?;
     store.put(&f.stream.object(3), state(3, 1)?).await?;
     for zone in &f.zones {
         let objects = zone.objects.lock().unwrap();
-        let records = frame::decode(&Bytes::copy_from_slice(
-            &objects.values().next().unwrap().bytes,
+        let records = frame::decode(&Payload::from(
+            objects.values().next().unwrap().bytes.clone(),
         ))?;
         assert_eq!(
             records.iter().map(|r| r.version).collect::<Vec<_>>(),
@@ -743,7 +742,7 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
             &self,
             key: &str,
             generation: Option<i64>,
-            bytes: bytes::Bytes,
+            bytes: Payload,
         ) -> Result<bool> {
             ensure!(
                 !key.ends_with(".replicated"),
@@ -855,7 +854,8 @@ async fn recovery_ignores_incomplete_tail_but_rejects_corrupt_complete_records()
         version: 2,
         state: snapshot.encode()?,
     }
-    .encode()?;
+    .encode()?
+    .to_bytes()?;
     f.zones[0]
         .objects
         .lock()
@@ -955,8 +955,9 @@ async fn manifests_cannot_redirect_a_reader_to_another_actors_log() -> Result<()
         .pop()
         .unwrap();
     let stored = f.archive.get(&left).await?.unwrap();
-    let mut manifest: Manifest = serde_json::from_slice(&stored.bytes)?;
-    let foreign: Manifest = serde_json::from_slice(&f.archive.get(&right).await?.unwrap().bytes)?;
+    let mut manifest: Manifest = serde_json::from_slice(&stored.bytes.to_bytes()?)?;
+    let foreign: Manifest =
+        serde_json::from_slice(&f.archive.get(&right).await?.unwrap().bytes.to_bytes()?)?;
     manifest.replicas = foreign.replicas;
     assert!(
         f.archive
@@ -1092,7 +1093,7 @@ impl LogZone for MemoryZone {
             }),
         ))
     }
-    async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes> {
+    async fn read(&self, replica: &Replica, fence: bool) -> Result<Payload> {
         ensure!(!self.offline.load(Ordering::SeqCst), "zone offline");
         let mut objects = self.objects.lock().unwrap();
         let object = objects
@@ -1101,9 +1102,9 @@ impl LogZone for MemoryZone {
         if fence {
             object.fence += 1;
         }
-        Ok(Bytes::copy_from_slice(&object.bytes))
+        crate::payload::copy(object.bytes.as_slice())
     }
-    async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
+    async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Payload> {
         self.range_reads.fetch_add(1, Ordering::SeqCst);
         let bytes = self.read(replica, false).await?;
         let end = start.checked_add(length).context("range overflow")? as usize;

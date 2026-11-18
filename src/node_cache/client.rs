@@ -6,7 +6,7 @@ use futures_util::{TryStreamExt, stream::BoxStream};
 use reqwest::header::AUTHORIZATION;
 use tokio::io::AsyncWriteExt;
 
-use crate::control_plane::HostAuthorization;
+use crate::{control_plane::HostAuthorization, payload::Payload};
 
 // With no cache pod on the node the Service drops packets instead of refusing them, so only a
 // short connect timeout keeps installs from stalling.
@@ -112,7 +112,7 @@ impl NodeCacheClient {
             .await
     }
 
-    pub(crate) async fn snapshot(&self, digest: &str) -> Result<Option<Bytes>> {
+    pub(crate) async fn snapshot(&self, digest: &str) -> Result<Option<Payload>> {
         let Some(mut chunks) = self.read(&format!("snapshot/{digest}")).await? else {
             return Ok(None);
         };
@@ -123,9 +123,9 @@ impl NodeCacheClient {
         Ok(Some(download.finish().await?))
     }
 
-    pub(crate) async fn store_snapshot(&self, digest: &str, bytes: Bytes) -> Result<()> {
-        self.write(&format!("snapshot/{digest}"), bytes.into())
-            .await
+    pub(crate) async fn store_snapshot(&self, digest: &str, bytes: Payload) -> Result<()> {
+        let body = reqwest::Body::wrap_stream(bytes.chunks());
+        self.write(&format!("snapshot/{digest}"), body).await
     }
 
     async fn read(&self, entry: &str) -> Result<Option<BoxStream<'static, Result<Bytes>>>> {

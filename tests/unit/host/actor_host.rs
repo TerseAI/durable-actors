@@ -157,7 +157,7 @@ async fn commits_fields_and_sql_and_recovers_them_at_one_version() -> Result<()>
     assert_eq!(snapshots.len(), 4, "reads preserve the durable version");
     let decoded = snapshots
         .iter()
-        .map(|bytes| StateSnapshot::decode(bytes))
+        .map(StateSnapshot::decode)
         .collect::<Result<Vec<_>>>()?;
     let history = decoded
         .iter()
@@ -174,7 +174,7 @@ async fn commits_fields_and_sql_and_recovers_them_at_one_version() -> Result<()>
         endpoint,
         executor.clone(),
         Arc::new(FakeAuthority {
-            initial_state: Some((4, snapshots[3].clone().into())),
+            initial_state: Some((4, snapshots[3].clone())),
             history,
             ..Default::default()
         }),
@@ -1605,12 +1605,12 @@ async fn unreadable_cached_database_falls_back_to_history() -> Result<()> {
 #[derive(Default)]
 struct FakeAuthority {
     persisted: Option<Arc<FakeStateTransport>>,
-    history: std::collections::HashMap<String, bytes::Bytes>,
+    history: std::collections::HashMap<String, crate::payload::Payload>,
     fenced: std::sync::atomic::AtomicBool,
     loads: AtomicUsize,
     sqlite_reads: AtomicUsize,
-    initial_state: Option<(u64, bytes::Bytes)>,
-    activation_state: Option<bytes::Bytes>,
+    initial_state: Option<(u64, crate::payload::Payload)>,
+    activation_state: Option<crate::payload::Payload>,
     preparations: Mutex<Vec<u64>>,
     saved_database: Mutex<Option<tempfile::NamedTempFile>>,
 }
@@ -1696,7 +1696,7 @@ impl ActorStorage for FakeAuthority {
     }
 }
 
-fn verified(bytes: bytes::Bytes) -> Result<crate::storage::VerifiedSnapshot> {
+fn verified(bytes: crate::payload::Payload) -> Result<crate::storage::VerifiedSnapshot> {
     let snapshot = StateSnapshot::decode(&bytes)?;
     let object = crate::storage::snapshot_object_name(
         &counter(),
@@ -1706,18 +1706,17 @@ fn verified(bytes: bytes::Bytes) -> Result<crate::storage::VerifiedSnapshot> {
     crate::storage::VerifiedSnapshot::named(object, bytes)
 }
 
-struct FakeHistory<'a>(&'a std::collections::HashMap<String, bytes::Bytes>);
+struct FakeHistory<'a>(&'a std::collections::HashMap<String, crate::payload::Payload>);
 
 #[async_trait]
 impl crate::bucket::recovery::SnapshotHistory for FakeHistory<'_> {
-    async fn read(&mut self, object: &str) -> Result<bytes::Bytes> {
+    async fn read(&mut self, object: &str) -> Result<crate::payload::Payload> {
         self.0
             .get(object)
             .cloned()
-            .map(Into::into)
             .ok_or_else(|| anyhow::anyhow!("missing snapshot dependency"))
     }
-    async fn checkpoint(&mut self, _: &str) -> Result<Option<bytes::Bytes>> {
+    async fn checkpoint(&mut self, _: &str) -> Result<Option<crate::payload::Payload>> {
         Ok(None)
     }
 }
@@ -1725,13 +1724,17 @@ impl crate::bucket::recovery::SnapshotHistory for FakeHistory<'_> {
 #[derive(Default)]
 struct FakeStateTransport {
     failures: AtomicUsize,
-    writes: Mutex<Vec<bytes::Bytes>>,
+    writes: Mutex<Vec<crate::payload::Payload>>,
     paused_commit: Option<(mpsc::UnboundedSender<()>, Arc<tokio::sync::Semaphore>)>,
 }
 
 #[async_trait]
 impl crate::state_transport::SnapshotWriter for FakeStateTransport {
-    async fn write_snapshot(&self, _ticket: &WritePlan, bytes: bytes::Bytes) -> Result<StateWrite> {
+    async fn write_snapshot(
+        &self,
+        _ticket: &WritePlan,
+        bytes: crate::payload::Payload,
+    ) -> Result<StateWrite> {
         if StateSnapshot::decode(&bytes)?.request_id == "first"
             && let Some((started, release)) = &self.paused_commit
         {
@@ -1765,7 +1768,7 @@ async fn cold_actors_load_the_current_head_instead_of_a_cached_route_snapshot() 
     )?
     .encode()?;
     let authority = Arc::new(FakeAuthority {
-        initial_state: Some((8, snapshot.into())),
+        initial_state: Some((8, snapshot)),
         ..Default::default()
     });
     let state = Arc::new(FakeStateTransport::default());
@@ -1817,7 +1820,7 @@ async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() 
     )?
     .encode()?;
     let authority = Arc::new(FakeAuthority {
-        initial_state: Some((8, snapshot.into())),
+        initial_state: Some((8, snapshot)),
         ..Default::default()
     });
     let state = Arc::new(FakeStateTransport::default());
@@ -1972,7 +1975,7 @@ async fn resident_actor_uses_immutable_snapshots_and_replays_the_last_request() 
         .lock()
         .unwrap()
         .iter()
-        .map(|bytes| StateSnapshot::decode(bytes))
+        .map(StateSnapshot::decode)
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(snapshots[0].state_version, 1);
     assert_eq!(snapshots[1].state_version, 2);
@@ -2309,7 +2312,7 @@ async fn immediate_writes_wait_for_durability_and_share_atomic_versions() -> Res
         .lock()
         .unwrap()
         .iter()
-        .map(|bytes| StateSnapshot::decode(bytes))
+        .map(StateSnapshot::decode)
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(
         snapshots
@@ -2398,7 +2401,7 @@ async fn sql_transactions_publish_once_on_commit_and_never_on_rollback() -> Resu
         .lock()
         .unwrap()
         .iter()
-        .map(|bytes| StateSnapshot::decode(bytes))
+        .map(StateSnapshot::decode)
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .filter(|snapshot| snapshot.completion.is_none())
@@ -2514,7 +2517,7 @@ async fn delayed_interleaved_completion_cannot_rewind_an_immediate_write() -> Re
         .lock()
         .unwrap()
         .iter()
-        .map(|bytes| StateSnapshot::decode(bytes))
+        .map(StateSnapshot::decode)
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(snapshots.len(), 2);
     assert_eq!(snapshots[0].request_id, "newer");
@@ -2596,7 +2599,7 @@ async fn background_database_writes_outlive_invocations() -> Result<()> {
         .lock()
         .unwrap()
         .iter()
-        .map(|bytes| StateSnapshot::decode(bytes))
+        .map(StateSnapshot::decode)
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .filter(|snapshot| snapshot.request_id == "background")

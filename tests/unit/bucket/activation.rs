@@ -140,7 +140,7 @@ async fn ownership_and_state_can_use_independent_backends() -> Result<()> {
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
-    assert_eq!(resumed.state.unwrap().bytes.as_ref(), bytes);
+    assert_eq!(resumed.state.unwrap().bytes, bytes);
     Ok(())
 }
 
@@ -190,7 +190,7 @@ impl Bucket for CountedBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: bytes::Bytes,
+        bytes: Payload,
     ) -> Result<bool> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         let delayed = self.delay_write.lock().unwrap().take();
@@ -694,7 +694,7 @@ async fn stale_owner_hint_rereads_and_preserves_the_current_owner() -> Result<()
         } else {
             let loaded = loaded?;
             assert_eq!(loaded.placement.owner_epoch, 3);
-            assert_eq!(loaded.state.unwrap().bytes.as_ref(), bytes);
+            assert_eq!(loaded.state.unwrap().bytes, bytes);
         }
     }
     Ok(())
@@ -764,11 +764,8 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                 .await?;
             assert_eq!(loaded.placement.owner_epoch, epoch);
             assert_eq!(
-                loaded
-                    .state
-                    .as_ref()
-                    .map(|snapshot| snapshot.bytes.as_ref()),
-                written.then_some(bytes.as_ref())
+                loaded.state.as_ref().map(|snapshot| &snapshot.bytes),
+                written.then_some(&bytes)
             );
             assert_eq!(f.bucket.lists.load(Ordering::SeqCst), 0);
             assert_eq!(f.bucket.reads.load(Ordering::SeqCst), u64::from(written));
@@ -846,11 +843,8 @@ async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
         .context("durable base missing")?;
     assert_eq!(resumed.placement.owner_epoch, 2);
     assert_eq!(
-        resumed
-            .state
-            .as_ref()
-            .map(|snapshot| snapshot.bytes.as_ref()),
-        Some(stored.bytes.as_ref())
+        resumed.state.as_ref().map(|snapshot| &snapshot.bytes),
+        Some(&stored.bytes)
     );
     Ok(())
 }
@@ -916,11 +910,8 @@ async fn crash_recovery_persists_the_selected_snapshot_before_claiming_the_next_
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
     assert_eq!(
-        resumed
-            .state
-            .as_ref()
-            .map(|snapshot| snapshot.bytes.as_ref()),
-        Some(bytes.as_ref())
+        resumed.state.as_ref().map(|snapshot| &snapshot.bytes),
+        Some(&bytes)
     );
     Ok(())
 }
@@ -932,16 +923,16 @@ struct RejectingSnapshots {
 
 #[async_trait]
 impl crate::bucket::SnapshotStore for RejectingSnapshots {
-    async fn get(&self, object: &str) -> Result<Option<bytes::Bytes>> {
+    async fn get(&self, object: &str) -> Result<Option<Payload>> {
         self.inner.get(object).await
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         self.inner.list(prefix).await
     }
-    async fn latest(&self, prefix: &str) -> Result<Option<(String, bytes::Bytes)>> {
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         self.inner.latest(prefix).await
     }
-    async fn put(&self, object: &str, bytes: bytes::Bytes) -> Result<()> {
+    async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         ensure!(
             !self.reject.load(Ordering::SeqCst),
             "snapshot persistence unavailable"
@@ -971,7 +962,7 @@ async fn pause_snapshot(gate: &Mutex<Option<SnapshotGate>>) -> Result<()> {
 
 #[async_trait]
 impl crate::bucket::SnapshotStore for PausedSnapshots {
-    async fn get(&self, object: &str) -> Result<Option<Bytes>> {
+    async fn get(&self, object: &str) -> Result<Option<Payload>> {
         pause_snapshot(&self.gates[0]).await?;
         ensure!(
             !self.reject_head.load(Ordering::SeqCst),
@@ -994,10 +985,10 @@ impl crate::bucket::SnapshotStore for PausedSnapshots {
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         self.inner.list(prefix).await
     }
-    async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         self.inner.latest(prefix).await
     }
-    async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
+    async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         self.inner.put(object, bytes).await
     }
     async fn start(&self, _: &StateStream) -> Result<()> {
@@ -1038,7 +1029,7 @@ async fn sealed_activation() -> Result<(Fixture, Arc<PausedSnapshots>, Ownership
             &first.id,
             &first.session_id,
             Some(SessionCheckpoint {
-                snapshot: Some(SnapshotRef::new(object, &snapshot, &bytes)),
+                snapshot: Some(SnapshotRef::new(object, &snapshot, &bytes)?),
             }),
         )
         .await?;

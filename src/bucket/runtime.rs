@@ -6,7 +6,6 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,6 +13,7 @@ use crate::{
     actor_state::ActorStorageKey,
     host::HostId,
     host_leases::HostLease,
+    payload::Payload,
     placement::{ObjectPlacement, ObjectPlacementStore},
     storage::{
         SnapshotReader, SnapshotRef, StateStream, VerifiedSnapshot, WritePlan,
@@ -236,7 +236,7 @@ impl ObjectPlacementStore for RuntimeStorageReader {
 
 #[async_trait]
 impl SnapshotReader for RuntimeStorageReader {
-    async fn read_snapshot(&self, _region: &str, object: &str) -> Result<Bytes> {
+    async fn read_snapshot(&self, _region: &str, object: &str) -> Result<Payload> {
         self.read_persisted(object)
             .await?
             .context("snapshot unavailable")
@@ -389,11 +389,11 @@ impl RuntimeStorageReader {
         Ok(loaded)
     }
 
-    async fn persist(&self, object: &str, bytes: bytes::Bytes) -> Result<()> {
-        self.snapshots.put(object, bytes.into()).await
+    async fn persist(&self, object: &str, bytes: Payload) -> Result<()> {
+        self.snapshots.put(object, bytes).await
     }
 
-    async fn read_persisted(&self, object: &str) -> Result<Option<Bytes>> {
+    async fn read_persisted(&self, object: &str) -> Result<Option<Payload>> {
         self.snapshots.get(object).await
     }
 
@@ -414,7 +414,7 @@ impl RuntimeStorageReader {
             .get(&ownership_key(object)?)
             .await?
             .map(|value| {
-                let record: Ownership = serde_json::from_slice(&value.bytes)?;
+                let record: Ownership = serde_json::from_reader(value.bytes.reader())?;
                 ensure!(
                     record.persistence.same_backend(&self.persistence),
                     "actor persistence backend changed; an explicit state migration is required"
@@ -439,7 +439,7 @@ impl ObjectPlacementStore for RuntimeStorage {
 }
 #[async_trait]
 impl SnapshotReader for RuntimeStorage {
-    async fn read_snapshot(&self, region: &str, object: &str) -> Result<Bytes> {
+    async fn read_snapshot(&self, region: &str, object: &str) -> Result<Payload> {
         self.reader.read_snapshot(region, object).await
     }
 }
@@ -479,7 +479,7 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
     async fn write_snapshot(
         &self,
         plan: &WritePlan,
-        bytes: bytes::Bytes,
+        bytes: Payload,
     ) -> Result<crate::state_transport::StateWrite> {
         self.ensure_write_owner(plan)?;
         let stream = &plan.stream;

@@ -17,7 +17,7 @@ pub(crate) struct CachedBase {
     /// The base's SQLite database: its checkpoint is left for SQLite recovery to fetch.
     pub database: bool,
     /// The base snapshot, used only when it matches the digest the ownership record names.
-    pub snapshot: Option<Bytes>,
+    pub snapshot: Option<Payload>,
 }
 
 impl RuntimeStorage {
@@ -331,7 +331,7 @@ impl RuntimeStorage {
     async fn recover_sealed_activation(
         &self,
         record: &Ownership,
-        cached: Option<&Bytes>,
+        cached: Option<&Payload>,
     ) -> Result<ActivationRecovery> {
         let snapshot = self.load_activation_snapshot(record, cached);
         let checkpoint = self.prefetch_activation_checkpoint(record);
@@ -358,15 +358,13 @@ impl RuntimeStorage {
     async fn load_activation_snapshot(
         &self,
         record: &Ownership,
-        cached: Option<&Bytes>,
+        cached: Option<&Payload>,
     ) -> Result<ActivationRecovery> {
         let started = Instant::now();
-        let cached = record
-            .base
-            .as_ref()
-            .zip(cached)
-            .filter(|(base, bytes)| base.verify(bytes).is_ok())
-            .and_then(|(base, bytes)| VerifiedSnapshot::matching(base.clone(), bytes.clone()).ok());
+        let cached =
+            record.base.as_ref().zip(cached).and_then(|(base, bytes)| {
+                VerifiedSnapshot::matching(base.clone(), bytes.clone()).ok()
+            });
         let snapshot = self.load_latest(record, cached).await?;
         Ok(ActivationRecovery {
             snapshot,

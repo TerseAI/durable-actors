@@ -1,5 +1,5 @@
 use super::{Bucket, SnapshotStore, replace};
-use crate::storage::StateStream;
+use crate::{payload::Payload, storage::StateStream};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -46,8 +46,8 @@ trait LogWriter: Send {
 trait LogZone: Send + Sync {
     fn bucket(&self) -> &str;
     async fn open(&self, object: &str) -> Result<(Replica, Box<dyn LogWriter>)>;
-    async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes>;
-    async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes>;
+    async fn read(&self, replica: &Replica, fence: bool) -> Result<Payload>;
+    async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Payload>;
     async fn delete(&self, replica: &Replica) -> Result<()>;
 }
 
@@ -127,7 +127,7 @@ impl RapidSnapshots {
 
 #[async_trait]
 impl SnapshotStore for RapidSnapshots {
-    async fn get(&self, object: &str) -> Result<Option<Bytes>> {
+    async fn get(&self, object: &str) -> Result<Option<Payload>> {
         if let Some(bytes) = self
             .session
             .lock()
@@ -197,10 +197,10 @@ impl SnapshotStore for RapidSnapshots {
         keys.extend(self.storage.records(prefix, false).await?.into_keys());
         Ok(keys.into_iter().collect())
     }
-    async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         self.storage.latest(prefix, false).await
     }
-    async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
+    async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         let mut session = self.session.lock().await;
         session
             .as_mut()
@@ -214,18 +214,18 @@ impl SnapshotStore for RapidSnapshots {
         *session = Some(Session::open(self.storage.clone(), stream.clone())?);
         Ok(())
     }
-    async fn recover(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+    async fn recover(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         for key in self.storage.archive.list(&object_name(prefix)?).await? {
             if !key.ends_with(".manifest") {
                 continue;
             }
-            let bytes = self
+            let stored = self
                 .storage
                 .archive
                 .get(&key)
                 .await?
                 .context("manifest disappeared")?;
-            let manifest: Manifest = serde_json::from_slice(&bytes.bytes)?;
+            let manifest: Manifest = serde_json::from_reader(stored.bytes.reader())?;
             manifest.validate(&key, prefix, &self.storage.zones)?;
             self.storage.recover_segment(&manifest).await?;
         }

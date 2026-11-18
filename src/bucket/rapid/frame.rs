@@ -4,35 +4,40 @@ use std::io::Write;
 
 pub(super) const HEADER: usize = 48;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub version: u64,
-    pub state: Bytes,
+    pub state: Payload,
 }
 
 impl Record {
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
+        let mut spool = crate::payload::Spool::new();
+        self.write_to(&mut spool)?;
+        spool.finish()
+    }
+
+    pub fn write_to(&self, writer: &mut impl Write) -> Result<()> {
         ensure!(self.version > 0, "invalid state version");
         let length = u32::try_from(self.state.len()).context("record length overflow")?;
-        let mut bytes = Vec::with_capacity(HEADER);
-        bytes.extend_from_slice(b"RLG1");
-        bytes.extend_from_slice(&length.to_le_bytes());
-        bytes.extend_from_slice(&self.version.to_le_bytes());
-        bytes.extend_from_slice(checksum(&bytes, &self.state).as_ref());
-        let mut spool = crate::payload::Spool::new();
-        spool.write_all(&bytes)?;
-        spool.write_all(&self.state)?;
-        spool.finish()
+        let mut header = Vec::with_capacity(HEADER);
+        header.extend_from_slice(b"RLG1");
+        header.extend_from_slice(&length.to_le_bytes());
+        header.extend_from_slice(&self.version.to_le_bytes());
+        header.extend_from_slice(checksum(&header, &self.state)?.as_ref());
+        writer.write_all(&header)?;
+        self.state.write_to(writer)?;
+        Ok(())
     }
 }
 
-pub(super) fn decode(bytes: &Bytes) -> Result<Vec<Record>> {
+pub(super) fn decode(bytes: &Payload) -> Result<Vec<Record>> {
     let mut records = Vec::new();
     let mut offset = 0;
     while bytes.len() - offset >= HEADER {
-        let header = &bytes[offset..offset + HEADER];
+        let header = bytes.read(offset..offset + HEADER)?;
         let end = offset
-            .checked_add(length(header)?)
+            .checked_add(length(&header)?)
             .context("record offset overflow")?;
         if end > bytes.len() {
             break;
@@ -48,7 +53,7 @@ pub(super) fn decode(bytes: &Bytes) -> Result<Vec<Record>> {
         }
         let state = bytes.slice(offset + HEADER..end);
         ensure!(
-            checksum(&header[..16], &state).as_ref() == &header[16..48],
+            checksum(&header[..16], &state)?.as_ref() == &header[16..48],
             "corrupt log record"
         );
         records.push(Record { version, state });
@@ -67,9 +72,12 @@ pub(super) fn length(header: &[u8]) -> Result<usize> {
         .context("record length overflow")
 }
 
-fn checksum(header: &[u8], state: &[u8]) -> aws_lc_rs::digest::Digest {
+fn checksum(header: &[u8], state: &Payload) -> std::io::Result<aws_lc_rs::digest::Digest> {
     let mut hash = Digest::new(&SHA256);
     hash.update(header);
-    hash.update(state);
-    hash.finish()
+    state.for_each_chunk(|chunk| {
+        hash.update(chunk);
+        Ok(())
+    })?;
+    Ok(hash.finish())
 }

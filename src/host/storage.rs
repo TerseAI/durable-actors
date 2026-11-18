@@ -446,7 +446,7 @@ impl HostStorage {
         }
     }
 
-    async fn find_snapshot(&self) -> Option<bytes::Bytes> {
+    async fn find_snapshot(&self) -> Option<crate::payload::Payload> {
         let cache = self.node_cache.as_ref()?;
         let digest = &self.owner_hint.as_ref()?.sealed_base()?.digest;
         let started = Instant::now();

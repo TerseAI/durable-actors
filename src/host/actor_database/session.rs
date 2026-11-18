@@ -4,7 +4,7 @@ use super::{
 };
 use crate::host::HostEndpoint;
 use crate::node_cache::NodeCacheClient;
-use crate::payload::JsonText;
+use crate::payload::{JsonText, Payload};
 use crate::{
     actor::{
         ActorExecutionResult, ActorInvocation, ActorInvocationFailure, DatabaseCall,
@@ -534,6 +534,7 @@ impl DatabaseSession {
         timings.snapshot_encoded_at_ms = Some(timings.elapsed_ms());
         cached.pending = Some(PendingStateCommit {
             snapshot,
+            bytes,
             txid,
             ticket,
             durable: false,
@@ -542,7 +543,9 @@ impl DatabaseSession {
             .pending
             .as_ref()
             .expect("pending write was installed");
-        self.state.write_snapshot(&pending.ticket, bytes).await?;
+        self.state
+            .write_snapshot(&pending.ticket, pending.bytes.clone())
+            .await?;
         cached
             .pending
             .as_mut()
@@ -627,7 +630,7 @@ impl DatabaseSession {
             );
             pending.ticket = renewed;
             self.state
-                .write_snapshot(&pending.ticket, pending.snapshot.encode()?)
+                .write_snapshot(&pending.ticket, pending.bytes.clone())
                 .await?;
             pending.durable = true;
         }
@@ -640,15 +643,14 @@ impl DatabaseSession {
             .context("state version overflow")?;
         next_write.object_name = stream.object(next_write.state_version);
         let pending = cached.pending.take().expect("pending commit checked above");
-        let bytes = pending.snapshot.encode()?;
         let head = SnapshotRef::new(
             pending.ticket.object_name.clone(),
             &pending.snapshot,
-            &bytes,
-        );
+            &pending.bytes,
+        )?;
         cached.snapshot = Some(PublishedSnapshot {
             digest: head.digest.clone(),
-            bytes,
+            bytes: pending.bytes,
         });
         cached.sqlite_head = Some(head);
         cached.state_version = pending.snapshot.state_version;
@@ -676,11 +678,12 @@ struct ResidentDatabase {
 
 struct PublishedSnapshot {
     digest: String,
-    bytes: bytes::Bytes,
+    bytes: Payload,
 }
 
 struct PendingStateCommit {
     snapshot: StateSnapshot,
+    bytes: Payload,
     txid: u64,
     ticket: WritePlan,
     durable: bool,

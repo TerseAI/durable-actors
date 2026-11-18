@@ -52,7 +52,7 @@ impl LogStorage {
     }
 
     /// Returns the LTX bytes of the full copy that now ends the history at `object`, if any.
-    pub async fn checkpoint(&self, object: &str, bytes: Bytes) -> Result<Option<u64>> {
+    pub async fn checkpoint(&self, object: &str, bytes: Payload) -> Result<Option<u64>> {
         let started = std::time::Instant::now();
         let snapshot = VerifiedSnapshot::named(object.into(), bytes)?;
         let state_version = snapshot.reference.state_version;
@@ -140,15 +140,15 @@ struct LogHistory<'a> {
 }
 
 struct EpochHistory {
-    records: Option<BTreeMap<String, Bytes>>,
+    records: Option<BTreeMap<String, Payload>>,
     indexes: Vec<String>,
-    indexed: BTreeMap<String, Bytes>,
+    indexed: BTreeMap<String, Payload>,
     checkpoints: std::collections::BTreeSet<String>,
 }
 
 #[async_trait]
 impl SnapshotHistory for LogHistory<'_> {
-    async fn read(&mut self, object: &str) -> Result<Bytes> {
+    async fn read(&mut self, object: &str) -> Result<Payload> {
         let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
         if !self.epochs.contains_key(prefix) {
             let prefix_key = format!("{prefix}/");
@@ -224,7 +224,7 @@ impl SnapshotHistory for LogHistory<'_> {
             .context("SQLite dependency missing")
     }
 
-    async fn checkpoint(&mut self, object: &str) -> Result<Option<Bytes>> {
+    async fn checkpoint(&mut self, object: &str) -> Result<Option<Payload>> {
         let key = format!("{object}.checkpoint");
         let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
         if self
@@ -266,7 +266,7 @@ impl Progress {
     pub async fn schedule(
         &mut self,
         storage: Arc<LogStorage>,
-        latest: Option<&(String, Bytes)>,
+        latest: Option<&(String, Payload)>,
         version: u64,
     ) {
         self.collect().await;
@@ -320,7 +320,7 @@ impl Progress {
         &mut self,
         storage: Arc<LogStorage>,
         object: &str,
-        bytes: Bytes,
+        bytes: Payload,
         version: u64,
         deadline: tokio::time::Instant,
     ) {
@@ -359,7 +359,7 @@ impl Progress {
         &mut self,
         storage: Arc<LogStorage>,
         object: String,
-        bytes: Bytes,
+        bytes: Payload,
         version: u64,
         trigger: &'static str,
     ) {

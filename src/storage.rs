@@ -19,7 +19,7 @@ pub struct WritePlan {
 
 #[async_trait]
 pub trait SnapshotReader: Send + Sync {
-    async fn read_snapshot(&self, region: &str, object: &str) -> Result<bytes::Bytes>;
+    async fn read_snapshot(&self, region: &str, object: &str) -> Result<crate::payload::Payload>;
 }
 
 pub fn snapshot_object_name(actor: &ActorKey, state_version: u64, nonce: &str) -> Result<String> {
