@@ -17,7 +17,6 @@ kind: ClusterRole
 metadata:
   name: {{ include "actors.nodeCollectorClusterName" . }}
 rules:
-  # The kubelet's stats summary only: no pods, logs, exec or kubelet proxy.
   - apiGroups: [""]
     resources: [nodes/stats]
     verbs: [get]
@@ -51,7 +50,6 @@ spec:
         checksum/config: {{ .Files.Get "files/node-collector.yaml" | sha256sum }}
     spec:
       serviceAccountName: {{ include "actors.nodeCollectorName" . }}
-      # Runs beside the sandboxes but outside gVisor, so customer code never shares its pod.
       nodeSelector:
         sandbox.gke.io/runtime: gvisor
       tolerations:
@@ -92,7 +90,6 @@ spec:
       volumes:
         - name: config
           configMap: {name: {{ include "actors.nodeCollectorName" . }}}
-        # The collector accepts sandbox usage only with a token for this audience.
         - name: platform-telemetry
           projected:
             sources:

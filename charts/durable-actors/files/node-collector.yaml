@@ -1,25 +1,14 @@
-# Runs on each sandbox node, outside the sandboxes, so an actor that runs out of memory can't take
-# its own measurements down. It samples the CPU and working set of each sandbox's runtime container
-# from this node's kubelet and sends them to the collector's platform port, which stores them and
-# routes each sample to the project of the actor its pod was claimed for. Everything else stays at
-# component defaults.
 extensions:
   health_check:
-    # The default binds localhost, which Kubernetes probes can't reach.
     endpoint: 0.0.0.0:13133
   bearertokenauth:
-    # A projected service-account token the kubelet keeps fresh; the extension rereads it.
     filename: /var/run/secrets/durable-actors/platform-telemetry/token
 
 receivers:
   kubeletstats:
     collection_interval: 5s
     auth_type: serviceAccount
-    # The node name is what the kubelet's serving certificate names; the receiver verifies it
-    # against the cluster CA from the service account.
     endpoint: https://${env:K8S_NODE_NAME}:10250
-    # The pod level also counts gVisor's own Sentry and gofer, which aren't the actor's usage. Under
-    # gVisor the runtime reports the container's usage as the sandbox itself accounts it.
     metric_groups: [container]
     metrics:
       container.cpu.time: {enabled: false}
@@ -36,8 +25,6 @@ processors:
   memory_limiter:
     check_interval: 1s
     limit_percentage: 80
-  # Sandbox nodes also run the node cache and this collector; only sandboxes run actors, in their
-  # runtime container.
   filter/sandboxes:
     error_mode: ignore
     metric_conditions:
