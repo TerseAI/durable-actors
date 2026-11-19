@@ -92,7 +92,8 @@ impl Node {
         let root = tempfile::tempdir()?;
         let cache = root.path().join("cache");
         let store = Arc::new(DiskStore::open(cache.clone(), 1 << 30, 1 << 10).await?);
-        let slots = SqliteSlots::open(cache, Some(root.path().join("pods")), store).await?;
+        let layout = SlotLayout::Kubelet(root.path().join("pods"));
+        let slots = SqliteSlots::open(cache, Some(layout), store).await?;
         Ok(Self { root, slots })
     }
 

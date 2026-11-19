@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use super::store::{DiskStore, PARKED};
-use crate::{actor::ActorKey, storage::SnapshotRef};
+use crate::{actor::ActorKey, control_plane::ActorPrincipal, storage::SnapshotRef};
 
 const DATABASE: &str = "db";
 const DATABASE_FILE: &str = "actor.sqlite";
@@ -44,22 +44,35 @@ struct CleanRecord {
     txid: u64,
 }
 
-/// Moves actor databases between spares' slots and parked directories (`actors/<actor>/db`) by
-/// renaming them on one filesystem. A slot is a spare's `slot` emptyDir, under kubelet's directory
-/// for the pod (`pods`), so kubelet caps it and deletes whatever a dead pod left in it. One lock
-/// orders every move, so a database is only ever in one place.
+/// Moves actor databases between hosts' slots and parked directories (`actors/<actor>/db`) by
+/// renaming them on one filesystem. Whoever owns the slots deletes whatever a dead host left in
+/// one. One lock orders every move, so a database is only ever in one place.
 pub(super) struct SqliteSlots {
     root: PathBuf,
-    pods: Option<PathBuf>,
+    layout: Option<SlotLayout>,
     store: Arc<DiskStore>,
     lock: tokio::sync::Mutex<()>,
 }
 
+/// Where a host's slot is, and which identity in its signed token names it.
+pub(super) enum SlotLayout {
+    /// A spare's `slot` emptyDir under kubelet's directory for the pod, named by the token's pod
+    /// UID. Kubelet caps it and deletes it with the pod.
+    Kubelet(PathBuf),
+    /// A directory per local host, named by the token's host ID. The local runtime creates it and
+    /// deletes it when the host exits.
+    Hosts(PathBuf),
+}
+
 impl SqliteSlots {
-    pub async fn open(root: PathBuf, pods: Option<PathBuf>, store: Arc<DiskStore>) -> Result<Self> {
+    pub async fn open(
+        root: PathBuf,
+        layout: Option<SlotLayout>,
+        store: Arc<DiskStore>,
+    ) -> Result<Self> {
         let slots = Self {
             root,
-            pods,
+            layout,
             store,
             lock: tokio::sync::Mutex::new(()),
         };
@@ -114,15 +127,32 @@ impl SqliteSlots {
         Ok(file)
     }
 
-    /// The slot of the pod with this UID, as the control plane signed it into the host token.
-    fn slot(&self, uid: &str) -> Result<PathBuf> {
-        let pods = self
-            .pods
-            .as_ref()
-            .context("SQLite slots are off on this node")?;
-        let parsed = uuid::Uuid::parse_str(uid).context("invalid slot")?;
-        ensure!(parsed.hyphenated().to_string() == uid, "invalid slot");
-        Ok(pods.join(uid).join("volumes/kubernetes.io~empty-dir/slot"))
+    /// The slot a host's token names; a host without one cannot move databases.
+    pub fn slot_of<'a>(&self, host: &'a ActorPrincipal) -> Option<&'a str> {
+        match self.layout.as_ref()? {
+            SlotLayout::Kubelet(_) => host.slot.as_deref(),
+            SlotLayout::Hosts(_) => Some(host.host_id.as_str()),
+        }
+    }
+
+    fn slot(&self, name: &str) -> Result<PathBuf> {
+        match self.layout.as_ref().context("SQLite slots are off here")? {
+            SlotLayout::Kubelet(pods) => {
+                let uid = uuid::Uuid::parse_str(name).context("invalid slot")?;
+                ensure!(uid.hyphenated().to_string() == name, "invalid slot");
+                Ok(pods.join(name).join("volumes/kubernetes.io~empty-dir/slot"))
+            }
+            SlotLayout::Hosts(hosts) => {
+                ensure!(
+                    !name.is_empty()
+                        && !name.starts_with('.')
+                        && name.bytes().all(|byte| byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'.' | b'-' | b'_')),
+                    "invalid slot"
+                );
+                Ok(hosts.join(name))
+            }
+        }
     }
 
     fn key(&self, actor: &ActorKey) -> String {

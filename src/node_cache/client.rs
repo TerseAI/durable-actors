@@ -103,9 +103,11 @@ impl NodeCacheClient {
             .await
     }
 
-    /// Where this host keeps its database when its sandbox has a node slot.
+    /// Where this host keeps its database when it has a slot: the directory the local runtime
+    /// names, or a GKE spare's `/slot` volume.
     pub(crate) fn slot_database(&self) -> Option<PathBuf> {
-        let slot = Path::new(SLOT_MOUNT);
+        let slot = std::env::var_os("DURABLE_ACTORS_SQLITE_SLOT_DIR")
+            .map_or_else(|| PathBuf::from(SLOT_MOUNT), PathBuf::from);
         slot.is_dir().then(|| slot.join("db"))
     }
 

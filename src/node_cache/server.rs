@@ -163,8 +163,12 @@ impl NodeCache {
     /// The host and the slot its token names: the slot comes from the control plane's signature,
     /// never from the request, so a host can only move databases through its own sandbox.
     fn slot_holder(&self, headers: &HeaderMap) -> Result<(ActorPrincipal, String), StatusCode> {
-        let mut host = self.authenticate(headers)?;
-        let slot = host.slot.take().ok_or(StatusCode::FORBIDDEN)?;
+        let host = self.authenticate(headers)?;
+        let slot = self
+            .slots
+            .slot_of(&host)
+            .ok_or(StatusCode::FORBIDDEN)?
+            .to_owned();
         Ok((host, slot))
     }
 

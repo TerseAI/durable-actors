@@ -82,7 +82,7 @@ impl NodeCache {
         let slots = Arc::new(
             slots::SqliteSlots::open(
                 directory.path().into(),
-                Some(directory.path().join("pods")),
+                Some(slots::SlotLayout::Kubelet(directory.path().join("pods"))),
                 store.clone(),
             )
             .await?,

@@ -18,6 +18,7 @@ const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const FILE_CHUNK_BYTES: usize = 256 * 1024;
 /// Each indexed entry holds about 350 bytes of memory, so this default fits a 256 MiB cache pod.
 const DEFAULT_MAX_ENTRIES: u64 = 500_000;
+const LOCAL_CAPACITY_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
 pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     let config = NodeCacheConfig::from_lookup(|name| std::env::var(name).ok())?;
@@ -30,7 +31,12 @@ pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'stati
         .await?,
     );
     let slots = Arc::new(
-        slots::SqliteSlots::open(config.directory, config.pods_directory, store.clone()).await?,
+        slots::SqliteSlots::open(
+            config.directory,
+            config.pods_directory.map(slots::SlotLayout::Kubelet),
+            store.clone(),
+        )
+        .await?,
     );
     let tokens = keys::HostTokens::load(config.verifier);
     let listener = TcpListener::bind(config.bind).await?;
@@ -39,6 +45,26 @@ pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'stati
         .with_graceful_shutdown(shutdown)
         .await
         .context("serve node cache")
+}
+
+/// The node cache inside the local runtime, which plays kubelet: each host gets a directory in
+/// `slots`, deleted when the host exits, and parks its database in `directory`.
+pub(crate) async fn local_router(
+    directory: PathBuf,
+    slots: PathBuf,
+    verifier: crate::control_plane::ActorJwtVerifier,
+) -> Result<axum::Router> {
+    let store = Arc::new(
+        store::DiskStore::open(directory.clone(), LOCAL_CAPACITY_BYTES, DEFAULT_MAX_ENTRIES)
+            .await?,
+    );
+    let layout = Some(slots::SlotLayout::Hosts(slots));
+    let slots = Arc::new(slots::SqliteSlots::open(directory, layout, store.clone()).await?);
+    Ok(server::router(
+        store,
+        slots,
+        keys::HostTokens::fixed(verifier),
+    ))
 }
 
 struct NodeCacheConfig {
