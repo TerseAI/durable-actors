@@ -51,7 +51,7 @@ async fn assignment_returns_invocation_outcomes_without_a_second_host_request() 
             panic!("expected invocation")
         };
         assert_eq!(invocation.request_id, "first");
-        assert_eq!(invocation.args, vec![json!("hello")]);
+        assert_eq!(invocation.args, vec![json!("hello")].into());
         assert_eq!(grant.as_ref().unwrap().subject, "subject");
     }
     Ok(())
@@ -135,6 +135,27 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
         .verifier
         .authenticate_authorization(&requests[0].0)?;
     assert_eq!(principal.actor.actor_id, "one");
+    Ok(())
+}
+
+#[tokio::test]
+async fn large_completed_replies_pass_through_with_their_length() -> Result<()> {
+    let host_reply = json!({"type":"completed", "result":{"rows":"x".repeat(2 * crate::payload::ARRIVING_BYTES)}});
+    let host_length = serde_json::to_vec(&host_reply)?.len();
+    let fixture = Fixture::start(vec![(StatusCode::OK, host_reply.clone())]).await?;
+    let response = fixture
+        .call(
+            "api-key",
+            json!({"requestId":"rows", "method":"clear", "args":[]}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.content_length(),
+        Some((r#"{"outcome":}"#.len() + host_length) as u64)
+    );
+    let reply: Value = response.json().await?;
+    assert_eq!(reply, json!({"outcome": host_reply}));
     Ok(())
 }
 
@@ -710,6 +731,10 @@ async fn host_invoke(
         .unwrap()
         .pop_front()
         .expect("unexpected replay");
+    if reply["type"] == "completed" {
+        let completed = [(crate::control_plane::OUTCOME_HEADER, "completed")];
+        return (status, completed, Json(reply)).into_response();
+    }
     (status, Json(reply)).into_response()
 }
 
@@ -761,7 +786,7 @@ impl HostProvisioner for InvocationProvisioner {
         _: bool,
         _: Option<&crate::bucket::OwnershipHint>,
         operation: Option<&crate::sandbox::assignment::InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+    ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         tokio::time::sleep(Duration::from_millis(25)).await;
         let lease = HostLease {
             route: self.route.clone(),
@@ -812,7 +837,7 @@ impl HostProvisioner for InvocationProvisioner {
         } else {
             None
         };
-        Ok((lease, owner_epoch, initial_reply))
+        Ok((lease, owner_epoch, initial_reply.map(Into::into)))
     }
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
         anyhow::bail!("unexpected termination")

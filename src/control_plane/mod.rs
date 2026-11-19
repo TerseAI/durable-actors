@@ -7,7 +7,9 @@ mod contract_api;
 pub(crate) mod contracts;
 pub(crate) use client::{HostAuthorization, LeaseFence};
 mod discovery;
+mod event_history;
 mod event_sink;
+mod event_topic;
 mod gateway;
 mod inspection;
 #[cfg(test)]
@@ -44,6 +46,8 @@ use std::time::Duration;
 pub(crate) const SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES: usize = usize::MAX;
 pub(crate) const MAX_CONTROL_PLANE_MESSAGE_BYTES: usize = SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES;
 pub(crate) const CONTROL_PLANE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Marks a host reply as completed, so the control plane can pass a large one on as it arrives.
+pub(crate) const OUTCOME_HEADER: &str = "durable-actors-outcome";
 
 pub use local::{DevOptions, serve_local};
 pub use organization_limits::OrganizationLimits;

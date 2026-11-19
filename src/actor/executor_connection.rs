@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    os::unix::fs::FileTypeExt,
+    os::{fd::OwnedFd, unix::fs::FileTypeExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -8,32 +8,44 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use bytes::Bytes;
+use command_fds::{CommandFdExt, FdMapping};
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{
-        UnixListener,
+        UnixListener, UnixStream,
         unix::{OwnedReadHalf, OwnedWriteHalf},
     },
+    process::Command,
     sync::{mpsc, oneshot, watch},
     task::{JoinHandle, JoinSet},
 };
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use super::{
-    ActorCall, ActorDatabase, ActorInvocationFailure, ActorKey, ActorLogRecord, ActorLogSink,
-    ActorSocketSource, DatabaseCall, DatabaseResult, LogLevel, StdioLogSink,
+    ActorArgs, ActorCall, ActorDatabase, ActorInvocationFailure, ActorKey, ActorLogRecord,
+    ActorLogSink, ActorSocketSource, LogLevel, StdioLogSink,
+    database_channel::{self, DatabaseScopes},
 };
+use crate::payload::{ARRIVING_BYTES, BUFFER_BYTES, JsonPayload, JsonStream, JsonText};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 32;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 34;
+const DATABASE_FD: i32 = 3;
+const NO_EFFECTS: &[u8] = b"[]";
+const ARRIVING_RESULT_CHUNKS: usize = 16;
+const ARRIVING_RESULT_STALL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Serialize)]
 pub struct ActorMethodInvocation {
     pub request_id: String,
     pub method: String,
-    pub args: Vec<Value>,
+    #[serde(skip)]
+    pub args: ActorArgs,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -136,11 +148,28 @@ pub enum ActorSocketEffect {
     },
 }
 
+impl ActorSocketEffect {
+    /// The one socket this effect is for; `None` when it concerns every socket of the actor.
+    pub(crate) fn connection_id(&self) -> Option<&str> {
+        match self {
+            Self::StateSnapshot { connection_id, .. }
+            | Self::Send { connection_id, .. }
+            | Self::Close { connection_id, .. }
+            | Self::Reject { connection_id, .. }
+            | Self::SetMetadata { connection_id, .. }
+            | Self::SetTags { connection_id, .. } => Some(connection_id),
+            Self::SetAutoResponse { .. } | Self::StateUpdate { .. } | Self::Broadcast { .. } => {
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ActorMethodOutcome {
     Interleaved(ActorInterleavedOutcome),
     Completed {
-        result: Value,
+        result: JsonPayload,
         effects: Vec<ActorSocketEffect>,
     },
     Failed(ActorInvocationFailure),
@@ -156,7 +185,7 @@ pub enum ActorSocketOutcome {
 #[derive(Debug, PartialEq)]
 pub struct ActorInterleavedOutcome {
     pub sequence: u64,
-    pub result: Value,
+    pub result: JsonPayload,
     pub effects: Vec<ActorSocketEffect>,
 }
 
@@ -213,9 +242,12 @@ pub(crate) trait ActorCaller: Send + Sync {
     async fn call(&self, call: ActorCall) -> Value;
 }
 
+/// The executor's first connection carries its commands. Each later one, and each channel made
+/// for it to inherit, carries database calls.
 pub(crate) struct ActorExecutorListener {
     listener: UnixListener,
-    socket_path: PathBuf,
+    socket: SocketPath,
+    inherited: Vec<UnixStream>,
 }
 
 impl ActorExecutorListener {
@@ -231,35 +263,37 @@ impl ActorExecutorListener {
             .with_context(|| format!("bind actor executor socket {}", socket_path.display()))?;
         Ok(Self {
             listener,
-            socket_path,
+            socket: SocketPath(socket_path),
+            inherited: Vec::new(),
         })
     }
 
-    pub(crate) async fn accept(self) -> Result<ActorExecutorConnection> {
-        let result = self.accept_connection().await;
-        let cleanup = remove_socket(&self.socket_path).await;
-        match (result, cleanup) {
-            (Ok(connection), Ok(())) => Ok(connection),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error),
-        }
+    pub(crate) fn socket_path(&self) -> &Path {
+        &self.socket.0
     }
 
-    async fn accept_connection(&self) -> Result<ActorExecutorConnection> {
-        let (stream, _) =
-            self.listener.accept().await.with_context(|| {
-                format!("accept actor executor at {}", self.socket_path.display())
-            })?;
-        let (reader, writer) = stream.into_split();
-        let reader = BufReader::new(reader);
-        attach_executor(reader, writer).await
+    /// Starts `command` holding a database channel, and tells it which descriptor that is. For
+    /// a runtime that cannot open a socket its actor thread can block on.
+    pub(crate) fn inherit_database_channel(&mut self, command: &mut Command) -> Result<()> {
+        let (host, executor) = std::os::unix::net::UnixStream::pair()?;
+        host.set_nonblocking(true)?;
+        self.inherited.push(UnixStream::from_std(host)?);
+        command
+            .env("DURABLE_ACTORS_DATABASE_FD", DATABASE_FD.to_string())
+            .fd_mappings(vec![FdMapping {
+                parent_fd: OwnedFd::from(executor),
+                child_fd: DATABASE_FD,
+            }])?;
+        Ok(())
+    }
+
+    pub(crate) async fn accept(self) -> Result<ActorExecutorConnection> {
+        let (reader, writer) = self.accept_commands().await?;
+        attach_executor(reader, writer, self.into()).await
     }
 
     pub(crate) async fn accept_warm(self) -> Result<WarmExecutor> {
-        let (stream, _) = self.listener.accept().await?;
-        remove_socket(&self.socket_path).await?;
-        let (reader, writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
+        let (mut reader, writer) = self.accept_commands().await?;
         ensure!(
             matches!(
                 read_client_message(&mut reader).await?,
@@ -269,13 +303,28 @@ impl ActorExecutorListener {
             ),
             "generic executor did not finish warming"
         );
-        Ok(WarmExecutor { reader, writer })
+        Ok(WarmExecutor {
+            reader,
+            writer,
+            channels: self.into(),
+        })
+    }
+
+    async fn accept_commands(&self) -> Result<(BufReader<OwnedReadHalf>, OwnedWriteHalf)> {
+        let (stream, _) = self
+            .listener
+            .accept()
+            .await
+            .with_context(|| format!("accept actor executor at {}", self.socket.0.display()))?;
+        let (reader, writer) = stream.into_split();
+        Ok((BufReader::new(reader), writer))
     }
 }
 
 pub(crate) struct WarmExecutor {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
+    channels: DatabaseChannels,
 }
 
 impl WarmExecutor {
@@ -289,13 +338,71 @@ impl WarmExecutor {
         }))?;
         bytes.push(b'\n');
         self.writer.write_all(&bytes).await?;
-        attach_executor(self.reader, self.writer).await
+        attach_executor(self.reader, self.writer, self.channels).await
+    }
+}
+
+struct DatabaseChannels {
+    listener: UnixListener,
+    inherited: Vec<UnixStream>,
+    _socket: SocketPath,
+}
+
+impl From<ActorExecutorListener> for DatabaseChannels {
+    fn from(listener: ActorExecutorListener) -> Self {
+        Self {
+            listener: listener.listener,
+            inherited: listener.inherited,
+            _socket: listener.socket,
+        }
+    }
+}
+
+impl DatabaseChannels {
+    async fn serve(self, scopes: Arc<DatabaseScopes>) {
+        let mut serving = JoinSet::new();
+        for stream in self.inherited {
+            serving.spawn(database_channel::serve(stream, scopes.clone()));
+        }
+        loop {
+            tokio::select! {
+                accepted = self.listener.accept() => match accepted {
+                    Ok((stream, _)) => {
+                        serving.spawn(database_channel::serve(stream, scopes.clone()));
+                    }
+                    Err(error) => {
+                        warn!(%error, "database channel was not accepted");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                },
+                Some(served) = serving.join_next() => {
+                    if let Ok(Err(error)) = served {
+                        warn!(error = %format!("{error:#}"), "database channel failed");
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct SocketPath(PathBuf);
+
+impl Drop for SocketPath {
+    fn drop(&mut self) {
+        match std::fs::remove_file(&self.0) {
+            Ok(()) => debug!(socket = %self.0.display(), "actor executor socket removed"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                warn!(%error, socket = %self.0.display(), "actor executor socket was not removed")
+            }
+        }
     }
 }
 
 async fn attach_executor(
     mut reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
+    channels: DatabaseChannels,
 ) -> Result<ActorExecutorConnection> {
     let actor_names = match read_client_message(&mut reader).await? {
         Some(ActorExecutorClientMessage::Attach {
@@ -314,14 +421,20 @@ async fn attach_executor(
         }
         _ => anyhow::bail!("customer executor must attach after loading code"),
     };
-    let (executor, task) = JsActorExecutor::start(reader, writer, actor_names);
+    let scopes = Arc::new(DatabaseScopes::default());
+    let (executor, task) = JsActorExecutor::start(reader, writer, actor_names, scopes.clone());
     debug!(actor_names = ?executor.actor_names, "JavaScript executor connected");
-    Ok(ActorExecutorConnection { executor, task })
+    Ok(ActorExecutorConnection {
+        executor,
+        task,
+        channels: tokio::spawn(channels.serve(scopes)),
+    })
 }
 
 pub(crate) struct ActorExecutorConnection {
     executor: Arc<JsActorExecutor>,
     task: JoinHandle<Result<()>>,
+    channels: JoinHandle<()>,
 }
 
 impl ActorExecutorConnection {
@@ -368,6 +481,7 @@ impl ActorExecutorConnection {
 impl Drop for ActorExecutorConnection {
     fn drop(&mut self) {
         self.task.abort();
+        self.channels.abort();
     }
 }
 
@@ -461,7 +575,7 @@ impl ActorExecutor for JsActorExecutor {
             ExecutorReply::WebsocketHandled { effects, sequence } => Ok(match sequence {
                 Some(sequence) => ActorSocketOutcome::Interleaved(ActorInterleavedOutcome {
                     sequence,
-                    result: Value::Null,
+                    result: JsonPayload::default(),
                     effects,
                 }),
                 None => ActorSocketOutcome::Handled { effects },
@@ -495,6 +609,7 @@ impl JsActorExecutor {
         reader: BufReader<OwnedReadHalf>,
         writer: OwnedWriteHalf,
         actor_names: Vec<String>,
+        scopes: Arc<DatabaseScopes>,
     ) -> (Arc<Self>, JoinHandle<Result<()>>) {
         let (commands, incoming) = mpsc::unbounded_channel();
         let residency = Arc::new(Mutex::new(None));
@@ -510,9 +625,10 @@ impl JsActorExecutor {
         });
 
         let task = tokio::spawn(async move {
-            let result =
-                run_executor_connection(reader, writer, incoming, residency, changes, admission)
-                    .await;
+            let result = run_executor_connection(
+                reader, writer, incoming, residency, changes, admission, scopes,
+            )
+            .await;
 
             if let Err(error) = &result {
                 tracing::error!(
@@ -580,6 +696,7 @@ async fn run_executor_connection(
     residency: Residency,
     changes: watch::Sender<()>,
     admission: watch::Sender<()>,
+    scopes: Arc<DatabaseScopes>,
 ) -> Result<()> {
     let (outbound, writes) = mpsc::unbounded_channel();
     let (inbound, replies) = mpsc::unbounded_channel();
@@ -592,13 +709,11 @@ async fn run_executor_connection(
         outbound,
         publisher: None,
         sockets: None,
-        database: None,
+        scopes,
         calls: None,
         logs: Arc::new(StdioLogSink),
         loading_connections: JoinSet::new(),
         connection_lookup_ids: HashSet::new(),
-        database_calls: JoinSet::new(),
-        database_ids: HashSet::new(),
         actor_calls: JoinSet::new(),
     };
     tokio::try_join!(
@@ -618,13 +733,11 @@ struct ExecutorDriver {
     outbound: mpsc::UnboundedSender<ExecutorWrite>,
     publisher: Option<Arc<dyn ActorSocketPublisher>>,
     sockets: Option<Arc<dyn ActorSocketSource>>,
-    database: Option<Arc<dyn ActorDatabase>>,
+    scopes: Arc<DatabaseScopes>,
     calls: Option<Arc<dyn ActorCaller>>,
     logs: Arc<dyn ActorLogSink>,
     loading_connections: JoinSet<(u64, Result<super::SocketLookup>)>,
     connection_lookup_ids: HashSet<u64>,
-    database_calls: JoinSet<(u64, Option<u64>, Result<DatabaseResult>)>,
-    database_ids: HashSet<u64>,
     actor_calls: JoinSet<(u64, Value)>,
 }
 
@@ -646,18 +759,13 @@ impl ExecutorDriver {
                             if changed { self.changes.send_replace(()); }
                         }
                         ActorExecutorClientMessage::ReadyForInvocation { message_id } => self.allow_next_invocation(message_id)?,
-                        ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
-                        ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
-                        ActorExecutorClientMessage::DatabaseCall { call_id, message_id, call } => self.call_database(call_id, message_id, call)?,
+                        ActorExecutorClientMessage::Reply { message_id, reply, .. } => self.deliver(message_id, reply)?,
+                        ActorExecutorClientMessage::SocketEffects { message_id, effects, .. } => self.publish(message_id, effects)?,
                         ActorExecutorClientMessage::GetConnections { message_id, query } => self.load_connections(message_id, query)?,
                         ActorExecutorClientMessage::ActorCall { call_id, call } => self.call_actor(call_id, call),
                         ActorExecutorClientMessage::Log { message_id, level, message } => self.log(message_id, level, message),
                         ActorExecutorClientMessage::Warm { .. } | ActorExecutorClientMessage::Attach { .. } => anyhow::bail!("customer actor executor attached more than once"),
                     }
-                }
-                called = self.database_calls.join_next(), if !self.database_calls.is_empty() => {
-                    let (call_id, message_id, result) = called.context("actor database call stopped")??;
-                    self.database_called(call_id, message_id, result)?;
                 }
                 called = self.actor_calls.join_next(), if !self.actor_calls.is_empty() => {
                     let (call_id, outcome) = called.context("actor call stopped")??;
@@ -696,7 +804,7 @@ impl ExecutorDriver {
             } => {
                 self.publisher = publisher;
                 self.sockets = sockets;
-                self.database = database;
+                self.scopes.activate(database);
                 self.calls = calls;
                 if let Some(logs) = logs {
                     self.logs = logs;
@@ -707,6 +815,7 @@ impl ExecutorDriver {
                             protocol: ACTOR_EXECUTOR_PROTOCOL_VERSION,
                             actor,
                         })?,
+                        parts: Vec::new(),
                         written: Some(written),
                     })
                     .map_err(|_| anyhow::anyhow!("actor executor writer stopped"))
@@ -733,55 +842,6 @@ impl ExecutorDriver {
         pending.admission_granted = true;
         self.admission.send_replace(());
         Ok(())
-    }
-
-    fn call_database(
-        &mut self,
-        call_id: u64,
-        message_id: Option<u64>,
-        call: DatabaseCall,
-    ) -> Result<()> {
-        let message_id = message_id.filter(|id| self.pending.contains_key(id));
-        let database = match message_id {
-            Some(id) => self.pending[&id].database.clone(),
-            None => self.database.clone(),
-        };
-        if let Some(id) = message_id {
-            ensure!(
-                self.database_ids.insert(id),
-                "actor sent concurrent database calls"
-            );
-        }
-        self.database_calls.spawn(async move {
-            let result = match database {
-                Some(database) => database.call(call).await,
-                None => Err(anyhow::anyhow!("actor database is unavailable")),
-            };
-            (call_id, message_id, result)
-        });
-        Ok(())
-    }
-
-    fn database_called(
-        &mut self,
-        call_id: u64,
-        message_id: Option<u64>,
-        result: Result<DatabaseResult>,
-    ) -> Result<()> {
-        if let Some(id) = message_id {
-            self.database_ids.remove(&id);
-        }
-        let (result, error) = match result {
-            Ok(result) => (Some(result), None),
-            Err(error) => (None, Some(format!("{error:#}"))),
-        };
-        self.write(encode_server_message(
-            &ActorExecutorServerMessage::DatabaseResult {
-                call_id,
-                result,
-                error,
-            },
-        )?)
     }
 
     fn call_actor(&mut self, call_id: u64, call: ActorCall) {
@@ -869,18 +929,24 @@ impl ExecutorDriver {
         });
     }
 
-    fn enqueue(&mut self, pending: PendingCommand) -> Result<()> {
+    fn enqueue(&mut self, mut pending: PendingCommand) -> Result<()> {
         let message_id = self.next_message_id;
         self.next_message_id = message_id
             .checked_add(1)
             .context("actor executor message ID overflow")?;
-        let bytes = encode_server_message(&ActorExecutorServerMessage::Command {
+        let parts = pending.command.parts();
+        let line = encode_server_message(&ActorExecutorServerMessage::Command {
             message_id,
             command: &pending.command,
+            parts: parts.iter().map(Bytes::len).collect(),
         });
-        match bytes {
-            Ok(bytes) => {
-                self.write(bytes)?;
+        match line {
+            Ok(line) => {
+                // The command's database calls can arrive as soon as it is written.
+                if let Some(database) = pending.database.take() {
+                    self.scopes.open(message_id, database);
+                }
+                self.write_parts(line, parts)?;
                 self.pending.insert(message_id, pending);
             }
             Err(error) => {
@@ -891,19 +957,20 @@ impl ExecutorDriver {
     }
 
     fn write(&self, bytes: Vec<u8>) -> Result<()> {
+        self.write_parts(bytes, Vec::new())
+    }
+
+    fn write_parts(&self, bytes: Vec<u8>, parts: Vec<Bytes>) -> Result<()> {
         self.outbound
             .send(ExecutorWrite {
                 bytes,
+                parts,
                 written: None,
             })
             .map_err(|_| anyhow::anyhow!("actor executor writer stopped"))
     }
 
     fn deliver(&mut self, message_id: u64, reply: ExecutorReply) -> Result<()> {
-        ensure!(
-            !self.database_ids.contains(&message_id),
-            "actor replied before its database call completed"
-        );
         ensure!(
             !self.connection_lookup_ids.contains(&message_id),
             "actor completed before connection lookup finished"
@@ -912,6 +979,7 @@ impl ExecutorDriver {
             .pending
             .remove(&message_id)
             .with_context(|| format!("actor executor replied to unknown message {message_id}"))?;
+        self.scopes.close(message_id);
         let _ = pending.reply.send(Ok(reply));
         Ok(())
     }
@@ -922,19 +990,71 @@ async fn read_executor_messages(
     inbound: mpsc::UnboundedSender<Result<ActorExecutorClientMessage>>,
 ) -> Result<()> {
     loop {
-        let reply = match read_client_message(&mut reader).await {
-            Ok(Some(message)) => Ok(message),
-            Ok(None) => Err(anyhow::anyhow!(
-                "customer JavaScript actor executor disconnected"
-            )),
-            Err(error) => Err(error),
-        };
-        let stopped = reply.is_err();
-        inbound
-            .send(reply)
-            .context("actor executor driver stopped")?;
-        if stopped {
+        if let Err(error) = forward_client_message(&mut reader, &inbound).await {
+            inbound.send(Err(error)).map_err(|_| driver_stopped())?;
             return Ok(());
+        }
+    }
+}
+
+/// Sends the next message to the driver. A result passed on as it arrives follows its message.
+async fn forward_client_message(
+    reader: &mut BufReader<OwnedReadHalf>,
+    inbound: &mpsc::UnboundedSender<Result<ActorExecutorClientMessage>>,
+) -> Result<()> {
+    let mut message = read_client_line(reader)
+        .await?
+        .context("customer JavaScript actor executor disconnected")?;
+    let arriving = message.arriving_result();
+    if arriving.is_none() {
+        read_parts(reader, &mut message).await?;
+    }
+    inbound.send(Ok(message)).map_err(|_| driver_stopped())?;
+    match arriving {
+        Some(arriving) => arriving.forward(reader).await,
+        None => Ok(()),
+    }
+}
+
+fn driver_stopped() -> anyhow::Error {
+    anyhow::anyhow!("actor executor driver stopped")
+}
+
+/// A result passed on as it arrives, followed by nothing but empty socket effects.
+struct ArrivingResult {
+    size: usize,
+    chunks: mpsc::Sender<Bytes>,
+}
+
+impl ArrivingResult {
+    /// Once nobody takes the result any more, the rest is still read, so the next message lines
+    /// up.
+    async fn forward(self, reader: &mut BufReader<OwnedReadHalf>) -> Result<()> {
+        let mut chunks = Some(self.chunks);
+        let mut remaining = self.size;
+        while remaining > 0 {
+            let chunk = read_part(reader, remaining.min(BUFFER_BYTES)).await?;
+            remaining -= chunk.len();
+            if let Some(taker) = &chunks
+                && !pass_on(taker, chunk).await
+            {
+                chunks = None;
+            }
+        }
+        ensure!(
+            read_part(reader, NO_EFFECTS.len()).await? == NO_EFFECTS,
+            "a result passed on as it arrives was followed by socket effects"
+        );
+        Ok(())
+    }
+}
+
+async fn pass_on(chunks: &mpsc::Sender<Bytes>, chunk: Vec<u8>) -> bool {
+    match tokio::time::timeout(ARRIVING_RESULT_STALL, chunks.send(chunk.into())).await {
+        Ok(sent) => sent.is_ok(),
+        Err(_) => {
+            warn!("an actor result was not taken for 30 seconds, so the rest of it is dropped");
+            false
         }
     }
 }
@@ -944,8 +1064,7 @@ async fn write_executor_messages(
     mut writes: mpsc::UnboundedReceiver<ExecutorWrite>,
 ) -> Result<()> {
     while let Some(write) = writes.recv().await {
-        let result = writer
-            .write_all(&write.bytes)
+        let result = write_message(&mut writer, &write)
             .await
             .context("write actor executor command");
         if let Some(written) = write.written {
@@ -957,6 +1076,14 @@ async fn write_executor_messages(
             );
         }
         result?;
+    }
+    Ok(())
+}
+
+async fn write_message(writer: &mut OwnedWriteHalf, write: &ExecutorWrite) -> std::io::Result<()> {
+    writer.write_all(&write.bytes).await?;
+    for part in &write.parts {
+        writer.write_all(part).await?;
     }
     Ok(())
 }
@@ -981,22 +1108,60 @@ struct PendingCommand {
     reply: oneshot::Sender<Result<ExecutorReply>>,
 }
 
+/// A line, then the parts whose sizes it announces.
 struct ExecutorWrite {
     bytes: Vec<u8>,
+    parts: Vec<Bytes>,
     written: Option<oneshot::Sender<Result<()>>>,
 }
 
+/// A message is a line of JSON, then the parts whose sizes the line announces.
 async fn read_client_message(
-    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    reader: &mut BufReader<OwnedReadHalf>,
 ) -> Result<Option<ActorExecutorClientMessage>> {
-    let mut document = Vec::new();
-    let bytes = reader.read_until(b'\n', &mut document).await?;
-    if bytes == 0 {
+    let Some(mut message) = read_client_line(reader).await? else {
+        return Ok(None);
+    };
+    read_parts(reader, &mut message).await?;
+    Ok(Some(message))
+}
+
+async fn read_client_line(
+    reader: &mut BufReader<OwnedReadHalf>,
+) -> Result<Option<ActorExecutorClientMessage>> {
+    let mut line = Vec::new();
+    if reader.read_until(b'\n', &mut line).await? == 0 {
         return Ok(None);
     }
-    serde_json::from_slice(trim_ascii_end(&document))
+    serde_json::from_slice(trim_ascii_end(&line))
         .map(Some)
         .context("decode customer actor executor message")
+}
+
+async fn read_parts(
+    reader: &mut BufReader<OwnedReadHalf>,
+    message: &mut ActorExecutorClientMessage,
+) -> Result<()> {
+    let mut parts = Vec::new();
+    for &size in message.part_sizes() {
+        parts.push(read_part(reader, size).await?);
+    }
+    message
+        .attach(parts)
+        .context("decode customer actor executor message parts")
+}
+
+// The customer process chooses the size, so memory is claimed only as its bytes arrive.
+async fn read_part(reader: &mut BufReader<OwnedReadHalf>, size: usize) -> Result<Vec<u8>> {
+    let mut part = Vec::new();
+    part.try_reserve_exact(size)
+        .context("customer actor executor message part is too large")?;
+    reader.take(size as u64).read_to_end(&mut part).await?;
+    ensure!(
+        part.len() == size,
+        "customer actor executor disconnected inside a message"
+    );
+    Ok(part)
 }
 
 fn trim_ascii_end(mut document: &[u8]) -> &[u8] {
@@ -1028,27 +1193,9 @@ async fn prepare_socket_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn remove_socket(path: &Path) -> Result<()> {
-    match tokio::fs::remove_file(path).await {
-        Ok(()) => {
-            debug!(socket = %path.display(), "actor executor socket removed");
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorServerMessage<'a> {
-    DatabaseResult {
-        call_id: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<DatabaseResult>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
     ActorResult {
         call_id: u64,
         outcome: Value,
@@ -1066,18 +1213,14 @@ enum ActorExecutorServerMessage<'a> {
     Command {
         message_id: u64,
         command: &'a ExecutorCommand,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        parts: Vec<usize>,
     },
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorClientMessage {
-    DatabaseCall {
-        call_id: u64,
-        #[serde(default)]
-        message_id: Option<u64>,
-        call: DatabaseCall,
-    },
     ActorCall {
         call_id: u64,
         call: ActorCall,
@@ -1098,6 +1241,9 @@ enum ActorExecutorClientMessage {
     },
     SocketEffects {
         message_id: u64,
+        #[serde(default)]
+        parts: Vec<usize>,
+        #[serde(skip)]
         effects: Vec<ActorSocketEffect>,
     },
     Attach {
@@ -1107,6 +1253,8 @@ enum ActorExecutorClientMessage {
     Reply {
         message_id: u64,
         reply: ExecutorReply,
+        #[serde(default)]
+        parts: Vec<usize>,
     },
     Log {
         #[serde(default)]
@@ -1114,6 +1262,98 @@ enum ActorExecutorClientMessage {
         level: LogLevel,
         message: String,
     },
+}
+
+impl ActorExecutorClientMessage {
+    fn part_sizes(&self) -> &[usize] {
+        match self {
+            Self::Reply { parts, .. } | Self::SocketEffects { parts, .. } => parts,
+            _ => &[],
+        }
+    }
+
+    /// A large result of a call that is not interleaved, with no socket effects after it, is
+    /// passed on as it arrives rather than read whole first.
+    fn arriving_result(&mut self) -> Option<ArrivingResult> {
+        let Self::Reply {
+            reply:
+                ExecutorReply::Invoked {
+                    result,
+                    sequence: None,
+                    ..
+                },
+            parts,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let &[size, effects] = parts.as_slice() else {
+            return None;
+        };
+        if size <= ARRIVING_BYTES || effects != NO_EFFECTS.len() {
+            return None;
+        }
+        let (chunks, arriving) = mpsc::channel(ARRIVING_RESULT_CHUNKS);
+        *result = JsonStream::new(ReceiverStream::new(arriving).map(Ok), size).into();
+        Some(ArrivingResult { size, chunks })
+    }
+
+    /// Fills in what followed the line: the result of an invocation, then the socket effects.
+    fn attach(&mut self, parts: Vec<Vec<u8>>) -> Result<()> {
+        let mut parts = Parts(parts.into_iter());
+        match self {
+            Self::SocketEffects { effects, .. } => *effects = parts.effects()?,
+            Self::Reply { reply, .. } => match reply {
+                ExecutorReply::Invoked {
+                    result, effects, ..
+                } => {
+                    *result = JsonText::from_vec(parts.next()?)?.into();
+                    *effects = parts.effects()?;
+                }
+                ExecutorReply::WebsocketHandled { effects, .. } => *effects = parts.effects()?,
+                _ => {}
+            },
+            _ => {}
+        }
+        parts.finish()
+    }
+}
+
+struct Parts(std::vec::IntoIter<Vec<u8>>);
+
+impl Parts {
+    /// A text message is written without its text, which is the next part and so is never
+    /// escaped into a JSON string.
+    fn effects(&mut self) -> Result<Vec<ActorSocketEffect>> {
+        let mut effects: Vec<Value> = self.json()?;
+        for effect in &mut effects {
+            let message = effect
+                .get_mut("message")
+                .filter(|message| message["type"] == "text");
+            if let Some(message) = message {
+                message["data"] = Value::String(self.text()?);
+            }
+        }
+        Ok(serde_json::from_value(Value::Array(effects))?)
+    }
+
+    fn json<T: DeserializeOwned>(&mut self) -> Result<T> {
+        Ok(serde_json::from_slice(&self.next()?)?)
+    }
+
+    fn text(&mut self) -> Result<String> {
+        Ok(String::from_utf8(self.next()?)?)
+    }
+
+    fn next(&mut self) -> Result<Vec<u8>> {
+        self.0.next().context("a part is missing")
+    }
+
+    fn finish(mut self) -> Result<()> {
+        ensure!(self.0.next().is_none(), "a part is left over");
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1134,6 +1374,14 @@ enum ExecutorCommand {
 }
 
 impl ExecutorCommand {
+    /// What can be large follows the command's line as parts, so it is never escaped into the line.
+    fn parts(&self) -> Vec<Bytes> {
+        match self {
+            Self::Invoke(invocation) => vec![invocation.args.text().bytes()],
+            _ => Vec::new(),
+        }
+    }
+
     fn request_id(&self) -> Option<&str> {
         match self {
             Self::Hydrate { request_id } | Self::WebsocketEvent { request_id, .. } => {
@@ -1150,15 +1398,17 @@ impl ExecutorCommand {
 enum ExecutorReply {
     Hydrated,
     Invoked {
-        result: Value,
+        #[serde(skip)]
+        result: JsonPayload,
         #[serde(default)]
         sequence: Option<u64>,
-        #[serde(default)]
+        #[serde(skip)]
         effects: Vec<ActorSocketEffect>,
     },
     WebsocketHandled {
         #[serde(default)]
         sequence: Option<u64>,
+        #[serde(skip)]
         effects: Vec<ActorSocketEffect>,
     },
     Failed {

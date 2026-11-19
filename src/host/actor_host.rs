@@ -8,7 +8,6 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{error, info, warn};
 
@@ -18,6 +17,7 @@ use crate::actor::{
     ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, validate_socket_effects,
 };
 use crate::host_leases::WaitingOperation;
+use crate::payload::JsonPayload;
 use crate::request_traces::RequestKind;
 use crate::request_tracking::{
     HostState, RequestCompletion, RequestMetadata, RequestObserver, RequestStage, RequestTracker,
@@ -95,6 +95,7 @@ impl ActorHost {
             requests,
             pending: VecDeque::new(),
             running: FuturesUnordered::new(),
+            transfers: FuturesUnordered::new(),
             next_invocation: 0,
             blocked_on: None,
             interleaved: false,
@@ -263,6 +264,7 @@ struct Actor {
     admission: Option<watch::Receiver<()>>,
     pending: VecDeque<Queued>,
     running: FuturesUnordered<BoxFuture<'static, Completion>>,
+    transfers: FuturesUnordered<oneshot::Receiver<()>>,
     next_invocation: u64,
     blocked_on: Option<u64>,
     interleaved: bool,
@@ -284,7 +286,7 @@ impl Actor {
         let mut open = true;
         loop {
             self.start_ready();
-            if self.draining && self.running.is_empty() && self.pending.is_empty() {
+            if self.draining && !self.busy() {
                 self.evict(true).await;
                 return;
             }
@@ -297,6 +299,7 @@ impl Actor {
                 Some(completion) = self.running.next(), if !self.running.is_empty() => {
                     if !self.executed(completion).await { return; }
                 }
+                Some(_) = self.transfers.next(), if !self.transfers.is_empty() => {}
                 _ = stopped.cancelled() => {
                     self.evict(false).await;
                     return;
@@ -371,7 +374,7 @@ impl Actor {
         let Completion {
             id,
             request,
-            result,
+            mut result,
             ..
         } = completion;
         self.owner_epoch = request.owner_epoch;
@@ -395,6 +398,13 @@ impl Actor {
         }
         if self.blocked_on == Some(id) {
             self.blocked_on = None;
+        }
+        if let Ok(ActorExecutionResult::Completed {
+            result: JsonPayload::Arriving(stream),
+            ..
+        }) = &mut result
+        {
+            self.transfers.push(stream.finished());
         }
         self.finish(request, result);
         true
@@ -431,7 +441,7 @@ impl Actor {
                 actor: self.actor.clone(),
                 request_id: "evict".into(),
                 method: "evict".into(),
-                args: vec![],
+                args: Default::default(),
             },
             self.owner_epoch,
             Default::default(),
@@ -456,13 +466,18 @@ impl Actor {
         }
     }
 
+    /// Results still passing on count as work, so the host neither idles nor drains under them.
+    fn busy(&self) -> bool {
+        !self.running.is_empty() || !self.pending.is_empty() || !self.transfers.is_empty()
+    }
+
     fn publish(&self) {
         let phase = if self.draining {
             ActorPhase::Draining
         } else {
             ActorPhase::Serving
         };
-        let busy = !self.running.is_empty() || !self.pending.is_empty();
+        let busy = self.busy();
         let waiting = self
             .pending
             .iter()
@@ -563,7 +578,7 @@ async fn run_request(
             actor: actor.clone(),
             request_id: "activate".into(),
             method: "activate".into(),
-            args: vec![],
+            args: Default::default(),
         });
         let result = activate(actor, &executor, &database).await;
         let recovery = match &result {
@@ -579,7 +594,7 @@ async fn run_request(
             id,
             request,
             result: Ok(ActorExecutionResult::Completed {
-                result: Value::Null,
+                result: JsonPayload::default(),
                 effects: vec![],
             }),
             interleaved: false,
@@ -677,7 +692,7 @@ async fn activate(
             actor,
             request_id: "activate".into(),
             method: "activate".into(),
-            args: vec![],
+            args: Default::default(),
         },
         activation.owner_epoch,
         Default::default(),
@@ -712,7 +727,7 @@ async fn execute(
                     ActorMethodOutcome::Interleaved(outcome)
                 }
                 ActorSocketOutcome::Handled { effects } => ActorMethodOutcome::Completed {
-                    result: Value::Null,
+                    result: JsonPayload::default(),
                     effects,
                 },
                 ActorSocketOutcome::Failed(failure) => ActorMethodOutcome::Failed(failure),
@@ -768,7 +783,19 @@ async fn commit_outcome(
             Recovery::Reset,
         );
     }
-    let version = match scope.complete(result.clone(), sequence).await {
+    let result = match kept_whole(result, scope, sequence).await {
+        Ok(result) => result,
+        Err(error) => {
+            return (
+                Ok(failed(
+                    "actor_error",
+                    format!("actor executor failed: {error:#}"),
+                )),
+                Recovery::Reset,
+            );
+        }
+    };
+    let version = match scope.complete(result.whole().cloned(), sequence).await {
         Ok(version) => version,
         Err(error) if error.is::<PublicationError>() || sequence.is_some() => {
             warn!(error = %format!("{error:#}"), "actor completed but state publication could not be confirmed");
@@ -785,9 +812,23 @@ async fn commit_outcome(
     (result, Recovery::Keep)
 }
 
+/// A result published with state, or ordered among interleaved calls, is kept by the host and so
+/// is read whole. Any other passes on as it arrives.
+async fn kept_whole(
+    result: JsonPayload,
+    scope: &DatabaseInvocation,
+    sequence: Option<u64>,
+) -> Result<JsonPayload> {
+    if scope.wrote() || sequence.is_some() {
+        Ok(result.into_text().await?.into())
+    } else {
+        Ok(result)
+    }
+}
+
 fn complete_with_state(
     state_version: u64,
-    result: Value,
+    result: JsonPayload,
     effects: Vec<ActorSocketEffect>,
     database: &HostDatabase,
     publisher: &Arc<dyn ActorSocketPublisher>,
@@ -888,14 +929,14 @@ impl ActorOperation {
                 request_id: "activate".into(),
                 actor: actor.clone(),
                 method: "activate".into(),
-                args: vec![],
+                args: Default::default(),
             }),
             Self::Method(invocation) => Cow::Borrowed(invocation),
             Self::Socket(invocation) => Cow::Owned(ActorInvocation {
                 request_id: invocation.request_id.clone(),
                 actor: invocation.actor.clone(),
                 method: socket_event_name(&invocation.event).into(),
-                args: Vec::new(),
+                args: Default::default(),
             }),
         }
     }

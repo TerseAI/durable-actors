@@ -25,10 +25,20 @@ function manifests(overrides) {
     return result.stdout
 }
 
+function tier(memoryMiB, warm) {
+    return { cpuMillis: 250, cpuLimitMillis: null, memoryMiB, memoryLimitMiB: memoryMiB, warm }
+}
+
 test("enables usage publishing only when a topic is configured", () => {
     assert.doesNotMatch(manifests(), /DURABLE_ACTORS_USAGE_TOPIC/)
     const output = manifests({ usage: { topic: "projects/example/topics/actor-usage" } })
     assert.match(output, /DURABLE_ACTORS_USAGE_TOPIC, value: "projects\/example\/topics\/actor-usage"/)
+})
+
+test("enables event publishing only when a topic is configured", () => {
+    assert.doesNotMatch(manifests(), /DURABLE_ACTORS_EVENTS_TOPIC/)
+    const output = manifests({ events: { topic: "projects/example/topics/actor-events" } })
+    assert.match(output, /DURABLE_ACTORS_EVENTS_TOPIC, value: "projects\/example\/topics\/actor-events"/)
 })
 
 test("configures ClickHouse analytics with a password from the credentials secret", () => {
@@ -117,6 +127,15 @@ test("allows extra controllers and a small warm pool", () => {
     assert.match(output, /kind: PodDisruptionBudget/)
 })
 
+test("gives the pool manager and every controller the same warm pool per actor size", () => {
+    const tiers = [tier(256, 2), { cpuMillis: 500, cpuLimitMillis: 1000, memoryMiB: 512, memoryLimitMiB: 768, warm: 1 }]
+    const output = manifests({ replicaCount: 2, actors: { tiers }, redis: { urlSecretKey: "redis-url" } })
+    const configured = [...output.matchAll(/DURABLE_ACTORS_SPARE_TIERS, value: (".*")\}/g)].map(match => JSON.parse(JSON.parse(match[1])))
+    assert.deepEqual(configured, [tiers, tiers])
+    assert.doesNotMatch(output, /DURABLE_ACTORS_SPARE_IDLE/)
+    assert.equal(output.match(/DURABLE_ACTORS_HOST_MEMORY_MIB, value: "256"/g).length, 2)
+})
+
 test("runs exactly one pool manager beside the serving control plane", () => {
     const deployments = manifests({ replicaCount: 3, redis: { urlSecretKey: "redis-url" } }).split("---").filter(document => document.includes("kind: Deployment"))
     const manager = deployments.find(document => document.includes("-pool-manager\n"))
@@ -156,6 +175,12 @@ for (const [name, overrides] of [
     ["shared trust namespace", { sandboxNamespace: "actors" }],
     ["missing ingress certificate", { ingress: { enabled: true } }],
     ["warm pool above fleet limit", { actors: { warm: 300 } }],
+    ["warm pool beside spare tiers", { actors: { warm: 2, tiers: [tier(256, 2)] } }],
+    ["spare tiers above fleet limit", { actors: { tiers: [tier(256, 200), tier(512, 57)] } }],
+    ["spare tiers of the same size", { actors: { tiers: [tier(256, 1), tier(256, 2)] } }],
+    ["spare tier without a warm count", { actors: { tiers: [{ ...tier(256, 1), warm: undefined }] } }],
+    ["spare tier without a CPU limit", { actors: { tiers: [{ ...tier(256, 1), cpuLimitMillis: undefined }] } }],
+    ["spare tier without a memory limit", { actors: { tiers: [{ ...tier(256, 1), memoryLimitMiB: undefined }] } }],
     ["refill interval below 50 ms", { actors: { refillIntervalMs: 10 } }]
 ]) test(`rejects ${name}`, () => assert.notEqual(render(overrides).status, 0))
 
@@ -209,8 +234,9 @@ test("the control plane reports platform events on a port sandboxes cannot reach
     assert.match(output, /\{name: otlp-internal, port: 4319, targetPort: otlp-internal, appProtocol: grpc\}/)
     assert.match(output, new RegExp(`PLATFORM_TOKEN_ISSUER, value: "${issuer}"`))
     assert.match(output, /serviceAccountToken: \{audience: durable-actors-platform-telemetry, expirationSeconds: 3600, path: token\}/)
-    // Only the control plane serves WebSockets and deployments, so the pool manager gets no token.
-    assert.equal(output.match(/DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT/g).length, 1)
+    // The control plane reports connections and deployments; the pool manager reports sandbox kills.
+    assert.equal(output.match(/DURABLE_ACTORS_PLATFORM_TELEMETRY_ENDPOINT/g).length, 2)
+    assert.equal(output.match(/name: platform-telemetry, mountPath/g).length, 2)
     assert.doesNotMatch(output, /port: 4319\}\n[^\n]*\n[^\n]*sandbox/)
     assert.match(output, /\{protocol: TCP, port: 4317\}/)
     assert.doesNotMatch(output, /\{protocol: TCP, port: 4319\}/)

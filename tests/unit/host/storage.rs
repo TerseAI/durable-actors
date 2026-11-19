@@ -52,7 +52,7 @@ impl Bucket for MemoryBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: bytes::Bytes,
+        bytes: crate::payload::Payload,
     ) -> Result<bool> {
         if key.contains("/owners/") {
             let delayed = self.delay_ownership.lock().unwrap().take();
@@ -149,7 +149,7 @@ async fn host_adopts_its_claim_then_reads_and_writes_without_a_control_plane() -
         .await?;
     let (version, loaded) = storage.load_actor_state(1).await?;
     assert_eq!(version, 1);
-    assert_eq!(loaded.as_ref(), snapshot.as_ref());
+    assert_eq!(loaded.unwrap().bytes, snapshot);
     assert!(storage.prepare_state_write(2, 1).await.is_err());
     storage.unregister(&host, "session").await?;
     assert!(storage.ensure_authority().is_err());
@@ -272,7 +272,12 @@ async fn canceling_an_ambiguous_write_permanently_fences_the_host() -> Result<()
     Ok(())
 }
 
-async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePlan, bytes::Bytes)> {
+async fn pending_write() -> Result<(
+    Arc<MemoryBucket>,
+    Arc<HostStorage>,
+    WritePlan,
+    crate::payload::Payload,
+)> {
     let bucket = Arc::new(MemoryBucket::default());
     let storage = Arc::new(host_storage(bucket.clone()).await?);
     storage
@@ -322,7 +327,7 @@ async fn socket_publication_uses_the_local_lease_without_reading_ownership() -> 
             .find(|(key, _)| key.contains("/owners/"))
             .unwrap()
             .1;
-        let mut record: serde_json::Value = serde_json::from_slice(&owner.bytes)?;
+        let mut record: serde_json::Value = serde_json::from_slice(&owner.bytes.to_bytes()?)?;
         record["lease"]["session_id"] = "replacement".into();
         owner.bytes = crate::payload::encode(&record)?;
         owner.generation += 1;
@@ -343,16 +348,16 @@ struct DelayedFinish {
 
 #[async_trait]
 impl crate::bucket::SnapshotStore for DelayedFinish {
-    async fn get(&self, key: &str) -> Result<Option<bytes::Bytes>> {
+    async fn get(&self, key: &str) -> Result<Option<crate::payload::Payload>> {
         self.snapshots.get(key).await
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         self.snapshots.list(prefix).await
     }
-    async fn latest(&self, prefix: &str) -> Result<Option<(String, bytes::Bytes)>> {
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, crate::payload::Payload)>> {
         self.snapshots.latest(prefix).await
     }
-    async fn put(&self, key: &str, bytes: bytes::Bytes) -> Result<()> {
+    async fn put(&self, key: &str, bytes: crate::payload::Payload) -> Result<()> {
         self.snapshots.put(key, bytes).await
     }
     async fn finish(&self, _: &crate::storage::StateStream, _: tokio::time::Instant) -> Result<()> {
@@ -416,7 +421,7 @@ impl MemoryBucket {
             .iter()
             .find(|(key, _)| key.contains("/owners/"))
             .context("ownership record missing")?;
-        Ok(serde_json::from_slice(&owner.bytes)?)
+        Ok(serde_json::from_reader(owner.bytes.reader())?)
     }
 }
 

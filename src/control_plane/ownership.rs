@@ -11,6 +11,7 @@ use crate::{
     bucket::{Bucket, BucketObject, OwnershipStore, confirm_replace},
     clock::Clock,
     host_leases::HostLease,
+    payload::Payload,
     postgres::PostgresDatabase,
 };
 
@@ -45,10 +46,11 @@ impl OwnershipStore for PostgresOwnership {
         }
     }
 
-    async fn replace(&self, key: &str, generation: Option<i64>, bytes: Bytes) -> Result<bool> {
+    async fn replace(&self, key: &str, generation: Option<i64>, bytes: Payload) -> Result<bool> {
+        let record = bytes.to_bytes()?;
         let replaced = match generation {
-            Some(generation) => self.update(key, generation, &bytes).await,
-            None => self.insert(key, 1, &bytes).await,
+            Some(generation) => self.update(key, generation, &record).await,
+            None => self.insert(key, 1, &record).await,
         };
         confirm_replace(self, key, &bytes, replaced).await
     }
@@ -68,7 +70,7 @@ impl OwnershipStore for PostgresOwnership {
             .legacy
             .get(key)
             .await?
-            .filter(|object| serde_json::from_slice::<Moved>(&object.bytes).is_err()))
+            .filter(|object| serde_json::from_reader::<_, Moved>(object.bytes.reader()).is_err()))
     }
 }
 
@@ -96,18 +98,19 @@ impl PostgresOwnership {
             log_bucket_read(key, "absent", None);
             return Ok(None);
         };
-        let record = match serde_json::from_slice::<Moved>(&legacy.bytes) {
+        let bytes = legacy.bytes.to_bytes()?;
+        let record = match serde_json::from_slice::<Moved>(&bytes) {
             Ok(moved) => {
                 let record = Bytes::from(STANDARD.decode(moved.moved_to_postgres)?);
                 log_bucket_read(key, "moved", Some(&record));
                 record
             }
-            Err(_) if self.leased(key, &legacy.bytes)? => return Ok(Some(legacy)),
+            Err(_) if self.leased(key, &bytes)? => return Ok(Some(legacy)),
             Err(_) => {
-                if !self.mark_moved(key, &legacy).await? {
+                if !self.mark_moved(key, legacy.generation, &bytes).await? {
                     return self.get(key).await;
                 }
-                legacy.bytes.clone()
+                bytes
             }
         };
         let generation = legacy
@@ -128,17 +131,12 @@ impl PostgresOwnership {
 
     /// A renewal or activation that lands after the read makes the marker lose, and the lookup
     /// starts over.
-    async fn mark_moved(&self, key: &str, legacy: &BucketObject) -> Result<bool> {
+    async fn mark_moved(&self, key: &str, generation: i64, bytes: &[u8]) -> Result<bool> {
         let moved = serde_json::to_vec(&Moved {
-            moved_to_postgres: STANDARD.encode(&legacy.bytes),
+            moved_to_postgres: STANDARD.encode(bytes),
         })?;
-        let marked = crate::bucket::replace(
-            self.legacy.as_ref(),
-            key,
-            Some(legacy.generation),
-            moved.into(),
-        )
-        .await;
+        let marked =
+            crate::bucket::replace(self.legacy.as_ref(), key, Some(generation), moved.into()).await;
         let outcome = match &marked {
             Ok(true) => "moved",
             Ok(false) => "conflict",
@@ -149,7 +147,7 @@ impl PostgresOwnership {
             key,
             "migration",
             outcome,
-            Some(&legacy.bytes),
+            Some(bytes),
         );
         marked
     }
@@ -164,7 +162,7 @@ impl PostgresOwnership {
             .await?;
         Ok(row.map(|row| BucketObject {
             generation: row.get(0),
-            bytes: Bytes::from(row.get::<_, Vec<u8>>(1)),
+            bytes: row.get::<_, Vec<u8>>(1).into(),
         }))
     }
 

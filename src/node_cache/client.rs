@@ -1,12 +1,12 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures_util::{TryStreamExt, stream::BoxStream};
 use reqwest::header::AUTHORIZATION;
 use tokio::io::AsyncWriteExt;
 
-use crate::control_plane::HostAuthorization;
+use crate::{control_plane::HostAuthorization, payload::Payload};
 
 // With no cache pod on the node the Service drops packets instead of refusing them, so only a
 // short connect timeout keeps installs from stalling.
@@ -112,22 +112,20 @@ impl NodeCacheClient {
             .await
     }
 
-    pub(crate) async fn snapshot(&self, digest: &str) -> Result<Option<Bytes>> {
-        let Some(chunks) = self.read(&format!("snapshot/{digest}")).await? else {
+    pub(crate) async fn snapshot(&self, digest: &str) -> Result<Option<Payload>> {
+        let Some(mut chunks) = self.read(&format!("snapshot/{digest}")).await? else {
             return Ok(None);
         };
-        let bytes = chunks
-            .try_fold(BytesMut::new(), |mut bytes, chunk| async move {
-                bytes.extend_from_slice(&chunk);
-                Ok(bytes)
-            })
-            .await?;
-        Ok(Some(bytes.freeze()))
+        let mut download = crate::payload::Download::new();
+        while let Some(chunk) = chunks.try_next().await? {
+            download = download.append(chunk).await?;
+        }
+        Ok(Some(download.finish().await?))
     }
 
-    pub(crate) async fn store_snapshot(&self, digest: &str, bytes: Bytes) -> Result<()> {
-        self.write(&format!("snapshot/{digest}"), bytes.into())
-            .await
+    pub(crate) async fn store_snapshot(&self, digest: &str, bytes: Payload) -> Result<()> {
+        let body = reqwest::Body::wrap_stream(bytes.chunks());
+        self.write(&format!("snapshot/{digest}"), body).await
     }
 
     async fn read(&self, entry: &str) -> Result<Option<BoxStream<'static, Result<Bytes>>>> {
@@ -161,7 +159,7 @@ impl NodeCacheClient {
 async fn file_body(path: &Path) -> Result<reqwest::Body> {
     let file = tokio::fs::File::open(path).await?;
     Ok(reqwest::Body::wrap_stream(
-        tokio_util::io::ReaderStream::new(file),
+        tokio_util::io::ReaderStream::with_capacity(file, super::FILE_CHUNK_BYTES),
     ))
 }
 

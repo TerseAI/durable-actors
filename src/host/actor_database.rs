@@ -1,14 +1,16 @@
 use super::HostEndpoint;
+use crate::payload::JsonText;
 use crate::{
-    actor::{ActorDatabase, ActorExecutionResult, ActorInvocation, DatabaseCall, DatabaseResult},
+    actor::{
+        ActorDatabase, ActorExecutionResult, ActorInvocation, DatabaseCall, DatabaseResult, RowSink,
+    },
     litestream::Replicator,
     request_tracking::{RequestStage, RequestTracker},
     state_log::SqliteSnapshot,
-    storage::WritePlan,
+    storage::{VerifiedSnapshot, WritePlan},
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use serde_json::Value;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -26,8 +28,8 @@ use session::DatabaseSession;
 #[async_trait]
 pub(crate) trait ActorStorage: Send + Sync {
     async fn acquire_actor(&self) -> Result<ActorActivation>;
-    async fn load_actor_state(&self, epoch: u64) -> Result<(u64, bytes::Bytes)>;
-    async fn read_sqlite(&self, bytes: &[u8]) -> Result<SqliteSnapshot>;
+    async fn load_actor_state(&self, epoch: u64) -> Result<(u64, Option<VerifiedSnapshot>)>;
+    async fn read_sqlite(&self, snapshot: &VerifiedSnapshot) -> Result<SqliteSnapshot>;
     async fn get_alarm(&self) -> Result<Option<i64>>;
     async fn update_alarm(&self, timestamp_ms: Option<i64>) -> Result<()>;
     fn ensure_authority(&self) -> Result<()>;
@@ -44,8 +46,7 @@ pub(crate) trait ActorStorage: Send + Sync {
     /// across activations; `None` starts a new history with a full copy.
     fn resume_parent(
         &self,
-        _snapshot: &crate::state_log::StateSnapshot,
-        _bytes: &[u8],
+        _snapshot: &VerifiedSnapshot,
     ) -> Result<Option<crate::storage::SnapshotRef>> {
         Ok(None)
     }
@@ -58,7 +59,7 @@ pub(crate) trait ActorStorage: Send + Sync {
 pub(crate) struct ActorActivation {
     pub owner_epoch: u64,
     pub state_version: u64,
-    pub state: Option<bytes::Bytes>,
+    pub state: Option<VerifiedSnapshot>,
 }
 
 #[derive(Clone, Default)]
@@ -140,7 +141,7 @@ impl HostDatabase {
             actor,
             request_id: "background".into(),
             method: "background".into(),
-            args: vec![],
+            args: Default::default(),
         };
         self.scope(invocation, None, CommitOrigin::default())
     }
@@ -273,7 +274,17 @@ impl DatabaseInvocation {
         self.scope.active.store(false, Ordering::Release);
     }
 
-    pub(super) async fn complete(&self, result: Value, sequence: Option<u64>) -> Result<u64> {
+    pub(super) fn wrote(&self) -> bool {
+        self.scope.committed.load(Ordering::Acquire) > 0
+    }
+
+    /// `result` is `None` when it passes on as it arrives, which only a call that wrote nothing
+    /// can do.
+    pub(super) async fn complete(
+        &self,
+        result: Option<JsonText>,
+        sequence: Option<u64>,
+    ) -> Result<u64> {
         self.close();
         let (reply, response) = oneshot::channel();
         self.database
@@ -292,7 +303,7 @@ impl DatabaseInvocation {
 
 #[async_trait]
 impl ActorDatabase for DatabaseInvocation {
-    async fn call(&self, call: DatabaseCall) -> Result<DatabaseResult> {
+    async fn call(&self, call: DatabaseCall, rows: Box<dyn RowSink>) -> Result<DatabaseResult> {
         ensure!(
             self.scope.active.load(Ordering::Acquire),
             "database call has no active invocation"
@@ -302,6 +313,7 @@ impl ActorDatabase for DatabaseInvocation {
             .send(Command::Call {
                 scope: self.scope.clone(),
                 call,
+                rows,
                 reply,
             })
             .await?;
@@ -361,6 +373,7 @@ enum Command {
     Call {
         scope: Arc<InvocationScope>,
         call: DatabaseCall,
+        rows: Box<dyn RowSink>,
         reply: oneshot::Sender<Result<DatabaseResult>>,
     },
     Activate {
@@ -382,7 +395,7 @@ enum Command {
 
 struct PendingCompletion {
     scope: Arc<InvocationScope>,
-    result: Value,
+    result: Option<JsonText>,
     sequence: Option<u64>,
     reply: oneshot::Sender<Result<u64>>,
 }
@@ -426,7 +439,12 @@ impl DatabaseService {
                     .await;
                 let _ = reply.send((result, timings));
             }
-            Command::Call { scope, call, reply } => return self.call(scope, call, reply).await,
+            Command::Call {
+                scope,
+                call,
+                rows,
+                reply,
+            } => return self.call(scope, call, rows, reply).await,
             Command::Activate { reply } => {
                 let _ = reply.send(self.session.prepare_activation().await);
             }
@@ -453,6 +471,7 @@ impl DatabaseService {
         &mut self,
         scope: Arc<InvocationScope>,
         call: DatabaseCall,
+        rows: Box<dyn RowSink>,
         reply: oneshot::Sender<Result<DatabaseResult>>,
     ) -> bool {
         if !scope.active.load(Ordering::Acquire) {
@@ -468,6 +487,7 @@ impl DatabaseService {
                 scope.owner_epoch,
                 scope.origin.clone(),
                 call,
+                rows,
             )
             .await;
         match result {

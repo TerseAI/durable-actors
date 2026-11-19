@@ -3,8 +3,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use crate::payload::Payload;
 use anyhow::Result;
-use bytes::Bytes;
 
 use super::*;
 use crate::{
@@ -45,7 +45,7 @@ impl Bucket for LossyBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: Bytes,
+        bytes: Payload,
     ) -> Result<bool> {
         let written = self.inner.compare_and_swap(key, generation, bytes).await?;
         anyhow::ensure!(
@@ -105,7 +105,10 @@ impl Harness {
             .select(&owner(actor))
             .await?
             .context("no PostgreSQL record")?;
-        Ok(serde_json::from_slice::<serde_json::Value>(&record.bytes)?["sealed"] == true)
+        Ok(
+            serde_json::from_reader::<_, serde_json::Value>(record.bytes.reader())?["sealed"]
+                == true,
+        )
     }
 
     fn advance(&self, ms: u64) {
@@ -146,7 +149,7 @@ fn key() -> String {
     owner(&actor_named("one"))
 }
 
-fn record(expires_at_ms: u64) -> Bytes {
+fn record(expires_at_ms: u64) -> Payload {
     serde_json::to_vec(&serde_json::json!({
         "actor": actor_named("one"),
         "lease": {"id": "legacy-host", "session_id": "legacy", "route": "http://legacy", "expires_at_ms": expires_at_ms},
@@ -157,9 +160,9 @@ fn record(expires_at_ms: u64) -> Bytes {
     .into()
 }
 
-fn moved(record: &[u8]) -> Bytes {
+fn moved(record: &Payload) -> Payload {
     serde_json::to_vec(&Moved {
-        moved_to_postgres: STANDARD.encode(record),
+        moved_to_postgres: STANDARD.encode(record.to_bytes().unwrap()),
     })
     .unwrap()
     .into()
@@ -458,7 +461,11 @@ async fn an_activation_racing_the_marker_wins_and_stays_in_the_bucket() -> Resul
             .register_activation(&actor, &request("second"), "us-east", false, None)
             .await?;
         let store = h.store()?;
-        assert!(!store.mark_moved(&key(), &read).await?);
+        assert!(
+            !store
+                .mark_moved(&key(), read.generation, &read.bytes.to_bytes()?)
+                .await?
+        );
         let current = store.get(&key()).await?.unwrap();
         assert_eq!(h.bucket.get(&key()).await?.unwrap().bytes, current.bytes);
         assert_eq!(h.rows().await?, 0);

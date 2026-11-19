@@ -59,7 +59,6 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
                 otlp_endpoint: None,
                 control_plane_url: None,
                 kind: SpareKind::Actor,
-                idle: 0,
                 fleet_maximum: 0,
                 max_starting: 1,
                 idle_ttl_seconds: 600,
@@ -68,11 +67,11 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
                 reap_interval: Duration::from_secs(30),
                 pod_reap_interval: Duration::from_secs(1),
                 regions: vec![],
-                resources: ResourceLimits::default(),
+                tiers: vec![],
             },
         );
         for name in ["done", "live"] {
-            pool.reserve_host(name, name, "revision").await?;
+            pool.reserve_host(name, name, "revision", None).await?;
             let spare = SpareHandle {
                 node: String::new(),
                 name: format!("do-actor-{name}"),
@@ -84,7 +83,7 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
             };
             pool.remember(name, "revision", &spare).await?;
         }
-        pool.reserve_host("starting", "starting", "revision")
+        pool.reserve_host("starting", "starting", "revision", None)
             .await?;
         assert!(pool.forget_stopped().await.is_err());
         assert!(pool.host("done").await?.is_some());
@@ -140,7 +139,6 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
                 otlp_endpoint: None,
                 control_plane_url: None,
                 kind: SpareKind::Actor,
-                idle: 0,
                 fleet_maximum: 0,
                 max_starting: 1,
                 idle_ttl_seconds: 600,
@@ -149,7 +147,7 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
                 reap_interval: Duration::from_secs(30),
                 pod_reap_interval: Duration::from_secs(1),
                 regions: vec![],
-                resources: ResourceLimits::default(),
+                tiers: vec![],
             },
         );
         let mut spare = SpareHandle {
@@ -161,7 +159,7 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
             control_route: "http://host:7102".into(),
             control_token: "token".into(),
         };
-        pool.reserve_host("done", "old", "revision").await?;
+        pool.reserve_host("done", "old", "revision", None).await?;
         pool.remember("old", "revision", &spare).await?;
         let cleanup = pool.forget_stopped();
         tokio::pin!(cleanup);
@@ -176,7 +174,7 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
                 &[],
             )
             .await?;
-        pool.reserve_host("done", "new", "revision").await?;
+        pool.reserve_host("done", "new", "revision", None).await?;
         spare.resource_id = "sandboxes/do-actor-done/new-uid".into();
         pool.remember("new", "revision", &spare).await?;
         let _ = resume.send(());
@@ -193,10 +191,10 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
         let provider = Arc::new(Provider { fail: false.into(), pause: None.into(), reaped: 0.into() });
         let pool = SparePool::new(PostgresDatabase::connect(&fixture.url).await?, provider, PoolConfig {
             otlp_endpoint: None,
-            control_plane_url: None, kind: SpareKind::Actor, idle: 2, fleet_maximum: 4,
+            control_plane_url: None, kind: SpareKind::Actor, fleet_maximum: 4,
             max_starting: 2, idle_ttl_seconds: 600, refill_interval: Duration::from_secs(1), retire_concurrency: 8, reap_interval: Duration::from_secs(30),
             pod_reap_interval: Duration::from_secs(1), regions: vec![],
-            resources: ResourceLimits::default(),
+            tiers: vec![PoolTier { resources: ResourceLimits::default(), idle: 2 }],
         });
         for name in ["evicted", "warm"] {
             let spare = SpareHandle { node: String::new(),
@@ -210,8 +208,8 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
             pool.store.0.execute("INSERT INTO durable_actors_spares (name, pool_key, status, handle, expires_at) VALUES ($1, 'warm', 'ready', $2, clock_timestamp() + interval '10 minutes')", &[&spare.name, &serde_json::to_string(&spare)?]).await?;
         }
         pool.forget_stopped().await?;
-        assert_eq!(pool.store.claim("warm", "next", "revision", None).await?.unwrap().name, "do-actor-warm");
-        assert!(pool.store.claim("warm", "another", "revision", None).await?.is_none());
+        assert_eq!(pool.store.claim("warm", "next", "revision", None, None).await?.unwrap().name, "do-actor-warm");
+        assert!(pool.store.claim("warm", "another", "revision", None, None).await?.is_none());
         Ok(())
     }).await
 }

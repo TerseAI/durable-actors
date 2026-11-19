@@ -140,7 +140,7 @@ async fn ownership_and_state_can_use_independent_backends() -> Result<()> {
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
-    assert_eq!(resumed.state.unwrap().as_ref(), bytes);
+    assert_eq!(resumed.state.unwrap().bytes, bytes);
     Ok(())
 }
 
@@ -190,7 +190,7 @@ impl Bucket for CountedBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: bytes::Bytes,
+        bytes: Payload,
     ) -> Result<bool> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         let delayed = self.delay_write.lock().unwrap().take();
@@ -461,6 +461,23 @@ async fn expired_activation_cannot_renew_or_reacquire_with_the_same_session() ->
 }
 
 #[tokio::test]
+async fn releasing_every_lease_lets_another_host_take_over_at_once() -> Result<()> {
+    let f = Fixture::new()?;
+    let first = request("first");
+    f.runtime
+        .register_activation(&f.actor, &first, "us-east", true, None)
+        .await?;
+    f.runtime.release_leases().await?;
+    assert!(f.runtime.renew_activation(&f.actor, &first).await.is_err());
+    let next = f
+        .runtime
+        .register_activation(&f.actor, &request("second"), "us-east", false, None)
+        .await?;
+    assert_eq!(next.placement.owner_epoch, 2);
+    Ok(())
+}
+
+#[tokio::test]
 async fn ambiguous_claim_and_renewal_responses_reconcile_the_exact_record() -> Result<()> {
     let f = Fixture::new()?;
     f.bucket.lose_reply.store(true, Ordering::SeqCst);
@@ -677,7 +694,7 @@ async fn stale_owner_hint_rereads_and_preserves_the_current_owner() -> Result<()
         } else {
             let loaded = loaded?;
             assert_eq!(loaded.placement.owner_epoch, 3);
-            assert_eq!(loaded.state.unwrap().as_ref(), bytes);
+            assert_eq!(loaded.state.unwrap().bytes, bytes);
         }
     }
     Ok(())
@@ -746,7 +763,10 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                 .register_activation(&f.actor, &next, "us-east", false, hint.as_ref())
                 .await?;
             assert_eq!(loaded.placement.owner_epoch, epoch);
-            assert_eq!(loaded.state.as_deref(), written.then_some(bytes.as_ref()));
+            assert_eq!(
+                loaded.state.as_ref().map(|snapshot| &snapshot.bytes),
+                written.then_some(&bytes)
+            );
             assert_eq!(f.bucket.lists.load(Ordering::SeqCst), 0);
             assert_eq!(f.bucket.reads.load(Ordering::SeqCst), u64::from(written));
             let checkpoint = f
@@ -822,7 +842,10 @@ async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
         .await?
         .context("durable base missing")?;
     assert_eq!(resumed.placement.owner_epoch, 2);
-    assert_eq!(resumed.state.as_deref(), Some(stored.bytes.as_ref()));
+    assert_eq!(
+        resumed.state.as_ref().map(|snapshot| &snapshot.bytes),
+        Some(&stored.bytes)
+    );
     Ok(())
 }
 
@@ -886,7 +909,10 @@ async fn crash_recovery_persists_the_selected_snapshot_before_claiming_the_next_
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
-    assert_eq!(resumed.state.as_deref(), Some(bytes.as_ref()));
+    assert_eq!(
+        resumed.state.as_ref().map(|snapshot| &snapshot.bytes),
+        Some(&bytes)
+    );
     Ok(())
 }
 
@@ -897,16 +923,16 @@ struct RejectingSnapshots {
 
 #[async_trait]
 impl crate::bucket::SnapshotStore for RejectingSnapshots {
-    async fn get(&self, object: &str) -> Result<Option<bytes::Bytes>> {
+    async fn get(&self, object: &str) -> Result<Option<Payload>> {
         self.inner.get(object).await
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         self.inner.list(prefix).await
     }
-    async fn latest(&self, prefix: &str) -> Result<Option<(String, bytes::Bytes)>> {
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         self.inner.latest(prefix).await
     }
-    async fn put(&self, object: &str, bytes: bytes::Bytes) -> Result<()> {
+    async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         ensure!(
             !self.reject.load(Ordering::SeqCst),
             "snapshot persistence unavailable"
@@ -936,7 +962,7 @@ async fn pause_snapshot(gate: &Mutex<Option<SnapshotGate>>) -> Result<()> {
 
 #[async_trait]
 impl crate::bucket::SnapshotStore for PausedSnapshots {
-    async fn get(&self, object: &str) -> Result<Option<Bytes>> {
+    async fn get(&self, object: &str) -> Result<Option<Payload>> {
         pause_snapshot(&self.gates[0]).await?;
         ensure!(
             !self.reject_head.load(Ordering::SeqCst),
@@ -959,10 +985,10 @@ impl crate::bucket::SnapshotStore for PausedSnapshots {
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         self.inner.list(prefix).await
     }
-    async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         self.inner.latest(prefix).await
     }
-    async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
+    async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         self.inner.put(object, bytes).await
     }
     async fn start(&self, _: &StateStream) -> Result<()> {
@@ -1003,7 +1029,7 @@ async fn sealed_activation() -> Result<(Fixture, Arc<PausedSnapshots>, Ownership
             &first.id,
             &first.session_id,
             Some(SessionCheckpoint {
-                snapshot: Some(SnapshotRef::new(object, &snapshot, &bytes)),
+                snapshot: Some(SnapshotRef::new(object, &snapshot, &bytes)?),
             }),
         )
         .await?;
@@ -1188,7 +1214,7 @@ async fn a_cached_base_snapshot_replaces_its_download_only_when_its_digest_match
         let cached = crate::bucket::CachedBase {
             database,
             snapshot: Some(if tampered {
-                Bytes::from_static(b"tampered")
+                Payload::from(b"tampered".as_slice())
             } else {
                 bytes.clone()
             }),
@@ -1207,7 +1233,7 @@ async fn a_cached_base_snapshot_replaces_its_download_only_when_its_digest_match
         } else {
             let loaded = loaded?;
             assert_eq!(loaded.placement.owner_epoch, 2);
-            assert_eq!(loaded.state.as_deref(), Some(bytes.as_ref()));
+            assert_eq!(loaded.state.unwrap().bytes, bytes);
         }
     }
     Ok(())

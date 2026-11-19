@@ -1,5 +1,4 @@
-#[path = "fixtures/sqlite.rs"]
-mod sqlite;
+use crate::sqlite;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -60,7 +59,7 @@ impl Bucket for MemoryBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: bytes::Bytes,
+        bytes: durable_actors::bucket::Payload,
     ) -> Result<bool> {
         anyhow::ensure!(
             !key.contains("/snapshots/") || !self.reject_snapshots.load(Ordering::SeqCst),
@@ -157,7 +156,7 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
             &self,
             key: &str,
             generation: Option<i64>,
-            bytes: bytes::Bytes,
+            bytes: durable_actors::bucket::Payload,
         ) -> Result<bool> {
             self.inner.compare_and_swap(key, generation, bytes).await
         }
@@ -243,7 +242,7 @@ async fn same_named_actors_in_different_projects_recover_independent_state() -> 
             )
             .await?;
         assert_eq!(restored.placement.state_version, 1);
-        assert_eq!(restored.state.unwrap().as_ref(), bytes);
+        assert_eq!(restored.state.unwrap().bytes, bytes);
     }
     Ok(())
 }

@@ -1,7 +1,10 @@
-use crate::{litestream::storage::LtxFile, storage::SnapshotRef};
+use crate::{
+    litestream::storage::LtxFile,
+    payload::{JsonText, Payload},
+    storage::SnapshotRef,
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 pub(crate) mod binary;
 mod legacy;
@@ -21,8 +24,7 @@ pub struct StateSnapshot {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestCompletion {
-    #[serde(deserialize_with = "Value::deserialize")]
-    pub result: Value,
+    pub result: JsonText,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,7 +85,7 @@ impl StateSnapshot {
         owner_epoch: u64,
         request_id: String,
         sqlite: SqliteSnapshot,
-        result: Value,
+        result: impl Into<JsonText>,
     ) -> Result<Self> {
         let snapshot = Self {
             attribution: None,
@@ -91,28 +93,30 @@ impl StateSnapshot {
             owner_epoch,
             request_id,
             sqlite,
-            completion: Some(RequestCompletion { result }),
+            completion: Some(RequestCompletion {
+                result: result.into(),
+            }),
         };
         snapshot.validate()?;
         Ok(snapshot)
     }
 
     /// Reads binary snapshots and the JSON ones written before them.
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let snapshot = if binary::is_binary(bytes) {
+    pub fn decode(bytes: &Payload) -> Result<Self> {
+        let snapshot = if binary::is_binary(bytes)? {
             let (mut snapshot, files): (Self, _) = binary::decode(bytes)?;
             ensure!(snapshot.sqlite.files.is_empty(), "duplicate LTX files");
             snapshot.sqlite.files = files;
             snapshot
         } else {
-            serde_json::from_slice(bytes).or_else(|_| legacy::decode(bytes))?
+            serde_json::from_reader(bytes.reader()).or_else(|_| legacy::decode(bytes.reader()))?
         };
         snapshot.validate().context("decode actor SQLite commit")?;
         Ok(snapshot)
     }
 
     // Object names keep their .json suffix, which every reader parses, for binary content too.
-    pub fn encode(&self) -> Result<bytes::Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         self.validate()?;
         let mut header = self.clone();
         let files = std::mem::take(&mut header.sqlite.files);

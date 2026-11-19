@@ -7,7 +7,7 @@ use crate::{
     actor::ActorKey,
     bucket::{OwnershipClaim, access::HostStorageConfig},
     bundle::{ActorBundle, ActorRuntime},
-    host_leases::{DEFAULT_HOST_LEASE_MS, MAX_HOST_LEASE_DURATION_MS},
+    host_leases::{DEFAULT_HOST_LEASE_MS, max_host_lease_duration_ms},
 };
 
 const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 10_000;
@@ -151,7 +151,7 @@ impl LeaseTiming {
         let duration = duration_ms(get, "DURABLE_ACTORS_LEASE_MS", DEFAULT_HOST_LEASE_MS)?;
         let renew_every = duration_ms(get, "DURABLE_ACTORS_RENEW_MS", 10_000)?;
         ensure!(
-            duration.as_millis() <= u128::from(MAX_HOST_LEASE_DURATION_MS),
+            duration.as_millis() <= u128::from(max_host_lease_duration_ms()?),
             "DURABLE_ACTORS_LEASE_MS is too large"
         );
         ensure!(

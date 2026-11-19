@@ -63,13 +63,13 @@ impl RuntimeStorageReader {
         let Some(peeked) = self.ownership.peek(key).await? else {
             return Ok(false);
         };
-        if !self.abandoned(&serde_json::from_slice(&peeked.bytes)?)? {
+        if !self.abandoned(&serde_json::from_reader(peeked.bytes.reader())?)? {
             return Ok(false);
         }
         let Some(stored) = self.ownership.get(key).await? else {
             return Ok(false);
         };
-        let mut record: Ownership = serde_json::from_slice(&stored.bytes)?;
+        let mut record: Ownership = serde_json::from_reader(stored.bytes.reader())?;
         if !self.abandoned(&record)? {
             return Ok(false);
         }
@@ -77,7 +77,7 @@ impl RuntimeStorageReader {
             .snapshots
             .recover(&record.stream()?.prefix)
             .await?
-            .map(|(object, bytes)| decode_snapshot(object, bytes))
+            .map(|(object, bytes)| VerifiedSnapshot::named(object, bytes))
             .transpose()?;
         advance(
             &mut record.base,
@@ -96,5 +96,31 @@ impl RuntimeStorageReader {
         Ok(!record.sealed
             && record.persistence.same_backend(&self.persistence)
             && abandoned_at <= self.clock.now_ms()?)
+    }
+
+    /// Ends every live lease, which lets a new host take over at once. Only for a store that no
+    /// live host can be using.
+    pub(crate) async fn release_leases(&self) -> Result<()> {
+        for key in self.ownership.keys().await? {
+            self.release_lease(&key).await?;
+        }
+        Ok(())
+    }
+
+    async fn release_lease(&self, key: &str) -> Result<()> {
+        let Some(stored) = self.ownership.get(key).await? else {
+            return Ok(());
+        };
+        let mut record: Ownership = serde_json::from_reader(stored.bytes.reader())?;
+        if record.lease.expires_at_ms <= self.clock.now_ms()? {
+            return Ok(());
+        }
+        record.lease.expires_at_ms = 0;
+        ensure!(
+            self.replace_activation(&mut record, Some(stored.generation))
+                .await?,
+            "actor ownership changed while its lease was released"
+        );
+        Ok(())
     }
 }

@@ -1,9 +1,9 @@
 use super::{RequestCompletion, SqliteSnapshot, StateAttribution, StateSnapshot};
+use crate::payload::JsonText;
 use serde::Deserialize;
-use serde_json::Value;
 
-pub(super) fn decode(bytes: &[u8]) -> serde_json::Result<StateSnapshot> {
-    let legacy: LegacySnapshot = serde_json::from_slice(bytes)?;
+pub(super) fn decode(reader: impl std::io::Read) -> serde_json::Result<StateSnapshot> {
+    let legacy: LegacySnapshot = serde_json::from_reader(reader)?;
     Ok(StateSnapshot {
         attribution: legacy.attribution,
         state_version: legacy.state_version,
@@ -24,8 +24,7 @@ struct LegacySnapshot {
     owner_epoch: u64,
     request_id: String,
     sqlite: SqliteSnapshot,
-    #[serde(deserialize_with = "Value::deserialize")]
-    result: Value,
+    result: JsonText,
 }
 
 #[cfg(test)]

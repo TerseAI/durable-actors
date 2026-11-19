@@ -1,5 +1,4 @@
-#[path = "fixtures/sqlite.rs"]
-mod sqlite;
+use crate::sqlite;
 use anyhow::Result;
 use durable_actors::state_log::StateSnapshot;
 use serde_json::json;
@@ -23,6 +22,6 @@ fn immutable_snapshot_round_trips_state_and_result() -> Result<()> {
         serde_json::to_value(decoded.sqlite)?,
         serde_json::to_value(snapshot.sqlite)?
     );
-    assert_eq!(decoded.completion.unwrap().result, json!(7));
+    assert_eq!(decoded.completion.unwrap().result, json!(7).into());
     Ok(())
 }

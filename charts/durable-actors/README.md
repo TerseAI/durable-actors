@@ -38,7 +38,7 @@ When upgrading from the shared image configuration, replace `image.repository` a
 - The sandbox namespace defaults to `<release-namespace>-<release-name>`; use one unique sandbox namespace per installation.
 - gVisor, separate sandbox credentials, RBAC, and sandbox NetworkPolicy are included.
 
-A single controller can interrupt service during replacement; clients must reconnect WebSockets. Increase `replicaCount` for controller redundancy; more than one controller requires Redis (`redis.urlSecretKey`). Increase `actors.warm` to reduce cold starts. The warm count is per image/region and supports 0–256. It does not cap active actors. Node autoscaling and quotas must accommodate your active workload.
+A single controller can interrupt service during replacement; clients must reconnect WebSockets. Increase `replicaCount` for controller redundancy; more than one controller requires Redis (`redis.urlSecretKey`). Increase `actors.warm` to reduce cold starts. The warm count is per image/region and supports 0–256. To also keep spares for larger actors, set `actors.tiers` instead: each tier lists its requests, limits and its own `warm` count, all required, and an actor starts on a spare only when its requests and limits equal a tier. An actor that sets only `memoryMiB: 512` keeps the default CPU and CPU limit, so with the chart defaults its tier is `{cpuMillis: 250, cpuLimitMillis: null, memoryMiB: 512, memoryLimitMiB: 512, warm: 1}`. Tiers share the 256-spare budget. It does not cap active actors. Node autoscaling and quotas must accommodate your active workload.
 
 ## Rapid writes
 
@@ -110,3 +110,14 @@ usage:
 Grant the control plane's Google service account `roles/pubsub.publisher` on that topic. Hosts use the existing lifecycle reporting path and need no Pub/Sub credentials. Publishing works with either analytics backend and is disabled when `usage.topic` is empty. Consumers must handle duplicates and out-of-order delivery; see the [usage event contract](../../docs/reference/configuration.md#usage-events) for aggregation and delivery limitations.
 
 Missing-stop reconciliation uses the configured Redis to coordinate estimated usage ends and later corrections across controllers. Configure Redis persistence for restart recovery. Consumers must accept higher revisions that correct or reopen an estimated interval; estimates do not change ownership or dashboard status.
+
+## Event publishing
+
+To publish platform events, such as sandbox kills, for another service, set an existing Pub/Sub topic:
+
+```yaml
+events:
+  topic: projects/my-project/topics/actor-events
+```
+
+Grant the control plane's Google service account `roles/pubsub.publisher` on that topic. See the [event contract](../../docs/reference/configuration.md#published-events).

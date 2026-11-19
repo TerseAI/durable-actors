@@ -17,10 +17,12 @@ use kube::{
 use tokio::sync::watch;
 use tokio_util::task::AbortOnDropHandle;
 
-use super::*;
+use super::{kills::KillReports, *};
 use crate::sandbox::kube_retry::retry_throttled;
 
 const MANAGED: &str = "app.kubernetes.io/managed-by=terse";
+/// The RuntimeClass GKE provides for gVisor.
+pub(crate) const GKE_RUNTIME_CLASS: &str = "gvisor";
 
 #[derive(Clone, Debug)]
 pub(crate) struct GkeConfig {
@@ -28,6 +30,7 @@ pub(crate) struct GkeConfig {
     pub zones: BTreeMap<String, Vec<String>>,
     pub reap_concurrency: usize,
     pub node_cache_url: Option<String>,
+    pub runtime_class: String,
 }
 
 /// Reads pod state from one shared watch so provisioning costs a single API call per pod.
@@ -36,19 +39,27 @@ pub(super) struct Kubernetes {
     observed: Store<Pod>,
     changes: watch::Receiver<()>,
     config: GkeConfig,
+    kills: Option<Arc<KillReports>>,
     _watch: AbortOnDropHandle<()>,
 }
 impl Kubernetes {
-    pub fn new(client: Client, config: GkeConfig) -> Self {
+    pub fn new(client: Client, config: GkeConfig, kills: Option<KillReporting>) -> Self {
         let pods = Api::namespaced(client, &config.namespace);
         let (observed, writer) = reflector::store();
         let (changed, changes) = watch::channel(());
-        let watch = AbortOnDropHandle::new(tokio::spawn(observe(pods.clone(), writer, changed)));
+        let kills = kills.map(|reporting| Arc::new(KillReports::new(observed.clone(), reporting)));
+        let watch = AbortOnDropHandle::new(tokio::spawn(observe(
+            pods.clone(),
+            writer,
+            changed,
+            kills.clone(),
+        )));
         Self {
             pods,
             observed,
             changes,
             config,
+            kills,
             _watch: watch,
         }
     }
@@ -120,6 +131,7 @@ impl SandboxCluster for Kubernetes {
             self.zones(&request.canonical_region)?,
             &token,
             self.config.node_cache_url.as_deref(),
+            &self.config.runtime_class,
         )?;
         let ready = self.start(pod).await?;
         let ip: std::net::IpAddr = ready
@@ -154,6 +166,9 @@ impl SandboxCluster for Kubernetes {
     }
 
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
+        if let Some(kills) = &self.kills {
+            kills.keep_claim(&spare.name).await;
+        }
         if spare.resource_id.is_empty() {
             let Some(pod) = retry_throttled(|| self.pods.get_opt(&spare.name)).await? else {
                 return Ok(());
@@ -217,7 +232,13 @@ impl SandboxCluster for Kubernetes {
     }
 }
 
-async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>) {
+async fn observe(
+    pods: Api<Pod>,
+    writer: Writer<Pod>,
+    changed: watch::Sender<()>,
+    kills: Option<Arc<KillReports>>,
+) {
+    let kills = kills.as_deref();
     watcher(pods, watcher::Config::default().labels(MANAGED))
         .default_backoff()
         .modify(|pod| {
@@ -226,6 +247,15 @@ async fn observe(pods: Api<Pod>, writer: Writer<Pod>, changed: watch::Sender<()>
                 node_name: spec.node_name,
                 ..PodSpec::default()
             });
+        })
+        // Ahead of the store, as `KillReports::report` needs.
+        .then(|event| async move {
+            if let (Some(kills), Ok(watcher::Event::Apply(pod) | watcher::Event::InitApply(pod))) =
+                (kills, &event)
+            {
+                kills.report(pod).await;
+            }
+            event
         })
         .reflect(writer)
         .for_each(|event| {
@@ -248,6 +278,7 @@ fn spare_pod(
     zones: &[String],
     token: &str,
     node_cache_url: Option<&str>,
+    runtime_class: &str,
 ) -> Result<Pod> {
     let mut pod: Pod = serde_yaml::from_str(SPARE_POD).context("spare pod manifest")?;
     pod.metadata.name = Some(request.name.clone());
@@ -269,6 +300,14 @@ fn spare_pod(
         .env
         .get_or_insert_with(Vec::new)
         .extend(spare_env(request, token, node_cache_url)?);
+    if runtime_class != GKE_RUNTIME_CLASS {
+        spec.runtime_class_name = Some(runtime_class.to_owned());
+        let mounts = mount_annotations(spec);
+        pod.metadata
+            .annotations
+            .get_or_insert_with(BTreeMap::new)
+            .extend(mounts);
+    }
     Ok(pod)
 }
 
@@ -331,6 +370,49 @@ fn env_var(name: &str, value: &str) -> EnvVar {
         value: Some(value.into()),
         ..Default::default()
     }
+}
+
+/// GKE tells gVisor how to mount a pod's volumes, but only for pods under its own class. A pod
+/// under another class has to say the same itself, or its volumes are mounted straight from the
+/// node's disk.
+fn mount_annotations(spec: &PodSpec) -> BTreeMap<String, String> {
+    spec.volumes
+        .iter()
+        .flatten()
+        .filter(|volume| volume.empty_dir.is_some())
+        .flat_map(|volume| {
+            let share = match mounting_containers(spec, &volume.name) {
+                1 => "container",
+                _ => "pod",
+            };
+            [
+                ("type", "bind"),
+                ("share", share),
+                ("options", "rw,rprivate"),
+            ]
+            .map(|(hint, value)| {
+                (
+                    format!("dev.gvisor.spec.mount.{}.{hint}", volume.name),
+                    value.to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn mounting_containers(spec: &PodSpec, volume: &str) -> usize {
+    spec.init_containers
+        .iter()
+        .flatten()
+        .chain(&spec.containers)
+        .filter(|container| {
+            container
+                .volume_mounts
+                .iter()
+                .flatten()
+                .any(|mount| mount.name == volume)
+        })
+        .count()
 }
 
 fn terminal_or_ready(pod: &Pod) -> bool {

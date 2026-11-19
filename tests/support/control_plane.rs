@@ -78,7 +78,7 @@ impl HostProvisioner for NoHosts {
         _new_actor: bool,
         _owner_hint: Option<&crate::bucket::OwnershipHint>,
         _: Option<&crate::sandbox::assignment::InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+    ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         anyhow::bail!("fixture host must be active")
     }
 

@@ -72,8 +72,9 @@ async fn run_activation(
         .token;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let route = format!("http://{}", listener.local_addr()?);
-    let ipc = ActorExecutorListener::bind(&socket).await?;
-    let javascript = Command::new("bun")
+    let mut ipc = ActorExecutorListener::bind(&socket).await?;
+    let mut command = Command::new("bun");
+    command
         .args([
             "--eval",
             "await import(process.env.DURABLE_ACTORS_SDK_HOST).then(m => m.runGenericHost())",
@@ -83,8 +84,9 @@ async fn run_activation(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+    ipc.inherit_database_channel(&mut command)?;
+    let javascript = command.spawn()?;
     let executor = tokio::time::timeout(Duration::from_secs(10), ipc.accept_warm()).await??;
     assert!(
         !code.exists(),
@@ -155,7 +157,7 @@ async fn run_activation(
                         } else {
                             "read".into()
                         },
-                        args: vec![],
+                        args: Default::default(),
                     },
                     grant: None,
                 }
@@ -193,7 +195,7 @@ async fn run_activation(
             "failed activation reported ready"
         );
         let record: serde_json::Value =
-            serde_json::from_slice(&bucket.get(&owner).await?.unwrap().bytes)?;
+            serde_json::from_slice(&bucket.get(&owner).await?.unwrap().bytes.to_bytes()?)?;
         assert_eq!(
             record["lease"]["expires_at_ms"], 0,
             "failed startup must release its lease"
@@ -218,9 +220,10 @@ async fn run_activation(
     };
     assert_eq!(response.host_id, host_id);
     assert_eq!(response.session_id, session);
-    let initial = response
+    let initial: serde_json::Value = response
         .initial_reply
-        .context("assignment omitted operation result")?;
+        .context("assignment omitted operation result")?
+        .decode()?;
     assert_eq!(initial["type"], "completed");
     let assigned = before + i64::from(before == 1);
     if before >= 2 {

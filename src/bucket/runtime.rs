@@ -6,7 +6,6 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,8 +13,12 @@ use crate::{
     actor_state::ActorStorageKey,
     host::HostId,
     host_leases::HostLease,
+    payload::Payload,
     placement::{ObjectPlacement, ObjectPlacementStore},
-    storage::{SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name},
+    storage::{
+        SnapshotReader, SnapshotRef, StateStream, VerifiedSnapshot, WritePlan,
+        snapshot_object_name, snapshot_position,
+    },
 };
 
 use super::{Bucket, OwnershipStore, replace};
@@ -100,7 +103,7 @@ impl OwnershipClaim {
 
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
-    pub state: Option<Bytes>,
+    pub state: Option<VerifiedSnapshot>,
     pub(crate) checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
 }
 
@@ -115,11 +118,6 @@ struct UploadedSnapshots {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SessionCheckpoint {
     pub(crate) snapshot: Option<SnapshotRef>,
-}
-
-struct LoadedSnapshot {
-    reference: SnapshotRef,
-    bytes: Bytes,
 }
 
 impl Ownership {
@@ -193,20 +191,18 @@ impl std::ops::Deref for RuntimeStorage {
 impl RuntimeStorageReader {
     pub(crate) async fn read_sqlite(
         &self,
-        object: &str,
-        bytes: Bytes,
+        snapshot: VerifiedSnapshot,
     ) -> Result<crate::state_log::SqliteSnapshot> {
-        self.read_sqlite_prefetched(object, bytes, None).await
+        self.read_sqlite_prefetched(snapshot, None).await
     }
 
     pub(crate) async fn read_sqlite_prefetched(
         &self,
-        object: &str,
-        bytes: Bytes,
+        snapshot: VerifiedSnapshot,
         checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
     ) -> Result<crate::state_log::SqliteSnapshot> {
         self.snapshots
-            .restore_prefetched(object, bytes, checkpoint)
+            .restore_prefetched(snapshot, checkpoint)
             .await
     }
 
@@ -270,7 +266,7 @@ impl ObjectPlacementStore for RuntimeStorageReader {
 
 #[async_trait]
 impl SnapshotReader for RuntimeStorageReader {
-    async fn read_snapshot(&self, _region: &str, object: &str) -> Result<Bytes> {
+    async fn read_snapshot(&self, _region: &str, object: &str) -> Result<Payload> {
         self.read_persisted(object)
             .await?
             .context("snapshot unavailable")
@@ -356,7 +352,7 @@ impl RuntimeStorage {
         Ok(self.remember(record, snapshot))
     }
 
-    fn remember(&self, record: Ownership, snapshot: Option<LoadedSnapshot>) -> LoadedActor {
+    fn remember(&self, record: Ownership, snapshot: Option<VerifiedSnapshot>) -> LoadedActor {
         let mut placement = record.placement();
         apply_snapshot(&mut placement, snapshot.as_ref().map(|s| &s.reference));
         if let Some(snapshot) = &snapshot {
@@ -373,7 +369,7 @@ impl RuntimeStorage {
             .insert(record.actor.storage_key().as_str().into(), record);
         LoadedActor {
             placement,
-            state: snapshot.map(|s| s.bytes),
+            state: snapshot,
             checkpoint: None,
         }
     }
@@ -393,13 +389,13 @@ impl RuntimeStorageReader {
     async fn latest(
         &self,
         record: &Ownership,
-        known: Option<LoadedSnapshot>,
-    ) -> Result<Option<LoadedSnapshot>> {
+        known: Option<VerifiedSnapshot>,
+    ) -> Result<Option<VerifiedSnapshot>> {
         let latest = self
             .snapshots
             .latest(&record.stream()?.prefix)
             .await?
-            .map(|(key, bytes)| decode_snapshot(key, bytes))
+            .map(|(key, bytes)| VerifiedSnapshot::named(key, bytes))
             .transpose()?;
         self.load_latest(record, latest.or(known)).await
     }
@@ -407,8 +403,8 @@ impl RuntimeStorageReader {
     async fn load_latest(
         &self,
         record: &Ownership,
-        mut loaded: Option<LoadedSnapshot>,
-    ) -> Result<Option<LoadedSnapshot>> {
+        mut loaded: Option<VerifiedSnapshot>,
+    ) -> Result<Option<VerifiedSnapshot>> {
         let mut candidate = record.base.clone();
         advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
         if let Some(snapshot) = candidate
@@ -418,20 +414,16 @@ impl RuntimeStorageReader {
                 .read_persisted(&snapshot.object)
                 .await?
                 .context("acknowledged snapshot is unavailable")?;
-            snapshot.verify(&bytes)?;
-            loaded = Some(LoadedSnapshot {
-                reference: snapshot,
-                bytes,
-            });
+            loaded = Some(VerifiedSnapshot::matching(snapshot, bytes)?);
         }
         Ok(loaded)
     }
 
-    async fn persist(&self, object: &str, bytes: bytes::Bytes) -> Result<()> {
-        self.snapshots.put(object, bytes.into()).await
+    async fn persist(&self, object: &str, bytes: Payload) -> Result<()> {
+        self.snapshots.put(object, bytes).await
     }
 
-    async fn read_persisted(&self, object: &str) -> Result<Option<Bytes>> {
+    async fn read_persisted(&self, object: &str) -> Result<Option<Payload>> {
         self.snapshots.get(object).await
     }
 
@@ -452,7 +444,7 @@ impl RuntimeStorageReader {
             .get(&ownership_key(object)?)
             .await?
             .map(|value| {
-                let record: Ownership = serde_json::from_slice(&value.bytes)?;
+                let record: Ownership = serde_json::from_reader(value.bytes.reader())?;
                 ensure!(
                     record.persistence.same_backend(&self.persistence),
                     "actor persistence backend changed; an explicit state migration is required"
@@ -477,7 +469,7 @@ impl ObjectPlacementStore for RuntimeStorage {
 }
 #[async_trait]
 impl SnapshotReader for RuntimeStorage {
-    async fn read_snapshot(&self, region: &str, object: &str) -> Result<Bytes> {
+    async fn read_snapshot(&self, region: &str, object: &str) -> Result<Payload> {
         self.reader.read_snapshot(region, object).await
     }
 }
@@ -512,31 +504,12 @@ fn advance(current: &mut Option<SnapshotRef>, candidate: Option<SnapshotRef>) ->
     Ok(())
 }
 
-fn snapshot_position(object: &str) -> Option<(u64, u64)> {
-    let mut parts = object.rsplit('/');
-    let version = parts.next()?.strip_suffix(".json")?.parse().ok()?;
-    let epoch = u64::from_str_radix(parts.next()?, 16).ok()?;
-    Some((epoch, version))
-}
-
-fn decode_snapshot(object: String, bytes: bytes::Bytes) -> Result<LoadedSnapshot> {
-    let snapshot = crate::state_log::StateSnapshot::decode(&bytes)?;
-    ensure!(
-        snapshot_position(&object) == Some((snapshot.owner_epoch, snapshot.state_version)),
-        "snapshot identity does not match its object"
-    );
-    Ok(LoadedSnapshot {
-        reference: SnapshotRef::new(object, &snapshot, &bytes),
-        bytes: bytes.into(),
-    })
-}
-
 #[async_trait]
 impl crate::state_transport::SnapshotWriter for RuntimeStorage {
     async fn write_snapshot(
         &self,
         plan: &WritePlan,
-        bytes: bytes::Bytes,
+        bytes: Payload,
     ) -> Result<crate::state_transport::StateWrite> {
         self.ensure_write_owner(plan)?;
         let stream = &plan.stream;

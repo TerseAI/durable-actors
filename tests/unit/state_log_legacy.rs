@@ -1,6 +1,6 @@
 use super::*;
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[test]
 fn reads_legacy_results_and_encodes_only_the_current_format() -> Result<()> {
@@ -13,8 +13,16 @@ fn reads_legacy_results_and_encodes_only_the_current_format() -> Result<()> {
         json!({"count": 3}),
     ] {
         let stored = legacy_record(result.clone())?;
-        let snapshot = StateSnapshot::decode(&serde_json::to_vec(&stored)?)?;
-        assert_eq!(snapshot.completion.as_ref().unwrap().result, result);
+        let snapshot = StateSnapshot::decode(&serde_json::to_vec(&stored)?.into())?;
+        assert_eq!(
+            snapshot
+                .completion
+                .as_ref()
+                .unwrap()
+                .result
+                .decode::<Value>()?,
+            result
+        );
         let encoded = serde_json::to_value(StateSnapshot::decode(&snapshot.encode()?)?)?;
         let mut expected = stored;
         expected.as_object_mut().unwrap().remove("result");
@@ -29,7 +37,7 @@ fn rejects_records_containing_both_completion_formats() -> Result<()> {
     for completion in [Value::Null, json!({"result": null}), json!({"result": 3})] {
         let mut stored = legacy_record(Value::Null)?;
         stored["completion"] = completion;
-        assert!(StateSnapshot::decode(&serde_json::to_vec(&stored)?).is_err());
+        assert!(StateSnapshot::decode(&serde_json::to_vec(&stored)?.into()).is_err());
     }
     Ok(())
 }
@@ -46,14 +54,14 @@ fn legacy_records_still_require_valid_metadata_and_sqlite() -> Result<()> {
     ] {
         let mut invalid = valid.clone();
         invalid[field] = value;
-        assert!(StateSnapshot::decode(&serde_json::to_vec(&invalid)?).is_err());
+        assert!(StateSnapshot::decode(&serde_json::to_vec(&invalid)?.into()).is_err());
     }
     Ok(())
 }
 
 #[test]
 fn legacy_snapshot_references_use_the_original_bytes() -> Result<()> {
-    let bytes = serde_json::to_vec(&legacy_record(json!(3))?)?;
+    let bytes = crate::payload::Payload::from(serde_json::to_vec(&legacy_record(json!(3))?)?);
     let snapshot = StateSnapshot::decode(&bytes)?;
     let stream = crate::storage::StateStream {
         session: "session".into(),

@@ -317,7 +317,7 @@ impl crate::bucket::OwnershipStore for ControlPlaneClient {
         }
     }
 
-    async fn replace(&self, _: &str, _: Option<i64>, _: bytes::Bytes) -> Result<bool> {
+    async fn replace(&self, _: &str, _: Option<i64>, _: crate::payload::Payload) -> Result<bool> {
         anyhow::bail!("hosts renew and release ownership through activation commands")
     }
 

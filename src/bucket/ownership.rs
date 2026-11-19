@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use crate::payload::Payload;
 use anyhow::Result;
 use async_trait::async_trait;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use super::{Bucket, BucketObject};
@@ -12,7 +12,7 @@ use super::{Bucket, BucketObject};
 pub(crate) trait OwnershipStore: Send + Sync {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>>;
     /// `None` creates the record; a lost response is resolved by the record's unique bytes.
-    async fn replace(&self, key: &str, generation: Option<i64>, bytes: Bytes) -> Result<bool>;
+    async fn replace(&self, key: &str, generation: Option<i64>, bytes: Payload) -> Result<bool>;
     /// Every record's key, for the abandoned-activation pass.
     async fn keys(&self) -> Result<Vec<String>>;
     /// Reads a record without moving it between stores.
@@ -38,7 +38,7 @@ impl OwnershipStore for BucketOwnership {
         self.0.get(key).await
     }
 
-    async fn replace(&self, key: &str, generation: Option<i64>, bytes: Bytes) -> Result<bool> {
+    async fn replace(&self, key: &str, generation: Option<i64>, bytes: Payload) -> Result<bool> {
         super::replace(self.0.as_ref(), key, generation, bytes).await
     }
 
@@ -50,7 +50,7 @@ impl OwnershipStore for BucketOwnership {
 pub(crate) async fn confirm_replace(
     store: &dyn OwnershipStore,
     key: &str,
-    bytes: &Bytes,
+    bytes: &Payload,
     replaced: Result<bool>,
 ) -> Result<bool> {
     let Err(error) = replaced else {
