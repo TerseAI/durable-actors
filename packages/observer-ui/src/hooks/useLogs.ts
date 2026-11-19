@@ -20,7 +20,7 @@ export function useLogs(baseUrl: string, timeWindow: TimeWindow, filter: LogFilt
     return {
         lines: pages ? newestFirst([...(streamed ?? []), ...pages.flatMap(page => page.records)]) : null,
         hasOlder: Boolean(pages?.at(-1)?.nextCursor),
-        loadingOlder: Boolean(pages && history.size > pages.length && !history.error),
+        loadingOlder: Boolean(pages && history.size > pages.length && (!history.error || history.isValidating)),
         // After a failed page, asking for one past the loaded pages retries it instead of skipping ahead.
         loadOlder: () => history.setSize((pages?.length ?? 0) + 1),
         histogram: histogram.data,
