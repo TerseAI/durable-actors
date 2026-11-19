@@ -318,54 +318,16 @@ impl DatabaseSession {
         Ok(version)
     }
 
-    pub(super) async fn save_to_node_cache(&mut self) -> Result<Option<u64>> {
-        let (Some(cache), Some(cached)) = (&self.node_cache, &self.cached_state) else {
-            return Ok(None);
-        };
-        let Some(snapshot) = cached.published_snapshot() else {
-            return Ok(None);
-        };
-        if cached.sqlite.in_slot() {
-            return self.park().await.map(|()| None);
-        }
-        let database = async {
-            let Some(database) = cached
-                .sqlite
-                .export(crate::node_cache::MAX_DATABASE_BYTES)
-                .await?
-            else {
-                return Ok(None);
-            };
-            cache
-                .store_database(&snapshot.reference.digest, database.path())
-                .await?;
-            Ok(Some(database.as_file().metadata()?.len()))
-        };
-        let stored = async {
-            match &snapshot.bytes {
-                Some(bytes) => {
-                    cache
-                        .store_snapshot(&snapshot.reference.digest, bytes.clone())
-                        .await
-                }
-                None => Ok(()),
-            }
-        };
-        let (stored, database) = tokio::join!(stored, database);
-        if let Err(error) = stored {
-            warn!(error = %format!("{error:#}"), "node cache snapshot save failed");
-        }
-        database
-    }
-
     /// Closes the database and hands its file to the node with the snapshot and transaction it was
     /// committed at, so the actor's next host on this node reopens it instead of rebuilding it.
-    async fn park(&mut self) -> Result<()> {
-        let started = Instant::now();
-        let cache = self
-            .node_cache
-            .clone()
-            .context("parking needs the node cache")?;
+    /// Nothing is parked outside a slot or with a commit still pending.
+    pub(super) async fn park(&mut self) -> Result<Option<SlotFile>> {
+        let (Some(cache), Some(cached)) = (self.node_cache.clone(), &self.cached_state) else {
+            return Ok(None);
+        };
+        if !cached.sqlite.in_slot() || cached.published_snapshot().is_none() {
+            return Ok(None);
+        }
         let ResidentDatabase {
             database,
             sqlite,
@@ -383,11 +345,7 @@ impl DatabaseSession {
             "database has changes its history lacks; leaving it to kubelet"
         );
         sqlite.close().await?;
-        let file = cache.park_slot(&snapshot.reference, synced).await?;
-        info!(event = "actor_sqlite_parked", host_id = %self.endpoint.id, bytes = file.bytes,
-            device = file.device, inode = file.inode,
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0);
-        Ok(())
+        cache.park_slot(&snapshot, synced).await.map(Some)
     }
 
     pub(super) fn reset(&mut self) {
@@ -449,10 +407,7 @@ impl DatabaseSession {
             info!(event = "actor_sqlite_restored", host_id = %self.endpoint.id, state_version,
                 source = "slot", duration_ms = elapsed_ms(started));
             let mut cached = Self::resident(owner_epoch, state_version, capture, parent).await?;
-            cached.snapshot = Some(PublishedSnapshot {
-                reference: head.clone(),
-                bytes: None,
-            });
+            cached.snapshot = Some(head.clone());
             cached.unread_head = Some(head);
             return Ok(cached);
         }
@@ -486,12 +441,9 @@ impl DatabaseSession {
         let VerifiedSnapshot {
             reference,
             snapshot,
-            bytes,
+            ..
         } = loaded;
-        cached.snapshot = Some(PublishedSnapshot {
-            reference,
-            bytes: Some(bytes),
-        });
+        cached.snapshot = Some(reference);
         cached.set_completion(snapshot.request_id, snapshot.completion);
         Ok(cached)
     }
@@ -521,28 +473,6 @@ impl DatabaseSession {
             && let Some(capture) = self.reopen(path, file, txid, resume).await
         {
             return Ok((capture, "slot"));
-        }
-        if let Some(saved) = self.storage.take_saved_database(&loaded.reference.digest) {
-            let adopted = async {
-                let directory = emptied(slot.as_deref()).await?;
-                let database = saved.into_file(directory.database()).await?;
-                SqliteCapture::adopt(
-                    directory,
-                    self.replication.clone(),
-                    database,
-                    txid,
-                    full_snapshots,
-                    resume,
-                )
-                .await
-            };
-            match adopted.await {
-                Ok(capture) => return Ok((capture, "node_cache")),
-                Err(error) => warn!(
-                    error = %format!("{error:#}"),
-                    "cached database could not be opened, restoring from history"
-                ),
-            }
         }
         let sqlite = self.storage.read_sqlite(loaded).await?;
         let capture = SqliteCapture::restore(
@@ -855,10 +785,7 @@ impl DatabaseSession {
             &pending.snapshot,
             &pending.bytes,
         )?;
-        cached.snapshot = Some(PublishedSnapshot {
-            reference: head.clone(),
-            bytes: Some(pending.bytes),
-        });
+        cached.snapshot = Some(head.clone());
         cached.unread_head = None;
         cached.sqlite_head = Some(head);
         cached.state_version = pending.snapshot.state_version;
@@ -873,7 +800,7 @@ struct ResidentDatabase {
     database: SqliteDatabase,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
-    snapshot: Option<PublishedSnapshot>,
+    snapshot: Option<SnapshotRef>,
     /// The head of a reopened database, whose stored result has not been read.
     unread_head: Option<SnapshotRef>,
     owner_epoch: u64,
@@ -884,12 +811,6 @@ struct ResidentDatabase {
     last_result: Option<JsonText>,
     next_write: Option<WritePlan>,
     pending: Option<PendingStateCommit>,
-}
-
-struct PublishedSnapshot {
-    reference: SnapshotRef,
-    /// `None` for a reopened database, which never reads its head's snapshot.
-    bytes: Option<Payload>,
 }
 
 struct PendingStateCommit {
@@ -919,7 +840,7 @@ impl ResidentDatabase {
         })
     }
 
-    fn published_snapshot(&self) -> Option<&PublishedSnapshot> {
+    fn published_snapshot(&self) -> Option<&SnapshotRef> {
         if self.pending.is_some() || self.published != Some(self.synced) {
             return None;
         }

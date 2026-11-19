@@ -9,7 +9,7 @@ mod server;
 mod slots;
 mod store;
 
-pub(crate) use client::{CachedDatabase, DatabaseDownload, NodeCacheClient, NodeCacheConnection};
+pub(crate) use client::{NodeCacheClient, NodeCacheConnection};
 pub(crate) use slots::SlotFile;
 
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
@@ -18,8 +18,6 @@ const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const FILE_CHUNK_BYTES: usize = 256 * 1024;
 /// Each indexed entry holds about 350 bytes of memory, so this default fits a 256 MiB cache pod.
 const DEFAULT_MAX_ENTRIES: u64 = 500_000;
-/// Larger databases take longer to export at shutdown than they save at the next activation.
-pub(crate) const MAX_DATABASE_BYTES: u64 = 256 * 1024 * 1024;
 
 pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     let config = NodeCacheConfig::from_lookup(|name| std::env::var(name).ok())?;

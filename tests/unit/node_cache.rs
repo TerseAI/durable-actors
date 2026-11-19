@@ -30,43 +30,6 @@ async fn hosts_share_code_through_the_node_cache() -> Result<()> {
 }
 
 #[tokio::test]
-async fn saved_databases_are_only_visible_to_hosts_of_the_same_actor() -> Result<()> {
-    let issuer = issuer()?;
-    let cache = NodeCache::start(&issuer).await?;
-    let database = tempfile::NamedTempFile::new()?;
-    std::fs::write(database.path(), b"sqlite bytes")?;
-    let snapshot = sha256(b"snapshot");
-    let owner = cache.client(&host_token(&issuer, "one")?)?;
-
-    owner.store_database(&snapshot, database.path()).await?;
-
-    let restored = owner
-        .database(&snapshot)
-        .await?
-        .unwrap()
-        .receive(&std::env::temp_dir())
-        .await?;
-    assert_eq!(std::fs::read(restored.path())?, b"sqlite bytes");
-    let other = cache.client(&host_token(&issuer, "two")?)?;
-    assert!(other.database(&snapshot).await?.is_none());
-    Ok(())
-}
-
-#[tokio::test]
-async fn saved_snapshots_are_received_whole() -> Result<()> {
-    let issuer = issuer()?;
-    let cache = NodeCache::start(&issuer).await?;
-    let bytes = (0..600 * 1024).map(|i| i as u8).collect::<Vec<_>>();
-    let digest = sha256(&bytes);
-    let payload = crate::payload::copy(bytes.as_slice())?;
-    let host = cache.client(&host_token(&issuer, "one")?)?;
-    assert!(host.snapshot(&digest).await?.is_none());
-    host.store_snapshot(&digest, payload.clone()).await?;
-    assert_eq!(host.snapshot(&digest).await?, Some(payload));
-    Ok(())
-}
-
-#[tokio::test]
 async fn a_host_moves_databases_only_through_the_slot_its_token_names() -> Result<()> {
     let issuer = issuer()?;
     let cache = NodeCache::start(&issuer).await?;

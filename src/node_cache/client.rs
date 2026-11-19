@@ -7,10 +7,9 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::{TryStreamExt, stream::BoxStream};
 use reqwest::header::AUTHORIZATION;
-use tokio::io::AsyncWriteExt;
 
 use super::slots::{SlotCheckout, SlotFile, SlotPark};
-use crate::{control_plane::HostAuthorization, payload::Payload, storage::SnapshotRef};
+use crate::{control_plane::HostAuthorization, storage::SnapshotRef};
 
 // With no cache pod on the node the Service drops packets instead of refusing them, so only a
 // short connect timeout keeps installs from stalling.
@@ -102,36 +101,6 @@ impl NodeCacheClient {
     pub(crate) async fn store_code(&self, digest: &str, path: &Path) -> Result<()> {
         self.write(&format!("code/{digest}"), file_body(path).await?)
             .await
-    }
-
-    /// The actor database saved at the snapshot with this digest, once the cache has answered
-    /// but before its body has arrived.
-    pub(crate) async fn database(&self, digest: &str) -> Result<Option<DatabaseDownload>> {
-        Ok(self
-            .read(&format!("sqlite/{digest}"))
-            .await?
-            .map(DatabaseDownload))
-    }
-
-    pub(crate) async fn store_database(&self, digest: &str, path: &Path) -> Result<()> {
-        self.write(&format!("sqlite/{digest}"), file_body(path).await?)
-            .await
-    }
-
-    pub(crate) async fn snapshot(&self, digest: &str) -> Result<Option<Payload>> {
-        let Some(mut chunks) = self.read(&format!("snapshot/{digest}")).await? else {
-            return Ok(None);
-        };
-        let mut download = crate::payload::Download::new();
-        while let Some(chunk) = chunks.try_next().await? {
-            download = download.append(chunk).await?;
-        }
-        Ok(Some(download.finish().await?))
-    }
-
-    pub(crate) async fn store_snapshot(&self, digest: &str, bytes: Payload) -> Result<()> {
-        let body = reqwest::Body::wrap_stream(bytes.chunks());
-        self.write(&format!("snapshot/{digest}"), body).await
     }
 
     /// Where this host keeps its database when its sandbox has a node slot.
@@ -233,34 +202,4 @@ async fn file_body(path: &Path) -> Result<reqwest::Body> {
     Ok(reqwest::Body::wrap_stream(
         tokio_util::io::ReaderStream::with_capacity(file, super::FILE_CHUNK_BYTES),
     ))
-}
-
-/// An actor database this node saved: received while the host took ownership, or still to be
-/// received into the directory the database will live in.
-pub(crate) enum CachedDatabase {
-    Received(tempfile::NamedTempFile),
-    Pending(DatabaseDownload),
-}
-
-impl CachedDatabase {
-    pub(crate) async fn into_file(self, directory: &Path) -> Result<tempfile::NamedTempFile> {
-        match self {
-            Self::Received(file) => Ok(file),
-            Self::Pending(download) => download.receive(directory).await,
-        }
-    }
-}
-
-pub(crate) struct DatabaseDownload(BoxStream<'static, Result<Bytes>>);
-
-impl DatabaseDownload {
-    pub(crate) async fn receive(mut self, directory: &Path) -> Result<tempfile::NamedTempFile> {
-        let output = tempfile::NamedTempFile::new_in(directory)?;
-        let mut file = tokio::fs::File::from_std(output.reopen()?);
-        while let Some(chunk) = self.0.try_next().await? {
-            file.write_all(&chunk).await?;
-        }
-        file.flush().await?;
-        Ok(output)
-    }
 }

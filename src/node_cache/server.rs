@@ -16,13 +16,13 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 use super::{
-    FILE_CHUNK_BYTES, MAX_ENTRY_BYTES, actor_digest,
+    FILE_CHUNK_BYTES, MAX_ENTRY_BYTES,
     keys::HostTokens,
     slots::{SlotCheckout, SlotPark, SqliteSlots},
     store::DiskStore,
     valid_digest,
 };
-use crate::{actor::ActorKey, control_plane::ActorPrincipal};
+use crate::control_plane::ActorPrincipal;
 
 #[derive(Clone)]
 struct NodeCache {
@@ -39,9 +39,7 @@ pub(super) fn router(
     Router::new()
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .route("/code/{digest}", get(read_code).put(write_code))
-        .route("/sqlite/{digest}", get(read_database).put(write_database))
         .route("/sqlite/parked/{digest}", get(is_parked))
-        .route("/snapshot/{digest}", get(read_snapshot).put(write_snapshot))
         .route("/slot/checkout", post(check_out))
         .route("/slot/park", post(park))
         .with_state(NodeCache {
@@ -69,77 +67,7 @@ async fn write_code(
     body: Body,
 ) -> StatusCode {
     match cache.authorize(&headers, &digest) {
-        Ok(_) => {
-            cache
-                .receive(&code_key(&digest), body, Some(&digest), Keep::Every)
-                .await
-        }
-        Err(status) => status,
-    }
-}
-
-async fn read_database(
-    State(cache): State<NodeCache>,
-    Path(digest): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    match cache.authorize(&headers, &digest) {
-        Ok(host) => {
-            cache
-                .serve(&actor_key("sqlite", &host.actor, &digest))
-                .await
-        }
-        Err(status) => status.into_response(),
-    }
-}
-
-async fn write_database(
-    State(cache): State<NodeCache>,
-    Path(digest): Path<String>,
-    headers: HeaderMap,
-    body: Body,
-) -> StatusCode {
-    match cache.authorize(&headers, &digest) {
-        Ok(host) => {
-            cache
-                .receive(
-                    &actor_key("sqlite", &host.actor, &digest),
-                    body,
-                    None,
-                    Keep::Latest,
-                )
-                .await
-        }
-        Err(status) => status,
-    }
-}
-
-async fn read_snapshot(
-    State(cache): State<NodeCache>,
-    Path(digest): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    match cache.authorize(&headers, &digest) {
-        Ok(host) => {
-            cache
-                .serve(&actor_key("snapshot", &host.actor, &digest))
-                .await
-        }
-        Err(status) => status.into_response(),
-    }
-}
-
-async fn write_snapshot(
-    State(cache): State<NodeCache>,
-    Path(digest): Path<String>,
-    headers: HeaderMap,
-    body: Body,
-) -> StatusCode {
-    match cache.authorize(&headers, &digest) {
-        Ok(host) => {
-            let key = actor_key("snapshot", &host.actor, &digest);
-            cache.receive(&key, body, Some(&digest), Keep::Latest).await
-        }
+        Ok(_) => cache.receive(&code_key(&digest), body, &digest).await,
         Err(status) => status,
     }
 }
@@ -261,8 +189,8 @@ impl NodeCache {
         }
     }
 
-    async fn receive(&self, key: &str, body: Body, digest: Option<&str>, keep: Keep) -> StatusCode {
-        match self.store_body(key, body, digest, keep).await {
+    async fn receive(&self, key: &str, body: Body, digest: &str) -> StatusCode {
+        match self.store_body(key, body, digest).await {
             Ok(()) => StatusCode::CREATED,
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "rejected node cache upload");
@@ -271,13 +199,7 @@ impl NodeCache {
         }
     }
 
-    async fn store_body(
-        &self,
-        key: &str,
-        body: Body,
-        digest: Option<&str>,
-        keep: Keep,
-    ) -> Result<()> {
+    async fn store_body(&self, key: &str, body: Body, digest: &str) -> Result<()> {
         let staged = self.store.stage()?;
         let mut file = tokio::fs::File::from_std(staged.reopen()?);
         let mut hash = Digest::new(&SHA256);
@@ -291,34 +213,16 @@ impl NodeCache {
         }
         file.flush().await?;
         ensure!(
-            digest.is_none_or(|digest| URL_SAFE_NO_PAD.encode(hash.finish().as_ref()) == digest),
+            URL_SAFE_NO_PAD.encode(hash.finish().as_ref()) == digest,
             "content digest mismatch"
         );
         // Entries outlive this process, so one must be on disk before its name is.
         file.sync_all().await?;
         drop(file);
-        match keep {
-            Keep::Every => self.store.insert(key, staged, size).await,
-            Keep::Latest => self.store.insert_latest(key, staged, size).await,
-        }
+        self.store.insert(key, staged, size).await
     }
-}
-
-/// Code is shared by content digest; an actor's database and snapshot are only worth keeping at
-/// the version its next activation will ask for.
-#[derive(Clone, Copy)]
-enum Keep {
-    Every,
-    Latest,
 }
 
 fn code_key(digest: &str) -> String {
     format!("code/{digest}")
-}
-
-/// Actor state is keyed by the actor in the host token, so a host can neither read nor replace
-/// another actor's database or snapshot. Each actor's versions share a directory, so a new
-/// version can drop the ones it supersedes.
-fn actor_key(kind: &str, actor: &ActorKey, snapshot: &str) -> String {
-    format!("{kind}/{}/{snapshot}", actor_digest(actor))
 }

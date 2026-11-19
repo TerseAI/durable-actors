@@ -145,18 +145,6 @@ impl SqliteCapture {
         .await
     }
 
-    pub(crate) async fn adopt(
-        directory: CaptureDirectory,
-        replication: Arc<dyn Replicator>,
-        database: tempfile::NamedTempFile,
-        txid: u64,
-        full_snapshots: Option<Duration>,
-        resume: bool,
-    ) -> Result<Self> {
-        database.persist(directory.database().join("actor.sqlite"))?;
-        Self::reopen(directory, replication, txid, full_snapshots, resume).await
-    }
-
     /// Opens a database already in `directory` that was closed at `txid`.
     pub(crate) async fn reopen(
         directory: CaptureDirectory,
@@ -192,27 +180,6 @@ impl SqliteCapture {
 
     pub(crate) fn in_slot(&self) -> bool {
         matches!(self.directory, Some(CaptureDirectory::Slot { .. }))
-    }
-
-    /// A page-for-page copy of the committed database, or `None` when it is larger than
-    /// `max_bytes`. A resumed capture appends page deltas to the history the copy was saved at,
-    /// so unlike `VACUUM INTO` the copy keeps every page where that history put it.
-    pub(crate) async fn export(&self, max_bytes: u64) -> Result<Option<tempfile::NamedTempFile>> {
-        let source = self.path();
-        tokio::task::spawn_blocking(move || {
-            let source_wal = wal_path(&source);
-            if file_size(&source)? + file_size(&source_wal)? > max_bytes {
-                return Ok(None);
-            }
-            let output = tempfile::NamedTempFile::new()?;
-            std::fs::copy(&source, output.path())?;
-            if file_size(&source_wal)? > 0 {
-                std::fs::copy(&source_wal, wal_path(output.path()))?;
-            }
-            fold_wal(output.path())?;
-            Ok(Some(output))
-        })
-        .await?
     }
 
     pub(crate) fn path(&self) -> PathBuf {

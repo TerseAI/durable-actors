@@ -833,8 +833,6 @@ async fn a_parked_base_activates_without_reading_its_snapshot() -> Result<()> {
     f.bucket.reads.store(0, Ordering::SeqCst);
 
     let cached = CachedBase {
-        database: true,
-        snapshot: None,
         parked: Some(base.clone()),
     };
     let loaded = f
