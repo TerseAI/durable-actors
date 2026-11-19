@@ -22,8 +22,8 @@ export function useLogs(baseUrl: string, timeWindow: TimeWindow, filter: LogFilt
         hasOlder: Boolean(pages?.at(-1)?.nextCursor),
         loadingOlder: Boolean(pages && history.size > pages.length),
         loadOlder: () => history.setSize(size => size + 1),
-        histogram,
-        isError: !pages && Boolean(history.error)
+        histogram: histogram.data,
+        isError: (!pages && Boolean(history.error)) || (!histogram.data && Boolean(histogram.error))
     }
 }
 
@@ -44,7 +44,7 @@ function useLogHistory(baseUrl: string, timeWindow: TimeWindow, filter: LogFilte
 
 function useLogHistogram(baseUrl: string, timeWindow: TimeWindow, filter: LogFilter, events: ReturnType<typeof useEventStream>) {
     const bucketMs = chartBucketMs(timeWindow.toMs - timeWindow.fromMs)
-    const { data } = useLiveView(
+    const { data, error } = useLiveView(
         [...logHistogramKey(baseUrl, filter), ...windowKey(timeWindow), bucketMs],
         async () => {
             const readAtMs = Date.now()
@@ -52,10 +52,9 @@ function useLogHistogram(baseUrl: string, timeWindow: TimeWindow, filter: LogFil
             return liveHistogram(read, readAtMs)
         },
         applyHistogramEvents,
-        events,
-        { keepPreviousData: true }
+        events
     )
-    return data && histogramFor(data, alignBounds(currentBounds(timeWindow), bucketMs))
+    return { data: data && histogramFor(data, alignBounds(currentBounds(timeWindow), bucketMs)), error }
 }
 
 function newestFirst(lines: ActorLog[]): ActorLog[] {
