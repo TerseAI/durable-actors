@@ -3,6 +3,7 @@ set -euo pipefail
 
 BUN_VERSION=1.4.2
 RUST_VERSION=1.91.0
+LIT_VERSION=0.1.2
 LITESTREAM_VERSION=0.5.17
 LITESTREAM_SHA256=cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d
 DOCKER_IMAGES=(postgres:16 redis:7.2-alpine clickhouse/clickhouse-server:26.6)
@@ -66,6 +67,21 @@ install_litestream() {
     fi
 }
 
+# Linear ticket CLI (CONTRIBUTING.md); the repository's .lit.json selects the DUR team.
+install_lit() {
+    if ! npm ls -g --depth=0 "linear-lit-cli@$LIT_VERSION" >/dev/null 2>&1; then
+        log "Installing lit $LIT_VERSION"
+        npm install -g --silent "linear-lit-cli@$LIT_VERSION"
+    fi
+    # Agent shells don't receive repository secrets, so store the key in lit's own config.
+    if ns secrets exec --env LINEAR_API_KEY=LINEAR_API_KEY -- \
+        sh -c 'lit config set linear-api-key "$LINEAR_API_KEY"' >/dev/null 2>&1; then
+        log "Configured lit with LINEAR_API_KEY"
+    else
+        log "LINEAR_API_KEY is not set; lit needs it to reach Linear"
+    fi
+}
+
 pull_test_images() {
     for image in "${DOCKER_IMAGES[@]}"; do
         docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null || log "Could not pull $image"
@@ -90,6 +106,7 @@ install_system_packages
 install_bun
 install_rust
 install_litestream
+install_lit
 pull_test_images
 install_workspace
 install_python_sdk
