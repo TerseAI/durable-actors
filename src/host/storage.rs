@@ -23,7 +23,7 @@ use crate::{
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
-    node_cache::{DatabaseDownload, NodeCacheClient},
+    node_cache::{CachedDatabase, DatabaseDownload, NodeCacheClient},
     storage::WritePlan,
 };
 
@@ -49,7 +49,7 @@ pub(crate) struct HostStorage {
 
 struct SavedDatabase {
     digest: String,
-    file: tempfile::NamedTempFile,
+    file: CachedDatabase,
 }
 
 impl HostStorage {
@@ -269,15 +269,15 @@ impl ActorStorage for HostStorage {
 
     fn resume_parent(
         &self,
-        snapshot: &crate::storage::VerifiedSnapshot,
+        head: &crate::storage::SnapshotRef,
     ) -> Result<Option<crate::storage::SnapshotRef>> {
         if self.runtime.persistence.rapid_settings().is_none() {
             return Ok(None);
         }
-        Ok(Some(snapshot.reference.clone()))
+        Ok(Some(head.clone()))
     }
 
-    fn take_saved_database(&self, digest: &str) -> Option<tempfile::NamedTempFile> {
+    fn take_saved_database(&self, digest: &str) -> Option<CachedDatabase> {
         let saved = self.saved_database.lock().unwrap().take()?;
         (saved.digest == digest).then_some(saved.file)
     }
@@ -313,6 +313,7 @@ impl ActorStorage for HostStorage {
             owner_epoch: loaded.placement.owner_epoch,
             state_version: loaded.placement.state_version,
             state: loaded.state,
+            head: loaded.head,
         })
     }
 
@@ -403,14 +404,21 @@ impl HostLeaseRegistry for HostStorage {
 }
 
 impl HostStorage {
-    /// A database this node saved at the hinted base stands in for the base's checkpoint, so it
-    /// downloads during the ownership CAS and the checkpoint is never fetched. A snapshot this node
-    /// saved stands in for the base's object storage read.
+    /// When this node parked the database at the hinted base, the host reopens that file and needs
+    /// neither the base's snapshot nor its checkpoint. Otherwise a database this node saved at the
+    /// base stands in for the checkpoint: it downloads during the ownership CAS, and a host with a
+    /// slot receives it into the slot once it has checked the slot out. A snapshot this node saved
+    /// stands in for the base's object storage read.
     async fn activate(&self, request: &HostLeaseRequest) -> Result<HostLease> {
-        let (saved, snapshot) = tokio::join!(self.find_saved_database(), self.find_snapshot());
+        let parked = self.find_parked().await;
+        let (saved, snapshot) = match parked {
+            Some(_) => (None, None),
+            None => tokio::join!(self.find_saved_database(), self.find_snapshot()),
+        };
         let cached = crate::bucket::CachedBase {
-            database: saved.is_some(),
+            database: parked.is_some() || saved.is_some(),
             snapshot,
+            parked,
         };
         let (loaded, saved) = tokio::join!(
             self.runtime.register_activation_with(
@@ -421,7 +429,7 @@ impl HostStorage {
                 self.owner_hint.as_ref(),
                 &cached,
             ),
-            receive_saved_database(saved),
+            self.receive_saved_database(saved),
         );
         let loaded = loaded?;
         *self.saved_database.lock().unwrap() = saved;
@@ -430,8 +438,22 @@ impl HostStorage {
             owner_epoch: loaded.placement.owner_epoch,
             state_version: loaded.placement.state_version,
             state: loaded.state,
+            head: loaded.head,
         });
         Ok(loaded.placement.lease)
+    }
+
+    async fn find_parked(&self) -> Option<crate::storage::SnapshotRef> {
+        let cache = self.node_cache.as_ref()?;
+        cache.slot_database()?;
+        let base = self.owner_hint.as_ref()?.sealed_base()?;
+        match cache.is_parked(&base.digest).await {
+            Ok(parked) => parked.then(|| base.clone()),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "parked database lookup failed");
+                None
+            }
+        }
     }
 
     async fn find_saved_database(&self) -> Option<(String, DatabaseDownload)> {
@@ -465,24 +487,34 @@ impl HostStorage {
             }
         }
     }
-}
 
-async fn receive_saved_database(
-    saved: Option<(String, DatabaseDownload)>,
-) -> Option<SavedDatabase> {
-    let (digest, download) = saved?;
-    let started = Instant::now();
-    match download.receive().await {
-        Ok(file) => {
-            tracing::info!(
-                event = "actor_sqlite_cache_received",
-                duration_ms = started.elapsed().as_secs_f64() * 1000.0
-            );
-            Some(SavedDatabase { digest, file })
+    async fn receive_saved_database(
+        &self,
+        saved: Option<(String, DatabaseDownload)>,
+    ) -> Option<SavedDatabase> {
+        let (digest, download) = saved?;
+        if self
+            .node_cache
+            .as_ref()
+            .is_some_and(|cache| cache.slot_database().is_some())
+        {
+            let file = CachedDatabase::Pending(download);
+            return Some(SavedDatabase { digest, file });
         }
-        Err(error) => {
-            tracing::warn!(error = %format!("{error:#}"), "node cache database download failed");
-            None
+        let started = Instant::now();
+        match download.receive(&std::env::temp_dir()).await {
+            Ok(file) => {
+                tracing::info!(
+                    event = "actor_sqlite_cache_received",
+                    duration_ms = started.elapsed().as_secs_f64() * 1000.0
+                );
+                let file = CachedDatabase::Received(file);
+                Some(SavedDatabase { digest, file })
+            }
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "node cache database download failed");
+                None
+            }
         }
     }
 }

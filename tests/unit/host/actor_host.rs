@@ -1632,6 +1632,7 @@ impl ActorStorage for FakeAuthority {
             state_version: state
                 .as_ref()
                 .map_or(0, |snapshot| snapshot.reference.state_version),
+            head: state.as_ref().map(|snapshot| snapshot.reference.clone()),
             state,
         })
     }
@@ -1658,8 +1659,12 @@ impl ActorStorage for FakeAuthority {
             None => Ok((0, None)),
         }
     }
-    fn take_saved_database(&self, _digest: &str) -> Option<tempfile::NamedTempFile> {
-        self.saved_database.lock().unwrap().take()
+    fn take_saved_database(&self, _digest: &str) -> Option<crate::node_cache::CachedDatabase> {
+        self.saved_database
+            .lock()
+            .unwrap()
+            .take()
+            .map(crate::node_cache::CachedDatabase::Received)
     }
     async fn read_sqlite(
         &self,

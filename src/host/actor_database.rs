@@ -46,11 +46,11 @@ pub(crate) trait ActorStorage: Send + Sync {
     /// across activations; `None` starts a new history with a full copy.
     fn resume_parent(
         &self,
-        _snapshot: &VerifiedSnapshot,
+        _head: &crate::storage::SnapshotRef,
     ) -> Result<Option<crate::storage::SnapshotRef>> {
         Ok(None)
     }
-    fn take_saved_database(&self, _digest: &str) -> Option<tempfile::NamedTempFile> {
+    fn take_saved_database(&self, _digest: &str) -> Option<crate::node_cache::CachedDatabase> {
         None
     }
 }
@@ -60,6 +60,8 @@ pub(crate) struct ActorActivation {
     pub owner_epoch: u64,
     pub state_version: u64,
     pub state: Option<VerifiedSnapshot>,
+    /// The head's reference; without `state`, the node holds the head's closed database.
+    pub head: Option<crate::storage::SnapshotRef>,
 }
 
 #[derive(Clone, Default)]

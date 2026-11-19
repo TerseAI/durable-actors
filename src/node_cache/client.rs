@@ -1,4 +1,7 @@
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -6,7 +9,8 @@ use futures_util::{TryStreamExt, stream::BoxStream};
 use reqwest::header::AUTHORIZATION;
 use tokio::io::AsyncWriteExt;
 
-use crate::{control_plane::HostAuthorization, payload::Payload};
+use super::slots::{SlotCheckout, SlotFile, SlotPark};
+use crate::{control_plane::HostAuthorization, payload::Payload, storage::SnapshotRef};
 
 // With no cache pod on the node the Service drops packets instead of refusing them, so only a
 // short connect timeout keeps installs from stalling.
@@ -15,6 +19,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// Activation reads code, the database and the snapshot at once, and a read that finds no idle
 /// connection pays for a new one inside gVisor.
 const WARM_CONNECTIONS: usize = 4;
+/// The spare's private directory on the node SSD; the node cache moves `db` in and out of it.
+const SLOT_MOUNT: &str = "/slot";
 
 /// Built and connected while a spare waits: building the client alone costs ~15 ms in gVisor, so
 /// assignment only attaches the host token.
@@ -128,6 +134,72 @@ impl NodeCacheClient {
         self.write(&format!("snapshot/{digest}"), body).await
     }
 
+    /// Where this host keeps its database when its sandbox has a node slot.
+    pub(crate) fn slot_database(&self) -> Option<PathBuf> {
+        let slot = Path::new(SLOT_MOUNT);
+        slot.is_dir().then(|| slot.join("db"))
+    }
+
+    /// Whether this node holds the actor's database closed at the snapshot with this digest.
+    pub(crate) async fn is_parked(&self, digest: &str) -> Result<bool> {
+        let response = self
+            .connection
+            .http
+            .get(
+                self.connection
+                    .url
+                    .join(&format!("sqlite/parked/{digest}"))?,
+            )
+            .header(AUTHORIZATION, self.authorization.header()?)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        response.error_for_status()?;
+        Ok(true)
+    }
+
+    /// Moves the actor's database closed at `snapshot` into this host's slot, or leaves the slot
+    /// an empty directory when the node has no such database.
+    pub(crate) async fn check_out_slot(
+        &self,
+        snapshot: Option<&SnapshotRef>,
+    ) -> Result<Option<SlotFile>> {
+        let request = SlotCheckout {
+            snapshot: snapshot.cloned(),
+        };
+        self.slot_call("checkout", &request).await
+    }
+
+    /// Hands the closed database in this host's slot to the node, recorded at `snapshot`, whose
+    /// SQLite transaction is `txid`.
+    pub(crate) async fn park_slot(&self, snapshot: &SnapshotRef, txid: u64) -> Result<SlotFile> {
+        let request = SlotPark {
+            snapshot: snapshot.clone(),
+            txid,
+        };
+        self.slot_call("park", &request).await
+    }
+
+    async fn slot_call<T: serde::de::DeserializeOwned>(
+        &self,
+        action: &str,
+        body: &impl serde::Serialize,
+    ) -> Result<T> {
+        Ok(self
+            .connection
+            .http
+            .post(self.connection.url.join(&format!("slot/{action}"))?)
+            .header(AUTHORIZATION, self.authorization.header()?)
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
     async fn read(&self, entry: &str) -> Result<Option<BoxStream<'static, Result<Bytes>>>> {
         let response = self
             .connection
@@ -163,11 +235,27 @@ async fn file_body(path: &Path) -> Result<reqwest::Body> {
     ))
 }
 
+/// An actor database this node saved: received while the host took ownership, or still to be
+/// received into the directory the database will live in.
+pub(crate) enum CachedDatabase {
+    Received(tempfile::NamedTempFile),
+    Pending(DatabaseDownload),
+}
+
+impl CachedDatabase {
+    pub(crate) async fn into_file(self, directory: &Path) -> Result<tempfile::NamedTempFile> {
+        match self {
+            Self::Received(file) => Ok(file),
+            Self::Pending(download) => download.receive(directory).await,
+        }
+    }
+}
+
 pub(crate) struct DatabaseDownload(BoxStream<'static, Result<Bytes>>);
 
 impl DatabaseDownload {
-    pub(crate) async fn receive(mut self) -> Result<tempfile::NamedTempFile> {
-        let output = tempfile::NamedTempFile::new()?;
+    pub(crate) async fn receive(mut self, directory: &Path) -> Result<tempfile::NamedTempFile> {
+        let output = tempfile::NamedTempFile::new_in(directory)?;
         let mut file = tokio::fs::File::from_std(output.reopen()?);
         while let Some(chunk) = self.0.try_next().await? {
             file.write_all(&chunk).await?;
