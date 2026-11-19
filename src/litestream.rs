@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use terse_litestream::{
-    CheckpointMode, Database, Durability, FileStore, Options, ReplicaStore, Segment, SegmentWriter,
+    Database, Durability, FileStore, Options, ReplicaStore, Segment, SegmentWriter,
 };
 
 use storage::LtxFile;
@@ -31,8 +31,6 @@ pub(crate) trait Replicator: DatabaseRestore {
         resume_at: Option<u64>,
     ) -> Result<u64>;
     async fn sync(&self, path: &Path) -> Result<u64>;
-    /// Takes the database's write lock, so callers run it while no transaction is open.
-    async fn checkpoint(&self, path: &Path) -> Result<()>;
     async fn unregister(&self, path: &Path) -> Result<()>;
 }
 
@@ -69,11 +67,6 @@ impl Replicator for Litestream {
     async fn sync(&self, path: &Path) -> Result<u64> {
         let (registry, path) = (self.registry.clone(), path.to_owned());
         tokio::task::spawn_blocking(move || registry.sync(&path)).await?
-    }
-
-    async fn checkpoint(&self, path: &Path) -> Result<()> {
-        let (registry, path) = (self.registry.clone(), path.to_owned());
-        tokio::task::spawn_blocking(move || registry.checkpoint(&path)).await?
     }
 
     async fn unregister(&self, path: &Path) -> Result<()> {
@@ -186,13 +179,6 @@ impl Registry {
         self.with_capture(path, Capture::sync)
     }
 
-    fn checkpoint(&self, path: &Path) -> Result<()> {
-        self.with_capture(path, |capture| {
-            capture.database.checkpoint(CheckpointMode::Passive)?;
-            Ok(())
-        })
-    }
-
     fn with_capture<T>(
         &self,
         path: &Path,
@@ -231,12 +217,11 @@ impl Registry {
 }
 
 /// The local replica only stages files until their commit is uploaded, so it skips fsync. A new
-/// history's base snapshot waits for the first write, and WAL checkpoints run between commits.
+/// history's base snapshot waits for the first write. Litestream's default checkpoints run inside
+/// the sync that follows a commit, so they never meet an open transaction.
 fn open_capture(path: &Path, replica: PathBuf, resume_at: Option<u64>) -> Result<Database> {
     let options = Options {
         defer_base_snapshot: true,
-        min_checkpoint_pages: 0,
-        checkpoint_interval: Duration::ZERO,
         ..Options::default()
     };
     let store = Arc::new(FileStore::scratch(replica));

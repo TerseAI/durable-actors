@@ -415,10 +415,6 @@ impl DatabaseService {
             let command = tokio::select! {
                 biased;
                 _ = self.stopped.cancelled() => return,
-                () = until(self.session.checkpoint_due()) => {
-                    self.session.checkpoint().await;
-                    continue;
-                }
                 command = commands.recv() => match command { Some(command) => command, None => return },
             };
             if !self.handle(command).await {
@@ -560,12 +556,5 @@ impl DatabaseService {
             .store(self.session.state_version().unwrap_or(0), Ordering::Release);
         let _ = completion.reply.send(result);
         success
-    }
-}
-
-async fn until(due: Option<tokio::time::Instant>) {
-    match due {
-        Some(due) => tokio::time::sleep_until(due).await,
-        None => std::future::pending().await,
     }
 }

@@ -16,14 +16,8 @@ use crate::{
     storage::{SnapshotRef, VerifiedSnapshot, WritePlan},
 };
 use anyhow::{Context, Result, ensure};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tracing::{debug, info, warn};
-
-const CHECKPOINT_IDLE: Duration = Duration::from_secs(1);
-const CHECKPOINT_MAX_DELAY: Duration = Duration::from_secs(10);
+use std::{sync::Arc, time::Instant};
+use tracing::{info, warn};
 
 pub(super) struct DatabaseSession {
     endpoint: HostEndpoint,
@@ -174,11 +168,7 @@ impl DatabaseSession {
             let previous = cached.synced;
             cached.synced = self.replication.sync(&cached.sqlite.path()).await?;
             // SQLite counts a row rewritten with identical bytes as a change but appends no WAL frames.
-            let advanced = cached.synced > previous;
-            if advanced {
-                cached.checkpoint.committed();
-            }
-            if immediate && advanced {
+            if immediate && cached.synced > previous {
                 self.publish_immediate(invocation, owner_epoch, cached, origin)
                     .await?;
             }
@@ -340,28 +330,6 @@ impl DatabaseSession {
         self.cached_state = None;
         self.prepared_activation = None;
         self.activation = None;
-    }
-
-    /// A due checkpoint waits for an open transaction to end, then runs before the next call.
-    pub(super) fn checkpoint_due(&self) -> Option<tokio::time::Instant> {
-        let cached = self.cached_state.as_ref()?;
-        let due = cached.checkpoint.due()?;
-        (!cached.database.in_transaction()).then_some(due)
-    }
-
-    pub(super) async fn checkpoint(&mut self) {
-        let Some(cached) = &mut self.cached_state else {
-            return;
-        };
-        cached.checkpoint = IdleCheckpoint::default();
-        let started = Instant::now();
-        let result = self.replication.checkpoint(&cached.sqlite.path()).await;
-        let duration_ms = elapsed_ms(started);
-        match result {
-            Ok(()) => debug!(event = "sqlite_wal_checkpoint", duration_ms),
-            Err(error) => warn!(event = "sqlite_wal_checkpoint_failed", duration_ms,
-                error = %format!("{error:#}")),
-        }
     }
     async fn take_or_load_state(
         &mut self,
@@ -706,7 +674,6 @@ struct ResidentDatabase {
     last_result: Option<JsonText>,
     next_write: Option<WritePlan>,
     pending: Option<PendingStateCommit>,
-    checkpoint: IdleCheckpoint,
 }
 
 struct PublishedSnapshot {
@@ -737,7 +704,6 @@ impl ResidentDatabase {
             last_result: None,
             next_write: None,
             pending: None,
-            checkpoint: IdleCheckpoint::default(),
         })
     }
 
@@ -786,27 +752,6 @@ impl ResidentDatabase {
         (self.last_request_id.as_deref() == Some(request_id))
             .then(|| self.last_result.clone())
             .flatten()
-    }
-}
-
-/// When to checkpoint the WAL: once commits pause, so commits rarely wait on one, or after
-/// `CHECKPOINT_MAX_DELAY` when they never do.
-#[derive(Default)]
-struct IdleCheckpoint {
-    due: Option<(tokio::time::Instant, tokio::time::Instant)>,
-}
-
-impl IdleCheckpoint {
-    fn committed(&mut self) {
-        let now = tokio::time::Instant::now();
-        let deadline = self
-            .due
-            .map_or(now + CHECKPOINT_MAX_DELAY, |(_, deadline)| deadline);
-        self.due = Some((now + CHECKPOINT_IDLE, deadline));
-    }
-
-    fn due(&self) -> Option<tokio::time::Instant> {
-        self.due.map(|(idle, deadline)| idle.min(deadline))
     }
 }
 

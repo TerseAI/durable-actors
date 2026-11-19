@@ -2424,7 +2424,7 @@ impl ActorExecutor for ReadThenWriteTransactions {
     ) -> Result<ActorMethodOutcome> {
         exec(&*database, "CREATE TABLE entries(value TEXT)").await?;
         exec(&*database, "INSERT INTO entries VALUES ('first')").await?;
-        // Rolling back appends no WAL frames, so the checkpoint stays due 1 s after the insert.
+        // Read-then-write transactions keep running while the insert's pages wait in the WAL.
         let (until, mut transactions) = (Instant::now() + Duration::from_millis(2500), 0);
         while Instant::now() < until {
             exec(&*database, "BEGIN").await?;
@@ -2441,7 +2441,7 @@ impl ActorExecutor for ReadThenWriteTransactions {
 }
 
 #[tokio::test]
-async fn transactions_that_read_then_write_never_meet_the_idle_checkpoint() -> Result<()> {
+async fn transactions_that_read_then_write_never_meet_a_checkpoint() -> Result<()> {
     let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
