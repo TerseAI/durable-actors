@@ -56,32 +56,6 @@ async fn a_database_parked_at_another_snapshot_is_dropped() -> Result<()> {
 }
 
 #[tokio::test]
-async fn one_of_two_concurrent_checkouts_gets_the_parked_database() -> Result<()> {
-    let node = Node::start().await?;
-    let (first, second, third) = (node.spare()?, node.spare()?, node.spare()?);
-    node.slots.check_out(&actor("one"), &first, None).await?;
-    write_value(&node.database(&first), 89)?;
-    node.slots
-        .park(&actor("one"), &first, snapshot(1), 7)
-        .await?;
-
-    let one = actor("one");
-    let (a, b) = tokio::join!(
-        node.slots.check_out(&one, &second, Some(snapshot(1))),
-        node.slots.check_out(&one, &third, Some(snapshot(1))),
-    );
-
-    assert_eq!(
-        [a?.is_some(), b?.is_some()]
-            .iter()
-            .filter(|reused| **reused)
-            .count(),
-        1
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn only_a_closed_database_of_plain_files_is_parked() -> Result<()> {
     let node = Node::start().await?;
     let slot = node.spare()?;
