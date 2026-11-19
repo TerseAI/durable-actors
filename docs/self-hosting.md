@@ -124,6 +124,8 @@ for bucket in "$BUCKET" "$RAPID_A" "$RAPID_B"; do
 done
 ```
 
+The controller identity needs `storage.buckets.get` on the Standard archive bucket and every Rapid bucket to validate storage class, placement, and lifecycle rules before serving writes. The bucket-reader grants above include this permission; object access alone is insufficient. A denied or failed metadata read stops startup.
+
 Select Rapid in the installation values:
 
 ```yaml
@@ -139,6 +141,8 @@ storage:
 When actor hosts can start in either of two regions, put one Rapid bucket in a zone of each and set `placement: nearest`. Each host then opens its log in both zones at assignment, keeps whichever opens first (normally its own region), and writes only there for that session. Each write has one Rapid copy, as with a single zone. Switching between `all` and `nearest` with the same buckets needs no migration.
 
 The Standard bucket remains required. Startup checks Rapid storage class, actual zonal placement, and retention rules. Do not configure automatic deletion of Rapid log objects: the runtime archives them before removing their Rapid copies. If Rapid streams cannot be opened at activation, the runtime can persist immutable Standard snapshots.
+
+The Standard archive bucket must retain the `durable-actors-v3-snapshots-` namespace, including manifests, archived batches, indexes, checkpoints, and fallback snapshots needed for recovery after Rapid copies are removed. Startup rejects lifecycle `Delete` rules unless every `matchesPrefix` value is disjoint from that namespace. A missing condition or prefix list is a catch-all and is rejected; age, date, version, storage-class, and suffix-only conditions are not permanent retention guarantees. For example, deletion limited to `temporary/` is allowed, while deletion matching `durable-actors-v3-` or `durable-actors-v3-snapshots-` is rejected. Known non-delete lifecycle actions remain allowed; missing or unsupported actions and unreadable bucket metadata block startup. This archive requirement does not change the separate Rapid log-bucket rules. Keep these policies safe after startup as well: they are checked at startup, not continuously.
 
 Storage mode and bucket identities are bound to existing actor ownership records. Select the mode before creating actors in an installation. Changing an existing installation's mode needs a planned data migration; a Helm values change alone does not migrate actor state.
 
