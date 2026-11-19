@@ -27,7 +27,14 @@ fn credentials_are_scoped_to_one_actor_and_its_deployed_code() -> Result<()> {
             sha256: "unused".into(),
         }],
     };
-    let scoped = scopes("authority", &local, Some("code"), &actor, Some(&code))?;
+    let scoped = scopes(
+        "authority",
+        &local,
+        Some("code"),
+        &actor,
+        Some(&code),
+        OwnershipAccess::Read,
+    )?;
     assert_eq!(
         scoped,
         Scopes {
@@ -35,7 +42,7 @@ fn credentials_are_scoped_to_one_actor_and_its_deployed_code() -> Result<()> {
                 rule(
                     "authority",
                     crate::storage_paths::owner(&actor.storage_key())?,
-                    Permissions::OBJECT_USER
+                    Permissions::OBJECT_VIEWER
                 ),
                 rule(
                     "code",
@@ -50,6 +57,23 @@ fn credentials_are_scoped_to_one_actor_and_its_deployed_code() -> Result<()> {
             )],
         }
     );
+    assert_eq!(
+        scopes(
+            "authority",
+            &local,
+            Some("code"),
+            &actor,
+            Some(&code),
+            OwnershipAccess::Write
+        )?
+        .ownership[0],
+        rule(
+            "authority",
+            crate::storage_paths::owner(&actor.storage_key())?,
+            Permissions::OBJECT_USER
+        ),
+        "hosts that renew in the bucket keep write access to their ownership record"
+    );
     for index in 0..1000 {
         let path = format!("modules/{index}.mjs");
         code.files.push(crate::bundle::BundleFile {
@@ -62,19 +86,43 @@ fn credentials_are_scoped_to_one_actor_and_its_deployed_code() -> Result<()> {
         });
     }
     assert_eq!(
-        scopes("authority", &local, Some("code"), &actor, Some(&code))?,
+        scopes(
+            "authority",
+            &local,
+            Some("code"),
+            &actor,
+            Some(&code),
+            OwnershipAccess::Read
+        )?,
         scoped,
         "the boundary does not grow with the bundle"
     );
     code.files[1].object =
         "durable-actors/v3/artifacts/87654321-1234-4234-8234-123456789012/modules/0.mjs".into();
-    assert!(scopes("authority", &local, Some("code"), &actor, Some(&code)).is_err());
+    assert!(
+        scopes(
+            "authority",
+            &local,
+            Some("code"),
+            &actor,
+            Some(&code),
+            OwnershipAccess::Read
+        )
+        .is_err()
+    );
     code.files.truncate(1);
     let mut other = actor.clone();
     other.project_id = "other".into();
     assert_ne!(
         scoped,
-        scopes("authority", &local, Some("code"), &other, Some(&code))?
+        scopes(
+            "authority",
+            &local,
+            Some("code"),
+            &other,
+            Some(&code),
+            OwnershipAccess::Read
+        )?
     );
     assert!(
         scopes(
@@ -82,7 +130,8 @@ fn credentials_are_scoped_to_one_actor_and_its_deployed_code() -> Result<()> {
             &local,
             Some("different-bucket"),
             &actor,
-            Some(&code)
+            Some(&code),
+            OwnershipAccess::Read
         )
         .is_err()
     );
@@ -100,7 +149,15 @@ fn log_credentials_cover_only_this_actors_logs_and_archive() -> Result<()> {
     let archive = super::super::rapid::object_name(&crate::storage_paths::snapshots(&actor)?)?;
     let logs = archive.replacen("snapshots-", "logs-", 1);
     assert_eq!(
-        scopes("authority", &config, None, &actor, None)?.state,
+        scopes(
+            "authority",
+            &config,
+            None,
+            &actor,
+            None,
+            OwnershipAccess::Read
+        )?
+        .state,
         [
             rule(
                 "archive-test",
@@ -145,9 +202,16 @@ async fn every_request_mints_its_own_token() -> Result<()> {
         },
         token_source: Some(Box::new(Numbered(Default::default()))),
         persistence: super::super::SnapshotStoreConfig::Local,
+        ownership: Default::default(),
     };
-    let first = access.issue(&actor(), None).await?.context("token")?;
-    let second = access.issue(&actor(), None).await?.context("token")?;
+    let first = access
+        .issue(&actor(), None, OwnershipAccess::Read)
+        .await?
+        .context("token")?;
+    let second = access
+        .issue(&actor(), None, OwnershipAccess::Read)
+        .await?
+        .context("token")?;
     assert_ne!(first.ownership.access_token, first.state.access_token);
     assert_ne!(first.ownership.access_token, second.ownership.access_token);
     Ok(())
@@ -192,6 +256,7 @@ async fn concurrent_launches_share_one_intermediary_exchange() -> Result<()> {
         None,
         &actor(),
         None,
+        OwnershipAccess::Read,
     )?
     .ownership;
     let issued = futures_util::future::try_join_all((0..50).map(|_| {
@@ -248,6 +313,7 @@ async fn each_token_fits_the_boundary_limit_at_the_longest_identifiers() -> Resu
             Some(&code.bucket),
             &actor,
             Some(&code),
+            OwnershipAccess::Read,
         )?;
         tokens.issue(&scopes.ownership).await?;
         tokens.issue(&scopes.state).await?;

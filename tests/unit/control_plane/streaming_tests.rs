@@ -560,8 +560,9 @@ impl Stack {
             auth,
             registry.clone(),
             issuer.clone(),
-            Arc::new(SocketTestProvisioner),
-        );
+            Arc::new(super::super::testing::NoHosts),
+        )
+        .with_activation_authority(runtime.activations()?);
         let gateway_listener = TcpListener::bind("127.0.0.1:0").await?;
         let gateway = format!("http://{}", gateway_listener.local_addr()?);
         let hub = super::super::socket_bus::MemorySocketHub::default();
@@ -624,34 +625,36 @@ impl Stack {
             )?
             .token;
         let publisher = Arc::new(ControlPlaneClient::connect(control_plane, token.clone()).await?);
-        let storage = Arc::new(
-            crate::host::storage::HostStorage::new(
-                crate::bucket::access::HostStorageConfig {
-                    persistence: crate::bucket::SnapshotStoreConfig::Local,
-                    bucket: crate::bucket::access::BucketLocation::File {
-                        directory: runtime.directory.path().into(),
-                    },
-                    region: "us-east".into(),
-                    tokens: None,
+        let storage = crate::host::storage::HostStorage::new(
+            crate::bucket::access::HostStorageConfig {
+                persistence: crate::bucket::SnapshotStoreConfig::Local,
+                bucket: crate::bucket::access::BucketLocation::File {
+                    directory: runtime.directory.path().into(),
                 },
-                host_id.clone(),
-                "00000000-0000-4000-8000-000000000001".into(),
-                publisher.clone(),
-                tokio_util::sync::CancellationToken::new(),
-                None,
-                actor.clone(),
-            )
-            .await?
-            .with_activation(true, None),
-        );
-        storage
-            .register(&HostLeaseRequest {
-                id: host_id.clone(),
-                session_id: "00000000-0000-4000-8000-000000000001".into(),
-                route: host_route.clone(),
-                duration_ms: 60_000,
-            })
+                region: "us-east".into(),
+                tokens: None,
+                ownership: Default::default(),
+            },
+            host_id.clone(),
+            "00000000-0000-4000-8000-000000000001".into(),
+            publisher.clone(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            actor.clone(),
+        )
+        .await?;
+        let lease = HostLeaseRequest {
+            id: host_id.clone(),
+            session_id: "00000000-0000-4000-8000-000000000001".into(),
+            route: host_route.clone(),
+            duration_ms: 60_000,
+        };
+        let claim = storage
+            .runtime
+            .claim_activation(&actor, &lease, "us-east", true, None)
             .await?;
+        let storage = Arc::new(storage.with_claim(claim));
+        storage.register(&lease).await?;
 
         let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(
             actor.clone(),
@@ -912,42 +915,6 @@ async fn receive(socket: &mut Socket) -> Result<serde_json::Value> {
     ensure!(frame.is_text(), "unexpected socket frame: {frame:?}");
     serde_json::from_str(frame.to_text()?)
         .with_context(|| format!("invalid socket JSON: {frame:?}"))
-}
-
-struct SocketTestProvisioner;
-
-#[async_trait]
-impl HostProvisioner for SocketTestProvisioner {
-    async fn prepare_deployment(
-        &self,
-        source: &HostLaunchSpec,
-        _previous: Option<&HostLaunchSpec>,
-        _region: &str,
-    ) -> Result<(
-        HostLaunchSpec,
-        Option<crate::control_plane::contracts::PublicActorContract>,
-    )> {
-        Ok((source.clone(), None))
-    }
-
-    async fn ensure_actor_host(
-        &self,
-        _spec: &HostLaunchSpec,
-        _region: &str,
-        _actor: &ActorKey,
-        _new_actor: bool,
-        _owner_hint: Option<&crate::bucket::OwnershipHint>,
-        _: Option<&crate::sandbox::assignment::InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
-        anyhow::bail!("fixture host must be active")
-    }
-    async fn terminate_hosts(
-        &self,
-        _spec: &HostLaunchSpec,
-        _regions: &[String],
-    ) -> Result<HostTermination> {
-        anyhow::bail!("unused")
-    }
 }
 
 fn socket_key(grant: &serde_json::Value) -> Result<String> {

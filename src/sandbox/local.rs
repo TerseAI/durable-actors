@@ -23,6 +23,9 @@ use crate::{
     placement::ObjectPlacementStore,
 };
 
+/// How long a claimed host may go unrecorded before `wait_ready` treats its route as stale.
+const UNRECORDED_HOST_WAIT: Duration = Duration::from_secs(5);
+
 pub(crate) struct LocalSandboxProvider {
     runtime: Arc<LocalRuntime>,
     placements: Arc<dyn ObjectPlacementStore>,
@@ -74,18 +77,24 @@ impl SandboxProvider for LocalSandboxProvider {
         anyhow::bail!("local hosts use their own process registry")
     }
 
+    /// The port is free when chosen but stays unreserved until the host binds it.
+    async fn reserve_route(&self) -> Result<String> {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0")?;
+        Ok(format!("http://{}", probe.local_addr()?))
+    }
+
     async fn wait_ready(&self, host: &crate::host::HostId) -> Result<()> {
         let mut changes = self.runtime.changes.subscribe();
+        let started = tokio::time::Instant::now();
         loop {
-            let record = self
-                .runtime
-                .store
-                .host(host.as_str())
-                .await?
-                .ok_or(super::HostNotReady)?;
-            match record.status.as_str() {
-                "ready" => return Ok(()),
-                "starting" => self.runtime.changed(&mut changes).await?,
+            let record = self.runtime.store.host(host.as_str()).await?;
+            match record.as_ref().map(|record| record.status.as_str()) {
+                Some("ready") => return Ok(()),
+                Some("starting") => self.runtime.changed(&mut changes).await?,
+                // The control plane publishes its claim just before ensure_host records the host.
+                None if started.elapsed() < UNRECORDED_HOST_WAIT => {
+                    tokio::time::sleep(Duration::from_millis(20)).await
+                }
                 _ => return Err(super::HostNotReady.into()),
             }
         }
@@ -419,13 +428,16 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
             serde_json::to_string(actor).expect("actor identity serializable"),
         );
     }
-    environment.insert(
-        "DURABLE_ACTORS_ACTOR_IS_NEW".into(),
-        request.actor_is_new.to_string(),
-    );
-    if let Some(hint) = &request.owner_hint {
-        environment.insert("DURABLE_ACTORS_OWNER_HINT".into(), hint.clone());
+    if let Some(claim) = &request.ownership_claim {
+        environment.insert("DURABLE_ACTORS_OWNERSHIP_CLAIM".into(), claim.clone());
     }
+    let bind = match &request.host_route {
+        Some(route) => {
+            environment.insert("DURABLE_ACTORS_HOST_ROUTE".into(), route.clone());
+            route.trim_start_matches("http://").to_owned()
+        }
+        None => "127.0.0.1:0".into(),
+    };
     if let Some(endpoint) = &request.otlp_endpoint {
         environment.insert("OTEL_EXPORTER_OTLP_ENDPOINT".into(), endpoint.clone());
     }
@@ -437,7 +449,7 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
         ),
         ("DURABLE_ACTORS_LOG_MODE", "development".into()),
         ("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1".into()),
-        ("DURABLE_ACTORS_HOST_BIND", "127.0.0.1:0".into()),
+        ("DURABLE_ACTORS_HOST_BIND", bind),
         (
             "DURABLE_ACTORS_HOST_ID",
             request.host_id.as_str().to_owned(),

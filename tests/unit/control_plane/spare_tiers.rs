@@ -126,6 +126,12 @@ async fn actors_start_on_a_spare_of_their_own_size_which_is_then_replaced() -> R
         let stop = tokio_util::sync::CancellationToken::new();
         let _guard = stop.clone().drop_guard();
         tokio::spawn(pool.clone().run(registry, stop));
+        let directory = tempfile::tempdir()?;
+        let ownership = crate::bucket::RuntimeStorageReader::new(
+            Arc::new(crate::bucket::FileBucket::new(directory.path().into())?),
+            Arc::new(SystemClock),
+            Arc::new(crate::litestream::EmbeddedRestore),
+        )?;
         let provisioner = SandboxHostProvisioner::new(
             provider.clone(),
             HostSandboxRuntimeConfig {
@@ -138,7 +144,8 @@ async fn actors_start_on_a_spare_of_their_own_size_which_is_then_replaced() -> R
             test_issuer()?,
             None,
         )
-        .with_pool(pool);
+        .with_pool(pool)
+        .with_ownership_claims(Arc::new(ownership));
         assert_eq!(ready_spares(&database, 2).await?, ["256mib", "512mib"]);
 
         for actor_name in ["Room", "Counter", "Batch"] {
@@ -167,7 +174,7 @@ async fn actors_start_on_a_spare_of_their_own_size_which_is_then_replaced() -> R
             [
                 ("Room", 512, Some("512mib")),
                 ("Counter", 256, Some("256mib")),
-                ("Batch", 1024, None),
+                ("Batch", 1024, Some("1024mib")),
             ]
         );
         assert_eq!(ready_spares(&database, 2).await?, ["256mib", "512mib"]);

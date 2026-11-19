@@ -1815,6 +1815,257 @@ fn socket_authorization_uses_actor_scope_without_reading_ownership() -> Result<(
     Ok(())
 }
 
+struct ClaimCheckingProvider {
+    ownership: Arc<crate::bucket::RuntimeStorageReader>,
+    requests: Mutex<Vec<EnsureHostRequest>>,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl SandboxProvider for ClaimCheckingProvider {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn reserve_route(&self) -> Result<String> {
+        Ok("http://127.0.0.1:4100".into())
+    }
+    async fn ensure_host(
+        &self,
+        request: &EnsureHostRequest,
+    ) -> Result<crate::sandbox::ActorHostHandle> {
+        self.requests.lock().unwrap().push(request.clone());
+        let actor = request.actor.as_ref().context("actor missing")?;
+        let owner = self
+            .ownership
+            .get_owner(&actor.storage_key())
+            .await?
+            .context("host started before its claim")?;
+        ensure!(
+            !self.fail.load(std::sync::atomic::Ordering::SeqCst),
+            "assignment refused"
+        );
+        Ok(crate::sandbox::ActorHostHandle {
+            initial_reply: None,
+            route: owner.lease.route.clone(),
+            lease: Some(owner.lease),
+            owner_epoch: owner.owner_epoch,
+            host_id: request.host_id.clone(),
+            canonical_region: request.canonical_region.clone(),
+            provisioning: None,
+        })
+    }
+    async fn terminate_hosts(&self, _: &TerminateHostsRequest) -> Result<HostTermination> {
+        anyhow::bail!("unexpected termination")
+    }
+}
+
+#[tokio::test]
+async fn the_control_plane_claims_ownership_before_any_host_starts() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let ownership = Arc::new(crate::bucket::RuntimeStorageReader::new(
+        Arc::new(crate::bucket::FileBucket::new(directory.path().into())?),
+        Arc::new(crate::clock::SystemClock),
+        Arc::new(crate::litestream::EmbeddedRestore),
+    )?);
+    let provider = Arc::new(ClaimCheckingProvider {
+        ownership: ownership.clone(),
+        requests: Mutex::new(vec![]),
+        fail: Default::default(),
+    });
+    let provisioner = SandboxHostProvisioner::new(
+        provider.clone(),
+        HostSandboxRuntimeConfig {
+            otlp_endpoint: None,
+            control_plane_url: "http://control".into(),
+            jwt_issuer: "issuer".into(),
+            invocation_jwt_audience: "invocation".into(),
+            host_idle_timeout_ms: 10_000,
+        },
+        test_issuer()?,
+        None,
+    )
+    .with_ownership_claims(ownership.clone());
+    let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
+        "projectId":"default", "organizationId":"org-test", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[]
+    }))?;
+    let actor = |id: &str| ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: id.into(),
+    };
+    let region = "north-america-east";
+
+    let (lease, epoch, _) = provisioner
+        .ensure_actor_host(&spec, region, &actor("one"), true, None, None)
+        .await?;
+    assert_eq!(epoch, 1);
+    assert_eq!(lease.route, "http://127.0.0.1:4100");
+    {
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(
+            requests[0].host_route.as_deref(),
+            Some("http://127.0.0.1:4100")
+        );
+        let claim: serde_json::Value =
+            serde_json::from_str(requests[0].ownership_claim.as_deref().unwrap())?;
+        assert_eq!(claim["epoch"], 1);
+        assert_eq!(claim["lease"]["session_id"], requests[0].session_id);
+    }
+
+    let (_, hint) = ownership
+        .get_owner_with_hint(&actor("one").storage_key())
+        .await?;
+    let contended = provisioner
+        .ensure_actor_host(&spec, region, &actor("one"), false, hint.as_ref(), None)
+        .await;
+    assert!(
+        contended
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("previous owner lease is still active")
+    );
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+
+    provider
+        .fail
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        provisioner
+            .ensure_actor_host(&spec, region, &actor("two"), true, None, None)
+            .await
+            .is_err()
+    );
+    let revoked = ownership
+        .get_owner(&actor("two").storage_key())
+        .await?
+        .context("revoked claim missing")?;
+    assert_eq!(revoked.owner_epoch, 1);
+    assert_eq!(revoked.lease.expires_at_ms, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hosts_renew_and_release_only_their_own_claimed_activation() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let ownership = Arc::new(crate::bucket::RuntimeStorageReader::new(
+        Arc::new(crate::bucket::FileBucket::new(directory.path().into())?),
+        Arc::new(crate::clock::SystemClock),
+        Arc::new(crate::litestream::EmbeddedRestore),
+    )?);
+    let actor = ActorKey {
+        project_id: "p".into(),
+        actor_name: "Room".into(),
+        actor_id: "one".into(),
+    };
+    let request = crate::host_leases::HostLeaseRequest {
+        id: HostId::new("host.v3.test.one"),
+        session_id: "00000000-0000-4000-8000-000000000001".into(),
+        route: "http://host".into(),
+        duration_ms: 30_000,
+    };
+    ownership
+        .claim_activation(&actor, &request, "us-east", true, None)
+        .await?;
+    let claimed = ownership.get_owner(&actor.storage_key()).await?.unwrap();
+    let issuer = test_issuer()?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    let service = ControlPlaneService::new(
+        Arc::new(LocalObjectPlacementStore::default()),
+        auth,
+        Arc::new(LocalAdminRegistry::default()),
+        issuer,
+        Arc::new(UnavailableProvisioner),
+    )
+    .with_activation_authority(ownership.clone());
+    let principal = ActorPrincipal {
+        organization_id: Some("org-test".into()),
+        actor: actor.clone(),
+        host_id: request.id.clone(),
+        session_id: request.session_id.clone(),
+        region: "us-east".into(),
+        host_config_key: None,
+        invocation: None,
+    };
+    let renew =
+        |request: &crate::host_leases::HostLeaseRequest| ControlPlaneCommand::RenewActivation {
+            request: request.clone(),
+        };
+
+    let mut foreign = request.clone();
+    foreign.session_id = "00000000-0000-4000-8000-000000000002".into();
+    let refused = service.execute_command(&principal, renew(&foreign)).await;
+    assert!(
+        refused
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("scope mismatch")
+    );
+    let mut stale = principal.clone();
+    stale.session_id = foreign.session_id.clone();
+    assert!(
+        service
+            .execute_command(&stale, renew(&foreign))
+            .await
+            .is_err()
+    );
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let ControlPlaneCommandReply::Lease { lease } =
+        service.execute_command(&principal, renew(&request)).await?
+    else {
+        anyhow::bail!("renewal returned no lease");
+    };
+    assert!(lease.expires_at_ms > claimed.lease.expires_at_ms);
+    let renewed = ownership.get_owner(&actor.storage_key()).await?.unwrap();
+    assert_eq!(renewed.owner_epoch, claimed.owner_epoch);
+    assert_eq!(renewed.lease, lease);
+
+    let checkpoint = |owner: &ActorKey| -> Result<_> {
+        Ok(Some(crate::bucket::SessionCheckpoint {
+            snapshot: Some(crate::storage::SnapshotRef {
+                object: crate::storage::snapshot_object_name(owner, 3, &"a".repeat(32))?,
+                state_version: 3,
+                request_id: "request".into(),
+                digest: "digest".into(),
+            }),
+        }))
+    };
+    let mut other = actor.clone();
+    other.actor_id = "two".into();
+    let release = |checkpoint| ControlPlaneCommand::ReleaseActivation { checkpoint };
+    let refused = service
+        .execute_command(&principal, release(checkpoint(&other)?))
+        .await;
+    assert!(refused.err().unwrap().to_string().contains("another actor"));
+    service
+        .execute_command(&principal, release(checkpoint(&actor)?))
+        .await?;
+    let released = ownership.get_owner(&actor.storage_key()).await?.unwrap();
+    assert_eq!(released.lease.expires_at_ms, 0);
+    assert!(
+        service
+            .execute_command(&principal, renew(&request))
+            .await
+            .is_err()
+    );
+    let (_, hint) = ownership.get_owner_with_hint(&actor.storage_key()).await?;
+    let mut next = request.clone();
+    next.session_id = foreign.session_id;
+    let claim = ownership
+        .claim_activation(&actor, &next, "us-east", false, hint.as_ref())
+        .await?;
+    assert_eq!(serde_json::to_value(&claim)?["base"]["state_version"], 3);
+    Ok(())
+}
+
 async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<ControlPlaneService> {
     let origin = "https://gateway.example.com".to_owned();
     let sockets = super::super::socket_gateway::SocketGateway::start(

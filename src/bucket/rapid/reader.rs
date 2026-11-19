@@ -75,9 +75,14 @@ impl LogStorage {
             closed.validate(manifest, end, &archived)?;
             return Ok(archived);
         }
+        let unopened = manifest.marker("unopened")?;
+        if self.archive.get(&unopened).await?.is_some() {
+            return Ok(archived);
+        }
         let rapid = match self.read_replicas(manifest, fence).await {
-            Ok(records) => records,
-            Err(error) => {
+            Ok(Some(records)) => records,
+            // Replication may have finished and deleted the copies since the first marker check.
+            unread => {
                 if let Some(marker) = self.archive.get(&manifest.marker("replicated")?).await? {
                     let closed: archive::ClosedSegment =
                         serde_json::from_reader(marker.bytes.reader())?;
@@ -85,7 +90,10 @@ impl LogStorage {
                     closed.validate(manifest, end, &records)?;
                     return Ok(records);
                 }
-                return Err(error);
+                if self.archive.get(&unopened).await?.is_some() {
+                    return Ok(archived);
+                }
+                unread?.unwrap_or_default()
             }
         };
         let mut merged = BTreeMap::new();
@@ -213,22 +221,33 @@ impl LogStorage {
         self.mark_replicated(manifest, &closed).await
     }
 
+    /// `None` when no zone holds the log's object: the manifest landed but the log never opened.
     pub(super) async fn read_replicas(
         &self,
         manifest: &Manifest,
         fence: bool,
-    ) -> Result<Vec<Record>> {
+    ) -> Result<Option<Vec<Record>>> {
         let reads =
             futures_util::future::join_all(manifest.replicas.iter().map(|replica| async move {
-                bounded(self.zone(replica)?.read(replica, fence)).await
+                match self.resolve(replica).await? {
+                    Some(replica) => bounded(self.zone(&replica)?.read(&replica, fence))
+                        .await
+                        .map(Some),
+                    None => Ok(None),
+                }
             }))
             .await;
         let mut copies = Vec::new();
+        let mut absent = 0;
         for read in reads {
             match read {
-                Ok(bytes) => copies.push(frame::decode(&bytes)?),
+                Ok(Some(bytes)) => copies.push(frame::decode(&bytes)?),
+                Ok(None) => absent += 1,
                 Err(error) => tracing::warn!(%error, "Rapid log replica unavailable during read"),
             }
+        }
+        if absent == manifest.replicas.len() {
+            return Ok(None);
         }
         ensure!(
             !copies.is_empty(),
@@ -244,7 +263,19 @@ impl LogStorage {
             }
         }
         // A complete uncertain tail is made durable in Standard before ownership advances.
-        Ok(selected)
+        Ok(Some(selected))
+    }
+
+    /// Each log object name is created once, so its live generation is the one the writer used.
+    async fn resolve(&self, replica: &Replica) -> Result<Option<Replica>> {
+        if replica.generation > 0 {
+            return Ok(Some(replica.clone()));
+        }
+        let generation = bounded(self.zone(replica)?.generation(&replica.object)).await?;
+        Ok(generation.map(|generation| Replica {
+            generation,
+            ..replica.clone()
+        }))
     }
 }
 

@@ -92,8 +92,28 @@ async fn run_activation(
         !code.exists(),
         "generic executor must warm without customer code"
     );
+    let claim = crate::bucket::RuntimeStorage::new(
+        Arc::new(FileBucket::new(data.to_path_buf())?),
+        Arc::new(crate::clock::SystemClock),
+    )?
+    .claim_activation(
+        actor,
+        &crate::host_leases::HostLeaseRequest {
+            id: host_id.clone(),
+            session_id: session.clone(),
+            route: route.clone(),
+            duration_ms: crate::host_leases::DEFAULT_HOST_LEASE_MS,
+        },
+        "north-america-east",
+        before < 0,
+        None,
+    )
+    .await?;
+    let mut control_plane = tokio::task::JoinSet::new();
+    let control_plane_url =
+        crate::control_plane::testing::serve_activations(data, issuer, &mut control_plane).await?;
     let environment: HashMap<String, String> = serde_json::from_value(serde_json::json!({
-        "DURABLE_ACTORS_CONTROL_PLANE_URL": "http://127.0.0.1:1",
+        "DURABLE_ACTORS_CONTROL_PLANE_URL": control_plane_url,
         "DURABLE_ACTORS_HOST_TOKEN": token,
         "DURABLE_ACTORS_JWT_PUBLIC_KEYS": issuer.verifier_keys_json()?,
         "DURABLE_ACTORS_HOST_ID": host_id.as_str(), "DURABLE_ACTORS_SESSION_ID": session,
@@ -102,7 +122,7 @@ async fn run_activation(
         "DURABLE_ACTORS_HOST_READY_FILE": ready.to_str().unwrap(),
         "DURABLE_ACTORS_ENTRYPOINT": code.to_str().unwrap(),
         "DURABLE_ACTORS_ACTOR": serde_json::to_string(actor)?,
-        "DURABLE_ACTORS_ACTOR_IS_NEW": (before < 0).to_string(),
+        "DURABLE_ACTORS_OWNERSHIP_CLAIM": serde_json::to_string(&claim)?,
         "DURABLE_ACTORS_RUNTIME_CONFIG": serde_json::json!({
             "bucket": {"type": "file", "directory": data}, "region": "north-america-east", "persistence": {"type":"local"},
             "tokens": null

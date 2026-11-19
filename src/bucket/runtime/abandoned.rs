@@ -30,7 +30,7 @@ impl RuntimeStorageReader {
 
     pub(crate) async fn seal_abandoned(&self) -> Result<()> {
         let started = std::time::Instant::now();
-        let keys = self.authority.list(&crate::storage_paths::owners()).await?;
+        let keys = self.ownership.keys().await?;
         let outcomes: Vec<_> = stream::iter(keys.iter().cloned())
             .map(|key| async move {
                 let outcome = self.seal_if_abandoned(&key).await;
@@ -58,19 +58,19 @@ impl RuntimeStorageReader {
         Ok(())
     }
 
+    /// Reads without moving the record first, so only abandoned records leave the bucket here.
     async fn seal_if_abandoned(&self, key: &str) -> Result<bool> {
-        let Some(stored) = self.authority.get(key).await? else {
+        let Some(peeked) = self.ownership.peek(key).await? else {
+            return Ok(false);
+        };
+        if !self.abandoned(&serde_json::from_reader(peeked.bytes.reader())?)? {
+            return Ok(false);
+        }
+        let Some(stored) = self.ownership.get(key).await? else {
             return Ok(false);
         };
         let mut record: Ownership = serde_json::from_reader(stored.bytes.reader())?;
-        let abandoned_at = record
-            .lease
-            .expires_at_ms
-            .saturating_add(ABANDONED_AFTER_MS);
-        if record.sealed
-            || !record.persistence.same_backend(&self.persistence)
-            || abandoned_at > self.clock.now_ms()?
-        {
+        if !self.abandoned(&record)? {
             return Ok(false);
         }
         let recovered = self
@@ -88,17 +88,27 @@ impl RuntimeStorageReader {
             .await
     }
 
+    fn abandoned(&self, record: &Ownership) -> Result<bool> {
+        let abandoned_at = record
+            .lease
+            .expires_at_ms
+            .saturating_add(ABANDONED_AFTER_MS);
+        Ok(!record.sealed
+            && record.persistence.same_backend(&self.persistence)
+            && abandoned_at <= self.clock.now_ms()?)
+    }
+
     /// Ends every live lease, which lets a new host take over at once. Only for a store that no
     /// live host can be using.
     pub(crate) async fn release_leases(&self) -> Result<()> {
-        for key in self.authority.list(&crate::storage_paths::owners()).await? {
+        for key in self.ownership.keys().await? {
             self.release_lease(&key).await?;
         }
         Ok(())
     }
 
     async fn release_lease(&self, key: &str) -> Result<()> {
-        let Some(stored) = self.authority.get(key).await? else {
+        let Some(stored) = self.ownership.get(key).await? else {
             return Ok(());
         };
         let mut record: Ownership = serde_json::from_reader(stored.bytes.reader())?;
