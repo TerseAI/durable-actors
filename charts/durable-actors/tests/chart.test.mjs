@@ -241,3 +241,27 @@ test("the control plane reports platform events on a port sandboxes cannot reach
     assert.match(output, /\{protocol: TCP, port: 4317\}/)
     assert.doesNotMatch(output, /\{protocol: TCP, port: 4319\}/)
 })
+
+test("samples sandbox pods on each sandbox node and sends them to the platform port", () => {
+    const issuer = "https://container.googleapis.com/v1/projects/p/locations/l/clusters/c"
+    const collector = {
+        analytics: { backend: "clickhouse", clickhouse: {
+            url: "https://clickhouse.example.com:8443", database: "actors", user: "writer",
+            passwordSecretKey: "clickhouse-password"
+        } },
+        redis: { urlSecretKey: "redis-url" }
+    }
+    const without = render({ ...collector, telemetry: { collector: { enabled: true }, nodeCollector: { enabled: true } } })
+    assert.notEqual(without.status, 0)
+    assert.match(without.stderr, /telemetry.nodeCollector requires telemetry.collector with platform.issuer/)
+    const output = manifests({ ...collector, telemetry: { collector: { enabled: true, platform: { issuer } }, nodeCollector: { enabled: true } } })
+    assert.match(output, /kind: DaemonSet\nmetadata:\n  name: actors-durable-actors-node-collector/)
+    assert.match(output, /kind: ClusterRole\nmetadata:\n  name: actors-actors-durable-actors-node-collector\n/)
+    assert.match(output, /resources: \[nodes\/stats\]\n\s+verbs: \[get\]/)
+    assert.doesNotMatch(output, /nodes\/proxy|insecure_skip_verify/)
+    assert.match(output, /name: SANDBOX_NAMESPACE, value: "actors-actors"/)
+    assert.match(output, /PLATFORM_COLLECTOR_ENDPOINT\n\s+value: "http:\/\/actors-durable-actors-collector.actors.svc.cluster.local:4320"/)
+    assert.match(output, /\{name: http-internal, port: 4320, targetPort: http-internal, appProtocol: http\}/)
+    assert.equal(output.match(/name: platform-telemetry, mountPath/g).length, 3)
+    assert.match(output, /metrics\/platform:/)
+})

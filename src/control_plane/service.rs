@@ -1349,6 +1349,11 @@ impl SandboxHostProvisioner {
                 let provisioning = provisioning
                     .as_ref()
                     .context("provider did not identify the assigned sandbox")?;
+                let sandbox = request
+                    .spare
+                    .as_ref()
+                    .map(|spare| spare.name.clone())
+                    .unwrap_or_else(|| format!("do-actor-{}", request.session_id));
                 pool.remember(
                     lease.id.as_str(),
                     &spec.host_config_key(),
@@ -1360,17 +1365,14 @@ impl SandboxHostProvisioner {
                             .unwrap_or_default(),
                         control_route: String::new(),
                         control_token: String::new(),
-                        name: request
-                            .spare
-                            .as_ref()
-                            .map(|spare| spare.name.clone())
-                            .unwrap_or_else(|| format!("do-actor-{}", request.session_id)),
+                        name: sandbox.clone(),
                         resource_id: provisioning.resource_id.clone(),
                         route: lease.route.clone(),
                         canonical_region: region.into(),
                     },
                 )
                 .await?;
+                pool.record_claim(actor, &sandbox, &request.resources);
             }
             anyhow::Ok(lease)
         }

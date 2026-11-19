@@ -83,6 +83,12 @@ telemetry:
       # Setting it makes the control plane report WebSocket connections and deployments through
       # the collector.
       issuer: ""
+  # Samples each actor sandbox's CPU and memory on its node for the observer.
+  nodeCollector:
+    enabled: false
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 256Mi}
 # Caches actor code and state on each sandbox node's disk so cold starts skip GCS.
 nodeCache:
   enabled: false

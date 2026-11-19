@@ -1,7 +1,8 @@
-# Events the control plane reports (WebSocket connections and deployments), merged into
-# collector.yaml when enabled. The control plane is trusted and reports for many projects at once,
-# so it authenticates with Kubernetes service-account tokens on its own port, which sandboxes
-# cannot reach, and each record carries its project. Host tokens are not accepted here.
+# Events the control plane reports (WebSocket connections and deployments) and sandbox usage the
+# node collectors sample, merged into collector.yaml when enabled. Both are trusted and report for
+# many projects at once, so they authenticate with Kubernetes service-account tokens on their own
+# port, which sandboxes cannot reach. Each event record carries its project; usage reaches a
+# project through the sandbox claims redislive/platform records. Host tokens are not accepted here.
 extensions:
   oidc/platform:
     providers:
@@ -15,6 +16,11 @@ receivers:
         endpoint: 0.0.0.0:4319
         auth:
           authenticator: oidc/platform
+      # Node collectors send over HTTP: the collector's gRPC client won't send a token in plaintext.
+      http:
+        endpoint: 0.0.0.0:4320
+        auth:
+          authenticator: oidc/platform
 
 exporters:
   clickhouse/platform:
@@ -25,6 +31,8 @@ exporters:
     # The control plane owns the schema (src/request_traces/persistence/clickhouse/schema.sql).
     create_schema: false
     logs_table_name: platform_events
+    metrics_tables:
+      gauge: {name: sandbox_usage}
     sending_queue:
       batch: {}
   redislive/platform:
@@ -38,6 +46,10 @@ service:
   extensions: [health_check, oidc, oidc/platform]
   pipelines:
     logs/platform:
+      receivers: [otlp/internal]
+      processors: [memory_limiter]
+      exporters: [clickhouse/platform, redislive/platform]
+    metrics/platform:
       receivers: [otlp/internal]
       processors: [memory_limiter]
       exporters: [clickhouse/platform, redislive/platform]
