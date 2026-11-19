@@ -338,11 +338,12 @@ async fn claims_record_the_actor_each_sandbox_was_claimed_for() -> Result<()> {
         assert_eq!(claims.actor_of("do-actor-cold").await?, Some(actor.clone()));
         assert_eq!(claims.actor_of(&unnamed.name).await?, None);
         assert_eq!(claims.actor_of("unknown").await?, None);
-        pool.record_claim(&actor, "do-actor-cold", &ResourceLimits::default());
+        pool.record_claim(&actor, "do-actor-cold", &ResourceLimits::default(), 1_000);
         let recorded = recorded.0.lock().unwrap();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].sandbox_id, "do-actor-cold");
         assert_eq!(recorded[0].actor, actor);
+        assert_eq!(recorded[0].at_ms, 1_000);
         Ok(())
     })
     .await

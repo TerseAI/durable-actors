@@ -111,18 +111,19 @@ impl SparePool {
         Ok(result)
     }
 
-    /// Records which actor a sandbox runs, once the sandbox is running it.
+    /// Records which actor a sandbox runs, from `claimed_at_ms`, once the sandbox is running it.
     pub(crate) fn record_claim(
         &self,
         actor: &ActorKey,
         sandbox_id: &str,
         resources: &ResourceLimits,
+        claimed_at_ms: u64,
     ) {
         self.claims.record(SandboxClaim {
             actor: actor.clone(),
             sandbox_id: sandbox_id.to_owned(),
             resources: resources.clone(),
-            at_ms: now_ms(),
+            at_ms: claimed_at_ms,
         });
     }
 

@@ -1260,6 +1260,8 @@ impl SandboxHostProvisioner {
         node: Option<&str>,
         started_at: Instant,
     ) -> Result<(HostLease, u64, Option<JsonText>)> {
+        // The sandbox is the actor's from here, so its startup and database restore count as the actor's usage.
+        let claimed_at_ms = SystemClock.now_ms()?;
         let token = async {
             match &self.runtime_access {
                 Some(access) => Ok(Some(
@@ -1372,7 +1374,7 @@ impl SandboxHostProvisioner {
                     },
                 )
                 .await?;
-                pool.record_claim(actor, &sandbox, &request.resources);
+                pool.record_claim(actor, &sandbox, &request.resources, claimed_at_ms);
             }
             anyhow::Ok(lease)
         }
