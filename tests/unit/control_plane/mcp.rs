@@ -162,15 +162,7 @@ async fn sessions_page_with_the_status_gateways_reported() {
 
 #[tokio::test]
 async fn tool_calls_log_what_they_touched_but_not_their_arguments() {
-    let output = tempfile::NamedTempFile::new().unwrap();
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_writer(output.reopen().unwrap())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-    // Parallel tests reach this callsite with no subscriber and can cache it as disabled.
-    tracing::callsite::rebuild_interest_cache();
+    let logs = crate::test_logs::LogCapture::start();
     let api = Router::new().route(
         "/v1/projects/demo/actors/Counter/one/invoke",
         post(|| async { Json(json!({ "outcome": { "type": "completed", "result": 7 } })) }),
@@ -180,12 +172,11 @@ async fn tool_calls_log_what_they_touched_but_not_their_arguments() {
     });
     call_tool(api, "invoke_actor", arguments).await;
 
-    let logs = std::fs::read_to_string(output.path()).unwrap();
-    let line: Value = logs
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+    let lines = logs.lines();
+    let line = lines
+        .iter()
         .find(|line| line["event"] == "mcp_tool_call")
-        .expect(&logs);
+        .unwrap_or_else(|| panic!("{lines:?}"));
     assert_eq!(line["mcp.tool_name"], "invoke_actor");
     assert!(
         line["mcp.request_bytes"]
@@ -204,7 +195,7 @@ async fn tool_calls_log_what_they_touched_but_not_their_arguments() {
     assert_eq!(line["actor_method"], "increment");
     assert_eq!(line["outcome"], "completed");
     assert_eq!(line["fault"], "none");
-    assert!(!logs.contains("private"), "{logs}");
+    assert!(!format!("{lines:?}").contains("private"), "{lines:?}");
 }
 
 #[tokio::test]

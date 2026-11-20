@@ -308,13 +308,17 @@ async fn send_invocation(
         Ok(response) => response,
         Err(error) if error.is_connect() => {
             return Ok(HostReply::not_run(
+                "upstream_not_reached",
                 json!({"type":"not_executed", "reason":"upstream_not_reached"}),
             ));
         }
         Err(_) => return Err(outcome_unknown()),
     };
     if response.status() == StatusCode::UNAUTHORIZED {
-        return Ok(HostReply::not_run(json!({"type":"unauthenticated"})));
+        return Ok(HostReply::not_run(
+            "host_unauthenticated",
+            json!({"type":"unauthenticated"}),
+        ));
     }
     if !response.status().is_success() {
         return Err(outcome_unknown());
@@ -331,10 +335,10 @@ pub(super) struct HostReply {
 }
 
 impl HostReply {
-    fn not_run(reply: Value) -> Self {
+    fn not_run(failure: &str, reply: Value) -> Self {
         Self {
             ran: false,
-            failure: reply["reason"].as_str().map(str::to_owned),
+            failure: Some(failure.to_owned()),
             text: reply.into(),
         }
     }

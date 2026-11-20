@@ -1,20 +1,13 @@
 use anyhow::Result;
 use axum::{Router, body::Body, http::Request, routing::get};
-use serde_json::Value;
 use tower::ServiceExt;
 
 use super::logged;
-use crate::control_plane::public_api::ApiError;
+use crate::{control_plane::public_api::ApiError, test_logs::LogCapture};
 
 #[tokio::test]
 async fn logs_api_requests_but_not_health_probes() -> Result<()> {
-    let output = tempfile::NamedTempFile::new()?;
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_writer(output.reopen()?)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let logs = LogCapture::start();
     let router = logged(
         Router::new()
             .route("/healthz", get(|| async {}))
@@ -38,12 +31,8 @@ async fn logs_api_requests_but_not_health_probes() -> Result<()> {
             .body(Body::empty())?;
         router.clone().oneshot(request).await?;
     }
-    let logs = std::fs::read_to_string(output.path())?;
-    let lines: Vec<Value> = logs
-        .lines()
-        .map(serde_json::from_str)
-        .collect::<Result<_, _>>()?;
-    assert_eq!(lines.len(), 2, "{logs}");
+    let lines = logs.lines();
+    assert_eq!(lines.len(), 2, "{lines:?}");
 
     let completed = &lines[0];
     assert_eq!(completed["event"], "http_request");

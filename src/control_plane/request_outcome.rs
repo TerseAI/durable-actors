@@ -37,6 +37,7 @@ impl Fault {
             | "unavailable"
             | "outcome_unknown"
             | "host_unavailable"
+            | "host_unauthenticated"
             | "upstream_not_reached" => Self::Server,
             _ => Self::Client,
         }
