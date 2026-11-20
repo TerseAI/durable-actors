@@ -21,7 +21,10 @@ export function applyRequestEvents(durationMs: number, { actorName, actorId }: R
     }
 }
 
-/** Counts streamed requests that match the filter into the histogram. */
+/**
+ * Counts streamed requests that match the filter, in the bucket they started in. A request that
+ * finished after the read was not in it, since hosts export a request when it finishes.
+ */
 export function applyRequestCounts({ actorName, actorId }: RequestFilter = {}): ApplyEvents<LiveHistogram<RequestCounts>> {
     return (histogram, events) => {
         const added: SecondCounts<RequestCounts>[] = []
@@ -29,7 +32,8 @@ export function applyRequestCounts({ actorName, actorId }: RequestFilter = {}): 
             if (event.type !== "request") continue
             const trace = event.item
             const counts = countsOf(trace)
-            if (counts && (actorName === undefined || trace.actorName === actorName) && (actorId === undefined || trace.actorId === actorId)) added.push({ atMs: trace.startedAtMs, counts })
+            const unread = trace.startedAtMs + trace.durationMs >= histogram.readAtMs
+            if (counts && unread && (actorName === undefined || trace.actorName === actorName) && (actorId === undefined || trace.actorId === actorId)) added.push({ atMs: trace.startedAtMs, counts })
         }
         return addCounts(histogram, added, addRequestCounts)
     }

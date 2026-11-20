@@ -48,8 +48,9 @@ export class EventBus {
         this.flushTimer ??= setTimeout(() => this.flush(), flushMs)
     }
 
-    opened(): void {
-        if (this.openedBefore) for (const listener of this.reconnectListeners) listener()
+    /** `afterGap` marks a first open that came well after the views read the store. */
+    opened(afterGap = false): void {
+        if (this.openedBefore || afterGap) for (const listener of this.reconnectListeners) listener()
         this.openedBefore = true
     }
 
@@ -73,7 +74,7 @@ export function openEventStream(baseUrl: string, query: URLSearchParams, bus: Ev
     const connect = () => {
         source = new EventSource(`${baseUrl}/events?${query}`, { withCredentials: true })
         forward(source, bus)
-        source.addEventListener("open", () => bus.opened())
+        source.addEventListener("open", () => bus.opened(startedHidden))
     }
     const followVisibility = () => {
         if (!document.hidden) {
@@ -83,6 +84,8 @@ export function openEventStream(baseUrl: string, query: URLSearchParams, bus: Ev
         source?.close()
         source = null
     }
+    // A tab opened in the background connects only once shown, long after its views first read.
+    const startedHidden = document.hidden
     followVisibility()
     document.addEventListener("visibilitychange", followVisibility)
     return () => {

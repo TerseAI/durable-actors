@@ -18,12 +18,11 @@ export function liveHistogram<T>({ fromMs, bucketMs, buckets }: Histogram<T>, re
     return { bucketMs, readAtMs, counts }
 }
 
-// Each second counts once: the read covered the seconds before readAtMs, the stream adds the rest.
+/** Adds counts the read did not cover; callers decide which those are. */
 export function addCounts<T>(histogram: LiveHistogram<T>, seconds: SecondCounts<T>[], add: (total: T | undefined, more: T) => T): LiveHistogram<T> {
-    const later = seconds.filter(second => second.atMs >= histogram.readAtMs)
-    if (!later.length) return histogram
+    if (!seconds.length) return histogram
     const counts = { ...histogram.counts }
-    for (const { atMs, counts: more } of later) {
+    for (const { atMs, counts: more } of seconds) {
         const start = Math.floor(atMs / histogram.bucketMs) * histogram.bucketMs
         counts[start] = add(counts[start], more)
     }
