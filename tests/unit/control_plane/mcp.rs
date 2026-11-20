@@ -161,6 +161,53 @@ async fn sessions_page_with_the_status_gateways_reported() {
 }
 
 #[tokio::test]
+async fn tool_calls_log_what_they_touched_but_not_their_arguments() {
+    let output = tempfile::NamedTempFile::new().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_writer(output.reopen().unwrap())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    // Parallel tests reach this callsite with no subscriber and can cache it as disabled.
+    tracing::callsite::rebuild_interest_cache();
+    let api = Router::new().route(
+        "/v1/projects/demo/actors/Counter/one/invoke",
+        post(|| async { Json(json!({ "outcome": { "type": "completed", "result": 7 } })) }),
+    );
+    let arguments = json!({
+        "actorName": "Counter", "actorId": "one", "method": "increment", "args": ["private"]
+    });
+    call_tool(api, "invoke_actor", arguments).await;
+
+    let logs = std::fs::read_to_string(output.path()).unwrap();
+    let line: Value = logs
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|line| line["event"] == "mcp_tool_call")
+        .expect(&logs);
+    assert_eq!(line["mcp.tool_name"], "invoke_actor");
+    assert!(
+        line["mcp.request_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert!(
+        line["mcp.response_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert_eq!(line["organization_id"], "org-test");
+    assert_eq!(line["project_id"], "demo");
+    assert_eq!(line["actor_name"], "Counter");
+    assert_eq!(line["actor_id"], "one");
+    assert_eq!(line["actor_method"], "increment");
+    assert_eq!(line["outcome"], "completed");
+    assert_eq!(line["fault"], "none");
+    assert!(!logs.contains("private"), "{logs}");
+}
+
+#[tokio::test]
 async fn invalid_cursors_are_tool_errors_the_model_can_fix() {
     let reply = call_tool(
         Router::new(),
