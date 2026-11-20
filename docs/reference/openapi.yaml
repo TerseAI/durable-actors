@@ -417,8 +417,8 @@ paths:
             description: |
                 SSE of the project's live channels, as the collector publishes them. Read each view
                 from its endpoint first, then apply these events; they never include history.
-                Each message names one event type, and its data is a JSON array of that type's
-                records in arrival order:
+                Each channel's records are gathered for up to 250 ms. Each message names one event
+                type, and its data is a JSON array of that type's records in arrival order:
 
                 - request (signal requests): RequestTrace records, deduplicated by eventId.
                 - log (signal logs): ActorLog records matching the log filters, deduplicated by logId.

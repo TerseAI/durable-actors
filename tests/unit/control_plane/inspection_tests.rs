@@ -501,10 +501,11 @@ async fn sandbox_kills_stream_live_and_the_event_history_reads_them_back() -> Re
     let kill = |id: &str, at_ms: u64, reason: &str| json!({"actorName": "Room.with.dots", "actorId": id, "atMs": at_ms, "reason": reason});
     let first = kill("one", 1000, "out_of_memory");
     let second = kill("two", 2000, "out_of_disk");
-    for expected in [&first, &second] {
-        let (name, streamed) = events.next().await?;
-        assert_eq!((name.as_str(), &streamed[0]), ("kill", expected));
-    }
+    let (name, streamed) = events.next().await?;
+    assert_eq!(
+        (name.as_str(), &streamed),
+        ("kill", &json!([first, second]))
+    );
 
     // The history holds each event as the stream sent it, under the stream's name for it.
     let [first, second] = [first, second].map(|item| json!({"type": "kill", "item": item}));

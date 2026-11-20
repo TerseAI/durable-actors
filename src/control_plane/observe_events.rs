@@ -1,8 +1,11 @@
 //! The project's observability events as the dashboard applies them. Views read the store once
 //! when they open; afterwards this stream forwards what the collector publishes on the project's
 //! live channels, decoded into the change each record makes to what an observer sees. Each
-//! message names one event type and carries the records of that type in the order they arrived.
+//! channel's records are gathered for up to `WINDOW`, then sent as messages that each name one
+//! event type and carry the records of that type in the order they arrived.
 //! `event_history` reads past events back from the store through the same decoder.
+
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use futures_util::{Stream, StreamExt, stream};
@@ -30,6 +33,11 @@ use crate::{
         otlp::{self, PlatformLog, Signal},
     },
 };
+
+// Every host publishes each export separately; observers redraw per message, so a busy project
+// would otherwise send them more messages than they can draw.
+const WINDOW: Duration = Duration::from_millis(250);
+const WINDOW_PAYLOADS: usize = 1024;
 
 /// Which live channels to forward, and which logs.
 #[derive(Default, Deserialize)]
@@ -191,7 +199,7 @@ pub(super) struct EventBatch {
     pub events: Vec<ObserveEvent>,
 }
 
-/// The project's events on the requested channels as the live feed delivers them.
+/// The project's events on the requested channels, each channel gathered over `WINDOW`.
 pub(super) async fn subscribe(
     traces: &TraceStore,
     project: &str,
@@ -202,12 +210,21 @@ pub(super) async fn subscribe(
         let filter = query.log_filter();
         let updates = traces.subscribe(project, signal).await?;
         channels.push(
-            updates
-                .flat_map(move |payload| stream::iter(batches(decode(signal, &payload, &filter))))
+            tokio_stream::StreamExt::chunks_timeout(updates, WINDOW_PAYLOADS, WINDOW)
+                .flat_map(move |payloads| stream::iter(window(signal, &payloads, &filter)))
                 .boxed(),
         );
     }
     Ok(stream::select_all(channels))
+}
+
+fn window(signal: Signal, payloads: &[Vec<u8>], filter: &LogQuery) -> Vec<EventBatch> {
+    batches(
+        payloads
+            .iter()
+            .flat_map(|payload| decode(signal, payload, filter))
+            .collect(),
+    )
 }
 
 pub(super) fn decode(signal: Signal, payload: &[u8], filter: &LogQuery) -> Vec<ObserveEvent> {

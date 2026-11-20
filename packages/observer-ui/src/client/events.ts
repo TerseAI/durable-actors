@@ -2,6 +2,9 @@ import { type ObserveEvent, observeEventTypes } from "../types/Events.js"
 
 // Covers the time between an event reaching the stream and its write reaching the store.
 const recentMs = 10_000
+// Messages that arrive together reach views as one update. A timer, not an animation frame,
+// which never fires in a background tab while the stream keeps delivering.
+const flushMs = 50
 
 type Listener = (events: ObserveEvent[]) => void
 
@@ -14,6 +17,8 @@ export class EventBus {
     private readonly listeners = new Set<Listener>()
     private readonly reconnectListeners = new Set<() => void>()
     private recent: { atMs: number; event: ObserveEvent }[] = []
+    private pending: ObserveEvent[] = []
+    private flushTimer: ReturnType<typeof setTimeout> | null = null
 
     subscribe(listener: Listener): () => void {
         this.listeners.add(listener)
@@ -29,6 +34,7 @@ export class EventBus {
     /** Forgets the recent events when the stream starts over with a different query. */
     reset(): void {
         this.recent = []
+        this.pending = []
     }
 
     recentEvents(): ObserveEvent[] {
@@ -37,13 +43,22 @@ export class EventBus {
     }
 
     publish(events: ObserveEvent[]): void {
-        const now = Date.now()
-        this.recent = [...this.recent.filter(entry => entry.atMs >= now - recentMs), ...events.map(event => ({ atMs: now, event }))]
-        for (const listener of this.listeners) listener(events)
+        for (const event of events) this.pending.push(event)
+        this.flushTimer ??= setTimeout(() => this.flush(), flushMs)
     }
 
     reconnected(): void {
         for (const listener of this.reconnectListeners) listener()
+    }
+
+    private flush(): void {
+        this.flushTimer = null
+        const events = this.pending
+        if (events.length === 0) return
+        this.pending = []
+        const now = Date.now()
+        this.recent = [...this.recent.filter(entry => entry.atMs >= now - recentMs), ...events.map(event => ({ atMs: now, event }))]
+        for (const listener of this.listeners) listener(events)
     }
 }
 
