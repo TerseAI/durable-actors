@@ -1,4 +1,4 @@
-import type { RequestTrace } from "../types/Requests.js"
+import type { RequestCounts, RequestTrace } from "../types/Requests.js"
 import type { TimeSpan, TimeWindow } from "../types/TimeRange.js"
 
 import { bucketCount, bucketIndex } from "./timeRange.js"
@@ -77,4 +77,33 @@ function bucketAverages(requests: RequestTrace[], timeWindow: TimeWindow, pick: 
         if (index !== null && value !== null) buckets[index]!.push(value)
     }
     return buckets.map(average)
+}
+
+export function emptyRequestCounts(): RequestCounts {
+    return { ok: 0, failed: 0, rejected: 0, interrupted: 0, queueWaitMs: 0, queueWaits: 0, runMs: 0 }
+}
+
+export function addRequestCounts(total: RequestCounts | undefined, more: RequestCounts): RequestCounts {
+    const sum = total ?? emptyRequestCounts()
+    return {
+        ok: sum.ok + more.ok,
+        failed: sum.failed + more.failed,
+        rejected: sum.rejected + more.rejected,
+        interrupted: sum.interrupted + more.interrupted,
+        queueWaitMs: sum.queueWaitMs + more.queueWaitMs,
+        queueWaits: sum.queueWaits + more.queueWaits,
+        runMs: sum.runMs + more.runMs
+    }
+}
+
+export function requestTotal({ ok, failed, rejected, interrupted }: RequestCounts): number {
+    return ok + failed + rejected + interrupted
+}
+
+/** One request as counts; null for a rerouted attempt, which counts under its final outcome. */
+export function countsOf(trace: RequestTrace): RequestCounts | null {
+    if (trace.outcome === "rerouted") return null
+    const counts = emptyRequestCounts()
+    counts[trace.outcome === "completed" ? "ok" : trace.outcome] = 1
+    return { ...counts, queueWaitMs: trace.queueWaitMs ?? 0, queueWaits: trace.queueWaitMs === null ? 0 : 1, runMs: serviceTime(trace) ?? trace.durationMs }
 }
