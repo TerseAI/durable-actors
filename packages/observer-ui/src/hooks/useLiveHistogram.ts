@@ -19,8 +19,11 @@ export function useLiveHistogram<T>({ key, read, apply, empty }: HistogramSource
     const { data, error } = useLiveView(
         [...key, ...windowKey(timeWindow), bucketMs],
         async () => {
-            const readAtMs = Date.now()
-            return liveHistogram(await read(alignBounds(currentBounds(timeWindow), bucketMs), bucketMs), readAtMs)
+            const { fromMs, toMs } = alignBounds(currentBounds(timeWindow), bucketMs)
+            // A live read stops at now, so whatever starts afterwards reaches the view only through the stream.
+            const readToMs = timeWindow.live ? Date.now() : toMs
+            const stored = await read({ fromMs, toMs: readToMs }, bucketMs)
+            return liveHistogram(stored, readToMs, Date.now())
         },
         apply,
         timeWindow.live ? events : null,

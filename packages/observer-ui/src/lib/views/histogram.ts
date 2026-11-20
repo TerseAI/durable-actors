@@ -2,20 +2,23 @@ import { formatTick } from "../../format.js"
 import type { Histogram } from "../../types/Histogram.js"
 import type { TimeBounds } from "../../types/TimeRange.js"
 
-/** Counts by bucket start, plus the time the store was read: later counts are added here. */
+/** Counts by bucket start, plus what the read covered, so the stream adds only the rest. */
 export interface LiveHistogram<T> {
     bucketMs: number
-    readAtMs: number
+    /** The read counted records that started before this... */
+    readToMs: number
+    /** ...and had been stored by the time its response arrived. */
+    respondedAtMs: number
     counts: Record<number, T>
 }
 
 /** Counts the live stream sends for one second. */
 export type SecondCounts<T> = { atMs: number; counts: T }
 
-export function liveHistogram<T>({ fromMs, bucketMs, buckets }: Histogram<T>, readAtMs: number): LiveHistogram<T> {
+export function liveHistogram<T>({ fromMs, bucketMs, buckets }: Histogram<T>, readToMs: number, respondedAtMs: number): LiveHistogram<T> {
     const counts: Record<number, T> = {}
     buckets.forEach((bucket, index) => (counts[fromMs + index * bucketMs] = bucket))
-    return { bucketMs, readAtMs, counts }
+    return { bucketMs, readToMs, respondedAtMs, counts }
 }
 
 /** Adds counts the read did not cover; callers decide which those are. */
