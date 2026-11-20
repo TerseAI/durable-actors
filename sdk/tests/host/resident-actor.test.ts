@@ -18,6 +18,7 @@ import { command } from "../fixtures/resident-actor.js"
 
 const sdk = JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))
 const evict = { type: "evict", graceful: false } as const
+const sleep = { type: "evict", graceful: true } as const
 
 test("eviction leaves fields and SQL in the database for the actor's next stay", { timeout: 30_000 }, async t => {
     const { actor, database } = await resident(
@@ -259,6 +260,108 @@ test("eviction answers a command that is still running and closes the database t
     assert.equal(resultOf(await run(actor, invoke("increment"))), 1)
 })
 
+test("a graceful eviction runs onSleep and keeps its writes for the next stay", { timeout: 30_000 }, async t => {
+    const { actor, database } = await resident(
+        t,
+        "SleepingResident",
+        `export class SleepingResident extends Actor {
+            @Persisted sleeps = 0
+            async onSleep(): Promise<void> {
+                this.sleeps += 1
+            }
+            async read(): Promise<number> {
+                return this.sleeps
+            }
+        }`
+    )
+
+    assertReply(await run(actor, invoke("read")), { type: "invoked", result: 0 })
+    assert.deepEqual(await run(actor, sleep), { type: "evicted" })
+    assert.deepEqual(database.fields(), { sleeps: 1 })
+    assertReply(await run(actor, invoke("read")), { type: "invoked", result: 1 })
+})
+
+test("work that overlaps a graceful eviction runs after onSleep on a fresh stay", { timeout: 30_000 }, async t => {
+    const { actor } = await resident(
+        t,
+        "RacingResident",
+        `export class RacingResident extends Actor {
+            @Persisted calls = 0
+            @Persisted sleeps = 0
+            async onSleep(): Promise<void> {
+                await new Promise(resolve => setTimeout(resolve, 50))
+                this.sleeps += 1
+            }
+            async slow(): Promise<number> {
+                await new Promise(resolve => setTimeout(resolve, 50))
+                return ++this.calls
+            }
+            async read(): Promise<{ calls: number; sleeps: number }> {
+                return { calls: this.calls, sleeps: this.sleeps }
+            }
+        }`
+    )
+    assert.equal((await run(actor, invoke("read"))).type, "invoked")
+
+    const slow = run(actor, invoke("slow"))
+    const evicted = run(actor, sleep)
+    const after = run(actor, invoke("read"))
+
+    assertReply(await slow, { type: "invoked", result: 1 })
+    assert.deepEqual(await evicted, { type: "evicted" })
+    assert.deepEqual(resultOf(await after), { calls: 1, sleeps: 1 })
+})
+
+test("a hanging onSleep does not hold up the eviction", { timeout: 30_000 }, async t => {
+    const { actor, database } = await resident(
+        t,
+        "HangingResident",
+        `export class HangingResident extends Actor {
+            @Persisted sleeps = 0
+            async onSleep(): Promise<void> {
+                await new Promise(() => {})
+                this.sleeps += 1
+            }
+            async read(): Promise<number> {
+                return this.sleeps
+            }
+        }`,
+        { evictionGraceMs: 50 }
+    )
+
+    assert.equal((await run(actor, invoke("read"))).type, "invoked")
+    assert.deepEqual(await run(actor, sleep), { type: "evicted" })
+    assert.equal(actor.isResident(), false)
+    assert.deepEqual(database.fields(), { sleeps: 0 })
+    assertReply(await run(actor, invoke("read")), { type: "invoked", result: 0 })
+})
+
+test("a forced eviction stops a running call without waiting for it", { timeout: 30_000 }, async t => {
+    const { actor } = await resident(
+        t,
+        "StuckResident",
+        `export class StuckResident extends Actor {
+            @Persisted sleeps = 0
+            async onSleep(): Promise<void> {
+                this.sleeps += 1
+            }
+            async stuck(): Promise<void> {
+                await new Promise(() => {})
+            }
+            async read(): Promise<number> {
+                return this.sleeps
+            }
+        }`,
+        { evictionGraceMs: 120_000 }
+    )
+    assert.equal((await run(actor, invoke("read"))).type, "invoked")
+
+    const stuck = run(actor, invoke("stuck"))
+    assert.deepEqual(await run(actor, evict), { type: "evicted" })
+    assertFailed(await stuck, "actor_worker_terminated", /evicted/)
+    assertReply(await run(actor, invoke("read")), { type: "invoked", result: 0 })
+})
+
 test("a failed commit stops the actor, which starts again from its database", { timeout: 30_000 }, async t => {
     let failing = false
     const { actor } = await resident(t, "UncommittedResident", counter("UncommittedResident"), {
@@ -348,6 +451,7 @@ interface ResidentOptions {
     readonly assign?: boolean
     readonly logs?: (log: ActorLog) => void
     readonly database?: (host: HostDatabase) => InvocationDatabase
+    readonly evictionGraceMs?: number
 }
 
 async function resident(
@@ -359,7 +463,8 @@ async function resident(
     const database = new HostDatabase()
     const actor = new ResidentActor({
         actorEntrypointUrl: await build(t, actorName, source),
-        database: options.database?.(database) ?? database.call
+        database: options.database?.(database) ?? database.call,
+        evictionGraceMs: options.evictionGraceMs
     })
     t.after(() => {
         actor.close()
