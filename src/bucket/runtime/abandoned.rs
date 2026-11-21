@@ -83,6 +83,7 @@ impl RuntimeStorageReader {
             &mut record.base,
             recovered.map(|snapshot| snapshot.reference),
         )?;
+        record.checkpoint_progress = None;
         record.sealed = true;
         self.replace_activation(&mut record, Some(stored.generation))
             .await

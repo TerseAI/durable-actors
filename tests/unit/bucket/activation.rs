@@ -33,7 +33,10 @@ async fn state_writes_require_local_ownership_and_a_matching_lease() -> Result<(
 
 #[tokio::test]
 async fn sqlite_dependencies_must_exist_in_the_snapshot_backend_before_publication() -> Result<()> {
-    use crate::litestream::{Litestream, Replicator, storage::SqliteCapture};
+    use crate::litestream::{
+        Litestream, Replicator,
+        storage::{CaptureDirectory, SqliteCapture},
+    };
     use crate::state_log::{SqliteSnapshot, StateSnapshot};
     use crate::state_transport::SnapshotWriter;
 
@@ -57,7 +60,8 @@ async fn sqlite_dependencies_must_exist_in_the_snapshot_backend_before_publicati
         .prepare_actor_write(&f.actor, &active.placement.lease, 1, 2)
         .await?;
     let replication = Arc::new(Litestream::default());
-    let mut capture = SqliteCapture::new(replication.clone(), None).await?;
+    let mut capture =
+        SqliteCapture::new(CaptureDirectory::temporary()?, replication.clone(), None).await?;
     let database = rusqlite::Connection::open(capture.path())?;
     database.execute("INSERT INTO __terse_fields VALUES ('seed', '1')", [])?;
     let initial = replication.sync(&capture.path()).await?;
@@ -788,6 +792,67 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
 }
 
 #[tokio::test]
+async fn a_parked_base_activates_without_reading_its_snapshot() -> Result<()> {
+    use crate::{state_log::StateSnapshot, state_transport::SnapshotWriter};
+    let f = Fixture::new()?;
+    let first = request("first");
+    let loaded = f
+        .runtime
+        .register_activation(&f.actor, &first, "us-east", true, None)
+        .await?;
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 1)
+        .await?;
+    let snapshot = StateSnapshot::new(
+        1,
+        1,
+        "committed".into(),
+        crate::test_sqlite::snapshot(serde_json::json!({"count": 42}))?,
+        serde_json::json!(42),
+    )?
+    .encode()?;
+    f.runtime.write_snapshot(&plan, snapshot).await?;
+    let checkpoint = f
+        .runtime
+        .drain_activation(
+            &f.actor,
+            &first.id,
+            &first.session_id,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await?;
+    f.runtime
+        .release_with_checkpoint(&f.actor, &first.id, &first.session_id, Some(checkpoint))
+        .await?;
+    let (_, hint) = f
+        .runtime
+        .get_owner_with_hint(&f.actor.storage_key())
+        .await?;
+    let base = hint.as_ref().unwrap().record.base.clone().unwrap();
+    f.bucket.reads.store(0, Ordering::SeqCst);
+
+    let cached = CachedBase {
+        parked: Some(base.clone()),
+    };
+    let next = request("next");
+    let claim = f
+        .runtime
+        .claim_activation(&f.actor, &next, "us-east", false, hint.as_ref())
+        .await?;
+    let loaded = f
+        .runtime
+        .adopt_activation(&f.actor, &next, "us-east", &claim, &cached)
+        .await?;
+
+    assert!(loaded.state.is_none());
+    assert_eq!(loaded.head, Some(base.clone()));
+    assert_eq!(loaded.placement.state_version, base.state_version);
+    assert_eq!(f.bucket.reads.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
     use crate::state_transport::SnapshotWriter;
     let mut f = Fixture::new()?;
@@ -991,7 +1056,15 @@ impl crate::bucket::SnapshotStore for PausedSnapshots {
     async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         self.inner.put(object, bytes).await
     }
-    async fn start(&self, _: &StateStream) -> Result<()> {
+    async fn start(
+        &self,
+        stream: &StateStream,
+        resume: Option<(&SnapshotRef, CheckpointProgress)>,
+    ) -> Result<()> {
+        assert_eq!(
+            resume.map(|(head, p)| (head.state_version, p.log_bytes)),
+            (stream.base_version > 0).then_some((stream.base_version, 1234))
+        );
         self.starts.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -1030,6 +1103,10 @@ async fn sealed_activation() -> Result<(Fixture, Arc<PausedSnapshots>, Ownership
             &first.session_id,
             Some(SessionCheckpoint {
                 snapshot: Some(SnapshotRef::new(object, &snapshot, &bytes)?),
+                progress: Some(CheckpointProgress {
+                    log_bytes: 1234,
+                    ..Default::default()
+                }),
             }),
         )
         .await?;
@@ -1193,47 +1270,6 @@ async fn revoking_a_claim_seals_its_epoch_unless_its_host_already_renewed() -> R
                 .await?;
             assert_eq!(again.placement.owner_epoch, 3);
             assert_eq!(again.placement.state_version, 1);
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_cached_base_snapshot_replaces_its_download_only_when_its_digest_matches() -> Result<()> {
-    for (database, tampered) in [(true, false), (false, false), (true, true)] {
-        let (f, snapshots, hint) = sealed_activation().await?;
-        let base = hint
-            .record
-            .base
-            .as_ref()
-            .context("hint has no sealed base")?;
-        let bytes = crate::bucket::SnapshotStore::get(&snapshots.inner, &base.object)
-            .await?
-            .context("base snapshot missing")?;
-        snapshots.reject_head.store(true, Ordering::SeqCst);
-        let cached = crate::bucket::CachedBase {
-            database,
-            snapshot: Some(if tampered {
-                Payload::from(b"tampered".as_slice())
-            } else {
-                bytes.clone()
-            }),
-        };
-        let next = request("next");
-        let claim = f
-            .runtime
-            .claim_activation(&f.actor, &next, "us-east", false, Some(&hint))
-            .await?;
-        let loaded = f
-            .runtime
-            .adopt_activation(&f.actor, &next, "us-east", &claim, &cached)
-            .await;
-        if tampered {
-            assert_eq!(loaded.err().unwrap().to_string(), "head download failed");
-        } else {
-            let loaded = loaded?;
-            assert_eq!(loaded.placement.owner_epoch, 2);
-            assert_eq!(loaded.state.unwrap().bytes, bytes);
         }
     }
     Ok(())

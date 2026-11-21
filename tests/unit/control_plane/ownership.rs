@@ -482,7 +482,10 @@ async fn a_stale_bucket_hint_rereads_and_moves_the_record() -> Result<()> {
         legacy
             .register_activation(&actor, &first, "us-east", true, None)
             .await?;
-        let sealed = SessionCheckpoint { snapshot: None };
+        let sealed = SessionCheckpoint {
+            snapshot: None,
+            progress: None,
+        };
         legacy
             .release_with_checkpoint(&actor, &first.id, &first.session_id, Some(sealed))
             .await?;
@@ -566,7 +569,10 @@ async fn recovery_seals_abandoned_records_from_either_store_and_moves_bucket_one
         legacy
             .register_activation(&moved_actor, &released, "us-east", true, None)
             .await?;
-        let sealed = SessionCheckpoint { snapshot: None };
+        let sealed = SessionCheckpoint {
+            snapshot: None,
+            progress: None,
+        };
         legacy
             .release_with_checkpoint(
                 &moved_actor,

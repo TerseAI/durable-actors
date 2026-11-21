@@ -52,7 +52,6 @@ pub struct ControlPlaneService {
     pub(super) registry: Arc<dyn AdminRegistry>,
     provisioner: Arc<dyn HostProvisioner>,
     alarms: Arc<dyn super::alarms::AlarmStore>,
-    socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     deployments: Arc<dyn PlatformEvents<DeploymentEvent>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
     ownership: Option<Arc<dyn crate::bucket::OwnershipStore>>,
@@ -113,7 +112,6 @@ impl ControlPlaneService {
             registry,
             provisioner,
             alarms: Arc::new(super::alarms::MemoryAlarmStore::default()),
-            socket_events: None,
             deployments: Arc::new(NoPlatformEvents),
             local_builds: None,
             ownership: None,
@@ -168,14 +166,6 @@ impl ControlPlaneService {
         stop: tokio_util::sync::CancellationToken,
     ) {
         super::alarms::start(self.clone(), self.alarms.clone(), poll_interval, stop);
-    }
-
-    pub(crate) fn with_socket_event_sink(
-        mut self,
-        sink: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
-    ) -> Self {
-        self.socket_events = sink;
-        self
     }
 
     pub fn into_internal_service(self) -> ActorControlPlaneServiceServer<Self> {
@@ -350,12 +340,7 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    pub(super) fn deliver_socket_message_event(
-        &self,
-        actor: &ActorKey,
-        trigger_id: Option<String>,
-        event: &ActorSocketEvent,
-    ) {
+    pub(super) fn log_committed_socket_message(&self, actor: &ActorKey, event: &ActorSocketEvent) {
         let ActorSocketEvent::Message {
             connection_id,
             message,
@@ -363,19 +348,6 @@ impl ControlPlaneService {
         else {
             return;
         };
-        if let Some(sink) = self.socket_events.clone() {
-            let event = super::event_sink::SocketMessageEvent::new(
-                actor,
-                trigger_id,
-                connection_id,
-                message,
-            );
-            tokio::spawn(async move {
-                if let Err(error) = sink.deliver(event).await {
-                    warn!(error = %format!("{error:#}"), "actor socket message trigger delivery failed");
-                }
-            });
-        }
         info!(
             event = "actor_socket_message_committed",
             actor_name = %actor.actor_name,
@@ -657,7 +629,7 @@ impl ControlPlaneService {
                     .await?;
                 let replacement_token = self
                     .host_token_issuer
-                    .issue_host(
+                    .issue_host_in_slot(
                         &spec.organization_id,
                         &principal.host_id,
                         &principal.session_id,
@@ -667,6 +639,7 @@ impl ControlPlaneService {
                             .context("host configuration missing")?,
                         &principal.region,
                         &principal.actor,
+                        principal.slot.as_deref(),
                     )?
                     .token;
                 Ok(ControlPlaneCommandReply::StorageAccess {
@@ -1404,6 +1377,26 @@ impl SandboxHostProvisioner {
         };
         let (runtime_config, spare) = tokio::join!(token, spare);
         request.spare = spare?;
+        // A claimed spare's slot is its pod's scratch volume, which the node cache finds by pod UID.
+        if let Some(slot) = request
+            .spare
+            .as_ref()
+            .and_then(|spare| spare.resource_id.splitn(3, '/').nth(2))
+            .map(str::to_owned)
+        {
+            request.host_token = self
+                .issuer
+                .issue_host_in_slot(
+                    &spec.organization_id,
+                    &request.host_id,
+                    &request.session_id,
+                    &request.host_config_key,
+                    region,
+                    actor,
+                    Some(&slot),
+                )?
+                .token;
+        }
         if let Some(pool) = &self.pool {
             if request.spare.is_none() {
                 pool.reserve_host(

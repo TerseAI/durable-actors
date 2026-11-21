@@ -44,7 +44,6 @@ pub struct ControlPlaneProcessConfig {
     pub invoke_api_key: Option<String>,
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
-    pub socket_event_sink: Option<SocketEventSinkConfig>,
     /// Where the control plane exports platform events (WebSocket connections and deployments);
     /// unset turns them off.
     pub platform_telemetry: Option<super::PlatformTelemetryConfig>,
@@ -121,10 +120,6 @@ pub struct SandboxProviderConfig {
 pub(crate) enum SandboxBackend {
     Gke(GkeConfig),
     Modal(ModalConfig),
-}
-
-pub struct SocketEventSinkConfig {
-    pub url: String,
 }
 
 impl ControlPlaneProcessConfig {
@@ -278,6 +273,12 @@ async fn control_plane_routes(
     if let Some(events) = &platform_events {
         lifecycle = lifecycle.with_events(events.clone());
     }
+    let feedback: Arc<dyn PlatformEvents<crate::platform_events::feedback::Feedback>> =
+        match &platform_events {
+            Some(events) => events.clone(),
+            None => Arc::new(NoPlatformEvents),
+        };
+    let feedback = super::event_topic::published(feedback, config.events_topic.as_deref()).await?;
     let socket_gateway = super::socket_gateway::SocketGateway::start(
         socket_bus,
         config.gateway_accept_connections,
@@ -307,13 +308,6 @@ async fn control_plane_routes(
         lifecycle = lifecycle.with_observer(admission);
     }
     provisioner = provisioner.with_ownership_claims(storage.clone());
-    let socket_events = config
-        .socket_event_sink
-        .map(|sink| {
-            super::event_sink::HttpSocketMessageEventSink::new(sink.url, config.api_key.clone())
-        })
-        .transpose()?
-        .map(|sink| Arc::new(sink) as Arc<dyn super::event_sink::SocketMessageEventSink>);
     let mut service = ControlPlaneService::new(
         placements.clone(),
         auth,
@@ -323,7 +317,6 @@ async fn control_plane_routes(
     )
     .with_runtime_access(runtime_access)
     .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
-    .with_socket_event_sink(socket_events)
     .with_ownership_store(ownership)
     .with_activation_authority(storage.clone());
     if let Some(redis) = redis {
@@ -354,9 +347,11 @@ async fn control_plane_routes(
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin.clone()))
         .merge(discovery);
-    let public_api = public_api
-        .clone()
-        .merge(super::mcp::router(public_api, admin));
+    let public_api = super::request_log::logged(
+        public_api
+            .clone()
+            .merge(super::mcp::router(public_api, admin, feedback)),
+    );
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
@@ -646,7 +641,6 @@ impl ControlPlaneProcessConfig {
                 .is_some_and(|region| sandbox_provider.pool.regions.contains(region)),
             "default region has no configured sandbox placement"
         );
-        let socket_event_sink = socket_event_sink_config(&mut get)?;
         let alarm_poll_interval = alarm_poll_interval(&mut get)?;
         Ok(Self {
             bind,
@@ -666,7 +660,6 @@ impl ControlPlaneProcessConfig {
             invoke_api_key,
             storage,
             sandbox_provider,
-            socket_event_sink,
             platform_telemetry: platform_telemetry_config(&mut get)?,
             usage_topic: get("DURABLE_ACTORS_USAGE_TOPIC"),
             events_topic: get("DURABLE_ACTORS_EVENTS_TOPIC"),
@@ -865,18 +858,6 @@ fn platform_telemetry_config(
     }))
 }
 
-fn socket_event_sink_config(
-    get: &mut impl FnMut(&str) -> Option<String>,
-) -> Result<Option<SocketEventSinkConfig>> {
-    get("DURABLE_ACTORS_SOCKET_EVENT_URL")
-        .map(|url| {
-            Ok(SocketEventSinkConfig {
-                url: validated_http_url(&url, "DURABLE_ACTORS_SOCKET_EVENT_URL")?,
-            })
-        })
-        .transpose()
-}
-
 fn sandbox_provider_config(
     get: &mut impl FnMut(&str) -> Option<String>,
     jwt_issuer: &str,
@@ -1000,6 +981,10 @@ fn sandbox_backend(
                         1024,
                     )? as usize,
                     node_cache_url: node_cache_url(get)?,
+                    sqlite_slot_gib: get("DURABLE_ACTORS_GKE_SQLITE_SLOT_GIB")
+                        .map(|gib| gib.parse())
+                        .transpose()
+                        .context("DURABLE_ACTORS_GKE_SQLITE_SLOT_GIB must be an integer")?,
                     runtime_class: get("DURABLE_ACTORS_GKE_RUNTIME_CLASS")
                         .filter(|class| !class.is_empty())
                         .unwrap_or_else(|| GKE_RUNTIME_CLASS.into()),

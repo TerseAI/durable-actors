@@ -24,7 +24,7 @@ use crate::{
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
-    node_cache::{DatabaseDownload, NodeCacheClient},
+    node_cache::NodeCacheClient,
     storage::WritePlan,
 };
 
@@ -41,15 +41,9 @@ pub(crate) struct HostStorage {
     node_cache: Option<NodeCacheClient>,
     activation: Mutex<Option<ActorActivation>>,
     checkpoint: Mutex<Option<crate::bucket::recovery::PrefetchedCheckpoint>>,
-    saved_database: Mutex<Option<SavedDatabase>>,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
     renewal: tokio::sync::Mutex<()>,
-}
-
-struct SavedDatabase {
-    digest: String,
-    file: tempfile::NamedTempFile,
 }
 
 impl HostStorage {
@@ -102,7 +96,6 @@ impl HostStorage {
             node_cache: None,
             activation: Mutex::new(None),
             checkpoint: Mutex::new(None),
-            saved_database: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
             renewal: tokio::sync::Mutex::new(()),
@@ -268,17 +261,12 @@ impl ActorStorage for HostStorage {
 
     fn resume_parent(
         &self,
-        snapshot: &crate::storage::VerifiedSnapshot,
+        head: &crate::storage::SnapshotRef,
     ) -> Result<Option<crate::storage::SnapshotRef>> {
         if self.runtime.persistence.rapid_settings().is_none() {
             return Ok(None);
         }
-        Ok(Some(snapshot.reference.clone()))
-    }
-
-    fn take_saved_database(&self, digest: &str) -> Option<tempfile::NamedTempFile> {
-        let saved = self.saved_database.lock().unwrap().take()?;
-        (saved.digest == digest).then_some(saved.file)
+        Ok(Some(head.clone()))
     }
 
     fn ensure_authority(&self) -> Result<()> {
@@ -312,6 +300,7 @@ impl ActorStorage for HostStorage {
             owner_epoch: loaded.placement.owner_epoch,
             state_version: loaded.placement.state_version,
             state: loaded.state,
+            head: loaded.head,
         })
     }
 
@@ -405,89 +394,43 @@ impl HostLeaseRegistry for HostStorage {
 }
 
 impl HostStorage {
-    /// A database this node saved at the claimed base stands in for the base's checkpoint, so it
-    /// downloads alongside the base snapshot and the checkpoint is never fetched. A snapshot this
-    /// node saved stands in for the base's object storage read.
+    /// When this node parked the database at the claimed base, the host reopens that file and
+    /// needs neither the base's snapshot nor its checkpoint.
     async fn activate(&self, request: &HostLeaseRequest) -> Result<HostLease> {
         let claim = self
             .claim
             .as_ref()
             .context("assignment carries no ownership claim")?;
-        let digest = claim.base().map(|base| base.digest.as_str());
-        let (saved, snapshot) =
-            tokio::join!(self.find_saved_database(digest), self.find_snapshot(digest));
         let cached = crate::bucket::CachedBase {
-            database: saved.is_some(),
-            snapshot,
+            parked: self.find_parked(claim.base()).await,
         };
-        let (loaded, saved) = tokio::join!(
-            self.runtime
-                .adopt_activation(&self.actor, request, &self.region, claim, &cached),
-            receive_saved_database(saved),
-        );
-        let loaded = loaded?;
-        *self.saved_database.lock().unwrap() = saved;
+        let loaded = self
+            .runtime
+            .adopt_activation(&self.actor, request, &self.region, claim, &cached)
+            .await?;
         *self.checkpoint.lock().unwrap() = loaded.checkpoint;
         *self.activation.lock().unwrap() = Some(ActorActivation {
             owner_epoch: loaded.placement.owner_epoch,
             state_version: loaded.placement.state_version,
             state: loaded.state,
+            head: loaded.head,
         });
         Ok(loaded.placement.lease)
     }
 
-    async fn find_saved_database(
+    async fn find_parked(
         &self,
-        digest: Option<&str>,
-    ) -> Option<(String, DatabaseDownload)> {
+        base: Option<&crate::storage::SnapshotRef>,
+    ) -> Option<crate::storage::SnapshotRef> {
         let cache = self.node_cache.as_ref()?;
-        let digest = digest?;
-        match cache.database(digest).await {
-            Ok(download) => download.map(|download| (digest.to_owned(), download)),
+        cache.slot_database()?;
+        let base = base?;
+        match cache.is_parked(&base.digest).await {
+            Ok(parked) => parked.then(|| base.clone()),
             Err(error) => {
-                tracing::warn!(error = %format!("{error:#}"), "node cache database lookup failed");
+                tracing::warn!(error = %format!("{error:#}"), "parked database lookup failed");
                 None
             }
-        }
-    }
-
-    async fn find_snapshot(&self, digest: Option<&str>) -> Option<crate::payload::Payload> {
-        let cache = self.node_cache.as_ref()?;
-        let digest = digest?;
-        let started = Instant::now();
-        match cache.snapshot(digest).await {
-            Ok(snapshot) => {
-                tracing::info!(
-                    event = "actor_snapshot_cache_lookup",
-                    hit = snapshot.is_some(),
-                    duration_ms = started.elapsed().as_secs_f64() * 1000.0
-                );
-                snapshot
-            }
-            Err(error) => {
-                tracing::warn!(error = %format!("{error:#}"), "node cache snapshot lookup failed");
-                None
-            }
-        }
-    }
-}
-
-async fn receive_saved_database(
-    saved: Option<(String, DatabaseDownload)>,
-) -> Option<SavedDatabase> {
-    let (digest, download) = saved?;
-    let started = Instant::now();
-    match download.receive().await {
-        Ok(file) => {
-            tracing::info!(
-                event = "actor_sqlite_cache_received",
-                duration_ms = started.elapsed().as_secs_f64() * 1000.0
-            );
-            Some(SavedDatabase { digest, file })
-        }
-        Err(error) => {
-            tracing::warn!(error = %format!("{error:#}"), "node cache database download failed");
-            None
         }
     }
 }

@@ -1,8 +1,11 @@
 //! The project's observability events as the dashboard applies them. Views read the store once
 //! when they open; afterwards this stream forwards what the collector publishes on the project's
 //! live channels, decoded into the change each record makes to what an observer sees. Each
-//! message names one event type and carries the records of that type in the order they arrived.
+//! channel is gathered over `WINDOW`, then sent as messages that each name one event type and
+//! carry the records of that type in the order they arrived.
 //! `event_history` reads past events back from the store through the same decoder.
+
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::{Result, bail};
 use futures_util::{Stream, StreamExt, stream};
@@ -20,7 +23,7 @@ use crate::{
     host_leases::WaitingOperation,
     placement::ActorResidency,
     platform_events::{
-        deployments, lifecycle,
+        deployments, feedback, lifecycle,
         sandboxes::{self, KillReason},
         sockets,
     },
@@ -30,6 +33,11 @@ use crate::{
         otlp::{self, PlatformLog, Signal},
     },
 };
+
+// Datadog's live views refresh every 2 seconds; observers need nothing fresher, and every host
+// publishes each export separately, so a busy project would otherwise flood them.
+const WINDOW: Duration = Duration::from_secs(2);
+const WINDOW_PAYLOADS: usize = 1024;
 
 /// Which live channels to forward, and which logs.
 #[derive(Default, Deserialize)]
@@ -81,6 +89,7 @@ pub(super) enum ObserveEvent {
     Deployment(Deployment),
     Kill(ActorKill),
     Usage(ActorUsage),
+    Feedback(SubmittedFeedback),
 }
 
 /// An instance as its latest lifecycle report leaves it.
@@ -168,6 +177,14 @@ pub(super) struct ActorUsage {
     pub memory_bytes: Option<u64>,
 }
 
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SubmittedFeedback {
+    pub organization_id: String,
+    pub at_ms: u64,
+    pub message: String,
+}
+
 impl ObserveEvent {
     pub(super) fn name(&self) -> &'static str {
         match self {
@@ -180,6 +197,7 @@ impl ObserveEvent {
             Self::Deployment(_) => "deployment",
             Self::Kill(_) => "kill",
             Self::Usage(_) => "usage",
+            Self::Feedback(_) => "feedback",
         }
     }
 }
@@ -191,7 +209,7 @@ pub(super) struct EventBatch {
     pub events: Vec<ObserveEvent>,
 }
 
-/// The project's events on the requested channels as the live feed delivers them.
+/// The project's events on the requested channels, each channel gathered over `WINDOW`.
 pub(super) async fn subscribe(
     traces: &TraceStore,
     project: &str,
@@ -202,12 +220,48 @@ pub(super) async fn subscribe(
         let filter = query.log_filter();
         let updates = traces.subscribe(project, signal).await?;
         channels.push(
-            updates
-                .flat_map(move |payload| stream::iter(batches(decode(signal, &payload, &filter))))
+            tokio_stream::StreamExt::chunks_timeout(updates, WINDOW_PAYLOADS, WINDOW)
+                .flat_map(move |payloads| stream::iter(window(signal, &payloads, &filter)))
                 .boxed(),
         );
     }
     Ok(stream::select_all(channels))
+}
+
+fn window(signal: Signal, payloads: &[Vec<u8>], filter: &LogQuery) -> Vec<EventBatch> {
+    batches(latest_snapshots(
+        payloads
+            .iter()
+            .flat_map(|payload| decode(signal, payload, filter))
+            .collect(),
+    ))
+}
+
+/// Instance and usage events each describe an actor's whole current state, so a window keeps
+/// only the latest of each per actor, where it arrived.
+fn latest_snapshots(events: Vec<ObserveEvent>) -> Vec<ObserveEvent> {
+    let mut seen = HashSet::new();
+    let mut kept: Vec<ObserveEvent> = events
+        .into_iter()
+        .rev()
+        .filter(|event| snapshot_key(event).is_none_or(|key| seen.insert(key)))
+        .collect();
+    kept.reverse();
+    kept
+}
+
+fn snapshot_key(event: &ObserveEvent) -> Option<(&'static str, String, String)> {
+    match event {
+        ObserveEvent::Instance(change) => Some((
+            "instance",
+            change.actor_name.clone(),
+            change.actor_id.clone(),
+        )),
+        ObserveEvent::Usage(usage) => {
+            Some(("usage", usage.actor_name.clone(), usage.actor_id.clone()))
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn decode(signal: Signal, payload: &[u8], filter: &LogQuery) -> Vec<ObserveEvent> {
@@ -285,6 +339,7 @@ pub(super) fn platform_event(log: &PlatformLog) -> Option<ObserveEvent> {
         }
         sandboxes::KILLED => kill(log),
         sandboxes::USAGE => usage(log),
+        feedback::SUBMITTED => submitted_feedback(log),
         _ => None,
     }
 }
@@ -367,6 +422,14 @@ fn usage(log: &PlatformLog) -> Option<ObserveEvent> {
     }))
 }
 
+fn submitted_feedback(log: &PlatformLog) -> Option<ObserveEvent> {
+    Some(ObserveEvent::Feedback(SubmittedFeedback {
+        organization_id: log.string(otlp::ORGANIZATION_ID)?,
+        at_ms: log.at_ms,
+        message: log.body.clone()?,
+    }))
+}
+
 fn deployed_actors(contract: Option<&str>) -> Vec<DeployedActor> {
     contract
         .and_then(|json| serde_json::from_str(json).ok())
@@ -379,3 +442,7 @@ fn deployed_actors(contract: Option<&str>) -> Vec<DeployedActor> {
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/control_plane/observe_events_tests.rs"]
+mod tests;

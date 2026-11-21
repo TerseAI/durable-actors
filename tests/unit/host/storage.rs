@@ -193,7 +193,6 @@ async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
         node_cache: None,
         activation: Mutex::new(None),
         checkpoint: Mutex::new(None),
-        saved_database: Mutex::new(None),
         fence: Mutex::new(LeaseFence::default()),
         lease: Mutex::new(None),
         renewal: tokio::sync::Mutex::new(()),
@@ -360,11 +359,15 @@ impl crate::bucket::SnapshotStore for DelayedFinish {
     async fn put(&self, key: &str, bytes: crate::payload::Payload) -> Result<()> {
         self.snapshots.put(key, bytes).await
     }
-    async fn finish(&self, _: &crate::storage::StateStream, _: tokio::time::Instant) -> Result<()> {
+    async fn finish(
+        &self,
+        _: &crate::storage::StateStream,
+        _: tokio::time::Instant,
+    ) -> Result<Option<crate::bucket::recovery::CheckpointProgress>> {
         self.entered.notify_one();
         self.resume.notified().await;
         ensure!(!self.fail, "archive failure");
-        Ok(())
+        Ok(None)
     }
 }
 

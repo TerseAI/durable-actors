@@ -12,7 +12,7 @@ use super::*;
 async fn lists_developer_tools() {
     let reply = rpc(test_router(Router::new()).await, "tools/list", json!({})).await;
     let tools = reply["result"]["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 11);
+    assert_eq!(tools.len(), 12);
     for tool in tools {
         assert_eq!(tool["outputSchema"]["type"], "object", "{}", tool["name"]);
     }
@@ -20,6 +20,55 @@ async fn lists_developer_tools() {
     assert_eq!(tool("invoke_actor")["annotations"]["destructiveHint"], true);
     assert_eq!(tool("invoke_actor")["annotations"]["openWorldHint"], true);
     assert_eq!(tool("list_logs")["annotations"]["openWorldHint"], false);
+    assert_eq!(
+        tool("send_feedback")["annotations"]["destructiveHint"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn feedback_is_recorded_for_the_organization_and_project() {
+    let recorded = Arc::new(RecordedFeedback::default());
+    let router = local_router(
+        Router::new(),
+        test_admin(&[("demo", "org-test")]).await,
+        recorded.clone(),
+    );
+    let send = |message: &str| {
+        let arguments = json!({ "projectId": "demo", "message": message });
+        rpc(
+            router.clone(),
+            "tools/call",
+            json!({ "name": "send_feedback", "arguments": arguments }),
+        )
+    };
+
+    let empty = send("  ").await;
+    let sent = send("  Deploys are slow \n").await;
+
+    assert_eq!(text(&empty)["error"]["code"], "invalid_request");
+    assert_eq!(text(&sent), json!({ "sent": true }));
+    let recorded = recorded.0.lock().unwrap();
+    let [feedback] = recorded.as_slice() else {
+        panic!("one feedback: {recorded:?}");
+    };
+    assert_eq!(
+        (
+            feedback.organization_id.as_str(),
+            feedback.project_id.as_str(),
+            feedback.message.as_str()
+        ),
+        ("org-test", "demo", "Deploys are slow")
+    );
+}
+
+#[derive(Default)]
+struct RecordedFeedback(Mutex<Vec<Feedback>>);
+
+impl PlatformEvents<Feedback> for RecordedFeedback {
+    fn record(&self, event: Feedback) {
+        self.0.lock().unwrap().push(event);
+    }
 }
 
 #[tokio::test]
@@ -40,7 +89,7 @@ async fn tool_calls_forward_the_credential_and_filters() {
         }),
     );
     let admin = test_admin(&[("demo", "org-test"), ("second", "org-test")]).await;
-    let router = local_router(api, admin);
+    let router = local_router(api, admin, no_feedback());
     for project in ["demo", "second"] {
         let arguments =
             json!({ "projectId": project, "actorName": "Counter", "outcome": "failed" });
@@ -161,6 +210,44 @@ async fn sessions_page_with_the_status_gateways_reported() {
 }
 
 #[tokio::test]
+async fn tool_calls_log_what_they_touched_but_not_their_arguments() {
+    let logs = crate::test_logs::LogCapture::start();
+    let api = Router::new().route(
+        "/v1/projects/demo/actors/Counter/one/invoke",
+        post(|| async { Json(json!({ "outcome": { "type": "completed", "result": 7 } })) }),
+    );
+    let arguments = json!({
+        "actorName": "Counter", "actorId": "one", "method": "increment", "args": ["private"]
+    });
+    call_tool(api, "invoke_actor", arguments).await;
+
+    let lines = logs.lines();
+    let line = lines
+        .iter()
+        .find(|line| line["event"] == "mcp_tool_call")
+        .unwrap_or_else(|| panic!("{lines:?}"));
+    assert_eq!(line["mcp.tool_name"], "invoke_actor");
+    assert!(
+        line["mcp.request_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert!(
+        line["mcp.response_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert_eq!(line["organization_id"], "org-test");
+    assert_eq!(line["project_id"], "demo");
+    assert_eq!(line["actor_name"], "Counter");
+    assert_eq!(line["actor_id"], "one");
+    assert_eq!(line["actor_method"], "increment");
+    assert_eq!(line["outcome"], "completed");
+    assert_eq!(line["fault"], "none");
+    assert!(!format!("{lines:?}").contains("private"), "{lines:?}");
+}
+
+#[tokio::test]
 async fn invalid_cursors_are_tool_errors_the_model_can_fix() {
     let reply = call_tool(
         Router::new(),
@@ -227,7 +314,15 @@ async fn rpc_as(
 }
 
 async fn test_router(api: Router) -> Router {
-    local_router(api, test_admin(&[("demo", "org-test")]).await)
+    local_router(
+        api,
+        test_admin(&[("demo", "org-test")]).await,
+        no_feedback(),
+    )
+}
+
+fn no_feedback() -> FeedbackEvents {
+    Arc::new(crate::platform_events::NoPlatformEvents)
 }
 
 async fn test_admin(projects: &[(&str, &str)]) -> AdminService {
@@ -264,7 +359,7 @@ async fn lists_only_projects_in_the_authenticated_organization() {
         ("private", "org-other"),
     ])
     .await;
-    let router = local_router(Router::new(), admin);
+    let router = local_router(Router::new(), admin, no_feedback());
     let (_, reply) = rpc_as(
         router,
         "tools/call",
@@ -286,7 +381,7 @@ async fn every_actor_tool_hides_projects_outside_the_organization() {
         panic!("Must not contact a foreign project's API")
     }
     let api = Router::new().fallback(unexpected_request);
-    let router = local_router(api, admin);
+    let router = local_router(api, admin, no_feedback());
     for name in [
         "describe_deployment",
         "list_actors",
@@ -298,9 +393,10 @@ async fn every_actor_tool_hides_projects_outside_the_organization() {
         "get_actor_resources",
         "list_websocket_sessions",
         "invoke_actor",
+        "send_feedback",
     ] {
         let (_, reply) = rpc_as(router.clone(), "tools/call", json!({"name":name, "arguments":{
-            "projectId":"private", "organizationId":"org-other", "actorName":"Counter", "actorId":"one", "method":"increment"
+            "projectId":"private", "organizationId":"org-other", "actorName":"Counter", "actorId":"one", "method":"increment", "message":"hi"
         }}), Some("org-test"), "secret").await;
         assert_eq!(reply["result"]["isError"], true, "{name}: {reply}");
         assert_eq!(
@@ -314,7 +410,7 @@ async fn every_actor_tool_hides_projects_outside_the_organization() {
 #[tokio::test]
 async fn requires_authentication_and_explicit_context_for_multiple_organizations() {
     let admin = test_admin(&[("demo", "org-test"), ("private", "org-other")]).await;
-    let router = local_router(Router::new(), admin);
+    let router = local_router(Router::new(), admin, no_feedback());
     let (status, _) = rpc_as(
         router.clone(),
         "tools/list",

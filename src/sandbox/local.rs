@@ -41,7 +41,15 @@ impl LocalSandboxProvider {
         sdk_host: Option<PathBuf>,
         database: PathBuf,
         ready_timeout: Duration,
+        sqlite_slots: Option<PathBuf>,
     ) -> Result<Self> {
+        if let Some(slots) = &sqlite_slots {
+            // Slots a previous run left belong to hosts that no longer exist.
+            if tokio::fs::try_exists(slots).await? {
+                tokio::fs::remove_dir_all(slots).await?;
+            }
+            tokio::fs::create_dir_all(slots).await?;
+        }
         let stop = CancellationToken::new();
         Ok(Self {
             runtime: Arc::new(LocalRuntime {
@@ -50,6 +58,7 @@ impl LocalSandboxProvider {
                 sdk_host,
                 abandoned_leases,
                 ready_timeout,
+                sqlite_slots,
                 store: LocalHostStore::open(database).await?,
                 tasks: TaskTracker::new(),
                 changes: watch::channel(()).0,
@@ -216,6 +225,8 @@ struct LocalRuntime {
     sdk_host: Option<PathBuf>,
     abandoned_leases: Option<Arc<dyn AbandonedLeases>>,
     ready_timeout: Duration,
+    /// Where each host gets its database slot, as kubelet gives each GKE spare one.
+    sqlite_slots: Option<PathBuf>,
     store: LocalHostStore,
     tasks: TaskTracker,
     changes: watch::Sender<()>,
@@ -303,6 +314,24 @@ impl LocalRuntime {
     fn spawn_host(&self, request: &EnsureHostRequest) -> Result<LocalHost> {
         let directory = tempfile::Builder::new().prefix("ldo-").tempdir_in("/tmp")?;
         let mut environment = host_environment(request, &directory);
+        let slot = self
+            .sqlite_slots
+            .as_ref()
+            .map(|slots| slots.join(request.host_id.as_str()));
+        if let Some(slot) = &slot {
+            std::fs::create_dir_all(slot)?;
+            environment.insert(
+                "DURABLE_ACTORS_SQLITE_SLOT_DIR".into(),
+                slot.display().to_string(),
+            );
+            environment.insert(
+                "DURABLE_ACTORS_NODE_CACHE_URL".into(),
+                format!(
+                    "{}/node-cache/",
+                    request.control_plane_url.trim_end_matches('/')
+                ),
+            );
+        }
         if let Some(module) = &self.sdk_host {
             environment.insert(
                 "DURABLE_ACTORS_SDK_HOST".into(),
@@ -324,6 +353,7 @@ impl LocalRuntime {
             lifetime: child.stdin.take(),
             child,
             directory,
+            slot,
             owner_epoch: 0,
             lease: None,
         })
@@ -361,6 +391,9 @@ struct LocalHost {
     lease: Option<crate::host_leases::HostLease>,
     child: Child,
     directory: TempDir,
+    /// The host's database slot, deleted once the host exits, along with any database it never
+    /// parked.
+    slot: Option<PathBuf>,
     owner_epoch: u64,
 }
 
@@ -395,6 +428,9 @@ impl LocalHost {
             .is_err()
         {
             let _ = self.child.kill().await;
+        }
+        if let Some(slot) = &self.slot {
+            let _ = tokio::fs::remove_dir_all(slot).await;
         }
     }
 }

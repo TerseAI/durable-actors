@@ -6,6 +6,8 @@ use crate::host_leases::HostLeaseRequest;
 #[derive(Default)]
 struct ActivationRecovery {
     snapshot: Option<VerifiedSnapshot>,
+    /// The head, when the host already holds its database and needs no snapshot.
+    head: Option<SnapshotRef>,
     checkpoint: Option<super::super::recovery::PrefetchedCheckpoint>,
     checkpoint_ms: Option<f64>,
     snapshot_ms: Option<f64>,
@@ -14,10 +16,9 @@ struct ActivationRecovery {
 /// What a host already holds for the base its claimed epoch starts from.
 #[derive(Default)]
 pub(crate) struct CachedBase {
-    /// The base's SQLite database: its checkpoint is left for SQLite recovery to fetch.
-    pub database: bool,
-    /// The base snapshot, used only when it matches the digest the claim names.
-    pub snapshot: Option<Payload>,
+    /// The base this node parked a closed database at. When the claim names exactly this base, the
+    /// database file already holds its pages, so activation skips the snapshot.
+    pub parked: Option<SnapshotRef>,
 }
 
 impl RuntimeStorage {
@@ -60,11 +61,13 @@ impl RuntimeStorage {
                 && record.lease.route == request.route,
             "control plane claimed a different activation"
         );
+        let progress = record.checkpoint_progress;
         let recovery = match self.load_activation_base(&record, cached).await {
             Ok(recovery) => recovery,
             Err(error) => {
                 let checkpoint = SessionCheckpoint {
                     snapshot: record.base.clone(),
+                    progress,
                 };
                 if let Err(release) = self
                     .release_with_checkpoint(
@@ -81,7 +84,9 @@ impl RuntimeStorage {
             }
         };
         let stream_started = Instant::now();
-        self.snapshots.start(&record.stream()?).await?;
+        self.snapshots
+            .start(&record.stream()?, record.base.as_ref().zip(progress))
+            .await?;
         let stream_open_ms = stream_started.elapsed().as_secs_f64() * 1_000.0;
         tracing::info!(
             event = "actor_activation_storage",
@@ -96,7 +101,7 @@ impl RuntimeStorage {
             checkpoint_prefetch_ms = recovery.checkpoint_ms,
             duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
         );
-        let mut loaded = self.remember(record, recovery.snapshot);
+        let mut loaded = self.remember(record, recovery.snapshot, recovery.head);
         loaded.checkpoint = recovery.checkpoint;
         Ok(loaded)
     }
@@ -164,12 +169,13 @@ impl RuntimeStorage {
         if record.base.is_none() {
             return Ok(ActivationRecovery::default());
         }
-        if cached.database {
-            return self
-                .load_activation_snapshot(record, cached.snapshot.as_ref())
-                .await;
+        if cached.parked.is_some() && record.base == cached.parked {
+            return Ok(ActivationRecovery {
+                head: record.base.clone(),
+                ..ActivationRecovery::default()
+            });
         }
-        let snapshot = self.load_activation_snapshot(record, cached.snapshot.as_ref());
+        let snapshot = self.load_activation_snapshot(record);
         let checkpoint = self.prefetch_activation_checkpoint(record);
         tokio::pin!(snapshot, checkpoint);
         let (mut recovery, (checkpoint, checkpoint_ms)) = tokio::select! {
@@ -191,17 +197,9 @@ impl RuntimeStorage {
         Ok(recovery)
     }
 
-    async fn load_activation_snapshot(
-        &self,
-        record: &Ownership,
-        cached: Option<&Payload>,
-    ) -> Result<ActivationRecovery> {
+    async fn load_activation_snapshot(&self, record: &Ownership) -> Result<ActivationRecovery> {
         let started = Instant::now();
-        let cached =
-            record.base.as_ref().zip(cached).and_then(|(base, bytes)| {
-                VerifiedSnapshot::matching(base.clone(), bytes.clone()).ok()
-            });
-        let snapshot = self.load_latest(record, cached).await?;
+        let snapshot = self.load_latest(record, None).await?;
         Ok(ActivationRecovery {
             snapshot,
             snapshot_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
@@ -308,6 +306,7 @@ impl ActivationAuthority for RuntimeStorageReader {
             record.lease.expires_at_ms = 0;
             if let Some(checkpoint) = &checkpoint {
                 record.base = checkpoint.snapshot.clone();
+                record.checkpoint_progress = checkpoint.progress;
                 record.sealed = true;
             }
             if self
@@ -485,6 +484,9 @@ impl RuntimeStorageReader {
                 .map_or(Some(1), |record| record.epoch.checked_add(1))
                 .context("owner epoch overflow")?,
             region: region.into(),
+            checkpoint_progress: current
+                .filter(|record| record.sealed)
+                .and_then(|record| record.checkpoint_progress),
             base: current.and_then(|record| record.base.clone()),
             lease: self.new_lease(request)?,
             mutation: String::new(),

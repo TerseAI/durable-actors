@@ -165,44 +165,52 @@ async fn live_checkpoint_inputs_are_read_as_one_bounded_range() -> Result<()> {
 
 #[tokio::test]
 async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
-    use crate::litestream::storage::{SqliteCapture, restored_fields};
+    use crate::litestream::storage::{CaptureDirectory, SqliteCapture, restored_fields};
     let f = Fixture::new()?;
-    let writer = f.store()?;
+    let (writer, gate) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    gate.stalled_checkpoint.store(true, Ordering::SeqCst);
     let (replication, history) = write_history(&f, &writer, 35).await?;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while f
-            .archive
-            .get(&format!("{}.checkpoint", f.stream.object(32)))
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let (progress, released) = tokio::join!(
+        writer.finish(&f.stream, deadline),
+        tokio::time::timeout_at(deadline, async {
+            while f.archive.get(&f.stream.object(35)).await?.is_none() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            gate.stalled_checkpoint.store(false, Ordering::SeqCst);
+            anyhow::Ok(())
+        })
+    );
+    released??;
+    let progress = progress?.unwrap();
+    assert_eq!(progress.version, 32);
+    assert_eq!(
+        progress.log_bytes,
+        history[32..].iter().map(|b| b.len() as u64).sum::<u64>()
+    );
+    assert_eq!(gate.checkpoint_attempts.load(Ordering::SeqCst), 1);
+    assert!(
+        f.archive
+            .get(&format!("{}.checkpoint", f.stream.object(35)))
             .await?
             .is_none()
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        anyhow::Ok(())
-    })
-    .await??;
-    writer
-        .finish(
-            &f.stream,
-            tokio::time::Instant::now() + Duration::from_secs(30),
-        )
-        .await?;
+    );
     f.cleaned().await?;
 
     let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
     let sqlite = reader
         .restore_prefetched(
-            VerifiedSnapshot::named(f.stream.object(35), history[34].clone())?,
+            VerifiedSnapshot::named(f.stream.object(32), history[31].clone())?,
             None,
         )
         .await?;
     assert_eq!(archive.read_requests.load(Ordering::SeqCst), 1);
-    let source = f.stream.snapshot(&history[34])?;
+    let source = f.stream.snapshot(&history[31])?;
     let prefetched = reader.prefetch_checkpoint(&source).await?;
     let requests = archive.read_requests.load(Ordering::SeqCst);
     let prepared = reader
         .restore_prefetched(
-            VerifiedSnapshot::matching(source.clone(), history[34].clone())?,
+            VerifiedSnapshot::matching(source.clone(), history[31].clone())?,
             prefetched,
         )
         .await?;
@@ -223,7 +231,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
     assert!(
         reader
             .restore_prefetched(
-                VerifiedSnapshot::matching(source.clone(), history[34].clone())?,
+                VerifiedSnapshot::matching(source.clone(), history[31].clone())?,
                 Some(corrupt),
             )
             .await
@@ -244,9 +252,21 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
         })
         .sum();
     assert!(sqlite.files[0].data.len() < original_size);
-    let restored =
-        SqliteCapture::restore(replication.clone(), &sqlite.files, sqlite.txid, None, false)
-            .await?;
+    let latest = reader
+        .restore_prefetched(
+            VerifiedSnapshot::named(f.stream.object(35), history[34].clone())?,
+            None,
+        )
+        .await?;
+    let restored = SqliteCapture::restore(
+        CaptureDirectory::temporary()?,
+        replication.clone(),
+        &latest.files,
+        latest.txid,
+        None,
+        false,
+    )
+    .await?;
     let db = rusqlite::Connection::open(restored.path())?;
     assert_eq!(
         crate::litestream::storage::read_fields(&db)?,
@@ -301,9 +321,9 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
         reader.get(&f.stream.object(35)).await?,
         Some(history[34].clone())
     );
-    let key = format!("{}.checkpoint", f.stream.object(35));
+    let key = format!("{}.checkpoint", f.stream.object(32));
     let stored = f.archive.get(&key).await?.unwrap();
-    let source = f.stream.snapshot(&history[34])?;
+    let source = f.stream.snapshot(&history[31])?;
     let mut checkpoint = crate::bucket::recovery::Checkpoint {
         sqlite: crate::bucket::recovery::Checkpoint::decode(&stored.bytes, &source, sqlite.txid)?,
         source,
@@ -331,28 +351,77 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
 }
 
 #[tokio::test]
+async fn full_checkpoint_upload_allows_slow_transfers_and_bounds_stalls() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    let (_, history) = write_history(&f, &writer, 2).await?;
+    let head = f.stream.snapshot(&history[1])?;
+    writer
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await?;
+
+    for (attempt, delay_secs) in [(1, 31), (2, 20)] {
+        archive.stalled_checkpoint.store(true, Ordering::SeqCst);
+        let upload = writer.storage.checkpoint(&head, Some(history[1].clone()));
+        tokio::pin!(upload);
+        tokio::select! {
+            result = &mut upload => panic!("checkpoint finished before upload started: {result:?}"),
+            _ = async {
+                while archive.checkpoint_attempts.load(Ordering::SeqCst) < attempt {
+                    tokio::task::yield_now().await;
+                }
+            } => {}
+        }
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(delay_secs)).await;
+        let result = futures_util::poll!(&mut upload);
+        tokio::time::resume();
+        if delay_secs == 31 {
+            let std::task::Poll::Ready(result) = result else {
+                panic!("stalled upload exceeded its deadline");
+            };
+            assert!(result.unwrap_err().is::<tokio::time::error::Elapsed>());
+        } else {
+            assert!(result.is_pending(), "slow upload expired: {result:?}");
+            archive.stalled_checkpoint.store(false, Ordering::SeqCst);
+            assert!(upload.await?.is_some());
+        }
+    }
+    Ok(())
+}
+#[tokio::test]
 async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Result<()> {
     for stalled in [false, true] {
         let f = Fixture::new()?;
         let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
         archive.fail_checkpoint.store(!stalled, Ordering::SeqCst);
         archive.stalled_checkpoint.store(stalled, Ordering::SeqCst);
-        let (replication, history) = write_history(&f, &writer, 2).await?;
-        writer
+        let (replication, history) = write_history(&f, &writer, 32).await?;
+        let progress = writer
             .finish(
                 &f.stream,
                 tokio::time::Instant::now() + Duration::from_secs(1),
             )
             .await?;
+        let progress = progress.unwrap();
+        assert_eq!(progress.version, 0);
+        assert_eq!(
+            progress.log_bytes,
+            history.iter().map(|b| b.len() as u64).sum::<u64>()
+        );
+        assert!(archive.checkpoint_attempts.load(Ordering::SeqCst) > 0);
         f.cleaned().await?;
         let reader = f.store()?;
         assert_eq!(
-            reader.get(&f.stream.object(2)).await?,
-            Some(history[1].clone())
+            reader.get(&f.stream.object(32)).await?,
+            Some(history[31].clone())
         );
         let sqlite = reader
             .restore_prefetched(
-                VerifiedSnapshot::named(f.stream.object(2), history[1].clone())?,
+                VerifiedSnapshot::named(f.stream.object(32), history[31].clone())?,
                 None,
             )
             .await?;
@@ -363,24 +432,88 @@ async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Re
                 sqlite.txid
             )
             .await?,
-            serde_json::json!({"count":2})
+            serde_json::json!({"count":32})
         );
     }
     Ok(())
 }
 
 #[tokio::test]
+async fn parked_wakes_retain_both_background_checkpoint_thresholds() -> Result<()> {
+    let source = Fixture::new()?;
+    let (_, history) = write_history(&source, &source.store()?, 35).await?;
+    let f = Fixture::new()?;
+    let actor = crate::storage_paths::actor_from_snapshot(&f.stream.object(1))?;
+    let mut progress = None;
+    let mut parent = None;
+    let mut log_bytes = 0;
+    let mut completed = 0;
+    for bytes in history {
+        let mut snapshot = StateSnapshot::decode(&bytes)?;
+        let version = snapshot.state_version;
+        snapshot.owner_epoch = version;
+        snapshot.sqlite.parent = parent;
+        if version >= 34 {
+            // Two individually sub-threshold records cross the 1 MiB byte floor on the last wake.
+            snapshot.completion.as_mut().unwrap().result =
+                serde_json::json!("x".repeat(600 * 1024)).into();
+        }
+        let key =
+            crate::storage::snapshot_object_name(&actor, version, &format!("{version:032x}"))?;
+        let stream = StateStream {
+            prefix: format!("{}/", key.rsplit_once('/').unwrap().0),
+            owner_epoch: version,
+            base_version: version - 1,
+            ..f.stream.clone()
+        };
+        let writer = f.store()?;
+        writer
+            .start(&stream, snapshot.sqlite.parent.as_ref().zip(progress))
+            .await?;
+        let bytes = snapshot.encode()?;
+        parent = Some(stream.snapshot(&bytes)?);
+        log_bytes += bytes.len() as u64;
+        writer.put(&key, bytes).await?;
+        progress = writer
+            .finish(
+                &stream,
+                tokio::time::Instant::now() + Duration::from_secs(5),
+            )
+            .await?;
+        if matches!(version, 32 | 35) {
+            completed = version;
+            log_bytes = 0;
+        }
+        let saved = progress.unwrap();
+        assert_eq!(saved.version, completed);
+        assert_eq!(saved.log_bytes, log_bytes);
+        assert_eq!(saved.base_bytes > 0, version >= 32);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn resumed_checkpoint_retries_without_new_writes() -> Result<()> {
+    assert_resumed_checkpoint_retry(false).await
+}
+
+#[tokio::test]
+async fn parked_checkpoint_retries_without_new_writes() -> Result<()> {
+    assert_resumed_checkpoint_retry(true).await
+}
+
+async fn assert_resumed_checkpoint_retry(parked: bool) -> Result<()> {
     let f = Fixture::new()?;
     let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
     archive.fail_checkpoint.store(true, Ordering::SeqCst);
     let (_replication, history) = write_history(&f, &writer, 33).await?;
-    writer
+    let progress = writer
         .finish(
             &f.stream,
             tokio::time::Instant::now() + Duration::from_secs(5),
         )
-        .await?;
+        .await?
+        .unwrap();
     let (resumed, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
     archive.fail_checkpoint.store(true, Ordering::SeqCst);
     let actor_prefix = f
@@ -396,13 +529,13 @@ async fn resumed_checkpoint_retries_without_new_writes() -> Result<()> {
         base_version: 33,
         ..f.stream.clone()
     };
-    resumed.start(&stream).await?;
+    let source = VerifiedSnapshot::named(f.stream.object(33), history[32].clone())?;
     resumed
-        .restore_prefetched(
-            VerifiedSnapshot::named(f.stream.object(33), history[32].clone())?,
-            None,
-        )
+        .start(&stream, parked.then_some((&source.reference, progress)))
         .await?;
+    if !parked {
+        resumed.restore_prefetched(source, None).await?;
+    }
     tokio::time::timeout(Duration::from_secs(2), async {
         while archive.checkpoint_attempts.load(Ordering::SeqCst) == 0 {
             tokio::task::yield_now().await;
@@ -433,10 +566,14 @@ async fn write_history(
     writer: &RapidSnapshots,
     count: u64,
 ) -> Result<(Arc<crate::litestream::Litestream>, Vec<Payload>)> {
-    use crate::litestream::{Litestream, Replicator, storage::SqliteCapture};
-    writer.start(&f.stream).await?;
+    use crate::litestream::{
+        Litestream, Replicator,
+        storage::{CaptureDirectory, SqliteCapture},
+    };
+    writer.start(&f.stream, None).await?;
     let replication = Arc::new(Litestream::default());
-    let mut capture = SqliteCapture::new(replication.clone(), None).await?;
+    let mut capture =
+        SqliteCapture::new(CaptureDirectory::temporary()?, replication.clone(), None).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch(
         "CREATE TABLE entries(value INTEGER); INSERT INTO __terse_fields VALUES ('count', '0');",
@@ -475,7 +612,7 @@ async fn byte_threshold_combines_commits_without_rotating_rapid_streams() -> Res
         .map(|b| b.len() + frame::HEADER)
         .sum();
     let (store, archive) = controlled(&f, threshold, 60_000)?;
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
     tokio::time::sleep(Duration::from_millis(10)).await;
     assert_eq!(archive.batches.load(Ordering::SeqCst), 0);
@@ -493,7 +630,7 @@ async fn byte_threshold_combines_commits_without_rotating_rapid_streams() -> Res
 async fn timer_flushes_partial_batches_and_never_uploads_empty_ones() -> Result<()> {
     let f = Fixture::new()?;
     let (store, archive) = controlled(&f, 16 * 1024 * 1024, 40)?;
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     tokio::time::sleep(Duration::from_millis(70)).await;
     assert_eq!(archive.batches.load(Ordering::SeqCst), 0);
     store.put(&f.stream.object(1), state(1, 1)?).await?;
@@ -508,7 +645,7 @@ async fn failed_partial_batch_retries_without_another_write() -> Result<()> {
     let f = Fixture::new()?;
     let (store, archive) = controlled(&f, 16 * 1024 * 1024, 40)?;
     archive.fail_batch.store(true, Ordering::SeqCst);
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
     let keys = batches(&f, 1).await?;
     let bytes = f.archive.get(&keys[0]).await?.unwrap().bytes;
@@ -525,7 +662,7 @@ async fn stalled_archive_does_not_block_writes_and_backlog_is_recovered_from_rap
     let threshold = state(1, 1)?.len() + frame::HEADER;
     let (store, archive) = controlled(&f, threshold, 60_000)?;
     archive.stalled.store(true, Ordering::SeqCst);
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
     tokio::time::timeout(Duration::from_secs(1), async {
         while archive.batches.load(Ordering::SeqCst) == 0 {
@@ -569,7 +706,7 @@ async fn crash_recovery_joins_standard_batches_and_unflushed_rapid_tail() -> Res
     let f = Fixture::new()?;
     let threshold = state(1, 1)?.len() + frame::HEADER;
     let (store, archive) = controlled(&f, threshold, 60_000)?;
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
     batches(&f, 1).await?;
     archive.stalled.store(true, Ordering::SeqCst);
@@ -590,7 +727,7 @@ async fn crash_recovery_joins_standard_batches_and_unflushed_rapid_tail() -> Res
 async fn partial_flush_cannot_acknowledge_a_write_and_remains_recoverable() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
     f.zones[1].stalled.store(true, Ordering::SeqCst);
     assert!(
@@ -623,13 +760,17 @@ async fn partial_flush_cannot_acknowledge_a_write_and_remains_recoverable() -> R
 #[tokio::test]
 async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> {
     use crate::{
-        litestream::{Litestream, Replicator, storage::SqliteCapture},
+        litestream::{
+            Litestream, Replicator,
+            storage::{CaptureDirectory, SqliteCapture},
+        },
         state_log::SqliteSnapshot,
         storage::SnapshotRef,
     };
     let f = Fixture::new()?;
     let replication = Arc::new(Litestream::default());
-    let mut capture = SqliteCapture::new(replication.clone(), None).await?;
+    let mut capture =
+        SqliteCapture::new(CaptureDirectory::temporary()?, replication.clone(), None).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch("INSERT INTO __terse_fields VALUES ('count','1'); CREATE TABLE entries(value INTEGER); INSERT INTO entries VALUES (1);")?;
     let txid = replication.sync(&capture.path()).await?;
@@ -661,7 +802,7 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
     assert!(second.sqlite.files[0].first > 1);
     let second_bytes = second.encode()?;
     let (store, archive) = controlled(&f, first_bytes.len() + frame::HEADER, 60_000)?;
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     store.put(&f.stream.object(1), first_bytes).await?;
     batches(&f, 1).await?;
     archive.stalled.store(true, Ordering::SeqCst);
@@ -677,7 +818,15 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
     parent.verify(&parent_bytes)?;
     let mut files = StateSnapshot::decode(&parent_bytes)?.sqlite.files;
     files.extend(second.sqlite.files);
-    let restored = SqliteCapture::restore(replication, &files, txid, None, false).await?;
+    let restored = SqliteCapture::restore(
+        CaptureDirectory::temporary()?,
+        replication,
+        &files,
+        txid,
+        None,
+        false,
+    )
+    .await?;
     let db = rusqlite::Connection::open(restored.path())?;
     assert_eq!(
         db.query_row(
@@ -698,7 +847,7 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
 async fn rapid_rotation_continues_writing_while_old_archive_is_stalled() -> Result<()> {
     let f = Fixture::new()?;
     let (store, archive) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
     archive.stalled.store(true, Ordering::SeqCst);
     tokio::time::pause();
@@ -771,7 +920,7 @@ async fn rapid_rotation_continues_writing_while_old_archive_is_stalled() -> Resu
 async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
-    store.start(&f.stream).await?;
+    store.start(&f.stream, None).await?;
     let original = state(1, 1)?;
     store.put(&f.stream.object(1), original.clone()).await?;
     let key = f
@@ -842,7 +991,7 @@ async fn large_records_archive_after_retry_and_remain_indexed() -> Result<()> {
     let f = Fixture::new()?;
     let (writer, archive) = controlled(&f, 64 * 1024, 60_000)?;
     archive.fail_batch.store(true, Ordering::SeqCst);
-    writer.start(&f.stream).await?;
+    writer.start(&f.stream, None).await?;
     let mut snapshot = StateSnapshot::decode(&state(1, 1)?)?;
     snapshot.completion.as_mut().unwrap().result =
         serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)}).into();
@@ -876,7 +1025,7 @@ async fn large_records_archive_after_retry_and_remain_indexed() -> Result<()> {
 async fn indexed_reads_fetch_only_the_requested_archived_record() -> Result<()> {
     let f = Fixture::new()?;
     let (writer, _) = controlled(&f, 1, 10_000)?;
-    writer.start(&f.stream).await?;
+    writer.start(&f.stream, None).await?;
     for version in 1..=5 {
         writer
             .put(&f.stream.object(version), state(version, 1)?)
@@ -904,7 +1053,7 @@ async fn indexed_reads_fetch_only_the_requested_archived_record() -> Result<()> 
 async fn unavailable_or_invalid_indexes_preserve_archive_recovery() -> Result<()> {
     let f = Fixture::new()?;
     let writer = f.store()?;
-    writer.start(&f.stream).await?;
+    writer.start(&f.stream, None).await?;
     for version in 1..=3 {
         writer
             .put(&f.stream.object(version), state(version, 1)?)
