@@ -25,7 +25,11 @@ pub(super) struct Session {
 }
 
 impl Session {
-    pub fn open(storage: Arc<LogStorage>, stream: StateStream) -> Result<Self> {
+    pub fn open(
+        storage: Arc<LogStorage>,
+        stream: StateStream,
+        progress: Option<CheckpointProgress>,
+    ) -> Result<Self> {
         let version = stream.base_version;
         let preparing = prepare(
             storage,
@@ -47,7 +51,7 @@ impl Session {
             standard: false,
             healthy: true,
             rotated: Instant::now(),
-            checkpoint: checkpoint::Progress::default(),
+            checkpoint: checkpoint::Progress::resume(progress.unwrap_or_default(), version),
         })
     }
 
@@ -141,7 +145,7 @@ impl Session {
             return Ok(());
         }
         self.latest = Some((object.clone(), snapshot.bytes.clone()));
-        self.checkpoint.restored(restored, self.version);
+        self.checkpoint = checkpoint::Progress::resume(restored.progress, self.version);
         self.checkpoint
             .schedule(storage, self.latest.as_ref(), self.version)
             .await;
@@ -216,7 +220,11 @@ impl Session {
         self.healthy = false;
     }
 
-    pub async fn finish(&mut self, storage: Arc<LogStorage>, deadline: Instant) -> Result<()> {
+    pub async fn finish(
+        &mut self,
+        storage: Arc<LogStorage>,
+        deadline: Instant,
+    ) -> Result<CheckpointProgress> {
         ensure!(self.healthy, "uncertain write cannot be sealed");
         self.healthy = false;
         let started = Instant::now();
@@ -228,14 +236,10 @@ impl Session {
             state_version = self.version,
             duration_ms = started.elapsed().as_secs_f64() * 1000.0
         );
-        if let Some((object, bytes)) = &self.latest {
-            self.checkpoint
-                .finish(storage, object, bytes.clone(), self.version, deadline)
-                .await;
-        }
+        let progress = self.checkpoint.finish(deadline).await;
         self.segment = None;
         self.healthy = true;
-        Ok(())
+        Ok(progress)
     }
 
     async fn finish_archive(&mut self, storage: Arc<LogStorage>) -> Result<()> {
