@@ -133,7 +133,9 @@ impl RuntimeStorage {
                 }
             };
             let stream_started = Instant::now();
-            self.snapshots.start(&record.stream()?, progress).await?;
+            self.snapshots
+                .start(&record.stream()?, record.base.as_ref().zip(progress))
+                .await?;
             let stream_open_ms = stream_started.elapsed().as_secs_f64() * 1_000.0;
             tracing::info!(
                 event = "actor_activation_storage",

@@ -425,7 +425,9 @@ async fn parked_wakes_retain_both_background_checkpoint_thresholds() -> Result<(
             ..f.stream.clone()
         };
         let writer = f.store()?;
-        writer.start(&stream, progress).await?;
+        writer
+            .start(&stream, snapshot.sqlite.parent.as_ref().zip(progress))
+            .await?;
         let bytes = snapshot.encode()?;
         parent = Some(stream.snapshot(&bytes)?);
         log_bytes += bytes.len() as u64;
@@ -450,16 +452,26 @@ async fn parked_wakes_retain_both_background_checkpoint_thresholds() -> Result<(
 
 #[tokio::test]
 async fn resumed_checkpoint_retries_without_new_writes() -> Result<()> {
+    assert_resumed_checkpoint_retry(false).await
+}
+
+#[tokio::test]
+async fn parked_checkpoint_retries_without_new_writes() -> Result<()> {
+    assert_resumed_checkpoint_retry(true).await
+}
+
+async fn assert_resumed_checkpoint_retry(parked: bool) -> Result<()> {
     let f = Fixture::new()?;
     let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
     archive.fail_checkpoint.store(true, Ordering::SeqCst);
     let (_replication, history) = write_history(&f, &writer, 33).await?;
-    writer
+    let progress = writer
         .finish(
             &f.stream,
             tokio::time::Instant::now() + Duration::from_secs(5),
         )
-        .await?;
+        .await?
+        .unwrap();
     let (resumed, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
     archive.fail_checkpoint.store(true, Ordering::SeqCst);
     let actor_prefix = f
@@ -475,13 +487,13 @@ async fn resumed_checkpoint_retries_without_new_writes() -> Result<()> {
         base_version: 33,
         ..f.stream.clone()
     };
-    resumed.start(&stream, None).await?;
+    let source = VerifiedSnapshot::named(f.stream.object(33), history[32].clone())?;
     resumed
-        .restore_prefetched(
-            VerifiedSnapshot::named(f.stream.object(33), history[32].clone())?,
-            None,
-        )
+        .start(&stream, parked.then_some((&source.reference, progress)))
         .await?;
+    if !parked {
+        resumed.restore_prefetched(source, None).await?;
+    }
     tokio::time::timeout(Duration::from_secs(2), async {
         while archive.checkpoint_attempts.load(Ordering::SeqCst) == 0 {
             tokio::task::yield_now().await;

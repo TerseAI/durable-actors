@@ -170,7 +170,7 @@ pub(crate) trait SnapshotStore: Send + Sync {
     async fn start(
         &self,
         _stream: &crate::storage::StateStream,
-        _progress: Option<recovery::CheckpointProgress>,
+        _resume: Option<(&crate::storage::SnapshotRef, recovery::CheckpointProgress)>,
     ) -> Result<()> {
         Ok(())
     }

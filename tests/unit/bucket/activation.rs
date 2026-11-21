@@ -1061,11 +1061,11 @@ impl crate::bucket::SnapshotStore for PausedSnapshots {
     async fn start(
         &self,
         stream: &StateStream,
-        progress: Option<CheckpointProgress>,
+        resume: Option<(&SnapshotRef, CheckpointProgress)>,
     ) -> Result<()> {
         assert_eq!(
-            progress.map(|p| p.log_bytes),
-            (stream.base_version > 0).then_some(1234)
+            resume.map(|(head, p)| (head.state_version, p.log_bytes)),
+            (stream.base_version > 0).then_some((stream.base_version, 1234))
         );
         self.starts.fetch_add(1, Ordering::SeqCst);
         Ok(())

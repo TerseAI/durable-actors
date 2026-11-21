@@ -1,5 +1,8 @@
 use super::{Bucket, SnapshotStore, recovery::CheckpointProgress, replace};
-use crate::{payload::Payload, storage::StateStream};
+use crate::{
+    payload::Payload,
+    storage::{SnapshotRef, StateStream},
+};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -211,15 +214,11 @@ impl SnapshotStore for RapidSnapshots {
     async fn start(
         &self,
         stream: &StateStream,
-        progress: Option<CheckpointProgress>,
+        resume: Option<(&SnapshotRef, CheckpointProgress)>,
     ) -> Result<()> {
         let mut session = self.session.lock().await;
         ensure!(session.is_none(), "log stream is already activated");
-        *session = Some(Session::open(
-            self.storage.clone(),
-            stream.clone(),
-            progress,
-        )?);
+        *session = Some(Session::open(self.storage.clone(), stream.clone(), resume)?);
         Ok(())
     }
     async fn recover(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
