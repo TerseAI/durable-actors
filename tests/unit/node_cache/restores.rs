@@ -117,7 +117,7 @@ fn prepared(
         store: futures_util::future::ready(Ok(store)).boxed().shared(),
         listed: Arc::new(OnceLock::new()),
         directory,
-        started: Instant::now(),
+        started: tokio::time::Instant::now(),
         task: AbortOnDropHandle::new(tokio::spawn(async move { Ok(Some(key)) })),
     })
 }
@@ -294,5 +294,23 @@ async fn refuses_a_symlinked_database_directory() -> Result<()> {
         std::fs::read(elsewhere.path().join(DATABASE_FILE))?,
         b"another actor's pages"
     );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn drops_an_unclaimed_prepared_base_without_another_prepare() -> Result<()> {
+    let staging = tempfile::tempdir()?;
+    let restores = Restores::new(None, staging.path().to_owned());
+    let store = Arc::new(FromBase(base("base", 5, Arc::new(Empty))));
+    let prepared = prepared("base", b"pages", store)?;
+    restores
+        .prepared
+        .lock()
+        .await
+        .insert("dead host".into(), prepared);
+
+    tokio::time::sleep(PREPARED_TTL * 2).await;
+
+    assert!(restores.prepared.lock().await.is_empty());
     Ok(())
 }

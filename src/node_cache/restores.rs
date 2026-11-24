@@ -31,7 +31,7 @@ use crate::{
 /// prepared download, so they must not share permits.
 const CONCURRENT_DOWNLOADS: usize = 4;
 const CONCURRENT_RESTORES: usize = 4;
-/// A prepared download no restore claims within this long is dropped.
+/// A prepared download no restore claims within this long is dropped, checked this often.
 const PREPARED_TTL: Duration = Duration::from_secs(60);
 const PREPARED_FILE: &str = "base.sqlite";
 
@@ -83,9 +83,10 @@ pub(super) struct Restores {
     bases: Option<Arc<dyn Bucket>>,
     /// On the slots' filesystem, so a finished database moves into its slot by renaming.
     staging: PathBuf,
-    prepared: tokio::sync::Mutex<HashMap<String, Prepared>>,
+    prepared: Arc<tokio::sync::Mutex<HashMap<String, Prepared>>>,
     downloads: Arc<tokio::sync::Semaphore>,
     restores: tokio::sync::Semaphore,
+    _expiry: AbortOnDropHandle<()>,
 }
 
 /// The actor's store, opened once for its prepare and restore.
@@ -100,16 +101,18 @@ struct Prepared {
     listed: Arc<OnceLock<SqliteBase>>,
     /// Holds the download as `PREPARED_FILE`, and goes with it.
     directory: tempfile::TempDir,
-    started: Instant,
+    started: tokio::time::Instant,
     task: AbortOnDropHandle<Result<Option<String>>>,
 }
 
 impl Restores {
     pub fn new(bases: Option<Arc<dyn Bucket>>, staging: PathBuf) -> Self {
+        let prepared = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         Self {
             bases,
             staging,
-            prepared: tokio::sync::Mutex::new(HashMap::new()),
+            _expiry: AbortOnDropHandle::new(tokio::spawn(expire(prepared.clone()))),
+            prepared,
             downloads: Arc::new(tokio::sync::Semaphore::new(CONCURRENT_DOWNLOADS)),
             restores: tokio::sync::Semaphore::new(CONCURRENT_RESTORES),
         }
@@ -117,7 +120,6 @@ impl Restores {
 
     /// Starts downloading `actor`'s newest base for `slot`'s restore, unless one is already coming.
     pub async fn prepare(&self, actor: &ActorKey, slot: &str, storage: SlotStorage) -> Result<()> {
-        self.expire().await;
         let mut prepared = self.prepared.lock().await;
         if prepared.contains_key(slot) {
             return Ok(());
@@ -140,7 +142,7 @@ impl Restores {
                 store,
                 listed,
                 directory,
-                started: Instant::now(),
+                started: tokio::time::Instant::now(),
                 task,
             },
         );
@@ -211,9 +213,20 @@ impl Restores {
         None
     }
 
-    /// Drops prepared downloads nobody claimed.
-    async fn expire(&self) {
-        let mut prepared = self.prepared.lock().await;
+    /// A new directory of the node's own, deleted when dropped.
+    async fn staged(&self) -> Result<tempfile::TempDir> {
+        tokio::fs::create_dir_all(&self.staging).await?;
+        Ok(tempfile::TempDir::new_in(&self.staging)?)
+    }
+}
+
+/// Drops prepared downloads nobody claimed, such as a dead host's, whether or not other hosts
+/// prepare: their files are the node's own, so nothing else deletes them.
+async fn expire(prepared: Arc<tokio::sync::Mutex<HashMap<String, Prepared>>>) {
+    let mut ticks = tokio::time::interval(PREPARED_TTL);
+    loop {
+        ticks.tick().await;
+        let mut prepared = prepared.lock().await;
         let expired: Vec<String> = prepared
             .iter()
             .filter(|(_, prepared)| prepared.started.elapsed() >= PREPARED_TTL)
@@ -222,12 +235,6 @@ impl Restores {
         for slot in expired {
             discard(prepared.remove(&slot));
         }
-    }
-
-    /// A new directory of the node's own, deleted when dropped.
-    async fn staged(&self) -> Result<tempfile::TempDir> {
-        tokio::fs::create_dir_all(&self.staging).await?;
-        Ok(tempfile::TempDir::new_in(&self.staging)?)
     }
 }
 
