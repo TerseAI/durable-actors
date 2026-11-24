@@ -99,10 +99,16 @@ fn head() -> Result<VerifiedSnapshot> {
     VerifiedSnapshot::named(object, bytes)
 }
 
-/// A prepared download of the base named `key` that has already finished into `file`.
-fn prepared(key: &str, file: PathBuf, store: Arc<dyn crate::bucket::SnapshotStore>) -> Prepared {
+/// A prepared download of the base named `key` that has already finished with `bytes`.
+fn prepared(
+    key: &str,
+    bytes: &[u8],
+    store: Arc<dyn crate::bucket::SnapshotStore>,
+) -> Result<Prepared> {
+    let directory = tempfile::tempdir()?;
+    std::fs::write(directory.path().join(PREPARED_FILE), bytes)?;
     let key = key.to_owned();
-    Prepared {
+    Ok(Prepared {
         actor: ActorKey {
             project_id: "project".into(),
             actor_name: "Counter".into(),
@@ -110,22 +116,20 @@ fn prepared(key: &str, file: PathBuf, store: Arc<dyn crate::bucket::SnapshotStor
         },
         store: futures_util::future::ready(Ok(store)).boxed().shared(),
         listed: Arc::new(OnceLock::new()),
-        file,
+        directory,
         started: Instant::now(),
         task: AbortOnDropHandle::new(tokio::spawn(async move { Ok(Some(key)) })),
-    }
+    })
 }
 
 #[tokio::test]
 async fn restores_onto_the_prepared_base_without_downloading_it_again() -> Result<()> {
     let slot = tempfile::tempdir()?;
     let bytes = database(slot.path(), 3)?;
-    let file = slot.path().join(PREPARED_DIR).join(PREPARED_FILE);
-    std::fs::create_dir_all(file.parent().unwrap())?;
-    std::fs::write(&file, &bytes)?;
     let store = Arc::new(FromBase(base("base", bytes.len() as u64, Arc::new(Empty))));
     let database = slot.path().join(DATABASE);
-    let prepared = prepared("base", file.clone(), store.clone());
+    let prepared = prepared("base", &bytes, store.clone())?;
+    let file = prepared.directory.path().join(PREPARED_FILE);
     let restored = restore_into(store.as_ref(), head()?, Some(prepared), &database).await?;
     assert_eq!(
         (restored.txid, restored.base_bytes),
@@ -146,12 +150,9 @@ async fn downloads_another_base_when_the_history_starts_from_it() -> Result<()> 
             .compare_and_swap("newer", None, bytes.clone().into())
             .await?
     );
-    let stale = slot.path().join(PREPARED_DIR).join(PREPARED_FILE);
-    std::fs::create_dir_all(stale.parent().unwrap())?;
-    std::fs::write(&stale, b"an older base")?;
     let store = Arc::new(FromBase(base("newer", bytes.len() as u64, bucket)));
     let database = slot.path().join(DATABASE);
-    let prepared = prepared("older", stale, store.clone());
+    let prepared = prepared("older", b"an older base", store.clone())?;
     restore_into(store.as_ref(), head()?, Some(prepared), &database).await?;
     assert_eq!(std::fs::read(database.join(DATABASE_FILE))?, bytes);
     Ok(())
@@ -171,7 +172,7 @@ async fn prepares_the_newest_base_through_the_nodes_own_bucket() -> Result<()> {
     let store: Arc<dyn crate::bucket::SnapshotStore> =
         Arc::new(FromBase(base("unused", 0, Arc::new(Empty))));
     let listed = Arc::new(OnceLock::new());
-    let file = slot.path().join(PREPARED_DIR).join(PREPARED_FILE);
+    let file = slot.path().join(PREPARED_FILE);
     let actor = ActorKey {
         project_id: "project".into(),
         actor_name: "Counter".into(),
@@ -252,5 +253,46 @@ async fn restores_from_an_older_base_when_the_newest_fails() -> Result<()> {
     let restored = restore_into(&store, head()?, None, &database).await?;
     assert_eq!(restored.base.map(|base| base.version), Some(1));
     assert_eq!(std::fs::read(database.join(DATABASE_FILE))?, bytes);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hands_the_database_over_replacing_an_earlier_attempt() -> Result<()> {
+    let (staged, slot) = (tempfile::tempdir()?, tempfile::tempdir()?);
+    std::fs::create_dir(slot.path().join(DATABASE))?;
+    std::fs::write(slot.path().join(DATABASE).join(DATABASE_FILE), b"earlier")?;
+    std::fs::write(staged.path().join(DATABASE_FILE), b"pages")?;
+
+    hand_over(staged.path(), slot.path()).await?;
+
+    let file = slot.path().join(DATABASE).join(DATABASE_FILE);
+    assert_eq!(std::fs::read(&file)?, b"pages");
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(file)?.permissions()) & 0o777,
+        0o666
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn refuses_a_symlinked_database_directory() -> Result<()> {
+    let (staged, slot, elsewhere) = (
+        tempfile::tempdir()?,
+        tempfile::tempdir()?,
+        tempfile::tempdir()?,
+    );
+    std::fs::write(
+        elsewhere.path().join(DATABASE_FILE),
+        b"another actor's pages",
+    )?;
+    std::os::unix::fs::symlink(elsewhere.path(), slot.path().join(DATABASE))?;
+    std::fs::write(staged.path().join(DATABASE_FILE), b"pages")?;
+
+    assert!(hand_over(staged.path(), slot.path()).await.is_err());
+
+    assert_eq!(
+        std::fs::read(elsewhere.path().join(DATABASE_FILE))?,
+        b"another actor's pages"
+    );
     Ok(())
 }

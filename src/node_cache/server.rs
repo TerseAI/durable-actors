@@ -39,6 +39,7 @@ pub(super) fn router(
     tokens: Arc<HostTokens>,
     bases: Option<Arc<dyn crate::bucket::Bucket>>,
 ) -> Router {
+    let restores = Arc::new(Restores::new(bases, store.staging().join("restores")));
     Router::new()
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .route("/code/{digest}", get(read_code).put(write_code))
@@ -50,7 +51,7 @@ pub(super) fn router(
         .with_state(NodeCache {
             store,
             slots,
-            restores: Arc::new(Restores::new(bases)),
+            restores,
             tokens,
         })
 }
@@ -179,16 +180,11 @@ async fn prepare(
         Ok(holder) => holder,
         Err(status) => return status.into_response(),
     };
-    let prepared = match cache.slots.slot(&slot) {
-        Ok(directory) => {
-            cache
-                .restores
-                .prepare(&host.actor, &slot, &directory, request.storage)
-                .await
-        }
-        Err(error) => Err(error),
-    };
-    match prepared {
+    match cache
+        .restores
+        .prepare(&host.actor, &slot, request.storage)
+        .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => {
             tracing::warn!(error = %format!("{error:#}"), host_id = %host.host_id, "slot prepare failed");
@@ -241,9 +237,7 @@ async fn restore(
 
 impl NodeCache {
     async fn cancel_prepared(&self, slot: &str) {
-        if let Ok(directory) = self.slots.slot(slot) {
-            self.restores.cancel(slot, &directory).await;
-        }
+        self.restores.cancel(slot).await;
     }
 
     fn authorize(&self, headers: &HeaderMap, digest: &str) -> Result<ActorPrincipal, StatusCode> {

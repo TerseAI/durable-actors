@@ -42,8 +42,13 @@ async fn a_host_moves_databases_only_through_the_slot_its_token_names() -> Resul
         std::fs::create_dir_all(&database)?;
         std::fs::write(database.join("actor.sqlite"), b"pages")?;
     }
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
     let snapshot = crate::storage::SnapshotRef {
-        object: "state/1".into(),
+        object: crate::storage::snapshot_object_name(&actor, 1, &format!("{:032x}", 1))?,
         state_version: 1,
         request_id: "request-1".into(),
         digest: sha256(b"state"),

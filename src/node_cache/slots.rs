@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    bases::BaseUploads,
+    bases::{BaseUploads, Stage},
     store::{DiskStore, PARKED},
 };
 use crate::{actor::ActorKey, control_plane::ActorPrincipal, storage::SnapshotRef};
@@ -109,15 +109,7 @@ impl SqliteSlots {
     ) -> Result<Option<SlotFile>> {
         let target = self.slot(slot)?.join(DATABASE);
         let (key, parked, name) = (self.key(actor), self.parked(actor), actor_name(actor));
-        let _moving = loop {
-            let moving = self.lock.lock().await;
-            let Some(mut copying) = self.uploads.copying(actor).await else {
-                break moving;
-            };
-            // Other actors park and check out while this one's base finishes its copy.
-            drop(moving);
-            let _ = copying.wait_for(|copied| *copied).await;
-        };
+        let _moving = self.moving(actor).await;
         let file = blocking(move || check_out(&parked, &target, &name, snapshot.as_ref())).await;
         self.store.forget(&key).await;
         file
@@ -131,6 +123,10 @@ impl SqliteSlots {
         txid: u64,
         base: bool,
     ) -> Result<SlotFile> {
+        ensure!(
+            crate::storage_paths::actor_from_snapshot(&snapshot.object)? == *actor,
+            "snapshot belongs to another actor"
+        );
         let source = self.slot(slot)?.join(DATABASE);
         let (key, parked) = (self.key(actor), self.parked(actor));
         let database = parked.join(DATABASE).join(DATABASE_FILE);
@@ -139,8 +135,7 @@ impl SqliteSlots {
             snapshot: snapshot.clone(),
             txid,
         };
-        let _moving = self.lock.lock().await;
-        self.uploads.cancel(actor).await;
+        let _moving = self.moving(actor).await;
         self.store.forget(&key).await;
         let file = blocking(move || park(&source, &parked, &record)).await?;
         self.store.track(&key, file.bytes).await;
@@ -155,6 +150,19 @@ impl SqliteSlots {
         match self.layout.as_ref()? {
             SlotLayout::Kubelet(_) => host.slot.as_deref(),
             SlotLayout::Hosts(_) => Some(host.host_id.as_str()),
+        }
+    }
+
+    /// The lock every move holds, taken once no upload is copying the actor's parked file.
+    async fn moving(&self, actor: &ActorKey) -> tokio::sync::MutexGuard<'_, ()> {
+        loop {
+            let moving = self.lock.lock().await;
+            let Some(mut copying) = self.uploads.release(actor).await else {
+                return moving;
+            };
+            // Other actors park and check out while this one's base finishes its copy.
+            drop(moving);
+            let _ = copying.wait_for(|stage| *stage != Stage::Copying).await;
         }
     }
 
@@ -197,11 +205,13 @@ fn check_out(
     ensure!(!present(target)?, "slot already holds a database");
     let clean = read_record(parked)
         .filter(|record| record.actor == actor && Some(&record.snapshot) == snapshot);
+    // Described before the move: once in the slot, the host controls what its path names.
     if let Some(record) = clean
+        && let Ok(file) = describe(&parked.join(DATABASE), record.txid)
         && take(parked, target).is_ok()
     {
         let _ = std::fs::remove_dir_all(parked);
-        return describe(target, record.txid).map(Some);
+        return Ok(Some(file));
     }
     if present(parked)? {
         std::fs::remove_dir_all(parked)?;
@@ -216,13 +226,21 @@ fn take(parked: &Path, target: &Path) -> Result<()> {
     sync_parent(target)
 }
 
+/// Moves the slot's database directory out before describing it: renaming moves whatever entry
+/// the host left there without following it, and the host cannot swap it once outside the slot.
 fn park(source: &Path, parked: &Path, record: &CleanRecord) -> Result<SlotFile> {
-    let file = describe(source, record.txid)?;
     if present(parked)? {
         std::fs::remove_dir_all(parked)?;
     }
     std::fs::create_dir_all(parked)?;
     std::fs::rename(source, parked.join(DATABASE))?;
+    let file = match describe(&parked.join(DATABASE), record.txid) {
+        Ok(file) => file,
+        Err(error) => {
+            std::fs::remove_dir_all(parked)?;
+            return Err(error);
+        }
+    };
     write_record(parked, record)?;
     sync_parent(parked)?;
     Ok(file)

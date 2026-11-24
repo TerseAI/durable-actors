@@ -70,7 +70,9 @@ async fn only_a_closed_database_of_plain_files_is_parked() -> Result<()> {
             .is_err()
     );
 
-    std::fs::remove_file(database.join("actor.sqlite-wal"))?;
+    assert!(!database.exists());
+
+    write_value(&database, 89)?;
     std::os::unix::fs::symlink("/etc/passwd", database.join("link"))?;
     assert!(
         node.slots
@@ -79,6 +81,41 @@ async fn only_a_closed_database_of_plain_files_is_parked() -> Result<()> {
             .is_err()
     );
     assert!(!node.slots.is_parked(&actor("one"), "d1").await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_host_parks_only_at_its_own_actors_snapshot() -> Result<()> {
+    let node = Node::start().await?;
+    let slot = node.spare()?;
+    write_value(&node.database(&slot), 89)?;
+
+    let parked = node
+        .slots
+        .park(&actor("two"), &slot, snapshot(1), 7, true)
+        .await;
+
+    assert!(parked.is_err());
+    assert!(node.database(&slot).join(DATABASE_FILE).exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn parking_moves_a_symlinked_database_directory_without_following_it() -> Result<()> {
+    let node = Node::start().await?;
+    let slot = node.spare()?;
+    let elsewhere = node.root.path().join("elsewhere");
+    write_value(&elsewhere, 89)?;
+    std::os::unix::fs::symlink(&elsewhere, node.database(&slot))?;
+
+    let parked = node
+        .slots
+        .park(&actor("one"), &slot, snapshot(1), 7, false)
+        .await;
+
+    assert!(parked.is_err());
+    assert!(!node.slots.is_parked(&actor("one"), "d1").await);
+    assert_eq!(read_value(&elsewhere)?, 89);
     Ok(())
 }
 
@@ -130,9 +167,15 @@ fn actor(id: &str) -> ActorKey {
     }
 }
 
+/// A snapshot of actor `one`.
 fn snapshot(version: u64) -> SnapshotRef {
     SnapshotRef {
-        object: format!("state/{version}"),
+        object: crate::storage::snapshot_object_name(
+            &actor("one"),
+            version,
+            &format!("{:032x}", 1),
+        )
+        .unwrap(),
         state_version: version,
         request_id: format!("request-{version}"),
         digest: format!("d{version}"),
@@ -161,10 +204,7 @@ async fn parking_with_a_due_base_uploads_the_parked_file() -> Result<()> {
     let node = Node::uploading(Some(bucket.clone())).await?;
     let slot = node.spare()?;
     write_value(&node.database(&slot), 5)?;
-    let snapshot = SnapshotRef {
-        object: "durable-actors/v3/snapshots/63/cHJvamVjdA/Q291bnRlcg/aWQ/0000000000000000000000000000000a/5.json".into(),
-        ..snapshot(5)
-    };
+    let snapshot = snapshot(5);
     let parked = node
         .slots
         .park(&actor("one"), &slot, snapshot.clone(), 9, true)

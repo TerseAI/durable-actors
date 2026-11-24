@@ -1,7 +1,8 @@
-//! Rebuilds hosts' Rapid databases in their slots, outside the sandbox. A host prepares as its
-//! assignment arrives, so the newest base downloads while it activates, then asks for the
-//! database at its verified head. The node finds and downloads bases with its own warm client;
-//! the history after a base is read with the host's forwarded token.
+//! Rebuilds hosts' Rapid databases outside the sandbox. A host prepares as its assignment arrives,
+//! so the newest base downloads while it activates, then asks for the database at its verified
+//! head. The node finds and downloads bases with its own warm client; the history after a base is
+//! read with the host's forwarded token. Everything is built in the node's own staging directory
+//! and only the finished file enters the slot, whose contents the host controls.
 
 use std::{
     collections::HashMap,
@@ -32,7 +33,6 @@ const CONCURRENT_DOWNLOADS: usize = 4;
 const CONCURRENT_RESTORES: usize = 4;
 /// A prepared download no restore claims within this long is dropped.
 const PREPARED_TTL: Duration = Duration::from_secs(60);
-const PREPARED_DIR: &str = "restore";
 const PREPARED_FILE: &str = "base.sqlite";
 
 /// What a host forwards so the node reads its actor's history with the host's own scope.
@@ -81,6 +81,8 @@ pub(crate) struct SlotRestored {
 pub(super) struct Restores {
     /// The archive as the node itself reads it; none means no prepared downloads.
     bases: Option<Arc<dyn Bucket>>,
+    /// On the slots' filesystem, so a finished database moves into its slot by renaming.
+    staging: PathBuf,
     prepared: tokio::sync::Mutex<HashMap<String, Prepared>>,
     downloads: Arc<tokio::sync::Semaphore>,
     restores: tokio::sync::Semaphore,
@@ -96,43 +98,39 @@ struct Prepared {
     actor: ActorKey,
     store: Store,
     listed: Arc<OnceLock<SqliteBase>>,
-    file: PathBuf,
+    /// Holds the download as `PREPARED_FILE`, and goes with it.
+    directory: tempfile::TempDir,
     started: Instant,
     task: AbortOnDropHandle<Result<Option<String>>>,
 }
 
 impl Restores {
-    pub fn new(bases: Option<Arc<dyn Bucket>>) -> Self {
+    pub fn new(bases: Option<Arc<dyn Bucket>>, staging: PathBuf) -> Self {
         Self {
             bases,
+            staging,
             prepared: tokio::sync::Mutex::new(HashMap::new()),
             downloads: Arc::new(tokio::sync::Semaphore::new(CONCURRENT_DOWNLOADS)),
             restores: tokio::sync::Semaphore::new(CONCURRENT_RESTORES),
         }
     }
 
-    /// Starts downloading `actor`'s newest base into `slot`, unless one is already coming.
-    pub async fn prepare(
-        &self,
-        actor: &ActorKey,
-        slot: &str,
-        directory: &Path,
-        storage: SlotStorage,
-    ) -> Result<()> {
+    /// Starts downloading `actor`'s newest base for `slot`'s restore, unless one is already coming.
+    pub async fn prepare(&self, actor: &ActorKey, slot: &str, storage: SlotStorage) -> Result<()> {
         self.expire().await;
         let mut prepared = self.prepared.lock().await;
         if prepared.contains_key(slot) {
             return Ok(());
         }
+        let directory = self.staged().await?;
         let store = open(storage).boxed().shared();
         let listed = Arc::new(OnceLock::new());
-        let file = directory.join(PREPARED_DIR).join(PREPARED_FILE);
         let task = AbortOnDropHandle::new(tokio::spawn(download_newest(
             self.bases.clone(),
             store.clone(),
             actor.clone(),
             listed.clone(),
-            file.clone(),
+            directory.path().join(PREPARED_FILE),
             self.downloads.clone(),
         )));
         prepared.insert(
@@ -141,7 +139,7 @@ impl Restores {
                 actor: actor.clone(),
                 store,
                 listed,
-                file,
+                directory,
                 started: Instant::now(),
                 task,
             },
@@ -149,13 +147,13 @@ impl Restores {
         Ok(())
     }
 
-    /// Writes `actor`'s database at `head` into the slot's database directory and returns its
-    /// SQLite transaction.
+    /// Writes `actor`'s database at `head` into the database directory of the slot at `slot_path`
+    /// and returns its SQLite transaction. A retry replaces what an earlier attempt handed over.
     pub async fn restore(
         &self,
         actor: &ActorKey,
         slot: &str,
-        directory: &Path,
+        slot_path: &Path,
         request: SlotRestore,
     ) -> Result<SlotRestored> {
         let started = Instant::now();
@@ -169,11 +167,15 @@ impl Restores {
         let open_ms = elapsed_ms(started);
         let head = read_head(store.as_ref(), request.head, request.head_bytes).await?;
         let head_ms = elapsed_ms(started) - open_ms;
-        let database = directory.join(DATABASE);
-        let restored = restore_into(store.as_ref(), head, prepared, &database).await;
-        remove_prepared(directory).await;
+        let database = self.staged().await?;
+        let restored = async {
+            let restored = restore_into(store.as_ref(), head, prepared, database.path()).await?;
+            hand_over(database.path(), slot_path).await?;
+            anyhow::Ok(restored)
+        }
+        .await;
+        discard(database);
         let restored = restored?;
-        open_to_host(&database.join(DATABASE_FILE)).await?;
         Ok(SlotRestored {
             txid: restored.txid,
             source: if restored.base_bytes.is_some() {
@@ -193,26 +195,39 @@ impl Restores {
     }
 
     /// Drops the slot's prepared download, when its host reopened a parked database or left.
-    pub async fn cancel(&self, slot: &str, directory: &Path) {
-        if self.prepared.lock().await.remove(slot).is_some() {
-            remove_prepared(directory).await;
+    pub async fn cancel(&self, slot: &str) {
+        let cancelled = self.prepared.lock().await.remove(slot);
+        if let Some(prepared) = cancelled {
+            discard(prepared);
         }
     }
 
     async fn take(&self, slot: &str, actor: &ActorKey) -> Option<Prepared> {
-        self.prepared
-            .lock()
-            .await
-            .remove(slot)
-            .filter(|prepared| &prepared.actor == actor)
+        let prepared = self.prepared.lock().await.remove(slot)?;
+        if &prepared.actor == actor {
+            return Some(prepared);
+        }
+        discard(prepared);
+        None
     }
 
-    /// Drops prepared downloads nobody claimed. Their files go with their slots.
+    /// Drops prepared downloads nobody claimed.
     async fn expire(&self) {
-        self.prepared
-            .lock()
-            .await
-            .retain(|_, prepared| prepared.started.elapsed() < PREPARED_TTL);
+        let mut prepared = self.prepared.lock().await;
+        let expired: Vec<String> = prepared
+            .iter()
+            .filter(|(_, prepared)| prepared.started.elapsed() >= PREPARED_TTL)
+            .map(|(slot, _)| slot.clone())
+            .collect();
+        for slot in expired {
+            discard(prepared.remove(&slot));
+        }
+    }
+
+    /// A new directory of the node's own, deleted when dropped.
+    async fn staged(&self) -> Result<tempfile::TempDir> {
+        tokio::fs::create_dir_all(&self.staging).await?;
+        Ok(tempfile::TempDir::new_in(&self.staging)?)
     }
 }
 
@@ -284,11 +299,17 @@ async fn use_prepared(
     let (Some(base), Some(prepared)) = (restored.base.as_mut(), prepared) else {
         return 0.0;
     };
-    let downloaded = matches!(prepared.task.await, Ok(Ok(Some(key))) if key == base.key);
+    let (directory, task) = (prepared.directory, prepared.task);
+    let downloaded = matches!(task.await, Ok(Ok(Some(key))) if key == base.key);
     let partial = restoring(database);
-    if downloaded && tokio::fs::rename(&prepared.file, &partial).await.is_ok() {
+    if downloaded
+        && tokio::fs::rename(directory.path().join(PREPARED_FILE), &partial)
+            .await
+            .is_ok()
+    {
         base.downloaded = Some(partial);
     }
+    discard(directory);
     elapsed_ms(waited)
 }
 
@@ -383,11 +404,28 @@ async fn open(
     opened.await.map_err(Arc::new)
 }
 
-/// The node writes as another user, so the host gets read and write access to the file.
-async fn open_to_host(file: &Path) -> Result<()> {
+/// Moves the database built in `staged` into the database directory the host made in its slot,
+/// replacing any earlier attempt's. The host controls the slot's contents, so the move resolves
+/// that directory once, refusing a symlink, and never names a path inside the slot again.
+async fn hand_over(staged: &Path, slot: &Path) -> Result<()> {
+    use nix::{
+        fcntl::{AT_FDCWD, OFlag, open, openat, renameat},
+        sys::stat::Mode,
+    };
     use std::os::unix::fs::PermissionsExt;
-    tokio::fs::set_permissions(file, std::fs::Permissions::from_mode(0o666)).await?;
-    Ok(())
+    let (file, slot) = (staged.join(DATABASE_FILE), slot.to_owned());
+    tokio::task::spawn_blocking(move || {
+        // The node writes as another user, so the host gets read and write access to the file.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666))?;
+        let directory = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        let slot = open(&slot, directory, Mode::empty()).context("open the slot")?;
+        let database = openat(&slot, DATABASE, directory, Mode::empty())
+            .context("open the slot's database directory")?;
+        renameat(AT_FDCWD, &file, &database, DATABASE_FILE)
+            .context("move the database into the slot")?;
+        anyhow::Ok(())
+    })
+    .await?
 }
 
 fn elapsed_ms(started: Instant) -> f64 {
@@ -403,8 +441,9 @@ async fn clear(database: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn remove_prepared(directory: &Path) {
-    let _ = tokio::fs::remove_dir_all(directory.join(PREPARED_DIR)).await;
+/// Drops `value` off the async workers: it may delete a downloaded base.
+fn discard<T: Send + 'static>(value: T) {
+    tokio::task::spawn_blocking(move || drop(value));
 }
 
 #[cfg(test)]
