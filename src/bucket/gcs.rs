@@ -5,7 +5,6 @@ use std::{
 
 use anyhow::Result;
 use async_trait::async_trait;
-use futures_util::FutureExt;
 use google_cloud_auth::credentials::{
     CacheableResource, Credentials, CredentialsProvider, EntityTag,
 };
@@ -14,6 +13,7 @@ use google_cloud_storage::{
     model_ext::ReadRange,
     read_object::ReadObjectResponse,
 };
+use tokio_util::task::AbortOnDropHandle;
 
 use super::{Bucket, BucketObject};
 
@@ -438,27 +438,38 @@ impl GcsBucket {
         } else {
             vec![(0, length)]
         };
+        // A task per range: on one task the ranges took turns receiving and writing, at half the
+        // speed of the node's disks.
+        let check = crc32c.is_some();
         let (offset, size) = parts[0];
-        let mut downloads =
-            vec![write_part(file.clone(), offset, size, first, crc32c.is_some()).boxed()];
+        let mut downloads = vec![AbortOnDropHandle::new(tokio::spawn(write_part(
+            file.clone(),
+            offset,
+            size,
+            first,
+            check,
+        )))];
         for &(offset, size) in &parts[1..] {
-            let file = file.clone();
-            downloads.push(
-                async move {
-                    let response = self
-                        .clients
-                        .storage
-                        .read_object(&self.bucket, key)
-                        .set_generation(generation)
-                        .set_read_range(ReadRange::segment(start + offset, size))
-                        .send()
-                        .await?;
-                    write_part(file, offset, size, response, crc32c.is_some()).await
-                }
-                .boxed(),
+            let (storage, bucket, key, file) = (
+                self.clients.storage.clone(),
+                self.bucket.clone(),
+                key.to_owned(),
+                file.clone(),
             );
+            downloads.push(AbortOnDropHandle::new(tokio::spawn(async move {
+                let response = storage
+                    .read_object(&bucket, &key)
+                    .set_generation(generation)
+                    .set_read_range(ReadRange::segment(start + offset, size))
+                    .send()
+                    .await?;
+                write_part(file, offset, size, response, check).await
+            })));
         }
-        let checksums = futures_util::future::try_join_all(downloads).await?;
+        let mut checksums = Vec::with_capacity(downloads.len());
+        for download in downloads {
+            checksums.push(download.await??);
+        }
         if let Some(expected) = crc32c {
             let mut crc = 0;
             for ((_, size), part) in parts.into_iter().zip(checksums) {
@@ -474,6 +485,8 @@ impl GcsBucket {
 /// reaches about 100 MiB/s.
 const PARALLEL_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 const DOWNLOAD_PARTS: u64 = 8;
+/// Each range writes 4 MiB at a time, ~10% faster than 256 KiB on the node's local SSDs.
+const PART_WRITE_BYTES: usize = 4 << 20;
 
 /// Contiguous `(offset, size)` ranges that cover `length` bytes.
 fn download_parts(length: u64) -> Vec<(u64, u64)> {
@@ -493,7 +506,7 @@ async fn write_part(
 ) -> Result<u32> {
     let mut crc = 0;
     let mut written = 0u64;
-    let mut buffer = Vec::with_capacity(crate::payload::IO_BUFFER_BYTES);
+    let mut buffer = Vec::with_capacity(PART_WRITE_BYTES);
     while written + (buffer.len() as u64) < size {
         let Some(chunk) = response.next().await else {
             break;
@@ -504,7 +517,7 @@ async fn write_part(
             crc = crc32c::crc32c_append(crc, &chunk[..wanted]);
         }
         buffer.extend_from_slice(&chunk[..wanted]);
-        if buffer.len() >= crate::payload::IO_BUFFER_BYTES {
+        if buffer.len() >= PART_WRITE_BYTES {
             written += flush_part(&file, offset + written, &mut buffer)?;
         }
     }
@@ -513,8 +526,8 @@ async fn write_part(
     Ok(crc)
 }
 
-/// Writes on the download task: in gVisor, handing each buffer to the blocking pool cost ~10x the
-/// CPU of the write itself, and the file takes writes no faster from several threads than from one.
+/// Writes on the range's own task: in gVisor, handing each buffer to the blocking pool cost ~10x
+/// the CPU of the write itself.
 fn flush_part(file: &std::fs::File, at: u64, buffer: &mut Vec<u8>) -> Result<u64> {
     use std::os::unix::fs::FileExt;
     file.write_all_at(buffer, at)?;
