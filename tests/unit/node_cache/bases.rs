@@ -1,5 +1,6 @@
 use super::*;
-use crate::bucket::{BucketObject, FileBucket, Payload};
+use crate::bucket::{BucketObject, Payload};
+use anyhow::Result;
 
 const SNAPSHOT: &str = "durable-actors/v3/snapshots/63/cHJvamVjdA/Q291bnRlcg/aWQ/000000000000000000000000000000a1/42.json";
 
@@ -18,28 +19,6 @@ fn actor() -> ActorKey {
         actor_name: "Counter".into(),
         actor_id: "id".into(),
     }
-}
-
-#[tokio::test]
-async fn uploads_a_parked_database_under_its_base_name() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let bucket = Arc::new(FileBucket::new(directory.path().join("bucket"))?);
-    let parked = directory.path().join("actor.sqlite");
-    std::fs::write(&parked, b"pages of a parked database")?;
-    let uploads = BaseUploads::new(Some(bucket.clone()));
-    uploads.start(&actor(), parked, snapshot(), 7).await;
-    let key = crate::bucket::base_key(&snapshot(), 7, 26)?;
-    let stored = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if let Some(object) = bucket.get(&key).await? {
-                return anyhow::Ok(object);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await??;
-    assert_eq!(&stored.bytes.to_bytes()?[..], b"pages of a parked database");
-    Ok(())
 }
 
 /// A bucket whose uploads never finish.

@@ -1,7 +1,5 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
-#[cfg(test)]
-use anyhow::Result;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{actor::ActorKey, bucket::Bucket, storage::SnapshotRef};

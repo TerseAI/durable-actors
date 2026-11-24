@@ -176,11 +176,6 @@ async fn parking_with_a_due_base_uploads_the_parked_file() -> Result<()> {
     )?
     .len();
     assert_eq!(parked.bytes, bytes);
-    let file = node
-        .slots
-        .parked(&actor("one"))
-        .join(DATABASE)
-        .join(DATABASE_FILE);
     let key = crate::bucket::base_key(&snapshot, 9, bytes)?;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while crate::bucket::Bucket::get(bucket.as_ref(), &key)
