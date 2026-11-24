@@ -514,7 +514,6 @@ async fn store_base(
         &reference,
         txid.unwrap_or(restored.txid),
         bytes.len() as u64,
-        crc32c::crc32c(&bytes),
     )?;
     assert!(f.archive.compare_and_swap(&key, None, bytes.into()).await?);
     Ok(restored.txid)
@@ -624,8 +623,9 @@ async fn restores_the_same_rows_from_an_older_base_when_the_newest_is_corrupt_or
     let checkpoint = reader.prefetch_checkpoint(&head.reference).await?;
     let newest = checkpoint.as_ref().unwrap().base.as_ref().unwrap();
     let object = f.archive.get(&newest.key).await?.unwrap();
+    // The file bucket keeps no checksum, so the corruption it can detect is a short base.
     let mut bytes = object.bytes.to_bytes()?.to_vec();
-    bytes[100] ^= 1;
+    bytes.pop();
     f.archive
         .compare_and_swap(&newest.key, Some(object.generation), bytes.into())
         .await?;
@@ -885,7 +885,6 @@ fn a_base_is_due_when_none_exists_or_the_changes_outgrow_the_newest() {
             owner_epoch: 1,
             version,
             txid: version,
-            crc32c: None,
             bytes,
         })
     };

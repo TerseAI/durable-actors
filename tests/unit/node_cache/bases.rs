@@ -28,12 +28,7 @@ async fn uploads_a_parked_database_under_its_base_name() -> Result<()> {
     std::fs::write(&parked, b"pages of a parked database")?;
     let uploads = BaseUploads::new(Some(bucket.clone()));
     uploads.start(&actor(), parked, snapshot(), 7).await;
-    let key = crate::bucket::base_key(
-        &snapshot(),
-        7,
-        26,
-        crc32c::crc32c(b"pages of a parked database"),
-    )?;
+    let key = crate::bucket::base_key(&snapshot(), 7, 26)?;
     let stored = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             if let Some(object) = bucket.get(&key).await? {

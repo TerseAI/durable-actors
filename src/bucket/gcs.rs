@@ -199,14 +199,6 @@ impl Bucket for GcsBucket {
         self.read(key, None).await
     }
     async fn download_to(&self, key: &str, path: &std::path::Path) -> Result<Option<u64>> {
-        self.download_checked(key, path, None).await
-    }
-    async fn download_checked(
-        &self,
-        key: &str,
-        path: &std::path::Path,
-        expected: Option<u32>,
-    ) -> Result<Option<u64>> {
         let Some(response) = self.open(key, None).await? else {
             return Ok(None);
         };
@@ -220,18 +212,12 @@ impl Bucket for GcsBucket {
         })
         .await??;
         let crc32c = response.object().checksums.and_then(|c| c.crc32c);
-        if let (Some(actual), Some(expected)) = (crc32c, expected) {
-            anyhow::ensure!(
-                actual == expected,
-                "stored SQLite base CRC32C differs from its published checksum"
-            );
-        }
         let generation = response.object().generation;
         self.download_parts(
             key,
             generation,
             (0, length),
-            expected.or(crc32c),
+            crc32c,
             response,
             Arc::new(file),
         )

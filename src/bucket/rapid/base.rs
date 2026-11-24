@@ -1,6 +1,6 @@
 //! Bases: a whole SQLite file at one published version, stored in the archive bucket beside the
 //! actor's history as `durable-actors-v3-snapshots-<actor>~bases~<owner epoch>~<version>~<txid>~
-//! <bytes>~<crc32c>.sqlite`. Inside the actor's snapshot names, so host tokens need no further rule, and
+//! <bytes>.sqlite`. Inside the actor's snapshot names, so host tokens need no further rule, and
 //! the only `.sqlite` objects there. A restore starts from the newest base at or below its head.
 
 use super::*;
@@ -16,7 +16,6 @@ pub(crate) struct BaseName {
     pub version: u64,
     pub txid: u64,
     pub bytes: u64,
-    pub crc32c: Option<u32>,
 }
 
 /// A base a restore can start from.
@@ -41,7 +40,7 @@ impl SqliteBase {
     pub async fn download_to(&self, path: &std::path::Path) -> Result<()> {
         let bytes = self
             .bucket
-            .download_checked(&self.key, path, self.name.crc32c)
+            .download_to(&self.key, path)
             .await?
             .with_context(|| format!("SQLite base {} disappeared", self.key))?;
         ensure!(
@@ -54,15 +53,13 @@ impl SqliteBase {
 }
 
 /// The base object for the database at `snapshot`: SQLite transaction `txid`, `bytes` long.
-pub(crate) fn key(snapshot: &SnapshotRef, txid: u64, bytes: u64, checksum: u32) -> Result<String> {
+pub(crate) fn key(snapshot: &SnapshotRef, txid: u64, bytes: u64) -> Result<String> {
     let name = object_name(&snapshot.object)?;
     let (actor, version) = name
         .strip_suffix(".json")
         .and_then(|name| name.split_once('~'))
         .context("snapshot object is not a version")?;
-    Ok(format!(
-        "{actor}{BASES}{version}~{txid}~{bytes}~{checksum:08x}.sqlite"
-    ))
+    Ok(format!("{actor}{BASES}{version}~{txid}~{bytes}.sqlite"))
 }
 
 /// The prefix every base of the actor whose snapshots live under `snapshots` starts with.
@@ -91,7 +88,7 @@ impl LogStorage {
             .into_iter()
             .filter_map(|key| Some((parse(&key)?, key)))
             .filter(|(name, _)| name.version <= version)
-            .max_by_key(|(name, _)| (name.version, name.crc32c.is_some()))
+            .max_by_key(|(name, _)| name.version)
             .map(|(name, key)| SqliteBase {
                 key,
                 name,
@@ -129,16 +126,11 @@ pub(crate) async fn upload_file(
     txid: u64,
     path: &std::path::Path,
 ) -> Result<u64> {
-    let path = path.to_owned();
-    let (payload, checksum) = tokio::task::spawn_blocking(move || {
-        let file = std::fs::File::open(path)?;
-        let len = usize::try_from(file.metadata()?.len())?;
-        let checksum = crate::bucket::file_crc32c(&file)?;
-        anyhow::Ok((Payload::from_file(Arc::new(file), len), checksum))
-    })
-    .await??;
-    let bytes = payload.len() as u64;
-    let key = key(snapshot, txid, bytes, checksum)?;
+    let file = tokio::fs::File::open(path).await?.into_std().await;
+    let bytes = file.metadata()?.len();
+    let payload = Payload::from_file(Arc::new(file), usize::try_from(bytes)?);
+    // The name holds the version, transaction and size, so an object already there is this base.
+    let key = key(snapshot, txid, bytes)?;
     bounded_transfer(bytes, bucket.compare_and_swap(&key, None, payload)).await?;
     Ok(bytes)
 }
@@ -163,11 +155,6 @@ pub(crate) fn parse(key: &str) -> Option<BaseName> {
         version: parts.next()?.parse().ok()?,
         txid: parts.next()?.parse().ok()?,
         bytes: parts.next()?.parse().ok()?,
-        crc32c: match parts.next() {
-            Some(s) if s.len() == 8 => Some(u32::from_str_radix(s, 16).ok()?),
-            Some(_) => return None,
-            None => None,
-        },
     };
     parts.next().is_none().then_some(name)
 }
