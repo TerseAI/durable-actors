@@ -510,8 +510,11 @@ impl DatabaseSession {
         let (Some(cache), Some(path)) = (&self.node_cache, slot) else {
             anyhow::bail!("Rapid restores need the node file service and a slot");
         };
+        let started = Instant::now();
         let directory = emptied(Some(&path)).await?;
+        let emptied_ms = elapsed_ms(started);
         let restored = restore_with_retry(cache, storage, loaded).await?;
+        let request_ms = elapsed_ms(started) - emptied_ms;
         ensure!(
             restored.txid == loaded.snapshot.sqlite.txid,
             "node restored another SQLite transaction"
@@ -525,6 +528,8 @@ impl DatabaseSession {
             resume,
         )
         .await?;
+        info!(event = "actor_slot_restore", host_id = %self.endpoint.id, emptied_ms, request_ms,
+            node_ms = restored.duration_ms, reopen_ms = elapsed_ms(started) - emptied_ms - request_ms);
         Ok((
             capture,
             if restored.source == "base" {

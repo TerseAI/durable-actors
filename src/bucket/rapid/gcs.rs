@@ -134,6 +134,7 @@ impl GcsZone {
         if size < PARALLEL_SEGMENT_BYTES {
             return download(&descriptor, 0, size).await;
         }
+        let _reading = PARALLEL_SEGMENTS.acquire().await?;
         let file = Arc::new(
             tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
                 let file = tempfile::tempfile()?;
@@ -178,6 +179,9 @@ impl GcsZone {
 
 /// Segments at least this large download as parallel ranges.
 const PARALLEL_SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
+/// Parallel segment downloads at once in this process, however many restores run: each holds
+/// `SEGMENT_PARTS` write buffers, so this bounds the node's memory.
+static PARALLEL_SEGMENTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 const SEGMENT_PARTS: u64 = 8;
 
 async fn download(descriptor: &ObjectDescriptor, start: u64, length: u64) -> Result<Payload> {

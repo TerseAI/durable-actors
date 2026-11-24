@@ -83,7 +83,7 @@ nodeCache:
   nodeSelector: {}
   googleServiceAccount: ""
   resources:
-    requests: {cpu: 100m, memory: 256Mi}
+    requests: {cpu: "1", memory: 512Mi}
     limits: {memory: 1Gi}
 historySweeper:
   minAgeHours: 720

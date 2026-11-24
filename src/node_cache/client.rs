@@ -90,7 +90,9 @@ impl NodeCacheConnection {
             return;
         };
         futures_util::future::join_all(
-            (0..WARM_CONNECTIONS).map(|_| self.http.get(url.clone()).send()),
+            (0..WARM_CONNECTIONS)
+                .map(|_| self.http.get(url.clone()).send())
+                .chain([self.restores.get(url.clone()).send()]),
         )
         .await;
     }
