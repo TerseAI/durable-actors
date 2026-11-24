@@ -1808,7 +1808,7 @@ async fn an_alarm_for_a_project_with_no_code_is_not_kept_due() -> Result<()> {
     Ok(())
 }
 
-/// What `invoke_alarm` returns when the host answers with `reply` (or cannot be reached when `None`).
+/// What `invoke_alarm` returns when the host answers with `reply`, never answers for `hang`, or cannot be reached for `None`.
 async fn invoke_alarm_against(
     status: u16,
     reply: Option<&'static str>,
@@ -1819,7 +1819,12 @@ async fn invoke_alarm_against(
     match reply {
         Some(reply) => {
             let status = axum::http::StatusCode::from_u16(status)?;
-            let router = axum::Router::new().fallback(move || async move { (status, reply) });
+            let router = axum::Router::new().fallback(move || async move {
+                if reply == "hang" {
+                    std::future::pending::<()>().await;
+                }
+                (status, reply)
+            });
             tokio::spawn(async move { axum::serve(listener, router).await });
         }
         None => drop(listener),
@@ -1929,5 +1934,14 @@ async fn a_route_that_takes_too_long_leaves_the_alarm_undelivered() -> Result<()
         .await?
         .expect("a route that never finishes is an error");
     assert!(error.is::<super::super::alarms::AlarmNotDelivered>());
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_host_that_never_answers_may_have_run_the_alarm() -> Result<()> {
+    let error = invoke_alarm_against(200, Some("hang"), None)
+        .await?
+        .expect("a reply that never comes is an error");
+    assert!(!error.is::<super::super::alarms::AlarmNotDelivered>());
     Ok(())
 }
