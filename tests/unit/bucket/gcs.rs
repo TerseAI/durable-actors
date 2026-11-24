@@ -281,6 +281,8 @@ impl WarmServer {
                     .with_credentials(credentials.clone())
                     .build()
                     .await?,
+                ranges: Arc::default(),
+                credentials: credentials.clone().into(),
             },
             credentials,
         })
@@ -395,6 +397,14 @@ async fn test_bucket(endpoint: &str) -> Result<GcsBucket> {
                 .with_credentials(anonymous::Builder::new().build())
                 .build()
                 .await?,
+            ranges: Arc::new(tokio::sync::OnceCell::new_with(Some(
+                Storage::builder()
+                    .with_endpoint(endpoint)
+                    .with_credentials(anonymous::Builder::new().build())
+                    .build()
+                    .await?,
+            ))),
+            credentials: anonymous::Builder::new().build(),
         },
     })
 }
