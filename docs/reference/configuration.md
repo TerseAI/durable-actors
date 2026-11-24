@@ -111,7 +111,7 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 
 | Variable | Description |
 | --- | --- |
-| `DURABLE_ACTORS_PROCESS_ROLE` | `control_plane` serves the API; `pool_manager` fills, trims and cleans up the warm pool with the same settings and must run as exactly one replica. `history_sweeper` deletes Rapid history that bases cover and runs as exactly one replica. The provider assigns actor/spare roles. |
+| `DURABLE_ACTORS_PROCESS_ROLE` | `control_plane` serves the API; `pool_manager` fills, trims and cleans up the warm pool with the same settings and must run as exactly one replica. In Rapid mode the pool manager also deletes history that bases cover. The provider assigns actor/spare roles. |
 | `DURABLE_ACTORS_CONTROL_PLANE_BIND` | Listen address, `0.0.0.0:7100` in the chart. |
 | `DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS` | Interval for checking due alarms, default `100` milliseconds. The chart sets it from `alarms.pollIntervalMs`. Shorter intervals reduce polling delay and increase database load. |
 | `DURABLE_ACTORS_CONTROL_PLANE_URL` | Private Kubernetes Service origin reachable from sandboxes. |
@@ -138,9 +138,9 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_RAPID_PLACEMENT` | Rapid only: `all` (default) writes every configured zone. `nearest` needs two zones, usually in different regions: at assignment the host opens its log in both, keeps the first to open, and writes only there for the session. The chart uses `storage.rapid.placement`. |
 | `DURABLE_ACTORS_ARCHIVE_BATCH_BYTES` | Largest byte range a restore reads at once from log batches older hosts archived, default `16777216`. |
 | `DURABLE_ACTORS_NODE_CACHE_BASE_BUCKET` | Node cache only: the Standard bucket it uploads parked databases to as bases when their hosts find one due. Unset, it uploads nothing. The chart sets it to `storage.bucket` in Rapid mode with `nodeCache.googleServiceAccount`. |
-| `DURABLE_ACTORS_SWEEP_MIN_AGE_HOURS` | History sweeper only: how old Rapid history, archived history and superseded bases must be before the sweeper deletes what a base covers, default `720`. The chart uses `historySweeper.minAgeHours`. |
-| `DURABLE_ACTORS_SWEEP_INTERVAL_SECONDS` | History sweeper only: time between passes, default `3600`. The chart uses `historySweeper.intervalSeconds`. |
-| `DURABLE_ACTORS_SWEEP_DRY_RUN` | History sweeper only: `true` logs what each pass would delete without deleting it. The default is `true`. The chart uses `historySweeper.dryRun`. |
+| `DURABLE_ACTORS_SWEEP_MIN_AGE_HOURS` | Pool manager, Rapid mode: how old Rapid history, archived history and superseded bases must be before the sweeper deletes what a base covers, default `720`. The chart uses `historySweeper.minAgeHours`. |
+| `DURABLE_ACTORS_SWEEP_INTERVAL_SECONDS` | Pool manager, Rapid mode: time between passes, default `3600`. The chart uses `historySweeper.intervalSeconds`. |
+| `DURABLE_ACTORS_SWEEP_DRY_RUN` | Pool manager, Rapid mode: `true` logs what each pass would delete without deleting it. The default is `true`. The chart uses `historySweeper.dryRun`. |
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace; the chart defaults to `<release-namespace>-<release-name>`. |
 | `DURABLE_ACTORS_GKE_ZONE` | Actor placement zone, for example `us-west4-a`; the runtime infers the canonical compute region. The chart sets this from `placement.zone`. |
 | `DURABLE_ACTORS_GKE_ZONES` | Advanced alternative to `GKE_ZONE`: JSON map from canonical compute region to eligible Google zones, such as `{"north-america-west":["us-west4-a","us-west4-b"]}`. A single zone string per region is also accepted. Configure only one of the two placement variables. |

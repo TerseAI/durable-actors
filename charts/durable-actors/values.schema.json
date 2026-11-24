@@ -332,8 +332,7 @@
       "properties": {
         "minAgeHours": {"type": "integer", "minimum": 1},
         "intervalSeconds": {"type": "integer", "minimum": 60},
-        "dryRun": {"type": "boolean"},
-        "resources": {"type": "object"}
+        "dryRun": {"type": "boolean"}
       }
     },
     "redis": {

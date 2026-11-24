@@ -1,7 +1,7 @@
-//! Deletes history no restore can need, as its own process. Versions only grow across owner
-//! epochs, so everything in an epoch older than the epoch of an actor's second-newest base lies
-//! below that base, and so do bases older than the two newest. Both go once all of it is older
-//! than the observer's lookback. An actor with fewer than two bases keeps everything.
+//! Deletes history no restore can need, inside the pool manager. Versions only grow across owner
+//! epochs, so everything in an epoch older than a base's epoch lies below that base. The sweep
+//! keeps the newest base older than the observer's lookback, so every version inside it still has
+//! a base below it, and deletes the history and bases below that one once they are older too.
 
 use super::{
     base::{self, BaseName},
@@ -20,7 +20,12 @@ pub struct SweepConfig {
 }
 
 impl SweepConfig {
-    pub fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
+    /// The sweep of a Rapid installation's buckets, timed by the `DURABLE_ACTORS_SWEEP_*` settings.
+    pub fn new(
+        archive_bucket: String,
+        rapid_buckets: Vec<crate::bucket::RapidBucket>,
+        mut get: impl FnMut(&str) -> Option<String>,
+    ) -> Result<Self> {
         let number = |value: Option<String>, name: &str, default: u64| -> Result<u64> {
             value
                 .map(|value| value.parse())
@@ -29,12 +34,8 @@ impl SweepConfig {
                 .map(|value| value.unwrap_or(default))
         };
         Ok(Self {
-            archive_bucket: get("DURABLE_ACTORS_ARCHIVE_BUCKET")
-                .context("DURABLE_ACTORS_ARCHIVE_BUCKET is required")?,
-            rapid_buckets: serde_json::from_str(
-                &get("DURABLE_ACTORS_RAPID_BUCKETS")
-                    .context("DURABLE_ACTORS_RAPID_BUCKETS is required")?,
-            )?,
+            archive_bucket,
+            rapid_buckets,
             min_age: Duration::from_secs(
                 3600 * number(
                     get("DURABLE_ACTORS_SWEEP_MIN_AGE_HOURS"),
