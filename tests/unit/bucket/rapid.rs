@@ -607,7 +607,7 @@ fn large_snapshots() -> Result<BTreeMap<u64, Payload>> {
 }
 
 #[test]
-fn lifecycle_rules_keep_logs_for_a_week() -> Result<()> {
+fn lifecycle_rules_never_delete_logs() -> Result<()> {
     use google_cloud_storage::model::bucket::{
         Lifecycle,
         lifecycle::{
@@ -628,8 +628,8 @@ fn lifecycle_rules_keep_logs_for_a_week() -> Result<()> {
     };
     let validate = super::gcs::validate_retention;
     validate(&bucket(vec!["durable-actors-v3-snapshots-"], Some(1)))?;
-    validate(&bucket(vec![], Some(7)))?;
-    validate(&bucket(vec!["durable-actors-v3-logs-"], Some(30)))?;
+    assert!(validate(&bucket(vec![], Some(7))).is_err());
+    assert!(validate(&bucket(vec!["durable-actors-v3-logs-"], Some(30))).is_err());
     assert!(validate(&bucket(vec!["durable-actors-v3-"], Some(6))).is_err());
     assert!(validate(&bucket(vec!["durable-actors-v3-logs-tenant"], None)).is_err());
     Ok(())

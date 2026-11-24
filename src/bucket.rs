@@ -6,6 +6,7 @@ pub(crate) use rapid::{RAPID_OPERATION_TIMEOUT, RapidSnapshots};
 pub(crate) mod recovery;
 mod snapshots;
 pub(crate) use rapid::base::{SqliteBase, key as base_key};
+pub use rapid::sweep::{SweepConfig, serve as serve_history_sweeper};
 pub(crate) use recovery::RestoredSqlite;
 pub use snapshots::{ArchiveBatchConfig, RapidBucket, RapidPlacement, SnapshotStoreConfig};
 pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};

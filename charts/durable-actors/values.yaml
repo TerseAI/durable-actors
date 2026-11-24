@@ -81,8 +81,16 @@ nodeCache:
     sizeGiB: 8
     diskRoot: ""
   nodeSelector: {}
+  googleServiceAccount: ""
   resources:
     requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 256Mi}
+historySweeper:
+  minAgeHours: 720
+  intervalSeconds: 3600
+  dryRun: false
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 256Mi}
 resources:
   requests: {cpu: 250m, memory: 512Mi}

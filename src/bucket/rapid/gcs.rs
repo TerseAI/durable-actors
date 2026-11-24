@@ -228,10 +228,10 @@ impl LogWriter for GcsWriter {
     }
 }
 
-/// The control plane archives abandoned logs within hours, so a week leaves ample margin.
+/// Rapid holds every change no base covers yet, so only the history sweeper deletes log objects:
+/// a lifecycle rule would delete them by age, covered or not.
 pub(crate) fn validate_retention(bucket: &google_cloud_storage::model::Bucket) -> Result<()> {
     const PREFIX: &str = "durable-actors-v3-logs-";
-    const MIN_AGE_DAYS: i32 = 7;
     if let Some(lifecycle) = &bucket.lifecycle {
         for rule in &lifecycle.rule {
             if rule
@@ -250,11 +250,8 @@ pub(crate) fn validate_retention(bucket: &google_cloud_storage::model::Bucket) -
                     .iter()
                     .any(|prefix| PREFIX.starts_with(prefix) || prefix.starts_with(PREFIX));
             ensure!(
-                !covers_logs
-                    || condition
-                        .and_then(|condition| condition.age_days)
-                        .is_some_and(|age| age >= MIN_AGE_DAYS),
-                "Rapid log objects must stay at least {MIN_AGE_DAYS} days before lifecycle deletion"
+                !covers_logs,
+                "Rapid log objects must have no lifecycle delete rule; the history sweeper deletes them"
             );
         }
     }

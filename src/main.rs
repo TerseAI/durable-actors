@@ -40,6 +40,11 @@ async fn run(cli: Cli) -> Result<()> {
             serve_pool_manager(ControlPlaneProcessConfig::from_env()?, shutdown).await
         }
         "node_cache" => durable_actors::node_cache::serve_node_cache(shutdown).await,
+        "history_sweeper" => {
+            let config =
+                durable_actors::bucket::SweepConfig::from_lookup(|name| std::env::var(name).ok())?;
+            durable_actors::bucket::serve_history_sweeper(config, shutdown).await
+        }
         role => durable_actors::host::serve_role(role, shutdown).await,
     }
 }

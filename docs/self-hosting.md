@@ -98,9 +98,9 @@ Verify an actor write and read, restart its sandbox, and read the value again. A
 
 ## Speed up writes with GCS Rapid
 
-Rapid stores the hot write log in one or two zones and keeps permanent history in the Standard bucket. Each acknowledged write has durably flushed to every configured Rapid copy. A single zone has no second Rapid copy if that zone is lost before archival. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.
+Rapid stores every write in one or two zones. When an actor's changes since its last base grow as large as that base, the node cache uploads the actor's whole SQLite file to the Standard bucket as a new base, and cold starts restore from the newest base plus the changes after it. The history sweeper deletes changes a base covers once they are older than its minimum age, 30 days by default. Each acknowledged write has durably flushed to every configured Rapid copy. With a single zone, changes since an actor's last base are unavailable while that zone is down. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.
 
-Choose a region with Rapid availability and use Google Cloud CLI 553 or newer. Create two distinct buckets once, grant object access and bucket-metadata access to the controller identity, and expire Rapid objects after seven days. The controller archives every log to the Standard bucket well before then and refuses to start if a delete rule would remove log objects sooner. The following placements are examples; verify current [Rapid availability and requirements](https://docs.cloud.google.com/storage/docs/rapid-bucket).
+Choose a region with Rapid availability and use Google Cloud CLI 553 or newer. Create two distinct buckets once and grant object access and bucket-metadata access to the controller identity. Add no lifecycle delete rule: the controller refuses to start if one would delete log objects. Give the node cache its own Google service account that can only create bases, the `.sqlite` objects in the Standard bucket. The following placements are examples; verify current [Rapid availability and requirements](https://docs.cloud.google.com/storage/docs/rapid-bucket).
 
 ```sh
 export RAPID_A=my-unique-actor-rapid-a
@@ -112,19 +112,20 @@ gcloud storage buckets create "gs://${RAPID_A}" --project="$PROJECT" \
 gcloud storage buckets create "gs://${RAPID_B}" --project="$PROJECT" \
   --location=us-west4 --placement=us-west4-b --default-storage-class=RAPID \
   --enable-hierarchical-namespace --uniform-bucket-level-access --public-access-prevention
-echo '{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 7}}]}' > rapid-lifecycle.json
 for bucket in "$RAPID_A" "$RAPID_B"; do
   gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
     --member="serviceAccount:${GSA}" --role=roles/storage.objectUser
-  gcloud storage buckets update "gs://${bucket}" --lifecycle-file=rapid-lifecycle.json
 done
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${NODE_CACHE_GSA}" --role=roles/storage.objectCreator \
+  --condition="title=bases,expression=resource.name.startsWith('projects/_/buckets/${BUCKET}/objects/durable-actors-v3-snapshots-') && resource.name.endsWith('.sqlite')"
 for bucket in "$BUCKET" "$RAPID_A" "$RAPID_B"; do
   gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
     --member="serviceAccount:${GSA}" --role=roles/storage.legacyBucketReader
 done
 ```
 
-Select Rapid in the installation values:
+Select Rapid in the installation values, with the node cache's service account bound to the release's `<release>-node-cache` Kubernetes service account through Workload Identity:
 
 ```yaml
 storage:
@@ -134,11 +135,14 @@ storage:
     buckets:
       - {bucket: my-unique-actor-rapid-a, zone: us-west4-a}
       - {bucket: my-unique-actor-rapid-b, zone: us-west4-b}
+nodeCache:
+  enabled: true
+  googleServiceAccount: node-cache@my-project.iam.gserviceaccount.com
 ```
 
 When actor hosts can start in either of two regions, put one Rapid bucket in a zone of each and set `placement: nearest`. Each host then opens its log in both zones at assignment, keeps whichever opens first (normally its own region), and writes only there for that session. Each write has one Rapid copy, as with a single zone. Switching between `all` and `nearest` with the same buckets needs no migration.
 
-The Standard bucket remains required. Startup checks Rapid storage class, actual zonal placement, and retention rules. Do not configure automatic deletion of Rapid log objects: the runtime archives them before removing their Rapid copies. If Rapid streams cannot be opened at activation, the runtime can persist immutable Standard snapshots.
+The Standard bucket remains required. Startup checks Rapid storage class, actual zonal placement, and that no lifecycle rule deletes log objects. The chart runs the history sweeper as one replica under the controller identity; `historySweeper.minAgeHours` sets how long covered history stays, which is also how far back the observer's state history reaches. Without the node cache, a host uploads a due base itself as it sleeps. If Rapid streams cannot be opened at activation, the runtime can persist immutable Standard snapshots.
 
 Storage mode and bucket identities are bound to existing actor ownership records. Select the mode before creating actors in an installation. Changing an existing installation's mode needs a planned data migration; a Helm values change alone does not migrate actor state.
 

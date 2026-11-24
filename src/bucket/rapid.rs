@@ -21,6 +21,7 @@ mod prepared;
 mod reader;
 mod segment;
 mod standard;
+pub(crate) mod sweep;
 mod writer;
 
 use frame::{Frame, Record};

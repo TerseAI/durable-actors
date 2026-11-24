@@ -1,0 +1,38 @@
+{{- if eq .Values.storage.mode "rapid" }}
+{{- $name := printf "%s-history-sweeper" (include "actors.name" .) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      serviceAccountName: {{ include "actors.name" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+      containers:
+        - name: history-sweeper
+          image: {{ include "actors.image" .Values.images.controlPlane | quote }}
+          env:
+            - {name: DURABLE_ACTORS_PROCESS_ROLE, value: history_sweeper}
+            - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ .Values.storage.bucket | quote }}}
+            - {name: DURABLE_ACTORS_SWEEP_MIN_AGE_HOURS, value: {{ .Values.historySweeper.minAgeHours | quote }}}
+            - {name: DURABLE_ACTORS_SWEEP_INTERVAL_SECONDS, value: {{ .Values.historySweeper.intervalSeconds | quote }}}
+            - {name: DURABLE_ACTORS_SWEEP_DRY_RUN, value: {{ .Values.historySweeper.dryRun | quote }}}
+          resources:
+            {{- toYaml .Values.historySweeper.resources | nindent 12 }}
+{{- end }}
