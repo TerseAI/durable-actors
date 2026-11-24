@@ -37,6 +37,7 @@ pub(super) fn router(
     store: Arc<DiskStore>,
     slots: Arc<SqliteSlots>,
     tokens: Arc<HostTokens>,
+    bases: Option<Arc<dyn crate::bucket::Bucket>>,
 ) -> Router {
     Router::new()
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
@@ -49,7 +50,7 @@ pub(super) fn router(
         .with_state(NodeCache {
             store,
             slots,
-            restores: Arc::new(Restores::new()),
+            restores: Arc::new(Restores::new(bases)),
             tokens,
         })
 }

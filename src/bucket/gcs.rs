@@ -86,8 +86,8 @@ impl GcsBucket {
         })
     }
 
-    /// The node's bucket for one restore, read with a host's forwarded token. Outside the sandbox
-    /// a restore can afford the connections its parallel Rapid reads need.
+    /// A node's bucket: its own, or one restore's read with a host's forwarded token. Outside the
+    /// sandbox it can afford the connections and transfers its parallel reads need.
     pub(crate) async fn for_restore(bucket: &str, credentials: Credentials) -> Result<Self> {
         let mut clients = GcsClients::new(credentials, Some(RESTORE_GRPC_SUBCHANNELS)).await?;
         clients.transfers = Arc::new(tokio::sync::Semaphore::new(RESTORE_TRANSFERS));

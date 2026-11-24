@@ -100,7 +100,7 @@ Verify an actor write and read, restart its sandbox, and read the value again. A
 
 Rapid stores every write in one or two zones. When an actor's changes since its last base grow as large as that base, the node cache uploads the actor's whole SQLite file to the Standard bucket as a new base. On a cold start the node cache, outside the sandbox, rebuilds the database in the host's slot from the newest base plus the changes after it. Rapid therefore needs the node cache with SQLite slots. The pool manager's history sweep deletes changes a base covers once they are older than its minimum age, 30 days by default. Each acknowledged write has durably flushed to every configured Rapid copy. With a single zone, changes since an actor's last base are unavailable while that zone is down. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.
 
-Choose a region with Rapid availability and use Google Cloud CLI 553 or newer. Create two distinct buckets once and grant object access and bucket-metadata access to the controller identity. Add no lifecycle delete rule: the controller refuses to start if one would delete log objects. Give the node cache its own Google service account that can only create bases, the `.sqlite` objects in the Standard bucket. The following placements are examples; verify current [Rapid availability and requirements](https://docs.cloud.google.com/storage/docs/rapid-bucket).
+Choose a region with Rapid availability and use Google Cloud CLI 553 or newer. Create two distinct buckets once and grant object access and bucket-metadata access to the controller identity. Add no lifecycle delete rule: the controller refuses to start if one would delete log objects. Give the node cache its own Google service account that can create and read only bases, the `.sqlite` objects in the Standard bucket. It also lists object names there to find each actor's newest base: Cloud Storage cannot limit listing to a prefix, so the listing grant covers the bucket. The following placements are examples; verify current [Rapid availability and requirements](https://docs.cloud.google.com/storage/docs/rapid-bucket).
 
 ```sh
 export RAPID_A=my-unique-actor-rapid-a
@@ -119,6 +119,11 @@ done
 gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --member="serviceAccount:${NODE_CACHE_GSA}" --role=roles/storage.objectCreator \
   --condition="title=bases,expression=resource.name.startsWith('projects/_/buckets/${BUCKET}/objects/durable-actors-v3-snapshots-') && resource.name.endsWith('.sqlite')"
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${NODE_CACHE_GSA}" --role=roles/storage.objectViewer \
+  --condition="title=read-bases,expression=resource.name.startsWith('projects/_/buckets/${BUCKET}/objects/durable-actors-v3-snapshots-') && resource.name.endsWith('.sqlite')"
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${NODE_CACHE_GSA}" --role=roles/storage.legacyBucketReader --condition=None
 for bucket in "$BUCKET" "$RAPID_A" "$RAPID_B"; do
   gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
     --member="serviceAccount:${GSA}" --role=roles/storage.legacyBucketReader

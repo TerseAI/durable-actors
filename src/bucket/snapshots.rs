@@ -172,13 +172,6 @@ pub(crate) trait SnapshotStore: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
-    /// The newest base of `actor`, for a store that keeps bases.
-    async fn newest_base(
-        &self,
-        _actor: &crate::actor::ActorKey,
-    ) -> Result<Option<super::SqliteBase>> {
-        Ok(None)
-    }
     async fn list(&self, prefix: &str) -> Result<Vec<String>>;
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>>;
     async fn put(&self, object: &str, bytes: Payload) -> Result<()>;

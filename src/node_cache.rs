@@ -33,25 +33,30 @@ pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'stati
         )
         .await?,
     );
-    let bucket =
-        match &config.base_bucket {
-            Some(name) => Some(Arc::new(crate::bucket::GcsBucket::new(name).await?)
-                as Arc<dyn crate::bucket::Bucket>),
-            None => None,
-        };
+    // One client for the node's own base uploads and prepared downloads, with a transfer for each.
+    let bucket = match &config.base_bucket {
+        Some(name) => Some(Arc::new(
+            crate::bucket::GcsBucket::for_restore(
+                name,
+                google_cloud_auth::credentials::Builder::default().build()?,
+            )
+            .await?,
+        ) as Arc<dyn crate::bucket::Bucket>),
+        None => None,
+    };
     let slots = Arc::new(
         slots::SqliteSlots::open(
             config.directory,
             config.pods_directory.map(slots::SlotLayout::Kubelet),
             store.clone(),
-            bases::BaseUploads::new(bucket, store.staging().join("bases")),
+            bases::BaseUploads::new(bucket.clone(), store.staging().join("bases")),
         )
         .await?,
     );
     let tokens = keys::HostTokens::load(config.verifier);
     let listener = TcpListener::bind(config.bind).await?;
     tracing::info!(bind = %config.bind, "node cache is ready");
-    axum::serve(listener, server::router(store, slots, tokens))
+    axum::serve(listener, server::router(store, slots, tokens, bucket))
         .with_graceful_shutdown(shutdown)
         .await
         .context("serve node cache")
@@ -76,6 +81,7 @@ pub(crate) async fn local_router(
         store,
         slots,
         keys::HostTokens::fixed(verifier),
+        None,
     ))
 }
 

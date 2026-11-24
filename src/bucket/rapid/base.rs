@@ -78,38 +78,42 @@ impl LogStorage {
         self.base_at_or_below(head, head.state_version).await
     }
 
-    /// The newest base of `actor` whatever its head: bases exist only for published versions, so
-    /// it is at or below any head the actor's activation can reach.
-    pub(super) async fn newest_base_of(
-        &self,
-        actor: &crate::actor::ActorKey,
-    ) -> Result<Option<SqliteBase>> {
-        let prefix = prefix(&crate::storage_paths::snapshots(actor)?)?;
-        self.newest_listed(&prefix, u64::MAX).await
-    }
-
     pub(super) async fn base_at_or_below(
         &self,
         head: &SnapshotRef,
         version: u64,
     ) -> Result<Option<SqliteBase>> {
-        self.newest_listed(&actor_prefix(head)?, version).await
+        newest_listed(&self.archive, &actor_prefix(head)?, version).await
     }
+}
 
-    async fn newest_listed(&self, prefix: &str, version: u64) -> Result<Option<SqliteBase>> {
-        let keys = self.archive.list(prefix).await?;
-        Ok(keys
-            .into_iter()
-            .filter_map(|key| Some((parse(&key)?, key)))
-            .filter(|(name, _)| name.version <= version)
-            .max_by_key(|(name, _)| name.version)
-            .map(|(name, key)| SqliteBase {
-                key,
-                name,
-                bucket: self.archive.clone(),
-                downloaded: None,
-            }))
-    }
+/// The newest base of `actor` in `archive` whatever its head: bases exist only for published
+/// versions, so it is at or below any head the actor's activation can reach.
+pub(crate) async fn newest_base_of(
+    archive: &Arc<dyn Bucket>,
+    actor: &crate::actor::ActorKey,
+) -> Result<Option<SqliteBase>> {
+    let prefix = prefix(&crate::storage_paths::snapshots(actor)?)?;
+    newest_listed(archive, &prefix, u64::MAX).await
+}
+
+async fn newest_listed(
+    archive: &Arc<dyn Bucket>,
+    prefix: &str,
+    version: u64,
+) -> Result<Option<SqliteBase>> {
+    let keys = archive.list(prefix).await?;
+    Ok(keys
+        .into_iter()
+        .filter_map(|key| Some((parse(&key)?, key)))
+        .filter(|(name, _)| name.version <= version)
+        .max_by_key(|(name, _)| name.version)
+        .map(|(name, key)| SqliteBase {
+            key,
+            name,
+            bucket: archive.clone(),
+            downloaded: None,
+        }))
 }
 
 pub(crate) async fn upload_file(

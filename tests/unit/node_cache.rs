@@ -88,7 +88,7 @@ impl NodeCache {
             )
             .await?,
         );
-        let routes = server::router(store, slots, tokens);
+        let routes = server::router(store, slots, tokens, None);
         Ok(Self {
             url,
             directory,

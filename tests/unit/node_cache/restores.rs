@@ -156,3 +156,38 @@ async fn downloads_another_base_when_the_history_starts_from_it() -> Result<()> 
     assert_eq!(std::fs::read(database.join(DATABASE_FILE))?, bytes);
     Ok(())
 }
+
+#[tokio::test]
+async fn prepares_the_newest_base_through_the_nodes_own_bucket() -> Result<()> {
+    let slot = tempfile::tempdir()?;
+    let bases: Arc<dyn Bucket> = Arc::new(FileBucket::new(slot.path().join("bucket"))?);
+    let bytes = database(slot.path(), 4)?;
+    let key = crate::bucket::base_key(&head()?.reference, 1, bytes.len() as u64)?;
+    assert!(
+        bases
+            .compare_and_swap(&key, None, bytes.clone().into())
+            .await?
+    );
+    let store: Arc<dyn crate::bucket::SnapshotStore> =
+        Arc::new(FromBase(base("unused", 0, Arc::new(Empty))));
+    let listed = Arc::new(OnceLock::new());
+    let file = slot.path().join(PREPARED_DIR).join(PREPARED_FILE);
+    let actor = ActorKey {
+        project_id: "project".into(),
+        actor_name: "Counter".into(),
+        actor_id: "id".into(),
+    };
+    let prepared = download_newest(
+        Some(bases),
+        futures_util::future::ready(Ok(store)).boxed().shared(),
+        actor,
+        listed.clone(),
+        file.clone(),
+        Arc::new(tokio::sync::Semaphore::new(1)),
+    )
+    .await?;
+    assert_eq!(prepared.as_deref(), Some(key.as_str()));
+    assert_eq!(listed.get().map(|base| base.key.as_str()), Some(key.as_str()));
+    assert_eq!(std::fs::read(file)?, bytes);
+    Ok(())
+}

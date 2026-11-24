@@ -1,6 +1,7 @@
 //! Rebuilds hosts' Rapid databases in their slots, outside the sandbox. A host prepares as its
 //! assignment arrives, so the newest base downloads while it activates, then asks for the
-//! database at its verified head.
+//! database at its verified head. The node finds and downloads bases with its own warm client;
+//! the history after a base is read with the host's forwarded token.
 
 use std::{
     collections::HashMap,
@@ -20,7 +21,7 @@ use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use super::slots::{DATABASE, DATABASE_FILE};
 use crate::{
     actor::ActorKey,
-    bucket::{BaseName, SnapshotStoreConfig, SqliteBase, recovery::CheckpointProgress},
+    bucket::{BaseName, Bucket, SnapshotStoreConfig, SqliteBase, recovery::CheckpointProgress},
     litestream::storage::{restore_database, restoring},
     storage::{SnapshotRef, VerifiedSnapshot},
 };
@@ -78,6 +79,8 @@ pub(crate) struct SlotRestored {
 }
 
 pub(super) struct Restores {
+    /// The archive as the node itself reads it; none means no prepared downloads.
+    bases: Option<Arc<dyn Bucket>>,
     prepared: tokio::sync::Mutex<HashMap<String, Prepared>>,
     downloads: Arc<tokio::sync::Semaphore>,
     restores: tokio::sync::Semaphore,
@@ -99,8 +102,9 @@ struct Prepared {
 }
 
 impl Restores {
-    pub fn new() -> Self {
+    pub fn new(bases: Option<Arc<dyn Bucket>>) -> Self {
         Self {
+            bases,
             prepared: tokio::sync::Mutex::new(HashMap::new()),
             downloads: Arc::new(tokio::sync::Semaphore::new(CONCURRENT_DOWNLOADS)),
             restores: tokio::sync::Semaphore::new(CONCURRENT_RESTORES),
@@ -124,6 +128,7 @@ impl Restores {
         let listed = Arc::new(OnceLock::new());
         let file = directory.join(PREPARED_DIR).join(PREPARED_FILE);
         let task = AbortOnDropHandle::new(tokio::spawn(download_newest(
+            self.bases.clone(),
             store.clone(),
             actor.clone(),
             listed.clone(),
@@ -301,20 +306,29 @@ async fn finish(
     })
 }
 
+/// Opens the actor's store beside finding and downloading its newest base, so the restore finds
+/// both ready. The store's own errors surface when the restore awaits it.
 async fn download_newest(
+    bases: Option<Arc<dyn Bucket>>,
     store: Store,
     actor: ActorKey,
     listed: Arc<OnceLock<SqliteBase>>,
     file: PathBuf,
     permits: Arc<tokio::sync::Semaphore>,
 ) -> Result<Option<String>> {
-    let store = store.await.map_err(|error| anyhow::anyhow!("{error:#}"))?;
-    let Some(base) = store.newest_base(&actor).await? else {
-        return Ok(None);
+    let newest = async {
+        let Some(bases) = bases else {
+            return Ok(None);
+        };
+        let Some(base) = crate::bucket::newest_base_of(&bases, &actor).await? else {
+            return Ok(None);
+        };
+        let _ = listed.set(base.clone());
+        download(base.clone(), file, permits).await?;
+        anyhow::Ok(Some(base.key))
     };
-    let _ = listed.set(base.clone());
-    download(base.clone(), file, permits).await?;
-    Ok(Some(base.key))
+    let (_, newest) = tokio::join!(store, newest);
+    newest
 }
 
 async fn download(

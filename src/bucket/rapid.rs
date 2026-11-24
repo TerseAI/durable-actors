@@ -198,12 +198,6 @@ impl SnapshotStore for RapidSnapshots {
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         self.storage.latest(prefix, false).await
     }
-    async fn newest_base(
-        &self,
-        actor: &crate::actor::ActorKey,
-    ) -> Result<Option<base::SqliteBase>> {
-        self.storage.newest_base_of(actor).await
-    }
     async fn restored_elsewhere(
         &self,
         snapshot: &crate::storage::VerifiedSnapshot,
