@@ -445,10 +445,12 @@ impl DatabaseSession {
             "actor snapshot belongs to a newer owner epoch"
         );
         let started = Instant::now();
+        let cpu = crate::host::usage::cpu_ms();
         let parent = self.storage.resume_parent(&loaded.reference)?;
         let (capture, source) = self.open_sqlite(&loaded, parent.is_some(), slot).await?;
         info!(event = "actor_sqlite_restored", host_id = %self.endpoint.id, state_version,
-            source, duration_ms = elapsed_ms(started));
+            source, duration_ms = elapsed_ms(started),
+            cpu_ms = crate::host::usage::cpu_since(cpu));
         let mut cached = Self::resident(owner_epoch, state_version, capture, parent).await?;
         let VerifiedSnapshot {
             reference,
