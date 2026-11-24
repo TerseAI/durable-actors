@@ -97,7 +97,8 @@ impl Node {
         let cache = root.path().join("cache");
         let store = Arc::new(DiskStore::open(cache.clone(), 1 << 30, 1 << 10).await?);
         let layout = SlotLayout::Kubelet(root.path().join("pods"));
-        let slots = SqliteSlots::open(cache, Some(layout), store, BaseUploads::new(bucket)).await?;
+        let uploads = BaseUploads::new(bucket, store.staging().join("bases"));
+        let slots = SqliteSlots::open(cache, Some(layout), store, uploads).await?;
         Ok(Self { root, slots })
     }
 

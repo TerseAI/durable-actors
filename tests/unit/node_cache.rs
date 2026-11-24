@@ -84,7 +84,7 @@ impl NodeCache {
                 directory.path().into(),
                 Some(slots::SlotLayout::Kubelet(directory.path().join("pods"))),
                 store.clone(),
-                bases::BaseUploads::new(None),
+                bases::BaseUploads::new(None, store.staging().join("bases")),
             )
             .await?,
         );

@@ -42,17 +42,22 @@ impl Bucket for Stuck {
 }
 
 #[tokio::test]
-async fn a_host_taking_the_file_back_stops_its_upload() -> Result<()> {
+async fn a_host_takes_its_file_back_once_copied_and_the_upload_goes_on() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let parked = directory.path().join("actor.sqlite");
     std::fs::write(&parked, b"pages")?;
     let bucket = Arc::new(Stuck(Default::default()));
-    let uploads = BaseUploads::new(Some(bucket.clone()));
-    uploads.start(&actor(), parked, snapshot(), 7).await;
+    let uploads = BaseUploads::new(Some(bucket.clone()), directory.path().join("staging"));
+    uploads.start(&actor(), parked.clone(), snapshot(), 7).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), uploads.copied(&actor())).await?;
+    // The host rewrites its file; the upload reads its own copy.
+    std::fs::write(&parked, b"other pages")?;
     while !bucket.0.load(std::sync::atomic::Ordering::SeqCst) {
         tokio::task::yield_now().await;
     }
-    tokio::time::timeout(std::time::Duration::from_secs(1), uploads.cancel(&actor())).await?;
-    assert!(uploads.running.lock().await.is_empty());
+    let copies: Vec<_> = std::fs::read_dir(directory.path().join("staging"))?.collect();
+    assert_eq!(copies.len(), 1);
+    assert_eq!(std::fs::read(copies[0].as_ref().unwrap().path())?, b"pages");
+    uploads.cancel(&actor()).await;
     Ok(())
 }

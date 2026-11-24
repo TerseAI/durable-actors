@@ -44,7 +44,7 @@ pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'stati
             config.directory,
             config.pods_directory.map(slots::SlotLayout::Kubelet),
             store.clone(),
-            bases::BaseUploads::new(bucket),
+            bases::BaseUploads::new(bucket, store.staging().join("bases")),
         )
         .await?,
     );
@@ -69,7 +69,7 @@ pub(crate) async fn local_router(
             .await?,
     );
     let layout = Some(slots::SlotLayout::Hosts(slots));
-    let uploads = bases::BaseUploads::new(None);
+    let uploads = bases::BaseUploads::new(None, store.staging().join("bases"));
     let slots =
         Arc::new(slots::SqliteSlots::open(directory, layout, store.clone(), uploads).await?);
     Ok(server::router(
