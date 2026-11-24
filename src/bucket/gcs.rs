@@ -89,9 +89,11 @@ impl GcsBucket {
     /// The node's bucket for one restore, read with a host's forwarded token. Outside the sandbox
     /// a restore can afford the connections its parallel Rapid reads need.
     pub(crate) async fn for_restore(bucket: &str, credentials: Credentials) -> Result<Self> {
+        let mut clients = GcsClients::new(credentials, Some(RESTORE_GRPC_SUBCHANNELS)).await?;
+        clients.transfers = Arc::new(tokio::sync::Semaphore::new(RESTORE_TRANSFERS));
         Ok(Self {
             bucket: bucket_name(bucket)?,
-            clients: GcsClients::new(credentials, Some(RESTORE_GRPC_SUBCHANNELS)).await?,
+            clients,
         })
     }
 }
@@ -161,6 +163,8 @@ impl WarmGcs {
 pub(crate) const HOST_GRPC_SUBCHANNELS: usize = 1;
 /// A restore reads up to 64 Rapid segments at once; one HTTP/2 connection carried ~140 MB/s.
 const RESTORE_GRPC_SUBCHANNELS: usize = 8;
+/// Large transfers at once for a restore's client; a host's stays at two to bound its memory.
+const RESTORE_TRANSFERS: usize = 8;
 
 impl GcsClients {
     async fn transfer(&self, length: u64) -> Result<Option<tokio::sync::SemaphorePermit<'_>>> {
@@ -508,7 +512,7 @@ fn download_parts(length: u64) -> Vec<(u64, u64)> {
         .collect()
 }
 
-async fn write_part(
+pub(super) async fn write_part(
     file: Arc<std::fs::File>,
     offset: u64,
     size: u64,
