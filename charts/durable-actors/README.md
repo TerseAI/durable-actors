@@ -104,7 +104,8 @@ With the platform issuer set, `telemetry.collector.datadog.enabled: true` also d
 
 | Metric | Type | Tags |
 | --- | --- | --- |
-| `durable_actors.requests` | count | `organization_id`, `project_id`, `actor_name`, `outcome` |
+| `durable_actors.requests` | count | `organization_id`, `project_id`, `actor_name`, `outcome`, `host_state` |
+| `durable_actors.request.routing` | distribution, ms, rerouted attempts excluded | `organization_id`, `project_id`, `actor_name`, `host_state` |
 | `durable_actors.request.duration` | distribution, ms, rerouted attempts excluded | `organization_id`, `project_id`, `actor_name` |
 | `durable_actors.request.queue_wait` | distribution, ms, rerouted attempts excluded | `organization_id`, `project_id`, `actor_name` |
 | `durable_actors.actor.starts` | count | `project_id`, `actor_name` |

@@ -20,9 +20,20 @@ connectors:
           - key: durable_actors.actor_name
         attributes:
           - key: durable_actors.outcome
+          - key: durable_actors.host_state
         sum:
           value: "1"
           monotonic: true
+      - name: durable_actors.request.routing
+        description: Time from the control plane receiving a request until its host started it, cold starts included, excluding rerouted attempts
+        unit: ms
+        include_resource_attributes: *tenant
+        attributes:
+          - key: durable_actors.host_state
+        conditions:
+          - span.attributes["durable_actors.routing_ms"] != nil and span.attributes["durable_actors.outcome"] != "rerouted"
+        exponential_histogram:
+          value: Double(span.attributes["durable_actors.routing_ms"])
       - name: durable_actors.request.duration
         description: Request duration, excluding rerouted attempts
         unit: ms
