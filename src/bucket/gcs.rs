@@ -38,9 +38,6 @@ pub(crate) struct GcsClients {
     pub storage: Storage,
     pub control: StorageControl,
     pub transfers: Arc<tokio::sync::Semaphore>,
-    /// A connection per extra range of a parallel download, opened on the first one.
-    ranges: Arc<tokio::sync::OnceCell<Storage>>,
-    credentials: Credentials,
 }
 
 impl GcsBucket {
@@ -171,25 +168,10 @@ impl GcsClients {
             transfers: Arc::new(tokio::sync::Semaphore::new(2)),
             storage: storage.build().await?,
             control: StorageControl::builder()
-                .with_credentials(credentials.clone())
+                .with_credentials(credentials)
                 .build()
                 .await?,
-            ranges: Arc::default(),
-            credentials,
         })
-    }
-
-    /// One HTTP/2 connection carries about 120 MB/s from a sandbox, so each range gets its own.
-    async fn ranges(&self) -> Result<&Storage> {
-        Ok(self
-            .ranges
-            .get_or_try_init(|| {
-                Storage::builder()
-                    .with_credentials(self.credentials.clone())
-                    .with_grpc_subchannel_count(DOWNLOAD_PARTS as usize - 1)
-                    .build()
-            })
-            .await?)
     }
 }
 
@@ -418,8 +400,7 @@ impl GcsBucket {
                 async move {
                     let response = self
                         .clients
-                        .ranges()
-                        .await?
+                        .storage
                         .read_object(&self.bucket, key)
                         .set_generation(generation)
                         .set_read_range(ReadRange::segment(start + offset, size))
