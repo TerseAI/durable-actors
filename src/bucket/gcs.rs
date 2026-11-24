@@ -458,21 +458,20 @@ async fn write_part(
         }
         buffer.extend_from_slice(&chunk[..wanted]);
         if buffer.len() >= crate::payload::IO_BUFFER_BYTES {
-            written += flush_part(&file, offset + written, &mut buffer).await?;
+            written += flush_part(&file, offset + written, &mut buffer)?;
         }
     }
-    written += flush_part(&file, offset + written, &mut buffer).await?;
+    written += flush_part(&file, offset + written, &mut buffer)?;
     anyhow::ensure!(written == size, "incomplete object part");
     Ok(crc)
 }
 
-async fn flush_part(file: &Arc<std::fs::File>, at: u64, buffer: &mut Vec<u8>) -> Result<u64> {
-    let (file, bytes) = (file.clone(), std::mem::take(buffer));
-    let length = bytes.len() as u64;
-    tokio::task::spawn_blocking(move || {
-        use std::os::unix::fs::FileExt;
-        file.write_all_at(&bytes, at)
-    })
-    .await??;
+/// Writes on the download task: in gVisor, handing each buffer to the blocking pool cost ~10x the
+/// CPU of the write itself, and the file takes writes no faster from several threads than from one.
+fn flush_part(file: &std::fs::File, at: u64, buffer: &mut Vec<u8>) -> Result<u64> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(buffer, at)?;
+    let length = buffer.len() as u64;
+    buffer.clear();
     Ok(length)
 }
