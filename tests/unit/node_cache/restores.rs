@@ -17,6 +17,7 @@ impl crate::bucket::SnapshotStore for FromBase {
     async fn restore_sqlite(
         &self,
         _: VerifiedSnapshot,
+        _: Option<SqliteBase>,
         _: Option<&Path>,
     ) -> Result<RestoredSqlite> {
         Ok(RestoredSqlite {
@@ -107,6 +108,7 @@ fn prepared(key: &str, file: PathBuf, store: Arc<dyn crate::bucket::SnapshotStor
             actor_id: "id".into(),
         },
         store: futures_util::future::ready(Ok(store)).boxed().shared(),
+        listed: Arc::new(OnceLock::new()),
         file,
         started: Instant::now(),
         task: AbortOnDropHandle::new(tokio::spawn(async move { Ok(Some(key)) })),
@@ -123,9 +125,11 @@ async fn restores_onto_the_prepared_base_without_downloading_it_again() -> Resul
     let store = Arc::new(FromBase(base("base", bytes.len() as u64, Arc::new(Empty))));
     let database = slot.path().join(DATABASE);
     let prepared = prepared("base", file.clone(), store.clone());
-    let (txid, base_bytes) =
-        restore_into(store.as_ref(), head()?, Some(prepared), &database).await?;
-    assert_eq!((txid, base_bytes), (1, Some(bytes.len() as u64)));
+    let restored = restore_into(store.as_ref(), head()?, Some(prepared), &database).await?;
+    assert_eq!(
+        (restored.txid, restored.base_bytes),
+        (1, Some(bytes.len() as u64))
+    );
     assert_eq!(std::fs::read(database.join(DATABASE_FILE))?, bytes);
     assert!(!file.exists());
     Ok(())

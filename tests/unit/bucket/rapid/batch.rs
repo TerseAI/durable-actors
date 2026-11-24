@@ -293,7 +293,7 @@ async fn restores_prefetch_archived_batches_without_reading_unlisted_versions() 
     let snapshot = VerifiedSnapshot::matching(f.stream.snapshot(&head)?, head)?;
 
     let (reader, archive) = controlled(&f, 1, 10_000)?;
-    let restored = reader.storage.restore(snapshot, None).await?;
+    let restored = reader.storage.restore(snapshot, None, None).await?;
 
     assert_eq!(restored.parents, 19);
     assert_eq!(archive.version_reads.load(Ordering::SeqCst), 0);
@@ -351,7 +351,7 @@ async fn restores_plan_history_spread_across_owner_epochs() -> Result<()> {
     }
     archive_legacy(&f.store()?, &f).await?;
     let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
-    let restored = reader.storage.restore(head.unwrap(), None).await?;
+    let restored = reader.storage.restore(head.unwrap(), None, None).await?;
 
     assert_eq!(restored.parents, 39);
     assert_eq!(archive.version_reads.load(Ordering::SeqCst), 0);
@@ -488,7 +488,7 @@ async fn store_base(
     let crate::bucket::RestoredSqlite {
         sqlite: restored,
         base: previous,
-    } = store.restore_sqlite(snapshot, None).await?;
+    } = store.restore_sqlite(snapshot, None, None).await?;
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("base.sqlite");
     match previous {
@@ -530,6 +530,7 @@ async fn restore_version(
                 f.stream.object(version),
                 history[version as usize - 1].clone(),
             )?,
+            None,
             None,
         )
         .await
@@ -588,6 +589,7 @@ async fn ignores_a_base_whose_transaction_disagrees_with_the_history() -> Result
     let restored = reader
         .restore_sqlite(
             VerifiedSnapshot::named(f.stream.object(12), history[11].clone())?,
+            None,
             Some(&download),
         )
         .await?;
@@ -626,7 +628,7 @@ async fn restores_the_same_rows_from_an_older_base_when_the_newest_is_corrupt() 
         .await?;
     let dir = tempfile::tempdir()?;
     let path = crate::litestream::storage::restoring(dir.path());
-    let restored = reader.restore_sqlite(head, Some(&path)).await?;
+    let restored = reader.restore_sqlite(head, None, Some(&path)).await?;
     assert_eq!(restored.base.as_ref().unwrap().name.version, 4);
     let fields = crate::litestream::storage::restored_fields(
         dir,
@@ -653,6 +655,7 @@ async fn downloads_the_base_while_reading_the_history_after_it() -> Result<()> {
     let restored = reader
         .restore_sqlite(
             VerifiedSnapshot::named(f.stream.object(12), history[11].clone())?,
+            None,
             Some(&download),
         )
         .await?;
@@ -748,7 +751,7 @@ async fn restores_rapid_history_spread_across_owner_epochs() -> Result<()> {
         head = Some(VerifiedSnapshot::matching(reference, bytes)?);
     }
     let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
-    let restored = reader.storage.restore(head.unwrap(), None).await?;
+    let restored = reader.storage.restore(head.unwrap(), None, None).await?;
 
     assert_eq!(restored.parents, 39);
     // The planner read every epoch's segments at once, so the walk read no single version.
@@ -824,7 +827,7 @@ async fn restores_from_a_legacy_checkpoint_and_refuses_a_corrupt_one() -> Result
         )
         .await?;
     let head = VerifiedSnapshot::matching(corrupt, history[34].clone())?;
-    assert!(reader.restore_sqlite(head, None).await.is_err());
+    assert!(reader.restore_sqlite(head, None, None).await.is_err());
     Ok(())
 }
 

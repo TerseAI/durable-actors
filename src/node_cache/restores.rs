@@ -5,7 +5,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -51,6 +51,9 @@ pub(crate) struct SlotPrepare {
 pub(crate) struct SlotRestore {
     pub storage: SlotStorage,
     pub head: SnapshotRef,
+    /// The head's bytes, base64, when the host sends them so the node need not read them again.
+    #[serde(default)]
+    pub head_bytes: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,6 +63,13 @@ pub(crate) struct SlotRestored {
     pub source: String,
     pub base_bytes: Option<u64>,
     pub duration_ms: f64,
+    /// Opening the actor's store, reading its head, and waiting for the prepared download.
+    #[serde(default)]
+    pub open_ms: f64,
+    #[serde(default)]
+    pub head_ms: f64,
+    #[serde(default)]
+    pub wait_ms: f64,
 }
 
 pub(super) struct Restores {
@@ -72,11 +82,12 @@ pub(super) struct Restores {
 type Store =
     Shared<BoxFuture<'static, Result<Arc<dyn crate::bucket::SnapshotStore>, Arc<anyhow::Error>>>>;
 
-/// The newest base, downloading into a slot before its host knows its head. The task returns the
-/// downloaded base's key, `None` when the actor has no base.
+/// The newest base, downloading into a slot before its host knows its head. `listed` holds that
+/// base once listed; the task returns its key, `None` when the actor has no base.
 struct Prepared {
     actor: ActorKey,
     store: Store,
+    listed: Arc<OnceLock<SqliteBase>>,
     file: PathBuf,
     started: Instant,
     task: AbortOnDropHandle<Result<Option<String>>>,
@@ -105,10 +116,12 @@ impl Restores {
             return Ok(());
         }
         let store = open(storage).boxed().shared();
+        let listed = Arc::new(OnceLock::new());
         let file = directory.join(PREPARED_DIR).join(PREPARED_FILE);
         let task = AbortOnDropHandle::new(tokio::spawn(download_newest(
             store.clone(),
             actor.clone(),
+            listed.clone(),
             file.clone(),
             self.downloads.clone(),
         )));
@@ -117,6 +130,7 @@ impl Restores {
             Prepared {
                 actor: actor.clone(),
                 store,
+                listed,
                 file,
                 started: Instant::now(),
                 task,
@@ -142,21 +156,27 @@ impl Restores {
             None => open(request.storage.clone()).await,
         }
         .map_err(|error| anyhow::anyhow!("{error:#}"))?;
-        let bytes = store
-            .get(&request.head.object)
-            .await?
-            .context("actor head is missing")?;
-        let head = VerifiedSnapshot::matching(request.head, bytes)?;
+        let open_ms = elapsed_ms(started);
+        let head = read_head(store.as_ref(), request.head, request.head_bytes).await?;
+        let head_ms = elapsed_ms(started) - open_ms;
         let database = directory.join(DATABASE);
         let restored = restore_into(store.as_ref(), head, prepared, &database).await;
         remove_prepared(directory).await;
-        let (txid, base) = restored?;
+        let restored = restored?;
         open_to_host(&database.join(DATABASE_FILE)).await?;
         Ok(SlotRestored {
-            txid,
-            source: if base.is_some() { "base" } else { "history" }.into(),
-            base_bytes: base,
-            duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+            txid: restored.txid,
+            source: if restored.base_bytes.is_some() {
+                "base"
+            } else {
+                "history"
+            }
+            .into(),
+            base_bytes: restored.base_bytes,
+            duration_ms: elapsed_ms(started),
+            open_ms,
+            head_ms,
+            wait_ms: restored.wait_ms,
         })
     }
 
@@ -184,6 +204,29 @@ impl Restores {
     }
 }
 
+/// The head the host verified, from the bytes it sent or else read again.
+async fn read_head(
+    store: &dyn crate::bucket::SnapshotStore,
+    head: SnapshotRef,
+    sent: Option<String>,
+) -> Result<VerifiedSnapshot> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let bytes = match sent {
+        Some(sent) => STANDARD.decode(sent)?.into(),
+        None => store
+            .get(&head.object)
+            .await?
+            .context("actor head is missing")?,
+    };
+    VerifiedSnapshot::matching(head, bytes)
+}
+
+struct Restored {
+    txid: u64,
+    base_bytes: Option<u64>,
+    wait_ms: f64,
+}
+
 /// Uses the prepared base when the head's history starts from it, and otherwise, or after any
 /// failure, restores the way a host did: download beside the history read, with fallbacks.
 async fn restore_into(
@@ -191,7 +234,7 @@ async fn restore_into(
     head: VerifiedSnapshot,
     prepared: Option<Prepared>,
     database: &Path,
-) -> Result<(u64, Option<u64>)> {
+) -> Result<Restored> {
     tokio::fs::create_dir_all(database).await?;
     match restore_prepared(store, head.clone(), prepared, database).await {
         Ok(restored) => Ok(restored),
@@ -199,9 +242,9 @@ async fn restore_into(
             tracing::warn!(error = %format!("{error:#}"), "prepared restore failed, restoring again");
             clear(database).await?;
             let restored = store
-                .restore_sqlite(head, Some(&restoring(database)))
+                .restore_sqlite(head, None, Some(&restoring(database)))
                 .await?;
-            finish(database, restored).await
+            finish(database, restored, 0.0).await
         }
     }
 }
@@ -211,8 +254,12 @@ async fn restore_prepared(
     head: VerifiedSnapshot,
     prepared: Option<Prepared>,
     database: &Path,
-) -> Result<(u64, Option<u64>)> {
-    let mut restored = store.restore_sqlite(head, None).await?;
+) -> Result<Restored> {
+    let listed = prepared
+        .as_ref()
+        .and_then(|prepared| prepared.listed.get().cloned());
+    let mut restored = store.restore_sqlite(head, listed, None).await?;
+    let waited = Instant::now();
     if let (Some(base), Some(prepared)) = (restored.base.as_mut(), prepared)
         && prepared.task.await??.as_deref() == Some(base.key.as_str())
     {
@@ -220,13 +267,14 @@ async fn restore_prepared(
         tokio::fs::rename(&prepared.file, &partial).await?;
         base.downloaded = Some(partial);
     }
-    finish(database, restored).await
+    finish(database, restored, elapsed_ms(waited)).await
 }
 
 async fn finish(
     database: &Path,
     restored: crate::bucket::RestoredSqlite,
-) -> Result<(u64, Option<u64>)> {
+    wait_ms: f64,
+) -> Result<Restored> {
     restore_database(
         &crate::litestream::EmbeddedRestore,
         database,
@@ -235,15 +283,17 @@ async fn finish(
         restored.sqlite.txid,
     )
     .await?;
-    Ok((
-        restored.sqlite.txid,
-        restored.base.map(|base| base.name.bytes),
-    ))
+    Ok(Restored {
+        txid: restored.sqlite.txid,
+        base_bytes: restored.base.map(|base| base.name.bytes),
+        wait_ms,
+    })
 }
 
 async fn download_newest(
     store: Store,
     actor: ActorKey,
+    listed: Arc<OnceLock<SqliteBase>>,
     file: PathBuf,
     permits: Arc<tokio::sync::Semaphore>,
 ) -> Result<Option<String>> {
@@ -251,6 +301,7 @@ async fn download_newest(
     let Some(base) = store.newest_base(&actor).await? else {
         return Ok(None);
     };
+    let _ = listed.set(base.clone());
     download(base.clone(), file, permits).await?;
     Ok(Some(base.key))
 }
@@ -282,7 +333,7 @@ async fn open(
     storage: SlotStorage,
 ) -> Result<Arc<dyn crate::bucket::SnapshotStore>, Arc<anyhow::Error>> {
     let opened = async {
-        let state = crate::bucket::GcsBucket::with_credentials(
+        let state = crate::bucket::GcsBucket::for_restore(
             &storage.bucket,
             crate::bucket::forwarded_token(storage.access_token.clone()),
         )
@@ -304,6 +355,10 @@ async fn open_to_host(file: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::set_permissions(file, std::fs::Permissions::from_mode(0o666)).await?;
     Ok(())
+}
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 async fn clear(database: &Path) -> Result<()> {

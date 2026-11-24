@@ -224,6 +224,9 @@ async fn restore(
                 txid = restored.txid,
                 source = restored.source,
                 base_bytes = restored.base_bytes,
+                open_ms = restored.open_ms,
+                head_ms = restored.head_ms,
+                wait_ms = restored.wait_ms,
                 duration_ms = restored.duration_ms
             );
             Json(restored).into_response()

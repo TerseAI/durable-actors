@@ -512,7 +512,7 @@ impl DatabaseSession {
             anyhow::bail!("Rapid restores need the node file service and a slot");
         };
         let directory = emptied(Some(&path)).await?;
-        let restored = restore_with_retry(cache, storage, &loaded.reference).await?;
+        let restored = restore_with_retry(cache, storage, loaded).await?;
         ensure!(
             restored.txid == loaded.snapshot.sqlite.txid,
             "node restored another SQLite transaction"
@@ -986,7 +986,7 @@ impl StateWriteTimings {
 async fn restore_with_retry(
     cache: &NodeCacheClient,
     storage: crate::node_cache::SlotStorage,
-    head: &SnapshotRef,
+    head: &VerifiedSnapshot,
 ) -> Result<crate::node_cache::SlotRestored> {
     let deadline = Instant::now() + std::time::Duration::from_secs(20);
     loop {

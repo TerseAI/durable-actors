@@ -20,6 +20,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// A restore answers only when the database is ready, after up to several seconds of silence.
 const RESTORE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Heads up to this size go with the restore request, so the node need not read them again.
+const SENT_HEAD_BYTES: usize = 4 << 20;
 /// Activation reads code, the database and the snapshot at once, and a read that finds no idle
 /// connection pays for a new one inside gVisor.
 const WARM_CONNECTIONS: usize = 4;
@@ -187,8 +189,12 @@ impl NodeCacheClient {
     pub(crate) async fn restore_slot(
         &self,
         storage: SlotStorage,
-        head: &SnapshotRef,
+        head: &crate::storage::VerifiedSnapshot,
     ) -> Result<SlotRestored> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let head_bytes = (head.bytes.len() <= SENT_HEAD_BYTES)
+            .then(|| head.bytes.to_bytes().map(|bytes| STANDARD.encode(bytes)))
+            .transpose()?;
         let response = self
             .connection
             .restores
@@ -196,7 +202,8 @@ impl NodeCacheClient {
             .header(AUTHORIZATION, self.authorization.header()?)
             .json(&SlotRestore {
                 storage,
-                head: head.clone(),
+                head: head.reference.clone(),
+                head_bytes,
             })
             .send()
             .await?;

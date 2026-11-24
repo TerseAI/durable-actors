@@ -23,14 +23,18 @@ impl LogStorage {
     pub async fn restore(
         &self,
         snapshot: VerifiedSnapshot,
+        newest: Option<super::base::SqliteBase>,
         download: Option<&std::path::Path>,
     ) -> Result<ResolvedSqlite> {
         let reference = &snapshot.reference;
         tracing::info!(event = "sqlite_history_started", object = reference.object);
-        let base = self.newest_base(reference).await.unwrap_or_else(|error| {
-            tracing::warn!(error = %format!("{error:#}"), "SQLite bases unavailable; restoring from history");
-            None
-        });
+        let base = match newest.filter(|base| base.name.version <= reference.state_version) {
+            Some(base) => Some(base),
+            None => self.newest_base(reference).await.unwrap_or_else(|error| {
+                tracing::warn!(error = %format!("{error:#}"), "SQLite bases unavailable; restoring from history");
+                None
+            }),
+        };
         let Some(newest) = base else {
             return self.restore_from(snapshot, None, download).await;
         };

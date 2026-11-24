@@ -85,6 +85,15 @@ impl GcsBucket {
             clients: GcsClients::new(credentials, Some(HOST_GRPC_SUBCHANNELS)).await?,
         })
     }
+
+    /// The node's bucket for one restore, read with a host's forwarded token. Outside the sandbox
+    /// a restore can afford the connections its parallel Rapid reads need.
+    pub(crate) async fn for_restore(bucket: &str, credentials: Credentials) -> Result<Self> {
+        Ok(Self {
+            bucket: bucket_name(bucket)?,
+            clients: GcsClients::new(credentials, Some(RESTORE_GRPC_SUBCHANNELS)).await?,
+        })
+    }
 }
 
 impl WarmStorage {
@@ -150,6 +159,8 @@ impl WarmGcs {
 /// activation through the egress proxy.
 /// One actor's storage traffic fits in one HTTP/2 connection (~100 concurrent RPCs).
 pub(crate) const HOST_GRPC_SUBCHANNELS: usize = 1;
+/// A restore reads up to 64 Rapid segments at once; one HTTP/2 connection carried ~140 MB/s.
+const RESTORE_GRPC_SUBCHANNELS: usize = 8;
 
 impl GcsClients {
     async fn transfer(&self, length: u64) -> Result<Option<tokio::sync::SemaphorePermit<'_>>> {

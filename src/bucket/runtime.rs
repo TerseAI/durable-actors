@@ -181,7 +181,9 @@ impl RuntimeStorageReader {
         snapshot: VerifiedSnapshot,
         download: Option<&std::path::Path>,
     ) -> Result<super::recovery::RestoredSqlite> {
-        self.snapshots.restore_sqlite(snapshot, download).await
+        self.snapshots
+            .restore_sqlite(snapshot, None, download)
+            .await
     }
 
     pub(crate) fn new(

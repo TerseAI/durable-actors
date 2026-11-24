@@ -147,11 +147,12 @@ impl SnapshotStoreConfig {
 #[async_trait]
 pub(crate) trait SnapshotStore: Send + Sync {
     async fn get(&self, object: &str) -> Result<Option<Payload>>;
-    /// Resolves `snapshot`'s SQLite history. A store with bases may download the one the history
-    /// starts from to `download` meanwhile.
+    /// Resolves `snapshot`'s SQLite history. A store with bases starts from `newest` when the
+    /// caller already listed it, and may download the base to `download` meanwhile.
     async fn restore_sqlite(
         &self,
         snapshot: crate::storage::VerifiedSnapshot,
+        _newest: Option<super::SqliteBase>,
         _download: Option<&std::path::Path>,
     ) -> Result<recovery::RestoredSqlite> {
         let resolved =
