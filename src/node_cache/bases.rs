@@ -73,17 +73,15 @@ impl BaseUploads {
         );
     }
 
-    /// Waits until the actor's upload, if any, has its copy, so a host can take the file back.
-    pub async fn copied(&self, actor: &ActorKey) {
-        let waiting = self
-            .running
+    /// The actor's upload still copying its parked file, which a host must not take back until
+    /// the copy turns true.
+    pub async fn copying(&self, actor: &ActorKey) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.running
             .lock()
             .await
             .get(&super::actor_digest(actor))
-            .map(|upload| upload.copied.clone());
-        if let Some(mut waiting) = waiting {
-            let _ = waiting.wait_for(|copied| *copied).await;
-        }
+            .map(|upload| upload.copied.clone())
+            .filter(|copied| !*copied.borrow())
     }
 
     /// Stops the actor's upload, when a newer park supersedes it.

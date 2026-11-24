@@ -49,7 +49,14 @@ async fn a_host_takes_its_file_back_once_copied_and_the_upload_goes_on() -> Resu
     let bucket = Arc::new(Stuck(Default::default()));
     let uploads = BaseUploads::new(Some(bucket.clone()), directory.path().join("staging"));
     uploads.start(&actor(), parked.clone(), snapshot(), 7).await;
-    tokio::time::timeout(std::time::Duration::from_secs(1), uploads.copied(&actor())).await?;
+    if let Some(mut copying) = uploads.copying(&actor()).await {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            copying.wait_for(|copied| *copied),
+        )
+        .await??;
+    }
+    assert!(uploads.copying(&actor()).await.is_none());
     // The host rewrites its file; the upload reads its own copy.
     std::fs::write(&parked, b"other pages")?;
     while !bucket.0.load(std::sync::atomic::Ordering::SeqCst) {

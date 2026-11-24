@@ -109,8 +109,15 @@ impl SqliteSlots {
     ) -> Result<Option<SlotFile>> {
         let target = self.slot(slot)?.join(DATABASE);
         let (key, parked, name) = (self.key(actor), self.parked(actor), actor_name(actor));
-        let _moving = self.lock.lock().await;
-        self.uploads.copied(actor).await;
+        let _moving = loop {
+            let moving = self.lock.lock().await;
+            let Some(mut copying) = self.uploads.copying(actor).await else {
+                break moving;
+            };
+            // Other actors park and check out while this one's base finishes its copy.
+            drop(moving);
+            let _ = copying.wait_for(|copied| *copied).await;
+        };
         let file = blocking(move || check_out(&parked, &target, &name, snapshot.as_ref())).await;
         self.store.forget(&key).await;
         file
