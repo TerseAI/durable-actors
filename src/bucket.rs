@@ -2,7 +2,7 @@ pub(crate) mod access;
 mod file;
 mod gcs;
 mod rapid;
-pub(crate) use rapid::{RAPID_OPERATION_TIMEOUT, RapidSnapshots, transfer_timeout};
+pub(crate) use rapid::{RAPID_OPERATION_TIMEOUT, RapidSnapshots};
 pub(crate) mod recovery;
 mod snapshots;
 pub(crate) use rapid::base::SqliteBase;

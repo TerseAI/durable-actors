@@ -246,6 +246,7 @@ impl LogStorage {
         Ok(records)
     }
 
+    #[cfg(test)]
     pub async fn index_batch(
         &self,
         manifest: &Manifest,

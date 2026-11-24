@@ -71,15 +71,7 @@ impl RapidSnapshots {
                 }) as Arc<dyn LogZone>
             })
             .collect();
-        let store = Self::new(
-            archive,
-            snapshots,
-            zones,
-            *placement,
-            *archive_batch,
-            Arc::new(crate::litestream::compaction::RustCompactor),
-            stop,
-        )?;
+        let store = Self::new(archive, snapshots, zones, *placement, *archive_batch, stop)?;
         if let Some(actor) = actor {
             store.prepare(actor)?;
         }

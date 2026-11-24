@@ -30,10 +30,9 @@ use tokio_util::task::AbortOnDropHandle;
 use writer::Session;
 
 const ROTATION_INTERVAL: Duration = Duration::from_secs(60);
-/// Archived batches a restore downloads at once; their bodies spool to temporary files.
+/// Archived batches or log segments a restore downloads at once; their bodies spool to
+/// temporary files.
 const PREFETCH_BATCHES: usize = 64;
-/// Keeps every Rapid object a session writes far younger than the 7-day lifecycle rule.
-const IDLE_SEGMENT_REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) const RAPID_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// The slowest transfer rate a bounded operation is allowed before it counts as stuck.
 const MIN_TRANSFER_BYTES_PER_SECOND: f64 = 32.0 * 1024.0 * 1024.0;
@@ -62,6 +61,8 @@ trait LogZone: Send + Sync {
 pub(crate) struct RapidSnapshots {
     storage: Arc<LogStorage>,
     session: Arc<Mutex<Option<Session>>>,
+    /// The newest base the activation's prefetch found, and the head it looked below.
+    prefetched_base: std::sync::Mutex<Option<(SnapshotRef, Option<base::BaseName>)>>,
 }
 
 struct LogStorage {
@@ -72,7 +73,6 @@ struct LogStorage {
     prepared: std::sync::Mutex<Option<Prepared>>,
     batch: super::ArchiveBatchConfig,
     live: std::sync::Mutex<BTreeMap<u64, index::LiveRecord>>,
-    compactor: Arc<dyn crate::litestream::compaction::LtxCompactor>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -106,7 +106,6 @@ impl RapidSnapshots {
         zones: Vec<Arc<dyn LogZone>>,
         placement: super::RapidPlacement,
         batch: super::ArchiveBatchConfig,
-        compactor: Arc<dyn crate::litestream::compaction::LtxCompactor>,
         stop: CancellationToken,
     ) -> Result<Self> {
         ensure!(
@@ -125,11 +124,14 @@ impl RapidSnapshots {
             prepared: std::sync::Mutex::new(None),
             batch,
             live: std::sync::Mutex::new(BTreeMap::new()),
-            compactor,
         });
         let session = Arc::new(Mutex::new(None));
         writer::start_rotation(storage.clone(), Arc::downgrade(&session), stop);
-        Ok(Self { storage, session })
+        Ok(Self {
+            storage,
+            session,
+            prefetched_base: std::sync::Mutex::new(None),
+        })
     }
 }
 
@@ -175,6 +177,8 @@ impl SnapshotStore for RapidSnapshots {
             self.storage.snapshots.get(&checkpoint),
             self.storage.newest_base(source)
         )?;
+        *self.prefetched_base.lock().unwrap() =
+            Some((source.clone(), base.as_ref().map(|base| base.name)));
         Ok(Some(super::recovery::PrefetchedCheckpoint {
             source: source.clone(),
             bytes,
@@ -188,9 +192,7 @@ impl SnapshotStore for RapidSnapshots {
     ) -> Result<super::recovery::RestoredSqlite> {
         let restored = self.storage.restore(snapshot.clone(), checkpoint).await?;
         if let Some(session) = self.session.lock().await.as_mut() {
-            session
-                .restored(self.storage.clone(), &snapshot, &restored)
-                .await?;
+            session.restored(&snapshot, &restored).await?;
         }
         Ok(super::recovery::RestoredSqlite {
             sqlite: restored.sqlite,
@@ -225,9 +227,18 @@ impl SnapshotStore for RapidSnapshots {
         stream: &StateStream,
         resume: Option<(&SnapshotRef, CheckpointProgress)>,
     ) -> Result<()> {
+        let base = match (resume, self.prefetched_base.lock().unwrap().take()) {
+            (Some((head, _)), Some((source, base))) if *head == source => base,
+            _ => None,
+        };
         let mut session = self.session.lock().await;
         ensure!(session.is_none(), "log stream is already activated");
-        *session = Some(Session::open(self.storage.clone(), stream.clone(), resume)?);
+        *session = Some(Session::open(
+            self.storage.clone(),
+            stream.clone(),
+            resume,
+            base,
+        )?);
         Ok(())
     }
     async fn recover(&self, prefix: &str) -> Result<Option<(String, Payload)>> {

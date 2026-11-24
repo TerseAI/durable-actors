@@ -13,7 +13,6 @@ use terse_litestream::{
 use storage::LtxFile;
 
 pub(crate) mod apply;
-pub(crate) mod compaction;
 pub(crate) mod storage;
 
 /// How often a database whose store has no checkpoints of its own writes a full copy, which

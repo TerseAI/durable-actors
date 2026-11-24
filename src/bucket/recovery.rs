@@ -48,6 +48,9 @@ pub(crate) struct CheckpointProgress {
     pub base_bytes: u64,
     /// Restores count LTX payloads. Live writes count the encoded records.
     pub log_bytes: u64,
+    /// Whether the sealing owner found a new base due; never stored.
+    #[serde(skip)]
+    pub base_due: bool,
 }
 
 /// Walks `snapshot`'s SQLite history back to the first full copy it reaches: `base` when the walk
@@ -128,6 +131,7 @@ pub(crate) async fn resolve(
             version: reference.state_version,
             base_bytes,
             log_bytes,
+            base_due: false,
         },
         sqlite: SqliteSnapshot {
             txid,
@@ -138,6 +142,7 @@ pub(crate) async fn resolve(
 }
 
 impl Checkpoint {
+    #[cfg(test)]
     pub fn encode(&self) -> Result<Payload> {
         let mut header = self.clone();
         let files = std::mem::take(&mut header.sqlite.files);

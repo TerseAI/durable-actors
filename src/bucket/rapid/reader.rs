@@ -271,7 +271,16 @@ impl LogStorage {
         Ok((through, records))
     }
 
+    /// Fences a segment whose owner never sealed it, so its writer can append nothing more, and
+    /// checks that it reads.
     pub async fn recover_segment(&self, manifest: &Manifest) -> Result<()> {
+        self.read_segment(manifest, true, None).await?;
+        Ok(())
+    }
+
+    /// Archives a segment as hosts did before bases, so tests can build legacy history.
+    #[cfg(test)]
+    pub async fn archive_segment(&self, manifest: &Manifest) -> Result<()> {
         let records = self.read_segment(manifest, true, None).await?;
         if self
             .archive
