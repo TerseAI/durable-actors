@@ -8,6 +8,7 @@ use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone)]
 pub(crate) struct PrefetchedCheckpoint {
     pub source: SnapshotRef,
     pub bytes: Option<Payload>,
@@ -73,9 +74,10 @@ pub(crate) async fn resolve(
     let mut based = None;
     let mut parents = 0;
     loop {
-        if let Some(base) = base.as_ref().filter(|base| {
-            base.name.version == reference.state_version && base.name.txid == current.sqlite.txid
-        }) {
+        if let Some(base) = base
+            .as_ref()
+            .filter(|base| base.matches(&reference, current.sqlite.txid))
+        {
             based = Some(base.clone());
             break;
         }
@@ -98,6 +100,15 @@ pub(crate) async fn resolve(
         let Some(parent) = current.sqlite.parent else {
             break;
         };
+        if let Some(base) = base.as_ref().filter(|base| {
+            first
+                .checked_sub(1)
+                .is_some_and(|txid| base.matches(&parent, txid))
+        }) {
+            based = Some(base.clone());
+            reference = parent;
+            break;
+        }
         let bytes = history
             .read(&parent.object)
             .await

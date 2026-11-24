@@ -5,7 +5,9 @@ mod rapid;
 pub(crate) use rapid::{RAPID_OPERATION_TIMEOUT, RapidSnapshots};
 pub(crate) mod recovery;
 mod snapshots;
-pub(crate) use rapid::base::{SqliteBase, key as base_key};
+#[cfg(test)]
+pub(crate) use rapid::base::key as base_key;
+pub(crate) use rapid::base::{SqliteBase, upload_file as upload_sqlite_base};
 pub use rapid::sweep::{SweepConfig, serve as serve_history_sweeper};
 pub(crate) use recovery::RestoredSqlite;
 pub use snapshots::{ArchiveBatchConfig, RapidBucket, RapidPlacement, SnapshotStoreConfig};
@@ -50,6 +52,36 @@ pub trait Bucket: Send + Sync {
             Ok(Some(std::io::copy(&mut object.bytes.reader(), &mut file)?))
         })
         .await?
+    }
+    async fn download_checked(
+        &self,
+        key: &str,
+        path: &std::path::Path,
+        expected: Option<u32>,
+    ) -> Result<Option<u64>> {
+        let bytes = self.download_to(key, path).await?;
+        if let (Some(_), Some(expected)) = (bytes, expected) {
+            let path = path.to_owned();
+            let actual =
+                tokio::task::spawn_blocking(move || file_crc32c(&std::fs::File::open(path)?))
+                    .await??;
+            anyhow::ensure!(actual == expected, "base CRC32C mismatch");
+        }
+        Ok(bytes)
+    }
+}
+
+fn file_crc32c(file: &std::fs::File) -> Result<u32> {
+    use std::os::unix::fs::FileExt;
+    let mut buffer = vec![0; crate::payload::IO_BUFFER_BYTES];
+    let (mut offset, mut crc) = (0, 0);
+    loop {
+        let size = file.read_at(&mut buffer, offset)?;
+        if size == 0 {
+            return Ok(crc);
+        }
+        crc = crc32c::crc32c_append(crc, &buffer[..size]);
+        offset += size as u64;
     }
 }
 

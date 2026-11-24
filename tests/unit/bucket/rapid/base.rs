@@ -13,10 +13,10 @@ fn reference(object: &str, state_version: u64) -> SnapshotRef {
 
 #[test]
 fn a_base_name_records_its_epoch_version_transaction_and_size() {
-    let key = key(&reference(SNAPSHOT, 42), 7, 4096).unwrap();
+    let key = key(&reference(SNAPSHOT, 42), 7, 4096, 123).unwrap();
     assert!(key.starts_with(SNAPSHOTS), "{key}");
     assert!(
-        key.ends_with("~bases~000000000000000000000000000000a1~42~7~4096.sqlite"),
+        key.ends_with("~bases~000000000000000000000000000000a1~42~7~4096~0000007b.sqlite"),
         "{key}"
     );
     let name = BaseName {
@@ -24,13 +24,14 @@ fn a_base_name_records_its_epoch_version_transaction_and_size() {
         version: 42,
         txid: 7,
         bytes: 4096,
+        crc32c: Some(123),
     };
     assert_eq!(parse(&key), Some(name));
 }
 
 #[test]
 fn every_base_of_an_actor_shares_one_prefix() {
-    let key = key(&reference(SNAPSHOT, 42), 7, 4096).unwrap();
+    let key = key(&reference(SNAPSHOT, 42), 7, 4096, 123).unwrap();
     assert!(key.starts_with(&actor_prefix(&reference(SNAPSHOT, 42)).unwrap()));
     // Host tokens grant the actor's snapshot names, so they cover its bases without a new rule.
     let actor = "durable-actors/v3/snapshots/63/cHJvamVjdA/Q291bnRlcg/aWQ/";

@@ -445,12 +445,13 @@ impl DatabaseSession {
             "actor snapshot belongs to a newer owner epoch"
         );
         let started = Instant::now();
-        let cpu = crate::host::usage::cpu_ms();
         let parent = self.storage.resume_parent(&loaded.reference)?;
-        let (capture, source) = self.open_sqlite(&loaded, parent.is_some(), slot).await?;
+        let (opened, resources) =
+            crate::process_usage::measure(self.open_sqlite(&loaded, parent.is_some(), slot)).await;
+        let (capture, source) = opened?;
         info!(event = "actor_sqlite_restored", host_id = %self.endpoint.id, state_version,
             source, duration_ms = elapsed_ms(started),
-            cpu_ms = crate::host::usage::cpu_since(cpu));
+            cpu_ms = resources.cpu_ms, peak_rss_bytes = resources.peak_rss_bytes);
         let mut cached = Self::resident(owner_epoch, state_version, capture, parent).await?;
         let VerifiedSnapshot {
             reference,
@@ -491,6 +492,11 @@ impl DatabaseSession {
         let directory = emptied(slot.as_deref()).await?;
         let download = crate::litestream::storage::restoring(directory.database());
         let restored = self.storage.read_sqlite(loaded, &download).await?;
+        let source = if restored.base.is_some() {
+            "base"
+        } else {
+            "history"
+        };
         let capture = SqliteCapture::restore(
             directory,
             self.replication.clone(),
@@ -501,7 +507,7 @@ impl DatabaseSession {
             resume,
         )
         .await?;
-        Ok((capture, "history"))
+        Ok((capture, source))
     }
 
     async fn reopen(

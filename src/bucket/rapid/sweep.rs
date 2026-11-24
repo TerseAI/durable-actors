@@ -13,6 +13,7 @@ const SNAPSHOTS: &str = "durable-actors-v3-snapshots-";
 
 pub struct SweepConfig {
     pub archive_bucket: String,
+    pub rapid_buckets: Vec<crate::bucket::RapidBucket>,
     pub min_age: Duration,
     pub interval: Duration,
     pub dry_run: bool,
@@ -30,6 +31,10 @@ impl SweepConfig {
         Ok(Self {
             archive_bucket: get("DURABLE_ACTORS_ARCHIVE_BUCKET")
                 .context("DURABLE_ACTORS_ARCHIVE_BUCKET is required")?,
+            rapid_buckets: serde_json::from_str(
+                &get("DURABLE_ACTORS_RAPID_BUCKETS")
+                    .context("DURABLE_ACTORS_RAPID_BUCKETS is required")?,
+            )?,
             min_age: Duration::from_secs(
                 3600 * number(
                     get("DURABLE_ACTORS_SWEEP_MIN_AGE_HOURS"),
@@ -42,7 +47,10 @@ impl SweepConfig {
                 "DURABLE_ACTORS_SWEEP_INTERVAL_SECONDS",
                 3600,
             )?),
-            dry_run: get("DURABLE_ACTORS_SWEEP_DRY_RUN").as_deref() == Some("true"),
+            dry_run: get("DURABLE_ACTORS_SWEEP_DRY_RUN")
+                .map(|s| s.parse::<bool>())
+                .transpose()?
+                .unwrap_or(true),
         })
     }
 }
@@ -60,6 +68,8 @@ pub(super) trait SweepStore: Send + Sync {
     /// empty after the last.
     async fn page(&self, prefix: &str, page: &str) -> Result<(Vec<Listed>, String)>;
     async fn get(&self, name: &str) -> Result<Option<Payload>>;
+    async fn remember(&self, name: &str, bytes: Payload) -> Result<()>;
+    fn allows_replica(&self, bucket: &str) -> bool;
     /// Deletes an object of `bucket`, the archive when `None`; a missing object is deleted.
     async fn delete(&self, bucket: Option<&str>, name: &str, generation: Option<i64>)
     -> Result<()>;
@@ -73,7 +83,7 @@ pub(super) struct Summary {
 }
 
 pub async fn serve(config: SweepConfig, shutdown: impl Future<Output = ()>) -> Result<()> {
-    let store = GcsSweep::new(&config.archive_bucket).await?;
+    let store = GcsSweep::new(&config.archive_bucket, &config.rapid_buckets).await?;
     tokio::pin!(shutdown);
     loop {
         let started = Instant::now();
@@ -142,13 +152,17 @@ async fn sweep_actor(
     for object in plan(objects, cutoff) {
         summary.objects += 1;
         summary.bytes += object.bytes;
-        if dry_run {
-            continue;
+        tracing::info!(
+            event = "history_sweep_object",
+            key = object.name,
+            bytes = object.bytes,
+            dry_run
+        );
+        if object.name.ends_with(".manifest") || object.name.ends_with(".manifest.sweeping") {
+            sweep_segment(store, &object.name, dry_run).await?;
+        } else if !dry_run {
+            store.delete(None, &object.name, None).await?;
         }
-        if object.name.ends_with(".manifest") {
-            delete_replicas(store, &object.name).await?;
-        }
-        store.delete(None, &object.name, None).await?;
     }
     Ok(())
 }
@@ -161,14 +175,26 @@ fn plan(objects: &[Listed], cutoff: SystemTime) -> Vec<&Listed> {
         .filter_map(|object| Some((base::parse(&object.name)?, object)))
         .collect();
     bases.sort_by_key(|(name, _)| std::cmp::Reverse(name.version));
-    let Some(&(floor, _)) = bases.get(1) else {
+    let Some((newest, _)) = bases.first() else {
         return Vec::new();
     };
-    let old = |object: &&Listed| object.created < cutoff;
-    let mut doomed: Vec<&Listed> = bases[2..]
+    // The fallback base must predate the lookback so every retained version has a restore path.
+    let earliest_recent_epoch = objects
         .iter()
+        .filter(|object| object.created >= cutoff && !object.name.ends_with(".sweeping"))
+        .filter_map(|object| epoch_of(&object.name))
+        .min();
+    let Some((floor, _)) = bases.iter().find(|(base, object)| {
+        base.version < newest.version
+            && object.created < cutoff
+            && earliest_recent_epoch.is_none_or(|epoch| base.owner_epoch < epoch)
+    }) else {
+        return Vec::new();
+    };
+    let mut doomed: Vec<&Listed> = bases
+        .iter()
+        .filter(|(base, object)| base.version < floor.version && object.created < cutoff)
         .map(|(_, object)| *object)
-        .filter(old)
         .collect();
     let mut epochs: BTreeMap<u64, Vec<&Listed>> = BTreeMap::new();
     for object in objects {
@@ -177,7 +203,10 @@ fn plan(objects: &[Listed], cutoff: SystemTime) -> Vec<&Listed> {
         }
     }
     for epoch in epochs.range(..floor.owner_epoch).map(|(_, epoch)| epoch) {
-        if epoch.iter().all(old) {
+        if epoch
+            .iter()
+            .all(|obj| obj.created < cutoff || obj.name.ends_with(".sweeping"))
+        {
             doomed.extend(epoch);
         }
     }
@@ -185,19 +214,59 @@ fn plan(objects: &[Listed], cutoff: SystemTime) -> Vec<&Listed> {
     doomed
 }
 
-async fn delete_replicas(store: &dyn SweepStore, manifest: &str) -> Result<()> {
-    let Some(bytes) = store.get(manifest).await? else {
+async fn sweep_segment(store: &dyn SweepStore, key: &str, dry_run: bool) -> Result<()> {
+    let original = key.strip_suffix(".sweeping").unwrap_or(key);
+    let journal = format!("{original}.sweeping");
+    let Some(bytes) = store.get(key).await? else {
         return Ok(());
     };
     let manifest: Manifest = serde_json::from_reader(bytes.reader())?;
+    let (actor_and_epoch, id) = original
+        .strip_suffix(".manifest")
+        .and_then(|s| s.rsplit_once("~log~"))
+        .context("invalid manifest name")?;
+    let actor = actor_of(actor_and_epoch)
+        .strip_prefix(SNAPSHOTS)
+        .context("invalid actor prefix")?;
+    let expected = format!("durable-actors-v3-logs-{actor}~{id}.segment");
+    ensure!(
+        manifest.id == id && manifest.format == 1 && !manifest.replicas.is_empty(),
+        "invalid sweep manifest"
+    );
     for replica in &manifest.replicas {
-        store
-            .delete(
-                Some(&replica.bucket),
-                &replica.object,
-                Some(replica.generation),
-            )
-            .await?;
+        ensure!(
+            replica.object == expected
+                && replica.generation > 0
+                && store.allows_replica(&replica.bucket),
+            "invalid sweep replica"
+        );
+    }
+    if !dry_run {
+        // Keep the descriptors across a restart after the manifest has been unlisted.
+        if key == original {
+            store.remember(&journal, bytes).await?;
+        }
+        store.delete(None, original, None).await?;
+    }
+    for replica in &manifest.replicas {
+        tracing::info!(
+            event = "history_sweep_object",
+            key = replica.object,
+            bucket = replica.bucket,
+            dry_run
+        );
+        if !dry_run {
+            store
+                .delete(
+                    Some(&replica.bucket),
+                    &replica.object,
+                    Some(replica.generation),
+                )
+                .await?;
+        }
+    }
+    if !dry_run {
+        store.delete(None, &journal, None).await?;
     }
     Ok(())
 }
@@ -216,15 +285,20 @@ fn epoch_of(name: &str) -> Option<u64> {
 
 struct GcsSweep {
     archive: String,
+    replicas: std::collections::HashSet<String>,
     objects: super::super::GcsBucket,
     clients: super::super::gcs::GcsClients,
 }
 
 impl GcsSweep {
-    async fn new(bucket: &str) -> Result<Self> {
+    async fn new(bucket: &str, placements: &[crate::bucket::RapidBucket]) -> Result<Self> {
         let objects = super::super::GcsBucket::new(bucket).await?;
         Ok(Self {
             archive: format!("projects/_/buckets/{bucket}"),
+            replicas: placements
+                .iter()
+                .map(|p| format!("projects/_/buckets/{}", p.bucket))
+                .collect(),
             clients: objects.clients(),
             objects,
         })
@@ -260,6 +334,18 @@ impl SweepStore for GcsSweep {
 
     async fn get(&self, name: &str) -> Result<Option<Payload>> {
         Ok(self.objects.get(name).await?.map(|object| object.bytes))
+    }
+
+    async fn remember(&self, name: &str, bytes: Payload) -> Result<()> {
+        ensure!(
+            replace(&self.objects, name, None, bytes).await?,
+            "conflicting sweep journal"
+        );
+        Ok(())
+    }
+
+    fn allows_replica(&self, bucket: &str) -> bool {
+        self.replicas.contains(bucket)
     }
 
     async fn delete(

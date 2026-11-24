@@ -177,13 +177,6 @@ impl std::ops::Deref for RuntimeStorage {
 }
 
 impl RuntimeStorageReader {
-    pub(crate) async fn read_sqlite(
-        &self,
-        snapshot: VerifiedSnapshot,
-    ) -> Result<super::recovery::RestoredSqlite> {
-        self.read_sqlite_prefetched(snapshot, None, None).await
-    }
-
     pub(crate) async fn upload_base(
         &self,
         snapshot: &crate::storage::SnapshotRef,

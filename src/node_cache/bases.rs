@@ -1,14 +1,10 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
+#[cfg(test)]
 use anyhow::Result;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{actor::ActorKey, bucket::Bucket, payload::Payload, storage::SnapshotRef};
+use crate::{actor::ActorKey, bucket::Bucket, storage::SnapshotRef};
 
 /// Uploads at once per node, so a wave of sleeping actors shares the node's network.
 const CONCURRENT_UPLOADS: usize = 4;
@@ -40,19 +36,25 @@ impl BaseUploads {
         let task = AbortOnDropHandle::new(tokio::spawn(async move {
             let _permit = permits.acquire_owned().await;
             let started = Instant::now();
-            let uploaded = upload(bucket.as_ref(), &path, &snapshot, txid).await;
+            let (uploaded, resources) = crate::process_usage::measure(
+                crate::bucket::upload_sqlite_base(bucket.as_ref(), &snapshot, txid, &path),
+            )
+            .await;
             let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
             match uploaded {
                 Ok(bytes) => tracing::info!(
                     event = "sqlite_base_uploaded",
                     state_version = snapshot.state_version,
                     bytes,
+                    cpu_ms = resources.cpu_ms,
+                    peak_rss_bytes = resources.peak_rss_bytes,
                     duration_ms
                 ),
                 Err(error) => tracing::warn!(
                     event = "sqlite_base_upload_failed",
                     state_version = snapshot.state_version,
                     error = %format!("{error:#}"),
+                    cpu_ms = resources.cpu_ms, peak_rss_bytes = resources.peak_rss_bytes,
                     duration_ms
                 ),
             }
@@ -74,21 +76,6 @@ impl BaseUploads {
             let _ = task.await;
         }
     }
-}
-
-async fn upload(
-    bucket: &dyn Bucket,
-    path: &Path,
-    snapshot: &SnapshotRef,
-    txid: u64,
-) -> Result<u64> {
-    let file = tokio::fs::File::open(path).await?.into_std().await;
-    let bytes = file.metadata()?.len();
-    let key = crate::bucket::base_key(snapshot, txid, bytes)?;
-    let payload = Payload::from_file(Arc::new(file), usize::try_from(bytes)?);
-    // The name holds the version, transaction and size, so an object already there is this base.
-    bucket.compare_and_swap(&key, None, payload).await?;
-    Ok(bytes)
 }
 
 #[cfg(test)]

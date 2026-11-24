@@ -199,6 +199,14 @@ impl Bucket for GcsBucket {
         self.read(key, None).await
     }
     async fn download_to(&self, key: &str, path: &std::path::Path) -> Result<Option<u64>> {
+        self.download_checked(key, path, None).await
+    }
+    async fn download_checked(
+        &self,
+        key: &str,
+        path: &std::path::Path,
+        expected: Option<u32>,
+    ) -> Result<Option<u64>> {
         let Some(response) = self.open(key, None).await? else {
             return Ok(None);
         };
@@ -212,12 +220,18 @@ impl Bucket for GcsBucket {
         })
         .await??;
         let crc32c = response.object().checksums.and_then(|c| c.crc32c);
+        if let (Some(actual), Some(expected)) = (crc32c, expected) {
+            anyhow::ensure!(
+                actual == expected,
+                "stored SQLite base CRC32C differs from its published checksum"
+            );
+        }
         let generation = response.object().generation;
         self.download_parts(
             key,
             generation,
             (0, length),
-            crc32c,
+            expected.or(crc32c),
             response,
             Arc::new(file),
         )
@@ -410,7 +424,8 @@ impl GcsBucket {
             vec![(0, length)]
         };
         let (offset, size) = parts[0];
-        let mut downloads = vec![write_part(file.clone(), offset, size, first).boxed()];
+        let mut downloads =
+            vec![write_part(file.clone(), offset, size, first, crc32c.is_some()).boxed()];
         for &(offset, size) in &parts[1..] {
             let file = file.clone();
             downloads.push(
@@ -424,14 +439,18 @@ impl GcsBucket {
                         .set_read_range(ReadRange::segment(start + offset, size))
                         .send()
                         .await?;
-                    write_part(file, offset, size, response).await
+                    write_part(file, offset, size, response, crc32c.is_some()).await
                 }
                 .boxed(),
             );
         }
-        futures_util::future::try_join_all(downloads).await?;
+        let checksums = futures_util::future::try_join_all(downloads).await?;
         if let Some(expected) = crc32c {
-            verify_crc32c(file, length, expected).await?;
+            let mut crc = 0;
+            for ((_, size), part) in parts.into_iter().zip(checksums) {
+                crc = crc32c::crc32c_combine(crc, part, usize::try_from(size)?);
+            }
+            anyhow::ensure!(crc == expected, "parallel download failed its CRC32C check");
         }
         Ok(())
     }
@@ -456,7 +475,9 @@ async fn write_part(
     offset: u64,
     size: u64,
     mut response: ReadObjectResponse,
-) -> Result<()> {
+    checksum: bool,
+) -> Result<u32> {
+    let mut crc = 0;
     let mut written = 0u64;
     let mut buffer = Vec::with_capacity(crate::payload::IO_BUFFER_BYTES);
     while written + (buffer.len() as u64) < size {
@@ -465,6 +486,9 @@ async fn write_part(
         };
         let chunk = chunk?;
         let wanted = (size - written - buffer.len() as u64).min(chunk.len() as u64) as usize;
+        if checksum {
+            crc = crc32c::crc32c_append(crc, &chunk[..wanted]);
+        }
         buffer.extend_from_slice(&chunk[..wanted]);
         if buffer.len() >= crate::payload::IO_BUFFER_BYTES {
             written += flush_part(&file, offset + written, &mut buffer).await?;
@@ -472,25 +496,7 @@ async fn write_part(
     }
     written += flush_part(&file, offset + written, &mut buffer).await?;
     anyhow::ensure!(written == size, "incomplete object part");
-    Ok(())
-}
-
-async fn verify_crc32c(file: Arc<std::fs::File>, length: u64, expected: u32) -> Result<()> {
-    tokio::task::spawn_blocking(move || {
-        use std::os::unix::fs::FileExt;
-        let mut buffer = vec![0; crate::payload::IO_BUFFER_BYTES];
-        let (mut crc, mut offset) = (0u32, 0u64);
-        while offset < length {
-            let size = (length - offset).min(buffer.len() as u64) as usize;
-            let chunk = &mut buffer[..size];
-            file.read_exact_at(chunk, offset)?;
-            crc = crc32c::crc32c_append(crc, chunk);
-            offset += chunk.len() as u64;
-        }
-        anyhow::ensure!(crc == expected, "parallel download failed its CRC32C check");
-        Ok(())
-    })
-    .await?
+    Ok(crc)
 }
 
 async fn flush_part(file: &Arc<std::fs::File>, at: u64, buffer: &mut Vec<u8>) -> Result<u64> {

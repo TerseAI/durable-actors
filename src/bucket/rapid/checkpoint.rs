@@ -26,16 +26,66 @@ impl LogStorage {
         checkpoint: Option<crate::bucket::recovery::PrefetchedCheckpoint>,
         download: Option<&std::path::Path>,
     ) -> Result<ResolvedSqlite> {
-        let started = std::time::Instant::now();
-        let object = snapshot.reference.object.clone();
-        tracing::info!(event = "sqlite_history_started", object);
+        let reference = &snapshot.reference;
+        tracing::info!(event = "sqlite_history_started", object = reference.object);
         let base = match &checkpoint {
-            Some(prefetched) if prefetched.source == snapshot.reference => prefetched.base.clone(),
-            _ => self.newest_base(&snapshot.reference).await.unwrap_or_else(|error| {
+            Some(prefetched) if &prefetched.source == reference => prefetched.base.clone(),
+            _ => self.newest_base(reference).await.unwrap_or_else(|error| {
                 tracing::warn!(error = %format!("{error:#}"), "SQLite bases unavailable; restoring from history");
                 None
             }),
         };
+        let Some(newest) = base else {
+            return self
+                .restore_from(snapshot, checkpoint, None, download)
+                .await;
+        };
+        match self
+            .restore_from(
+                snapshot.clone(),
+                checkpoint.clone(),
+                Some(newest.clone()),
+                download,
+            )
+            .await
+        {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                tracing::warn!(base = newest.key, error = %format!("{error:#}"), "SQLite restore from newest base failed")
+            }
+        }
+        if let Some(version) = newest.name.version.checked_sub(1)
+            && let Some(older) = self.base_at_or_below(reference, version).await?
+        {
+            match self
+                .restore_from(
+                    snapshot.clone(),
+                    checkpoint.clone(),
+                    Some(older.clone()),
+                    download,
+                )
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    tracing::warn!(base = older.key, error = %format!("{error:#}"), "SQLite restore from previous base failed")
+                }
+            }
+        }
+        self.restore_from(snapshot, checkpoint, None, download)
+            .await
+            .context("restore from history after base recovery failed")
+    }
+
+    async fn restore_from(
+        &self,
+        snapshot: VerifiedSnapshot,
+        checkpoint: Option<crate::bucket::recovery::PrefetchedCheckpoint>,
+        base: Option<super::base::SqliteBase>,
+        download: Option<&std::path::Path>,
+    ) -> Result<ResolvedSqlite> {
+        let started = std::time::Instant::now();
+        let object = snapshot.reference.object.clone();
         let mut history = LogHistory {
             storage: self,
             epochs: BTreeMap::new(),
@@ -45,15 +95,18 @@ impl LogStorage {
                 .as_ref()
                 .map(|base| (base.name.owner_epoch, base.name.version)),
         };
-        let (mut resolved, base_download_ms) = tokio::try_join!(
+        let (resolved, downloaded) = tokio::join!(
             resolve(&mut history, snapshot, checkpoint, base.clone()),
             download_base(base.as_ref(), download)
-        )?;
-        if let (Some(path), Some(_)) = (download, base_download_ms) {
-            match resolved.base.as_mut() {
-                Some(base) => base.downloaded = Some(path.to_owned()),
-                None => tokio::fs::remove_file(path).await?,
-            }
+        );
+        let mut resolved = resolved?;
+        let mut base_download_ms = None;
+        if let (Some((dir, elapsed)), Some(base), Some(path)) =
+            (downloaded?, resolved.base.as_mut(), download)
+        {
+            tokio::fs::rename(dir.path().join("base.sqlite"), path).await?;
+            base.downloaded = Some(path.to_owned());
+            base_download_ms = Some(elapsed);
         }
         tracing::info!(
             event = "sqlite_history_restored",
@@ -88,13 +141,14 @@ impl LogStorage {
 async fn download_base(
     base: Option<&super::base::SqliteBase>,
     path: Option<&std::path::Path>,
-) -> Result<Option<f64>> {
+) -> Result<Option<(tempfile::TempDir, f64)>> {
     let (Some(base), Some(path)) = (base, path) else {
         return Ok(None);
     };
     let started = std::time::Instant::now();
-    base.download_to(path).await?;
-    Ok(Some(started.elapsed().as_secs_f64() * 1000.0))
+    let dir = tempfile::tempdir_in(path.parent().context("base download has no directory")?)?;
+    base.download_to(&dir.path().join("base.sqlite")).await?;
+    Ok(Some((dir, started.elapsed().as_secs_f64() * 1000.0)))
 }
 
 struct LogHistory<'a> {
@@ -140,10 +194,18 @@ impl LogHistory<'_> {
     async fn plan(&mut self, prefix: &str, version: u64) -> Result<()> {
         let (root, epoch) = prefix.rsplit_once('/').context("invalid snapshot prefix")?;
         let mut next = u64::from_str_radix(epoch, 16).context("invalid owner epoch")?;
+        let starting_epoch = next;
         let mut planned = Vec::new();
         let mut floor = None;
         while floor.is_none() && next > 0 && planned.len() < MAX_PLANNED_EPOCHS {
-            let lowest = next.saturating_sub(EPOCHS_PER_WAVE - 1).max(1);
+            let base_epoch = self
+                .base
+                .filter(|&(epoch, base)| epoch <= next && base <= version)
+                .map_or(1, |(epoch, _)| epoch);
+            let lowest = next
+                .saturating_sub(EPOCHS_PER_WAVE - 1)
+                .max(base_epoch)
+                .max(1);
             let storage = self.storage;
             let mut wave: Vec<(String, EpochHistory)> = stream::iter((lowest..=next).rev())
                 .map(|epoch| async move {
@@ -162,9 +224,20 @@ impl LogHistory<'_> {
                 .filter(|&(epoch, base)| epoch >= lowest && base <= version)
                 .map(|(_, base)| base);
             floor = checkpoint.max(based);
-            planned.extend(wave.iter().map(|(prefix, epoch)| {
-                (prefix.clone(), epoch.indexes.clone(), epoch.listed.clone())
-            }));
+            // A base normally seals its epoch. If the chain still needs a record there,
+            // the reader can fetch it on demand without speculatively downloading that whole epoch.
+            planned.extend(
+                wave.iter()
+                    .zip((lowest..=next).rev())
+                    .filter(|(_, epoch)| {
+                        self.base.is_none_or(|(base_epoch, _)| {
+                            *epoch > base_epoch || *epoch == starting_epoch
+                        })
+                    })
+                    .map(|((prefix, epoch), _)| {
+                        (prefix.clone(), epoch.indexes.clone(), epoch.listed.clone())
+                    }),
+            );
             for (prefix, epoch) in wave.drain(..) {
                 self.epochs.entry(prefix).or_insert(epoch);
             }

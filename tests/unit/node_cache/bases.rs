@@ -1,5 +1,5 @@
 use super::*;
-use crate::bucket::{BucketObject, FileBucket};
+use crate::bucket::{BucketObject, FileBucket, Payload};
 
 const SNAPSHOT: &str = "durable-actors/v3/snapshots/63/cHJvamVjdA/Q291bnRlcg/aWQ/000000000000000000000000000000a1/42.json";
 
@@ -28,7 +28,12 @@ async fn uploads_a_parked_database_under_its_base_name() -> Result<()> {
     std::fs::write(&parked, b"pages of a parked database")?;
     let uploads = BaseUploads::new(Some(bucket.clone()));
     uploads.start(&actor(), parked, snapshot(), 7).await;
-    let key = crate::bucket::base_key(&snapshot(), 7, 26)?;
+    let key = crate::bucket::base_key(
+        &snapshot(),
+        7,
+        26,
+        crc32c::crc32c(b"pages of a parked database"),
+    )?;
     let stored = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             if let Some(object) = bucket.get(&key).await? {

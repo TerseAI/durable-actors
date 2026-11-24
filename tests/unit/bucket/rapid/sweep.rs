@@ -58,6 +58,15 @@ impl SweepStore for Memory {
             .map(|(_, bytes)| bytes.clone()))
     }
 
+    async fn remember(&self, key: &str, bytes: Payload) -> Result<()> {
+        self.put(key.into(), Duration::ZERO, bytes);
+        Ok(())
+    }
+
+    fn allows_replica(&self, bucket: &str) -> bool {
+        bucket == "projects/_/buckets/rapid-a"
+    }
+
     async fn delete(&self, bucket: Option<&str>, name: &str, _: Option<i64>) -> Result<()> {
         self.deleted
             .lock()
@@ -141,10 +150,7 @@ async fn deletes_what_the_older_kept_base_covers_once_old_enough() -> Result<()>
     let deleted = store.deleted.lock().unwrap();
     assert_eq!(
         deleted.first(),
-        Some(&(
-            Some("projects/_/buckets/rapid-a".into()),
-            "durable-actors-v3-logs-aaa~s1.segment".into()
-        ))
+        Some(&(None, name("aaa", 1, "log~s1.manifest")))
     );
     Ok(())
 }
@@ -156,7 +162,7 @@ async fn keeps_an_epoch_that_holds_anything_younger_than_the_lookback() -> Resul
     sweep(&store, SystemTime::now() - 30 * DAY, false).await?;
     let names = store.names();
     assert!(names.contains(&name("aaa", 1, "log~s1.manifest")));
-    assert!(!names.contains(&base("aaa", 1, 2)));
+    assert!(names.contains(&base("aaa", 1, 2)));
     Ok(())
 }
 
@@ -169,5 +175,39 @@ async fn a_dry_run_counts_without_deleting() -> Result<()> {
     assert_eq!(summary.objects, 4);
     assert_eq!(store.names(), before);
     assert!(store.deleted.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn resumes_replica_cleanup_after_the_manifest_was_unlisted() -> Result<()> {
+    let store = Memory::new(2);
+    history(&store, false);
+    let key = name("aaa", 1, "log~s1.manifest");
+    store
+        .remember(&format!("{key}.sweeping"), manifest("s1"))
+        .await?;
+    store.delete(None, &key, None).await?;
+    sweep(&store, SystemTime::now() - 30 * DAY, false).await?;
+    assert!(!store.names().contains(&format!("{key}.sweeping")));
+    assert!(store.deleted.lock().unwrap().contains(&(
+        Some("projects/_/buckets/rapid-a".into()),
+        "durable-actors-v3-logs-aaa~s1.segment".into()
+    )));
+    Ok(())
+}
+
+#[tokio::test]
+async fn keeps_old_history_through_the_first_rollback_window() -> Result<()> {
+    let store = Memory::new(3);
+    history(&store, false);
+    for (epoch, version) in [(1, 2), (2, 5), (3, 9)] {
+        store.put(base("aaa", epoch, version), DAY, Payload::default());
+    }
+    assert_eq!(
+        sweep(&store, SystemTime::now() - 30 * DAY, false)
+            .await?
+            .objects,
+        0
+    );
     Ok(())
 }

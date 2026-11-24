@@ -88,7 +88,7 @@ nodeCache:
 historySweeper:
   minAgeHours: 720
   intervalSeconds: 3600
-  dryRun: false
+  dryRun: true
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 256Mi}

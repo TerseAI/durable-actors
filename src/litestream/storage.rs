@@ -409,12 +409,12 @@ fn range(name: &str) -> Option<(u64, u64)> {
 }
 
 pub(crate) async fn restored_fields(
+    directory: tempfile::TempDir,
     restore: &dyn DatabaseRestore,
     base: Option<&SqliteBase>,
     files: &[LtxFile],
     txid: u64,
 ) -> Result<serde_json::Value> {
-    let directory = tempfile::tempdir()?;
     restore_database(restore, directory.path(), base, files, txid).await?;
     tokio::task::spawn_blocking(move || {
         let db = rusqlite::Connection::open(directory.path().join("actor.sqlite"))?;

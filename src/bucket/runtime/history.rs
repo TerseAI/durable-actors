@@ -121,8 +121,13 @@ impl RuntimeStorageReader {
         };
         let snapshot = VerifiedSnapshot::named(key.into(), bytes)?;
         let record = record(snapshot.snapshot.clone());
-        let restored = self.read_sqlite(snapshot).await?;
+        let directory = tempfile::tempdir()?;
+        let download = crate::litestream::storage::restoring(directory.path());
+        let restored = self
+            .read_sqlite_prefetched(snapshot, None, Some(&download))
+            .await?;
         let fields = crate::litestream::storage::restored_fields(
+            directory,
             self.restore.as_ref(),
             restored.base.as_ref(),
             &restored.sqlite.files,

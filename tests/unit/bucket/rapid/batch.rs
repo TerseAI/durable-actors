@@ -301,6 +301,7 @@ async fn restores_prefetch_archived_batches_without_reading_unlisted_versions() 
     assert_eq!(archive.read_batches.load(Ordering::SeqCst), 19);
     assert_eq!(
         crate::litestream::storage::restored_fields(
+            tempfile::tempdir()?,
             replication.as_ref(),
             None,
             &restored.sqlite.files,
@@ -364,6 +365,7 @@ async fn restores_plan_history_spread_across_owner_epochs() -> Result<()> {
     );
     assert_eq!(
         crate::litestream::storage::restored_fields(
+            tempfile::tempdir()?,
             replication.as_ref(),
             None,
             &restored.sqlite.files,
@@ -512,6 +514,7 @@ async fn store_base(
         &reference,
         txid.unwrap_or(restored.txid),
         bytes.len() as u64,
+        crc32c::crc32c(&bytes),
     )?;
     assert!(f.archive.compare_and_swap(&key, None, bytes.into()).await?);
     Ok(restored.txid)
@@ -551,6 +554,7 @@ async fn restores_from_the_newest_base_and_the_history_after_it() -> Result<()> 
     assert_eq!(restored.sqlite.files[0].first, txid + 1);
     assert_eq!(
         crate::litestream::storage::restored_fields(
+            tempfile::tempdir()?,
             replication.as_ref(),
             restored.base.as_ref(),
             &restored.sqlite.files,
@@ -563,6 +567,7 @@ async fn restores_from_the_newest_base_and_the_history_after_it() -> Result<()> 
     assert!(at_base.sqlite.files.is_empty());
     assert_eq!(
         crate::litestream::storage::restored_fields(
+            tempfile::tempdir()?,
             replication.as_ref(),
             at_base.base.as_ref(),
             &at_base.sqlite.files,
@@ -594,6 +599,7 @@ async fn ignores_a_base_whose_transaction_disagrees_with_the_history() -> Result
     assert!(!download.exists());
     assert_eq!(
         crate::litestream::storage::restored_fields(
+            tempfile::tempdir()?,
             replication.as_ref(),
             None,
             &restored.sqlite.files,
@@ -602,6 +608,48 @@ async fn ignores_a_base_whose_transaction_disagrees_with_the_history() -> Result
         .await?,
         serde_json::json!({"count":12})
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn restores_the_same_rows_from_an_older_base_when_the_newest_is_corrupt_or_disappears()
+-> Result<()> {
+    let f = Fixture::new()?;
+    let writer = f.store()?;
+    let (replication, history) = write_history(&f, &writer, 12, None).await?;
+    store_base(&f, &writer, &replication, &history, 4, None).await?;
+    store_base(&f, &writer, &replication, &history, 8, None).await?;
+    let head = VerifiedSnapshot::named(f.stream.object(12), history[11].clone())?;
+    let reader = f.store()?;
+    let checkpoint = reader.prefetch_checkpoint(&head.reference).await?;
+    let newest = checkpoint.as_ref().unwrap().base.as_ref().unwrap();
+    let object = f.archive.get(&newest.key).await?.unwrap();
+    let mut bytes = object.bytes.to_bytes()?.to_vec();
+    bytes[100] ^= 1;
+    f.archive
+        .compare_and_swap(&newest.key, Some(object.generation), bytes.into())
+        .await?;
+    for missing in [false, true] {
+        let mut checkpoint = checkpoint.clone().unwrap();
+        if missing {
+            checkpoint.base.as_mut().unwrap().key.push_str(".missing");
+        }
+        let dir = tempfile::tempdir()?;
+        let path = crate::litestream::storage::restoring(dir.path());
+        let restored = reader
+            .restore_prefetched(head.clone(), Some(checkpoint), Some(&path))
+            .await?;
+        assert_eq!(restored.base.as_ref().unwrap().name.version, 4);
+        let fields = crate::litestream::storage::restored_fields(
+            dir,
+            replication.as_ref(),
+            restored.base.as_ref(),
+            &restored.sqlite.files,
+            restored.sqlite.txid,
+        )
+        .await?;
+        assert_eq!(fields, serde_json::json!({"count":12}));
+    }
     Ok(())
 }
 
@@ -723,6 +771,7 @@ async fn restores_rapid_history_spread_across_owner_epochs() -> Result<()> {
     assert_eq!(archive.version_reads.load(Ordering::SeqCst), 0);
     assert_eq!(
         crate::litestream::storage::restored_fields(
+            tempfile::tempdir()?,
             replication.as_ref(),
             None,
             &restored.sqlite.files,
@@ -774,6 +823,7 @@ async fn restores_from_a_legacy_checkpoint_and_refuses_a_corrupt_one() -> Result
     assert_eq!(restored.sqlite.files.len(), 11);
     assert_eq!(
         crate::litestream::storage::restored_fields(
+            tempfile::tempdir()?,
             replication.as_ref(),
             None,
             &restored.sqlite.files,
@@ -835,6 +885,7 @@ fn a_base_is_due_when_none_exists_or_the_changes_outgrow_the_newest() {
             owner_epoch: 1,
             version,
             txid: version,
+            crc32c: None,
             bytes,
         })
     };
