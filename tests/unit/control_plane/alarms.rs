@@ -108,6 +108,30 @@ async fn an_alarm_replaced_during_delivery_survives_finish_and_is_claimable() ->
 }
 
 #[tokio::test]
+async fn requeue_moves_only_the_claimed_revision() -> Result<()> {
+    with_each_store(async |store| {
+        store.update(&actor(), Some(100)).await?;
+        let alarm = store.claim_due(100, 0, 100).await?.remove(0);
+        store.requeue(&alarm, 500).await?;
+        assert!(store.claim_due(1_000, 499, 100).await?.is_empty());
+        assert_eq!(store.claim_due(1_000, 500, 100).await?, vec![alarm.clone()]);
+
+        store.update(&actor(), Some(150)).await?;
+        store.requeue(&alarm, 0).await?;
+        assert_eq!(
+            store.claim_due(150, 0, 100).await?,
+            vec![claimed(actor(), 2)]
+        );
+
+        store.update(&actor(), None).await?;
+        store.requeue(&claimed(actor(), 2), 0).await?;
+        assert!(store.claim_due(10_000, 10_000, 100).await?.is_empty());
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
 async fn sqlite_alarms_survive_a_restart_and_release_interrupted_claims() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("alarms.sqlite3");
@@ -136,6 +160,81 @@ async fn delivery_retries_in_memory_until_an_attempt_succeeds() -> Result<()> {
 
     assert_eq!(delivery.attempts(), 2);
     assert_eq!(store.get(&actor()).await?, None);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn undelivered_alarms_stay_due_after_max_attempts() -> Result<()> {
+    let store = MemoryAlarmStore::default();
+    let alarm = due_alarm(&store).await?;
+    let delivery = FailingDelivery::undelivered(usize::MAX);
+
+    deliver(&store, &delivery, &alarm).await;
+
+    assert_eq!(delivery.attempts(), MAX_ATTEMPTS);
+    assert_eq!(store.get(&actor()).await?, Some(100));
+    let now_ms = i64::try_from(crate::clock::SystemClock.now_ms()?)?;
+    let window_ms = i64::try_from(QUEUED_TIMEOUT.as_millis())?;
+    let later_ms = now_ms + i64::try_from(REDELIVERY_DELAY.as_millis())? + 1_000;
+    assert!(
+        store
+            .claim_due(now_ms, now_ms - window_ms, 1)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(
+        store.claim_due(later_ms, later_ms - window_ms, 1).await?,
+        vec![alarm]
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_attempt_that_may_have_run_still_finishes_after_later_refusals() -> Result<()> {
+    struct RunThenRefuse(AtomicUsize);
+    #[async_trait]
+    impl AlarmDelivery for RunThenRefuse {
+        async fn attempt(&self, _: &ClaimedAlarm) -> Result<()> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("alarm outcome could not be confirmed");
+            }
+            Err(AlarmNotDelivered("actor host is not ready").into())
+        }
+    }
+    let store = MemoryAlarmStore::default();
+    let alarm = due_alarm(&store).await?;
+    let delivery = RunThenRefuse(AtomicUsize::new(0));
+
+    deliver(&store, &delivery, &alarm).await;
+
+    assert_eq!(delivery.0.load(Ordering::SeqCst), MAX_ATTEMPTS);
+    assert_eq!(store.get(&actor()).await?, None);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_suspension_after_an_attempt_that_may_have_run_keeps_the_alarm() -> Result<()> {
+    struct RunThenSuspend(AtomicUsize);
+    #[async_trait]
+    impl AlarmDelivery for RunThenSuspend {
+        async fn attempt(&self, _: &ClaimedAlarm) -> Result<()> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("alarm outcome could not be confirmed");
+            }
+            Err(
+                anyhow::Error::from(crate::control_plane::access::AccessDisabled)
+                    .context(AlarmNotDelivered("could not route alarm")),
+            )
+        }
+    }
+    let store = MemoryAlarmStore::default();
+    let alarm = due_alarm(&store).await?;
+    let delivery = RunThenSuspend(AtomicUsize::new(0));
+
+    deliver(&store, &delivery, &alarm).await;
+
+    assert_eq!(delivery.0.load(Ordering::SeqCst), 2);
+    assert_eq!(store.get(&actor()).await?, Some(100));
     Ok(())
 }
 
@@ -179,6 +278,7 @@ async fn due_alarm(store: &MemoryAlarmStore) -> Result<ClaimedAlarm> {
 
 struct FailingDelivery {
     failures: usize,
+    undelivered: bool,
     attempts: AtomicUsize,
 }
 
@@ -186,7 +286,15 @@ impl FailingDelivery {
     fn new(failures: usize) -> Self {
         Self {
             failures,
+            undelivered: false,
             attempts: AtomicUsize::new(0),
+        }
+    }
+
+    fn undelivered(failures: usize) -> Self {
+        Self {
+            undelivered: true,
+            ..Self::new(failures)
         }
     }
 
@@ -199,7 +307,12 @@ impl FailingDelivery {
 impl AlarmDelivery for FailingDelivery {
     async fn attempt(&self, _alarm: &ClaimedAlarm) -> Result<()> {
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
-        anyhow::ensure!(attempt >= self.failures, "actor host is unavailable");
-        Ok(())
+        if attempt >= self.failures {
+            return Ok(());
+        }
+        if self.undelivered {
+            return Err(AlarmNotDelivered("actor host is not ready").into());
+        }
+        anyhow::bail!("alarm outcome could not be confirmed")
     }
 }

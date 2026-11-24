@@ -4,7 +4,6 @@ use crate::{
     sandbox::assignment::{InitialOperation, InitialRequest},
     sockets::operations::SocketOperation,
 };
-use anyhow::Context;
 use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
@@ -32,7 +31,14 @@ pub(super) async fn invoke_alarm(
     let target = service
         .resolve_actor_route(&alarm.actor, None, None, None, None)
         .await
-        .context("could not route alarm")?;
+        .map_err(|error| {
+            // Without a deployment a retry cannot succeed, so the alarm is finished instead of kept due.
+            if error.is::<super::service::NoRegisteredCode>() {
+                error
+            } else {
+                error.context(super::alarms::AlarmNotDelivered("could not route alarm"))
+            }
+        })?;
     let invocation = ActorInvocation {
         actor: alarm.actor.clone(),
         request_id: format!("alarm-{}", alarm.revision),
@@ -51,7 +57,8 @@ pub(super) async fn invoke_alarm(
     .map_err(|_| anyhow::anyhow!("alarm outcome could not be confirmed"))?;
     if !outcome.ran {
         let reply = outcome.text.into_text().await?;
-        anyhow::bail!("alarm was not executed: {}", reply.get());
+        return Err(anyhow::anyhow!("{}", reply.get())
+            .context(super::alarms::AlarmNotDelivered("alarm was not executed")));
     }
     Ok(())
 }
