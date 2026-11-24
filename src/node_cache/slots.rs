@@ -7,7 +7,10 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use super::store::{DiskStore, PARKED};
+use super::{
+    bases::BaseUploads,
+    store::{DiskStore, PARKED},
+};
 use crate::{actor::ActorKey, control_plane::ActorPrincipal, storage::SnapshotRef};
 
 const DATABASE: &str = "db";
@@ -33,6 +36,9 @@ pub(crate) struct SlotCheckout {
 pub(crate) struct SlotPark {
     pub snapshot: SnapshotRef,
     pub txid: u64,
+    /// Whether the node should also upload the parked database as the actor's base.
+    #[serde(default)]
+    pub base: bool,
 }
 
 /// The actor a parked database belongs to and the committed snapshot and transaction it was
@@ -51,6 +57,7 @@ pub(super) struct SqliteSlots {
     root: PathBuf,
     layout: Option<SlotLayout>,
     store: Arc<DiskStore>,
+    uploads: BaseUploads,
     lock: tokio::sync::Mutex<()>,
 }
 
@@ -69,11 +76,13 @@ impl SqliteSlots {
         root: PathBuf,
         layout: Option<SlotLayout>,
         store: Arc<DiskStore>,
+        uploads: BaseUploads,
     ) -> Result<Self> {
         let slots = Self {
             root,
             layout,
             store,
+            uploads,
             lock: tokio::sync::Mutex::new(()),
         };
         let parked = slots.root.join(PARKED);
@@ -101,6 +110,7 @@ impl SqliteSlots {
         let target = self.slot(slot)?.join(DATABASE);
         let (key, parked, name) = (self.key(actor), self.parked(actor), actor_name(actor));
         let _moving = self.lock.lock().await;
+        self.uploads.cancel(actor).await;
         let file = blocking(move || check_out(&parked, &target, &name, snapshot.as_ref())).await;
         self.store.forget(&key).await;
         file
@@ -112,18 +122,24 @@ impl SqliteSlots {
         slot: &str,
         snapshot: SnapshotRef,
         txid: u64,
+        base: bool,
     ) -> Result<SlotFile> {
         let source = self.slot(slot)?.join(DATABASE);
         let (key, parked) = (self.key(actor), self.parked(actor));
+        let database = parked.join(DATABASE).join(DATABASE_FILE);
         let record = CleanRecord {
             actor: actor_name(actor),
-            snapshot,
+            snapshot: snapshot.clone(),
             txid,
         };
         let _moving = self.lock.lock().await;
+        self.uploads.cancel(actor).await;
         self.store.forget(&key).await;
         let file = blocking(move || park(&source, &parked, &record)).await?;
         self.store.track(&key, file.bytes).await;
+        if base {
+            self.uploads.start(actor, database, snapshot, txid).await;
+        }
         Ok(file)
     }
 

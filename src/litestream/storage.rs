@@ -172,8 +172,9 @@ impl SqliteCapture {
     }
 
     /// Stops capture and leaves the committed database alone in its directory, synced, with its
-    /// WAL folded in, so another host can reopen it.
-    pub(crate) async fn close(mut self) -> Result<()> {
+    /// WAL folded in, so another host can reopen it. A temporary directory lasts as long as the
+    /// returned value.
+    pub(crate) async fn close(mut self) -> Result<CaptureDirectory> {
         let path = self.path();
         self.registered = false;
         self.replication.unregister(&path).await?;
@@ -182,7 +183,7 @@ impl SqliteCapture {
             fold_wal(&path)?;
             std::fs::File::open(&path)?.sync_all()?;
             std::fs::File::open(directory.database())?.sync_all()?;
-            anyhow::Ok(())
+            anyhow::Ok(directory)
         })
         .await?
     }

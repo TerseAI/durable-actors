@@ -319,13 +319,16 @@ impl DatabaseSession {
     }
 
     /// Closes the database and hands its file to the node with the snapshot and transaction it was
-    /// committed at, so the actor's next host on this node reopens it instead of rebuilding it.
-    /// Nothing is parked outside a slot or with a commit still pending.
+    /// committed at, so the actor's next host on this node reopens it instead of rebuilding it,
+    /// and the node uploads it when a base is due. Without a slot, the host uploads a due base
+    /// itself. Nothing is parked or uploaded with a commit still pending.
     pub(super) async fn park(&mut self) -> Result<Option<SlotFile>> {
-        let (Some(cache), Some(cached)) = (self.node_cache.clone(), &self.cached_state) else {
+        let Some(cached) = &self.cached_state else {
             return Ok(None);
         };
-        if !cached.sqlite.in_slot() || cached.published_snapshot().is_none() {
+        let slot = self.node_cache.clone().filter(|_| cached.sqlite.in_slot());
+        let base_due = self.storage.base_due();
+        if cached.published_snapshot().is_none() || (slot.is_none() && !base_due) {
             return Ok(None);
         }
         let ResidentDatabase {
@@ -344,8 +347,17 @@ impl DatabaseSession {
             position == synced,
             "database has changes its history lacks; leaving it to kubelet"
         );
-        sqlite.close().await?;
-        cache.park_slot(&snapshot, synced).await.map(Some)
+        let directory = sqlite.close().await?;
+        match slot {
+            Some(cache) => cache.park_slot(&snapshot, synced, base_due).await.map(Some),
+            None => {
+                let database = directory.database().join("actor.sqlite");
+                self.storage
+                    .upload_base(&snapshot, synced, &database)
+                    .await?;
+                Ok(None)
+            }
+        }
     }
 
     pub(super) fn reset(&mut self) {

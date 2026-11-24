@@ -52,6 +52,20 @@ pub(crate) trait ActorStorage: Send + Sync {
     ) -> Result<Option<crate::storage::SnapshotRef>> {
         Ok(None)
     }
+    /// Whether sealing this activation found a new base due.
+    fn base_due(&self) -> bool {
+        false
+    }
+    /// Uploads the closed database at `path`, committed at `snapshot` and SQLite `txid`, as the
+    /// actor's base.
+    async fn upload_base(
+        &self,
+        _snapshot: &crate::storage::SnapshotRef,
+        _txid: u64,
+        _path: &std::path::Path,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]

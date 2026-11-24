@@ -171,6 +171,16 @@ pub(crate) trait SnapshotStore: Send + Sync {
         })
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>>;
+    /// Stores the closed database at `path`, committed at `snapshot` and SQLite `txid`, as the
+    /// actor's base, where the store keeps bases.
+    async fn upload_base(
+        &self,
+        _snapshot: &crate::storage::SnapshotRef,
+        _txid: u64,
+        _path: &std::path::Path,
+    ) -> Result<()> {
+        Ok(())
+    }
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>>;
     async fn put(&self, object: &str, bytes: Payload) -> Result<()>;
     async fn start(

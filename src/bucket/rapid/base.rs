@@ -80,6 +80,32 @@ impl LogStorage {
     }
 }
 
+impl LogStorage {
+    /// Stores the closed database at `path` as the base of `snapshot` at SQLite `txid`. A base of
+    /// the same version, transaction and size already stored is that base.
+    pub(super) async fn upload_base(
+        &self,
+        snapshot: &SnapshotRef,
+        txid: u64,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let started = std::time::Instant::now();
+        let file = tokio::fs::File::open(path).await?.into_std().await;
+        let bytes = file.metadata()?.len();
+        let key = key(snapshot, txid, bytes)?;
+        let payload = Payload::from_file(Arc::new(file), usize::try_from(bytes)?);
+        bounded_transfer(bytes, replace(self.archive.as_ref(), &key, None, payload)).await?;
+        tracing::info!(
+            event = "sqlite_base_uploaded",
+            state_version = snapshot.state_version,
+            bytes,
+            uploader = "host",
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+        );
+        Ok(())
+    }
+}
+
 fn actor_prefix(head: &SnapshotRef) -> Result<String> {
     let (epoch, _) = head
         .object

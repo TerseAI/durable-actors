@@ -130,7 +130,13 @@ async fn park(
     let started = Instant::now();
     match cache
         .slots
-        .park(&host.actor, &slot, request.snapshot, request.txid)
+        .park(
+            &host.actor,
+            &slot,
+            request.snapshot,
+            request.txid,
+            request.base,
+        )
         .await
     {
         Ok(file) => {

@@ -145,10 +145,17 @@ impl NodeCacheClient {
 
     /// Hands the closed database in this host's slot to the node, recorded at `snapshot`, whose
     /// SQLite transaction is `txid`.
-    pub(crate) async fn park_slot(&self, snapshot: &SnapshotRef, txid: u64) -> Result<SlotFile> {
+    /// Parks the closed database; with `base`, the node also uploads it as the actor's base.
+    pub(crate) async fn park_slot(
+        &self,
+        snapshot: &SnapshotRef,
+        txid: u64,
+        base: bool,
+    ) -> Result<SlotFile> {
         let request = SlotPark {
             snapshot: snapshot.clone(),
             txid,
+            base,
         };
         self.slot_call("park", &request).await
     }

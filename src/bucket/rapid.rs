@@ -214,6 +214,14 @@ impl SnapshotStore for RapidSnapshots {
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         self.storage.latest(prefix, false).await
     }
+    async fn upload_base(
+        &self,
+        snapshot: &SnapshotRef,
+        txid: u64,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        self.storage.upload_base(snapshot, txid, path).await
+    }
     async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         let mut session = self.session.lock().await;
         session

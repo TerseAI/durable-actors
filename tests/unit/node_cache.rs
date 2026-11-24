@@ -49,10 +49,10 @@ async fn a_host_moves_databases_only_through_the_slot_its_token_names() -> Resul
         digest: sha256(b"state"),
     };
     let unslotted = cache.client(&host_token(&issuer, "one")?)?;
-    assert!(unslotted.park_slot(&snapshot, 1).await.is_err());
+    assert!(unslotted.park_slot(&snapshot, 1, false).await.is_err());
 
     let host = cache.client(&slotted_token(&issuer, "one", &mine)?)?;
-    host.park_slot(&snapshot, 1).await?;
+    host.park_slot(&snapshot, 1, false).await?;
 
     assert!(!cache.slot(&mine).join("db").exists());
     assert!(cache.slot(&other).join("db/actor.sqlite").exists());
@@ -84,6 +84,7 @@ impl NodeCache {
                 directory.path().into(),
                 Some(slots::SlotLayout::Kubelet(directory.path().join("pods"))),
                 store.clone(),
+                bases::BaseUploads::new(None),
             )
             .await?,
         );

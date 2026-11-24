@@ -3,6 +3,7 @@ use std::{future::Future, net::SocketAddr, path::PathBuf, sync::Arc, time::Durat
 use anyhow::{Context, Result, ensure};
 use tokio::net::TcpListener;
 
+mod bases;
 mod client;
 mod keys;
 mod server;
@@ -30,11 +31,18 @@ pub async fn serve_node_cache(shutdown: impl Future<Output = ()> + Send + 'stati
         )
         .await?,
     );
+    let bucket =
+        match &config.base_bucket {
+            Some(name) => Some(Arc::new(crate::bucket::GcsBucket::new(name).await?)
+                as Arc<dyn crate::bucket::Bucket>),
+            None => None,
+        };
     let slots = Arc::new(
         slots::SqliteSlots::open(
             config.directory,
             config.pods_directory.map(slots::SlotLayout::Kubelet),
             store.clone(),
+            bases::BaseUploads::new(bucket),
         )
         .await?,
     );
@@ -59,7 +67,9 @@ pub(crate) async fn local_router(
             .await?,
     );
     let layout = Some(slots::SlotLayout::Hosts(slots));
-    let slots = Arc::new(slots::SqliteSlots::open(directory, layout, store.clone()).await?);
+    let uploads = bases::BaseUploads::new(None);
+    let slots =
+        Arc::new(slots::SqliteSlots::open(directory, layout, store.clone(), uploads).await?);
     Ok(server::router(
         store,
         slots,
@@ -75,6 +85,8 @@ struct NodeCacheConfig {
     capacity_bytes: u64,
     max_entries: u64,
     verifier: keys::VerifierConfig,
+    /// The archive bucket parked databases are uploaded to as bases; none means no uploads.
+    base_bucket: Option<String>,
 }
 
 impl NodeCacheConfig {
@@ -105,6 +117,8 @@ impl NodeCacheConfig {
                 .unwrap_or_else(|| "/cache".into())
                 .into(),
             pods_directory: get("DURABLE_ACTORS_NODE_CACHE_PODS_DIR").map(PathBuf::from),
+            base_bucket: get("DURABLE_ACTORS_NODE_CACHE_BASE_BUCKET")
+                .filter(|name| !name.is_empty()),
             capacity_bytes,
             max_entries,
             verifier: keys::VerifierConfig {

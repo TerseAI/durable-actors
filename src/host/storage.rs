@@ -41,6 +41,8 @@ pub(crate) struct HostStorage {
     node_cache: Option<NodeCacheClient>,
     activation: Mutex<Option<ActorActivation>>,
     checkpoint: Mutex<Option<crate::bucket::recovery::PrefetchedCheckpoint>>,
+    /// Whether sealing found a new base due, for the park that follows.
+    base_due: std::sync::atomic::AtomicBool,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
     renewal: tokio::sync::Mutex<()>,
@@ -92,6 +94,7 @@ impl HostStorage {
             node_cache: None,
             activation: Mutex::new(None),
             checkpoint: Mutex::new(None),
+            base_due: std::sync::atomic::AtomicBool::new(false),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
             renewal: tokio::sync::Mutex::new(()),
@@ -217,6 +220,10 @@ impl HostStorage {
             }
         };
         let sealed = checkpoint.is_some();
+        self.base_due.store(
+            checkpoint.as_ref().is_some_and(|sealed| sealed.base_due()),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         let storage_ms = started.elapsed().as_secs_f64() * 1000.0;
         let release_started = Instant::now();
         self.fence.lock().unwrap().fenced = true;
@@ -246,6 +253,19 @@ impl HostStorage {
 impl ActorStorage for HostStorage {
     async fn get_alarm(&self) -> Result<Option<i64>> {
         HostStorage::get_alarm(self).await
+    }
+
+    fn base_due(&self) -> bool {
+        self.base_due.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn upload_base(
+        &self,
+        snapshot: &crate::storage::SnapshotRef,
+        txid: u64,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        self.runtime.upload_base(snapshot, txid, path).await
     }
 
     async fn update_alarm(&self, timestamp_ms: Option<i64>) -> Result<()> {

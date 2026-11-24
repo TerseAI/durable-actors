@@ -112,6 +112,13 @@ pub(crate) struct SessionCheckpoint {
     progress: Option<CheckpointProgress>,
 }
 
+impl SessionCheckpoint {
+    /// Whether the sealed session found a new base due.
+    pub(crate) fn base_due(&self) -> bool {
+        self.progress.is_some_and(|progress| progress.base_due)
+    }
+}
+
 impl Ownership {
     fn placement(&self) -> ObjectPlacement {
         let mut placement = ObjectPlacement {
@@ -175,6 +182,15 @@ impl RuntimeStorageReader {
         snapshot: VerifiedSnapshot,
     ) -> Result<super::recovery::RestoredSqlite> {
         self.read_sqlite_prefetched(snapshot, None).await
+    }
+
+    pub(crate) async fn upload_base(
+        &self,
+        snapshot: &crate::storage::SnapshotRef,
+        txid: u64,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        self.snapshots.upload_base(snapshot, txid, path).await
     }
 
     pub(crate) async fn read_sqlite_prefetched(
