@@ -616,8 +616,9 @@ impl DatabaseSession {
         match cache.check_out_slot(snapshot).await {
             Ok(parked) => (Some(path), parked),
             Err(error) => {
-                warn!(error = %format!("{error:#}"), "node slot checkout failed, using temporary storage");
-                (None, None)
+                // The slot is the host's own directory, so a restore can still fill it.
+                warn!(error = %format!("{error:#}"), "node slot checkout failed, restoring into the slot");
+                (Some(path), None)
             }
         }
     }
