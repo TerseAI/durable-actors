@@ -23,6 +23,7 @@
 {{- if eq (include "actors.sandboxNamespace" .) .Release.Namespace }}{{ fail "sandbox namespace must differ from the control-plane namespace" }}{{ end -}}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.redis.urlSecretKey) }}{{ fail "replicaCount above 1 requires redis.urlSecretKey" }}{{ end -}}
 {{- if and .Values.actors.tiers (gt (int .Values.actors.warm) 0) }}{{ fail "actors.tiers replaces actors.warm; set warm on each tier" }}{{ end -}}
+{{- if and .Values.telemetry.collector.datadog.enabled (not .Values.telemetry.collector.platform.issuer) }}{{ fail "telemetry.collector.datadog requires telemetry.collector.platform.issuer" }}{{ end -}}
 {{- $sizes := dict -}}{{- $warm := 0 -}}
 {{- range .Values.actors.tiers -}}
 {{- $size := printf "%v/%v/%v/%v" .cpuMillis .cpuLimitMillis .memoryMiB .memoryLimitMiB -}}

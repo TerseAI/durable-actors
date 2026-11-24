@@ -1,0 +1,105 @@
+processors:
+  batch/datadog:
+    timeout: 10s
+  transform/datadog:
+    error_mode: ignore
+    metric_statements:
+      - merge_maps(datapoint.attributes, resource.attributes, "insert")
+      - keep_matching_keys(datapoint.attributes, "^durable_actors[.]")
+      - replace_all_patterns(datapoint.attributes, "key", "^durable_actors[.]", "")
+      - set(datapoint.attributes["collector"], "${env:POD_NAME}")
+
+connectors:
+  signal_to_metrics/datadog:
+    spans:
+      - name: durable_actors.requests
+        description: Requests by outcome
+        include_resource_attributes: &tenant
+          - key: durable_actors.organization_id
+          - key: durable_actors.project_id
+          - key: durable_actors.actor_name
+        attributes:
+          - key: durable_actors.outcome
+        sum:
+          value: "1"
+          monotonic: true
+      - name: durable_actors.request.duration
+        description: Request duration, excluding rerouted attempts
+        unit: ms
+        include_resource_attributes: *tenant
+        conditions:
+          - span.attributes["durable_actors.outcome"] != nil and span.attributes["durable_actors.outcome"] != "rerouted"
+        exponential_histogram:
+          value: Double(Microseconds(span.end_time - span.start_time)) / 1000.0
+      - name: durable_actors.request.queue_wait
+        description: Time a request waited for its actor, excluding rerouted attempts
+        unit: ms
+        include_resource_attributes: *tenant
+        conditions:
+          - span.attributes["durable_actors.queue_wait_ms"] != nil and span.attributes["durable_actors.outcome"] != "rerouted"
+        exponential_histogram:
+          value: Double(span.attributes["durable_actors.queue_wait_ms"])
+    logs:
+      - name: durable_actors.actor.starts
+        description: Actor activations
+        include_resource_attributes: &platform
+          - key: service.name
+        attributes:
+          - key: durable_actors.project_id
+          - key: durable_actors.actor_name
+        conditions:
+          - log.event_name == "durable_actors.actor.reported" and ParseJSON(log.body)["kind"] == "started"
+        sum:
+          value: "1"
+          monotonic: true
+      - name: durable_actors.sandbox.kills
+        description: Sandboxes that stopped under an actor without the platform asking
+        include_resource_attributes: *platform
+        attributes:
+          - key: durable_actors.project_id
+          - key: durable_actors.kill_reason
+        conditions:
+          - log.event_name == "durable_actors.sandbox.killed"
+        sum:
+          value: "1"
+          monotonic: true
+      - name: durable_actors.socket.opens
+        description: WebSocket connections opened
+        include_resource_attributes: *platform
+        attributes:
+          - key: durable_actors.project_id
+        conditions:
+          - log.event_name == "durable_actors.socket.opened"
+        sum:
+          value: "1"
+          monotonic: true
+      - name: durable_actors.socket.closes
+        description: WebSocket connections closed
+        include_resource_attributes: *platform
+        attributes:
+          - key: durable_actors.project_id
+          - key: durable_actors.close_clean
+        conditions:
+          - log.event_name == "durable_actors.socket.closed"
+        sum:
+          value: "1"
+          monotonic: true
+
+exporters:
+  otlp_http/datadog:
+    endpoint: http://${env:HOST_IP}:4318
+
+service:
+  pipelines:
+    traces/datadog:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/tenant, batch/datadog]
+      exporters: [signal_to_metrics/datadog]
+    logs/datadog:
+      receivers: [otlp/internal]
+      processors: [memory_limiter, batch/datadog]
+      exporters: [signal_to_metrics/datadog]
+    metrics/datadog:
+      receivers: [signal_to_metrics/datadog]
+      processors: [transform/datadog]
+      exporters: [otlp_http/datadog]

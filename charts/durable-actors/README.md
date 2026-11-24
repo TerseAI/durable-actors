@@ -100,6 +100,18 @@ The control plane reports lifecycle reports, WebSocket connections and deploymen
 
 With the platform issuer set, `telemetry.nodeCollector.enabled: true` runs a collector on each gVisor sandbox node. It reads the CPU and working set of each sandbox's runtime container from the node's kubelet every 5 seconds, which leaves out gVisor's own usage, using a ClusterRole that grants only `get` on `nodes/stats`, and sends them over OTLP/HTTP on port 4320, which sandboxes cannot reach. The collector writes them to `sandbox_usage` and publishes each sample to the project of the actor its pod was claimed for.
 
+With the platform issuer set, `telemetry.collector.datadog.enabled: true` also derives metrics from the same request spans and platform events and sends them every 10 seconds over OTLP/HTTP to the Datadog Agent on the collector's node, at port 4318. Enable the Agent's OTLP HTTP receiver (`datadog.otlp.receiver.protocols.http.enabled: true` in the Datadog chart). Tags never include actor, host or request IDs, and every metric carries a `collector` tag naming the collector pod, so replicas never write the same series:
+
+| Metric | Type | Tags |
+| --- | --- | --- |
+| `durable_actors.requests` | count | `organization_id`, `project_id`, `actor_name`, `outcome` |
+| `durable_actors.request.duration` | distribution, ms, rerouted attempts excluded | `organization_id`, `project_id`, `actor_name` |
+| `durable_actors.request.queue_wait` | distribution, ms, rerouted attempts excluded | `organization_id`, `project_id`, `actor_name` |
+| `durable_actors.actor.starts` | count | `project_id`, `actor_name` |
+| `durable_actors.sandbox.kills` | count | `project_id`, `kill_reason` |
+| `durable_actors.socket.opens` | count | `project_id` |
+| `durable_actors.socket.closes` | count | `project_id`, `close_clean` |
+
 ## Usage publishing
 
 To publish actor activation usage, set an existing Pub/Sub topic:

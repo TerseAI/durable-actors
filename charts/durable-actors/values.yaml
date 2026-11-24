@@ -66,6 +66,8 @@ telemetry:
       limits: {memory: 1Gi}
     platform:
       issuer: ""
+    datadog:
+      enabled: false
   nodeCollector:
     enabled: false
     resources:

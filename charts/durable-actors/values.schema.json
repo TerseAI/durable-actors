@@ -291,6 +291,11 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {"issuer": {"type": "string"}}
+            },
+            "datadog": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {"enabled": {"type": "boolean"}}
             }
           }
         },
