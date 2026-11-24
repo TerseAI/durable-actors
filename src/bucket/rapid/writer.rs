@@ -207,9 +207,13 @@ impl Session {
         ensure!(self.healthy, "uncertain write cannot be sealed");
         self.healthy = false;
         let started = Instant::now();
-        tokio::time::timeout_at(deadline, self.seal_head(storage))
-            .await
-            .context("head seal timed out")??;
+        tokio::time::timeout_at(deadline, async {
+            self.seal_head(storage.clone()).await?;
+            self.find_base(&storage).await;
+            anyhow::Ok(())
+        })
+        .await
+        .context("head seal timed out")??;
         let progress = self.checkpoint.seal(self.version);
         tracing::info!(
             event = "rapid_log_sealed",
@@ -223,6 +227,19 @@ impl Session {
         self.next = None;
         self.healthy = true;
         Ok(progress)
+    }
+
+    /// A session that reopened a parked database never listed the actor's bases, so it lists them
+    /// before deciding whether one is due.
+    async fn find_base(&mut self, storage: &LogStorage) {
+        let Some((head, _)) = self.latest.as_ref().filter(|_| !self.checkpoint.based()) else {
+            return;
+        };
+        match storage.newest_base(head).await {
+            Ok(base) => self.checkpoint.found(base.map(|base| base.name)),
+            Err(error) => tracing::warn!(error = %format!("{error:#}"),
+                "SQLite bases unavailable; a base is due"),
+        }
     }
 
     async fn seal_head(&mut self, storage: Arc<LogStorage>) -> Result<()> {

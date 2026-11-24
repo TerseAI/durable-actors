@@ -797,6 +797,36 @@ async fn restores_from_a_legacy_checkpoint_and_refuses_a_corrupt_one() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn parked_reopen_finds_the_previous_upload_and_counts_only_later_writes() -> Result<()> {
+    let f = Fixture::new()?;
+    let writer = f.store()?;
+    let (replication, history) = write_history(&f, &writer, 2, None).await?;
+    let head = f.stream.snapshot(&history[1])?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let sealed = writer.finish(&f.stream, deadline).await?.unwrap();
+    assert!(sealed.base_due);
+    store_base(&f, &f.store()?, &replication, &history, 2, None).await?;
+
+    let actor = crate::storage_paths::actor_from_snapshot(&head.object)?;
+    let object = crate::storage::snapshot_object_name(&actor, 3, &format!("{:032x}", 2))?;
+    let stream = StateStream {
+        owner_epoch: 2,
+        base_version: 2,
+        prefix: format!("{}/", object.rsplit_once('/').unwrap().0),
+        ..f.stream.clone()
+    };
+    let parked = f.store()?;
+    parked.start(&stream, Some((&head, sealed))).await?;
+    let bytes = state(3, 2)?;
+    parked.put(&object, bytes.clone()).await?;
+    let sealed = parked.finish(&stream, deadline).await?.unwrap();
+    assert_eq!(sealed.version, 2);
+    assert_eq!(sealed.log_bytes, bytes.len() as u64);
+    assert!(!sealed.base_due);
+    Ok(())
+}
+
 #[test]
 fn a_base_is_due_when_none_exists_or_the_changes_outgrow_the_newest() {
     use super::super::{base::BaseName, checkpoint::Progress};
@@ -814,7 +844,7 @@ fn a_base_is_due_when_none_exists_or_the_changes_outgrow_the_newest() {
         log_bytes: 0,
         base_due: false,
     };
-    assert!(Progress::resume(sealed, 10, None).seal(11).base_due);
+    assert!(Progress::resume(sealed, 10, None).seal(10).base_due);
 
     let mut progress = Progress::resume(sealed, 10, base(10, 4 << 20));
     assert!(!progress.seal(10).base_due);

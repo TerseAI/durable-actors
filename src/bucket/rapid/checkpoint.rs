@@ -309,6 +309,8 @@ impl SnapshotHistory for LogHistory<'_> {
 #[derive(Default)]
 pub(super) struct Progress {
     based: bool,
+    resumed_at: u64,
+    previous_bytes: u64,
     completed: u64,
     base_bytes: u64,
     log_bytes: u64,
@@ -316,35 +318,49 @@ pub(super) struct Progress {
 
 impl Progress {
     /// Resumes from the progress the last owner sealed, corrected by `base`, the newest base the
-    /// activation found: a node may have stored it after that owner sealed.
+    /// activation found, if it listed them.
     pub fn resume(progress: CheckpointProgress, version: u64, base: Option<BaseName>) -> Self {
         let mut state = Self {
             based: false,
+            resumed_at: version,
+            log_bytes: 0,
             completed: progress.version,
             base_bytes: progress.base_bytes,
-            log_bytes: if version > progress.version {
+            previous_bytes: if version > progress.version {
                 progress.log_bytes
             } else {
                 0
             },
         };
-        if let Some(base) = base.filter(|base| base.version >= state.completed) {
-            state.based = true;
-            if base.version > state.completed {
-                state.log_bytes = 0;
-            }
-            state.completed = base.version;
-            state.base_bytes = base.bytes;
-        }
+        state.found(base);
         state
+    }
+
+    /// Corrects the progress by the actor's newest base: a node may have stored it after the
+    /// progress was sealed.
+    pub fn found(&mut self, base: Option<BaseName>) {
+        if let Some(base) = base.filter(|base| base.version >= self.completed) {
+            self.based = true;
+            if base.version >= self.resumed_at {
+                self.previous_bytes = 0;
+            }
+            self.completed = base.version;
+            self.base_bytes = base.bytes;
+        }
+    }
+
+    pub fn based(&self) -> bool {
+        self.based
     }
 
     pub fn restored(&mut self, progress: CheckpointProgress, base: Option<BaseName>) {
         *self = Self {
             based: base.is_some(),
+            resumed_at: self.resumed_at,
+            previous_bytes: progress.log_bytes,
             completed: progress.version,
             base_bytes: progress.base_bytes,
-            log_bytes: progress.log_bytes,
+            log_bytes: 0,
         };
     }
 
@@ -355,14 +371,15 @@ impl Progress {
     /// The progress to seal at `version`, and whether a base of it is due: when none exists yet,
     /// when the changes since the newest one are as large as it, or when there are too many.
     pub fn seal(&self, version: u64) -> CheckpointProgress {
-        let due = version > self.completed
+        let log_bytes = self.previous_bytes.saturating_add(self.log_bytes);
+        let due = version > 0
             && (!self.based
-                || self.log_bytes >= self.base_bytes.max(MIN_LOG_BYTES)
-                || version - self.completed >= max_log_versions(self.base_bytes));
+                || log_bytes >= self.base_bytes.max(MIN_LOG_BYTES)
+                || version.saturating_sub(self.completed) >= max_log_versions(self.base_bytes));
         CheckpointProgress {
             version: self.completed,
             base_bytes: self.base_bytes,
-            log_bytes: self.log_bytes,
+            log_bytes,
             base_due: due,
         }
     }
