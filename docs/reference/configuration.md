@@ -140,7 +140,7 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_NODE_CACHE_BASE_BUCKET` | Node cache only: the Standard bucket it uploads parked databases to as bases when their hosts find one due. Unset, it uploads nothing. The chart sets it to `storage.bucket` in Rapid mode with `nodeCache.googleServiceAccount`. |
 | `DURABLE_ACTORS_SWEEP_MIN_AGE_HOURS` | History sweeper only: how old Rapid history, archived history and superseded bases must be before the sweeper deletes what a base covers, default `720`. The chart uses `historySweeper.minAgeHours`. |
 | `DURABLE_ACTORS_SWEEP_INTERVAL_SECONDS` | History sweeper only: time between passes, default `3600`. The chart uses `historySweeper.intervalSeconds`. |
-| `DURABLE_ACTORS_SWEEP_DRY_RUN` | History sweeper only: `true` logs what each pass would delete without deleting it. The chart uses `historySweeper.dryRun`. |
+| `DURABLE_ACTORS_SWEEP_DRY_RUN` | History sweeper only: `true` logs what each pass would delete without deleting it. The default is `true`. The chart uses `historySweeper.dryRun`. |
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace; the chart defaults to `<release-namespace>-<release-name>`. |
 | `DURABLE_ACTORS_GKE_ZONE` | Actor placement zone, for example `us-west4-a`; the runtime infers the canonical compute region. The chart sets this from `placement.zone`. |
 | `DURABLE_ACTORS_GKE_ZONES` | Advanced alternative to `GKE_ZONE`: JSON map from canonical compute region to eligible Google zones, such as `{"north-america-west":["us-west4-a","us-west4-b"]}`. A single zone string per region is also accepted. Configure only one of the two placement variables. |
