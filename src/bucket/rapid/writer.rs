@@ -124,7 +124,8 @@ impl Session {
     pub async fn restored(
         &mut self,
         snapshot: &crate::storage::VerifiedSnapshot,
-        restored: &crate::bucket::recovery::ResolvedSqlite,
+        progress: CheckpointProgress,
+        base: Option<super::base::BaseName>,
     ) -> Result<()> {
         let object = &snapshot.reference.object;
         if self
@@ -138,8 +139,7 @@ impl Session {
             return Ok(());
         }
         self.latest = Some((snapshot.reference.clone(), Some(snapshot.bytes.clone())));
-        let base = restored.base.as_ref().map(|base| base.name);
-        self.checkpoint.restored(restored.progress, base);
+        self.checkpoint.restored(progress, base);
         Ok(())
     }
 

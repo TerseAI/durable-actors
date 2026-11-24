@@ -1642,6 +1642,7 @@ impl ActorStorage for FakeAuthority {
         .await?;
         Ok(crate::bucket::RestoredSqlite {
             sqlite: resolved.sqlite,
+            progress: resolved.progress,
             base: None,
         })
     }

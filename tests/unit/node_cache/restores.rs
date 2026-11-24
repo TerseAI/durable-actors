@@ -27,6 +27,7 @@ impl crate::bucket::SnapshotStore for FromBase {
                 files: Vec::new(),
             },
             base: Some(self.0.clone()),
+            progress: Default::default(),
         })
     }
     async fn list(&self, _: &str) -> Result<Vec<String>> {

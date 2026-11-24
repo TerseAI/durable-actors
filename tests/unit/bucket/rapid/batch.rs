@@ -488,6 +488,7 @@ async fn store_base(
     let crate::bucket::RestoredSqlite {
         sqlite: restored,
         base: previous,
+        ..
     } = store.restore_sqlite(snapshot, None, None).await?;
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("base.sqlite");
@@ -857,6 +858,39 @@ async fn parked_reopen_finds_the_previous_upload_and_counts_only_later_writes() 
     let sealed = parked.finish(&stream, deadline).await?.unwrap();
     assert_eq!(sealed.version, 2);
     assert_eq!(sealed.log_bytes, bytes.len() as u64);
+    assert!(!sealed.base_due);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_session_the_node_restored_after_a_crash_counts_the_history_since_the_base() -> Result<()>
+{
+    let f = Fixture::new()?;
+    let writer = f.store()?;
+    let (replication, history) = write_history(&f, &writer, 12, None).await?;
+    store_base(&f, &f.store()?, &replication, &history, 8, None).await?;
+    let head = VerifiedSnapshot::named(f.stream.object(12), history[11].clone())?;
+    let restored = f.store()?.restore_sqlite(head.clone(), None, None).await?;
+
+    let actor = crate::storage_paths::actor_from_snapshot(&head.reference.object)?;
+    let object = crate::storage::snapshot_object_name(&actor, 13, &format!("{:032x}", 2))?;
+    let stream = StateStream {
+        owner_epoch: 2,
+        base_version: 12,
+        prefix: format!("{}/", object.rsplit_once('/').unwrap().0),
+        ..f.stream.clone()
+    };
+    // The crashed owner sealed nothing, so this owner learns the history only from the restore.
+    let owner = f.store()?;
+    owner.start(&stream, None).await?;
+    let base = restored.base.as_ref().map(|base| base.name);
+    owner
+        .restored_elsewhere(&head, restored.progress, base)
+        .await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let sealed = owner.finish(&stream, deadline).await?.unwrap();
+    assert_eq!(sealed.version, 8);
+    assert!(sealed.log_bytes > 0);
     assert!(!sealed.base_due);
     Ok(())
 }

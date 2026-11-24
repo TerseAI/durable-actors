@@ -10,7 +10,7 @@ const SNAPSHOTS: &str = "durable-actors-v3-snapshots-";
 const BASES: &str = "~bases~";
 
 /// What a base's name records about it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BaseName {
     pub owner_epoch: u64,
     pub version: u64,

@@ -20,7 +20,7 @@ use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use super::slots::{DATABASE, DATABASE_FILE};
 use crate::{
     actor::ActorKey,
-    bucket::{SnapshotStoreConfig, SqliteBase},
+    bucket::{BaseName, SnapshotStoreConfig, SqliteBase, recovery::CheckpointProgress},
     litestream::storage::{restore_database, restoring},
     storage::{SnapshotRef, VerifiedSnapshot},
 };
@@ -70,6 +70,11 @@ pub(crate) struct SlotRestored {
     pub head_ms: f64,
     #[serde(default)]
     pub wait_ms: f64,
+    /// What the restored history holds since its base, for the host's next due-base decision.
+    #[serde(default)]
+    pub progress: CheckpointProgress,
+    #[serde(default)]
+    pub base: Option<BaseName>,
 }
 
 pub(super) struct Restores {
@@ -177,6 +182,8 @@ impl Restores {
             open_ms,
             head_ms,
             wait_ms: restored.wait_ms,
+            progress: restored.progress,
+            base: restored.base,
         })
     }
 
@@ -225,6 +232,8 @@ struct Restored {
     txid: u64,
     base_bytes: Option<u64>,
     wait_ms: f64,
+    progress: CheckpointProgress,
+    base: Option<BaseName>,
 }
 
 /// Uses the prepared base when the head's history starts from it, and otherwise, or after any
@@ -285,8 +294,10 @@ async fn finish(
     .await?;
     Ok(Restored {
         txid: restored.sqlite.txid,
-        base_bytes: restored.base.map(|base| base.name.bytes),
+        base_bytes: restored.base.as_ref().map(|base| base.name.bytes),
         wait_ms,
+        progress: restored.progress,
+        base: restored.base.map(|base| base.name),
     })
 }
 

@@ -32,6 +32,8 @@ pub(crate) struct ResolvedSqlite {
 /// What a restore needs to rebuild a database: an optional base and the files after it.
 pub(crate) struct RestoredSqlite {
     pub sqlite: SqliteSnapshot,
+    /// What the restored history holds since its base, for deciding when the next base is due.
+    pub progress: CheckpointProgress,
     pub base: Option<super::rapid::base::SqliteBase>,
 }
 

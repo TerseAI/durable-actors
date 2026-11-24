@@ -266,6 +266,16 @@ impl ActorStorage for HostStorage {
         self.base_due.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    async fn restored_in_slot(
+        &self,
+        snapshot: &crate::storage::VerifiedSnapshot,
+        restored: &crate::node_cache::SlotRestored,
+    ) -> Result<()> {
+        self.runtime
+            .restored_elsewhere(snapshot, restored.progress, restored.base)
+            .await
+    }
+
     fn slot_storage(&self) -> Option<crate::node_cache::SlotStorage> {
         let forwarding = self.forwarding.as_ref()?;
         let tokens = forwarding.credentials.tokens.read().unwrap();

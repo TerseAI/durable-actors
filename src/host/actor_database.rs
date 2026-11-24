@@ -61,6 +61,14 @@ pub(crate) trait ActorStorage: Send + Sync {
     fn slot_storage(&self) -> Option<crate::node_cache::SlotStorage> {
         None
     }
+    /// Records what the node's restore found, which decides when this session's base is due.
+    async fn restored_in_slot(
+        &self,
+        _snapshot: &VerifiedSnapshot,
+        _restored: &crate::node_cache::SlotRestored,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]

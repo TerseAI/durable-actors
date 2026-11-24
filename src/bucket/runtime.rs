@@ -176,6 +176,17 @@ impl std::ops::Deref for RuntimeStorage {
 }
 
 impl RuntimeStorageReader {
+    pub(crate) async fn restored_elsewhere(
+        &self,
+        snapshot: &VerifiedSnapshot,
+        progress: super::recovery::CheckpointProgress,
+        base: Option<super::BaseName>,
+    ) -> Result<()> {
+        self.snapshots
+            .restored_elsewhere(snapshot, progress, base)
+            .await
+    }
+
     pub(crate) async fn read_sqlite(
         &self,
         snapshot: VerifiedSnapshot,

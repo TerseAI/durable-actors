@@ -516,6 +516,7 @@ impl DatabaseSession {
             restored.txid == loaded.snapshot.sqlite.txid,
             "node restored another SQLite transaction"
         );
+        self.storage.restored_in_slot(loaded, &restored).await?;
         let capture = SqliteCapture::reopen(
             directory,
             self.replication.clone(),

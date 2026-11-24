@@ -174,10 +174,12 @@ impl SnapshotStore for RapidSnapshots {
             .restore(snapshot.clone(), newest, download)
             .await?;
         if let Some(session) = self.session.lock().await.as_mut() {
-            session.restored(&snapshot, &restored).await?;
+            let base = restored.base.as_ref().map(|base| base.name);
+            session.restored(&snapshot, restored.progress, base).await?;
         }
         Ok(super::recovery::RestoredSqlite {
             sqlite: restored.sqlite,
+            progress: restored.progress,
             base: restored.base,
         })
     }
@@ -201,6 +203,17 @@ impl SnapshotStore for RapidSnapshots {
         actor: &crate::actor::ActorKey,
     ) -> Result<Option<base::SqliteBase>> {
         self.storage.newest_base_of(actor).await
+    }
+    async fn restored_elsewhere(
+        &self,
+        snapshot: &crate::storage::VerifiedSnapshot,
+        progress: CheckpointProgress,
+        base: Option<base::BaseName>,
+    ) -> Result<()> {
+        if let Some(session) = self.session.lock().await.as_mut() {
+            session.restored(snapshot, progress, base).await?;
+        }
+        Ok(())
     }
     async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         let mut session = self.session.lock().await;

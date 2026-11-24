@@ -159,8 +159,18 @@ pub(crate) trait SnapshotStore: Send + Sync {
             recovery::resolve(&mut recovery::StoredHistory(self), snapshot, None).await?;
         Ok(recovery::RestoredSqlite {
             sqlite: resolved.sqlite,
+            progress: resolved.progress,
             base: resolved.base,
         })
+    }
+    /// Records the progress of a restore the node made for this host, as if the host had made it.
+    async fn restored_elsewhere(
+        &self,
+        _snapshot: &crate::storage::VerifiedSnapshot,
+        _progress: recovery::CheckpointProgress,
+        _base: Option<super::BaseName>,
+    ) -> Result<()> {
+        Ok(())
     }
     /// The newest base of `actor`, for a store that keeps bases.
     async fn newest_base(
