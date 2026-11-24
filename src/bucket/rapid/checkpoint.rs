@@ -181,6 +181,8 @@ struct LogHistory<'a> {
 
 struct EpochHistory {
     records: Option<BTreeMap<String, Payload>>,
+    /// Every key the archive holds under the epoch, which names its log segments.
+    listed: Arc<std::collections::BTreeSet<String>>,
     indexes: Vec<String>,
     indexed: BTreeMap<String, Payload>,
     checkpoints: std::collections::BTreeSet<String>,
@@ -233,21 +235,29 @@ impl LogHistory<'_> {
                 .filter(|&(epoch, base)| epoch >= lowest && base <= version)
                 .map(|(_, base)| base);
             floor = checkpoint.max(based);
-            planned.extend(
-                wave.iter()
-                    .map(|(prefix, epoch)| (prefix.clone(), epoch.indexes.clone())),
-            );
+            planned.extend(wave.iter().map(|(prefix, epoch)| {
+                (prefix.clone(), epoch.indexes.clone(), epoch.listed.clone())
+            }));
             for (prefix, epoch) in wave.drain(..) {
                 self.epochs.entry(prefix).or_insert(epoch);
             }
             next = lowest - 1;
         }
-        let prefetched = self
-            .storage
-            .prefetch_indexed(&planned, floor.unwrap_or(0), version)
-            .await;
-        self.reads += prefetched.batches;
-        for (object, bytes) in prefetched.records {
+        let indexed: Vec<_> = planned
+            .iter()
+            .map(|(prefix, indexes, _)| (prefix.clone(), indexes.clone()))
+            .collect();
+        let segments: Vec<_> = planned
+            .into_iter()
+            .map(|(prefix, _, listed)| (prefix, listed))
+            .collect();
+        let first = floor.unwrap_or(0);
+        let (archived, logged) = tokio::join!(
+            self.storage.prefetch_indexed(&indexed, first, version),
+            self.storage.prefetch_segments(&segments, first, version)
+        );
+        self.reads += archived.batches + logged.batches;
+        for (object, bytes) in archived.records.into_iter().chain(logged.records) {
             let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
             if let Some(epoch) = self.epochs.get_mut(prefix) {
                 epoch.indexed.insert(object, bytes);
@@ -264,16 +274,24 @@ const MAX_PLANNED_EPOCHS: usize = 1024;
 
 async fn list_epoch(storage: &LogStorage, prefix: &str) -> Result<EpochHistory> {
     let prefix_key = format!("{prefix}/");
-    let (keys, indexes) = tokio::try_join!(
+    let (keys, listed) = tokio::join!(
         storage.snapshots.list(&prefix_key),
-        storage.index_keys(&prefix_key)
-    )?;
+        storage.epoch_keys(&prefix_key)
+    );
+    let keys = keys?;
+    let index = format!("{}index~", object_name(&prefix_key)?);
+    let indexes = listed
+        .iter()
+        .filter(|key| key.starts_with(&index))
+        .cloned()
+        .collect();
     let (checkpoints, heads) = keys
         .into_iter()
         .filter(|key| key.ends_with(".checkpoint") || key.ends_with(".json"))
         .partition(|key| key.ends_with(".checkpoint"));
     Ok(EpochHistory {
         records: None,
+        listed,
         indexes,
         indexed: BTreeMap::new(),
         checkpoints,

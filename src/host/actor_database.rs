@@ -6,7 +6,6 @@ use crate::{
     },
     litestream::Replicator,
     request_tracking::{RequestStage, RequestTracker},
-    state_log::SqliteSnapshot,
     storage::{VerifiedSnapshot, WritePlan},
 };
 use anyhow::{Context, Result, ensure};

@@ -43,6 +43,16 @@ impl LogStorage {
         }
     }
 
+    /// The manifests of the segments this session reads as bounded live ranges.
+    pub fn live_manifests(&self) -> std::collections::BTreeSet<String> {
+        self.live
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|record| record.manifest.key().ok())
+            .collect()
+    }
+
     pub async fn live_records(
         &self,
         object: &str,
