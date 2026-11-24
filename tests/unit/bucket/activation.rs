@@ -1047,6 +1047,7 @@ impl crate::bucket::SnapshotStore for PausedSnapshots {
         Ok(Some(crate::bucket::recovery::PrefetchedCheckpoint {
             source: source.clone(),
             bytes: None,
+            base: None,
         }))
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {

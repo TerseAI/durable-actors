@@ -153,10 +153,12 @@ async fn live_checkpoint_inputs_are_read_as_one_bounded_range() -> Result<()> {
             VerifiedSnapshot::named(f.stream.object(31), history[30].clone())?,
             None,
         )
-        .await?;
+        .await?
+        .sqlite;
     assert_eq!(
         crate::litestream::storage::restored_fields(
             replication.as_ref(),
+            None,
             &sqlite.files,
             sqlite.txid
         )
@@ -213,8 +215,10 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
             VerifiedSnapshot::named(f.stream.object(32), history[31].clone())?,
             None,
         )
-        .await?;
-    assert_eq!(archive.read_requests.load(Ordering::SeqCst), 1);
+        .await?
+        .sqlite;
+    // The checkpoint, plus the listing that finds no base.
+    assert_eq!(archive.read_requests.load(Ordering::SeqCst), 2);
     let source = f.stream.snapshot(&history[31])?;
     let prefetched = reader.prefetch_checkpoint(&source).await?;
     let requests = archive.read_requests.load(Ordering::SeqCst);
@@ -223,7 +227,8 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
             VerifiedSnapshot::matching(source.clone(), history[31].clone())?,
             prefetched,
         )
-        .await?;
+        .await?
+        .sqlite;
     assert_eq!(archive.read_requests.load(Ordering::SeqCst), requests);
     assert_eq!(prepared.txid, sqlite.txid);
     assert_eq!(prepared.files.len(), 1);
@@ -267,10 +272,12 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
             VerifiedSnapshot::named(f.stream.object(35), history[34].clone())?,
             None,
         )
-        .await?;
+        .await?
+        .sqlite;
     let restored = SqliteCapture::restore(
         CaptureDirectory::temporary()?,
         replication.clone(),
+        None,
         &latest.files,
         latest.txid,
         None,
@@ -294,7 +301,8 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
             VerifiedSnapshot::named(f.stream.object(34), history[33].clone())?,
             None,
         )
-        .await?;
+        .await?
+        .sqlite;
     assert_eq!(tail.files.len(), 3);
     assert_eq!(archive.read_batches.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -302,7 +310,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
         (history[31].len() + history[32].len() + 2 * frame::HEADER) as u64
     );
     assert_eq!(
-        restored_fields(replication.as_ref(), &tail.files, tail.txid).await?,
+        restored_fields(replication.as_ref(), None, &tail.files, tail.txid).await?,
         serde_json::json!({"count":34})
     );
     archive.read_batches.store(0, Ordering::SeqCst);
@@ -311,9 +319,10 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
             VerifiedSnapshot::named(f.stream.object(31), history[30].clone())?,
             None,
         )
-        .await?;
+        .await?
+        .sqlite;
     assert_eq!(
-        restored_fields(replication.as_ref(), &older.files, older.txid).await?,
+        restored_fields(replication.as_ref(), None, &older.files, older.txid).await?,
         serde_json::json!({"count":31})
     );
     assert_eq!(archive.read_batches.load(Ordering::SeqCst), 1);
@@ -424,10 +433,12 @@ async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Re
                 VerifiedSnapshot::named(f.stream.object(32), history[31].clone())?,
                 None,
             )
-            .await?;
+            .await?
+            .sqlite;
         assert_eq!(
             crate::litestream::storage::restored_fields(
                 replication.as_ref(),
+                None,
                 &sqlite.files,
                 sqlite.txid
             )
@@ -535,7 +546,7 @@ async fn assert_resumed_checkpoint_retry(parked: bool) -> Result<()> {
         .start(&stream, parked.then_some((&source.reference, progress)))
         .await?;
     if !parked {
-        resumed.restore_prefetched(source, None).await?;
+        resumed.restore_prefetched(source, None).await?.sqlite;
     }
     tokio::time::timeout(Duration::from_secs(2), async {
         while archive.checkpoint_attempts.load(Ordering::SeqCst) == 0 {
@@ -826,6 +837,7 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
     let restored = SqliteCapture::restore(
         CaptureDirectory::temporary()?,
         replication,
+        None,
         &files,
         txid,
         None,
@@ -1050,6 +1062,7 @@ async fn restores_prefetch_archived_batches_without_reading_unlisted_versions() 
     assert_eq!(
         crate::litestream::storage::restored_fields(
             replication.as_ref(),
+            None,
             &restored.sqlite.files,
             restored.sqlite.txid
         )
@@ -1112,6 +1125,7 @@ async fn restores_plan_history_spread_across_owner_epochs() -> Result<()> {
     assert_eq!(
         crate::litestream::storage::restored_fields(
             replication.as_ref(),
+            None,
             &restored.sqlite.files,
             restored.sqlite.txid
         )
@@ -1213,5 +1227,130 @@ async fn unavailable_or_invalid_indexes_preserve_archive_recovery() -> Result<()
         );
         assert_eq!(reader.get(&f.stream.object(2)).await?, Some(state(2, 1)?));
     }
+    Ok(())
+}
+
+/// Stores the database at `version` as a base, claiming SQLite transaction `txid` when given.
+async fn store_base(
+    f: &Fixture,
+    store: &RapidSnapshots,
+    replication: &crate::litestream::Litestream,
+    history: &[Payload],
+    version: u64,
+    txid: Option<u64>,
+) -> Result<u64> {
+    use crate::litestream::DatabaseRestore;
+    let snapshot = VerifiedSnapshot::named(
+        f.stream.object(version),
+        history[version as usize - 1].clone(),
+    )?;
+    let crate::bucket::RestoredSqlite {
+        sqlite: restored,
+        base: previous,
+    } = store.restore_prefetched(snapshot, None).await?;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("base.sqlite");
+    match previous {
+        Some(previous) => {
+            previous.download_to(&path).await?;
+            crate::litestream::apply::apply(
+                &path,
+                Some(previous.name.txid),
+                &restored.files,
+                restored.txid,
+            )?;
+        }
+        None => {
+            replication
+                .restore(&restored.files, &path, restored.txid)
+                .await?
+        }
+    }
+    let bytes = std::fs::read(&path)?;
+    let reference = f.stream.snapshot(&history[version as usize - 1])?;
+    let key = base::key(
+        &reference,
+        txid.unwrap_or(restored.txid),
+        bytes.len() as u64,
+    )?;
+    assert!(f.archive.compare_and_swap(&key, None, bytes.into()).await?);
+    Ok(restored.txid)
+}
+
+async fn restore_version(
+    store: &RapidSnapshots,
+    f: &Fixture,
+    history: &[Payload],
+    version: u64,
+) -> Result<crate::bucket::RestoredSqlite> {
+    store
+        .restore_prefetched(
+            VerifiedSnapshot::named(
+                f.stream.object(version),
+                history[version as usize - 1].clone(),
+            )?,
+            None,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn restores_from_the_newest_base_and_the_history_after_it() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, _) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
+    let (replication, history) = write_history(&f, &writer, 40, None).await?;
+    store_base(&f, &writer, &replication, &history, 20, None).await?;
+    let txid = store_base(&f, &writer, &replication, &history, 30, None).await?;
+    let (reader, _) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    let restored = restore_version(&reader, &f, &history, 40).await?;
+    assert_eq!(
+        restored.base.as_ref().map(|base| base.name.version),
+        Some(30)
+    );
+    assert_eq!(restored.sqlite.files[0].first, txid + 1);
+    assert_eq!(
+        crate::litestream::storage::restored_fields(
+            replication.as_ref(),
+            restored.base.as_ref(),
+            &restored.sqlite.files,
+            restored.sqlite.txid
+        )
+        .await?,
+        serde_json::json!({"count":40})
+    );
+    let at_base = restore_version(&reader, &f, &history, 30).await?;
+    assert!(at_base.sqlite.files.is_empty());
+    assert_eq!(
+        crate::litestream::storage::restored_fields(
+            replication.as_ref(),
+            at_base.base.as_ref(),
+            &at_base.sqlite.files,
+            at_base.sqlite.txid
+        )
+        .await?,
+        serde_json::json!({"count":30})
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ignores_a_base_whose_transaction_disagrees_with_the_history() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, _) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
+    let (replication, history) = write_history(&f, &writer, 12, None).await?;
+    store_base(&f, &writer, &replication, &history, 8, Some(999)).await?;
+    let (reader, _) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    let restored = restore_version(&reader, &f, &history, 12).await?;
+    assert!(restored.base.is_none());
+    assert_eq!(
+        crate::litestream::storage::restored_fields(
+            replication.as_ref(),
+            None,
+            &restored.sqlite.files,
+            restored.sqlite.txid
+        )
+        .await?,
+        serde_json::json!({"count":12})
+    );
     Ok(())
 }

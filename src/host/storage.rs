@@ -327,7 +327,7 @@ impl ActorStorage for HostStorage {
     async fn read_sqlite(
         &self,
         snapshot: &crate::storage::VerifiedSnapshot,
-    ) -> Result<crate::state_log::SqliteSnapshot> {
+    ) -> Result<crate::bucket::RestoredSqlite> {
         self.ensure_authority()?;
         let checkpoint = self.checkpoint.lock().unwrap().take();
         self.runtime

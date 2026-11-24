@@ -1,5 +1,5 @@
 use super::{DatabaseRestore, Replicator};
-use crate::payload::Payload;
+use crate::{bucket::SqliteBase, payload::Payload};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -127,15 +127,24 @@ impl SqliteCapture {
 
     /// With `resume`, capture continues the restored history, so the next commit is a delta at
     /// `txid + 1`; otherwise it starts a new history whose first commit holds every page.
+    /// With `base`, `files` apply to the base's file instead of starting from a full copy.
     pub(crate) async fn restore(
         directory: CaptureDirectory,
         replication: Arc<dyn Replicator>,
+        base: Option<&SqliteBase>,
         files: &[LtxFile],
         txid: u64,
         full_snapshots: Option<Duration>,
         resume: bool,
     ) -> Result<Self> {
-        restore_database(replication.as_ref(), directory.database(), files, txid).await?;
+        restore_database(
+            replication.as_ref(),
+            directory.database(),
+            base,
+            files,
+            txid,
+        )
+        .await?;
         Self::open(
             replication,
             directory,
@@ -400,11 +409,12 @@ fn range(name: &str) -> Option<(u64, u64)> {
 
 pub(crate) async fn restored_fields(
     restore: &dyn DatabaseRestore,
+    base: Option<&SqliteBase>,
     files: &[LtxFile],
     txid: u64,
 ) -> Result<serde_json::Value> {
     let directory = tempfile::tempdir()?;
-    restore_database(restore, directory.path(), files, txid).await?;
+    restore_database(restore, directory.path(), base, files, txid).await?;
     tokio::task::spawn_blocking(move || {
         let db = rusqlite::Connection::open(directory.path().join("actor.sqlite"))?;
         read_fields(&db)
@@ -415,12 +425,50 @@ pub(crate) async fn restored_fields(
 async fn restore_database(
     restore: &dyn DatabaseRestore,
     directory: &Path,
+    base: Option<&SqliteBase>,
     files: &[LtxFile],
     txid: u64,
 ) -> Result<()> {
-    restore
-        .restore(files, &directory.join("actor.sqlite"), txid)
-        .await
+    let path = directory.join("actor.sqlite");
+    match base {
+        Some(base) => restore_onto_base(base, files, &path, txid).await,
+        None => restore.restore(files, &path, txid).await,
+    }
+}
+
+/// Downloads `base` beside `path`, applies `files` to it and moves it into place.
+async fn restore_onto_base(
+    base: &SqliteBase,
+    files: &[LtxFile],
+    path: &Path,
+    txid: u64,
+) -> Result<()> {
+    ensure!(!path.exists(), "restore output already exists");
+    let started = std::time::Instant::now();
+    let partial = path.with_extension("restoring");
+    if tokio::fs::try_exists(&partial).await? {
+        tokio::fs::remove_file(&partial).await?;
+    }
+    base.download_to(&partial).await?;
+    let download_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let (files, path, base_txid) = (files.to_vec(), path.to_owned(), base.name.txid);
+    let applied = tokio::task::spawn_blocking(move || {
+        let applied = super::apply::apply(&partial, Some(base_txid), &files, txid)?;
+        std::fs::rename(&partial, &path)?;
+        anyhow::Ok(applied)
+    })
+    .await??;
+    tracing::info!(
+        event = "sqlite_base_restored",
+        base = %base.key,
+        base_bytes = base.name.bytes,
+        files = applied.files,
+        pages = applied.pages,
+        page_bytes = applied.bytes,
+        download_ms,
+        apply_ms = started.elapsed().as_secs_f64() * 1000.0 - download_ms
+    );
+    Ok(())
 }
 
 pub(crate) fn read_fields(db: &rusqlite::Connection) -> Result<serde_json::Value> {

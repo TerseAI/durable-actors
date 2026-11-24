@@ -474,12 +474,13 @@ impl DatabaseSession {
         {
             return Ok((capture, "slot"));
         }
-        let sqlite = self.storage.read_sqlite(loaded).await?;
+        let restored = self.storage.read_sqlite(loaded).await?;
         let capture = SqliteCapture::restore(
             emptied(slot.as_deref()).await?,
             self.replication.clone(),
-            &sqlite.files,
-            sqlite.txid,
+            restored.base.as_ref(),
+            &restored.sqlite.files,
+            restored.sqlite.txid,
             full_snapshots,
             resume,
         )

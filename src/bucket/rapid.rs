@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 mod archive;
+pub(crate) mod base;
 mod checkpoint;
 mod frame;
 mod gcs;
@@ -169,28 +170,32 @@ impl SnapshotStore for RapidSnapshots {
         &self,
         source: &crate::storage::SnapshotRef,
     ) -> Result<Option<super::recovery::PrefetchedCheckpoint>> {
-        let bytes = self
-            .storage
-            .snapshots
-            .get(&format!("{}.checkpoint", source.object))
-            .await?;
+        let checkpoint = format!("{}.checkpoint", source.object);
+        let (bytes, base) = tokio::try_join!(
+            self.storage.snapshots.get(&checkpoint),
+            self.storage.newest_base(source)
+        )?;
         Ok(Some(super::recovery::PrefetchedCheckpoint {
             source: source.clone(),
             bytes,
+            base,
         }))
     }
     async fn restore_prefetched(
         &self,
         snapshot: crate::storage::VerifiedSnapshot,
         checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
-    ) -> Result<crate::state_log::SqliteSnapshot> {
+    ) -> Result<super::recovery::RestoredSqlite> {
         let restored = self.storage.restore(snapshot.clone(), checkpoint).await?;
         if let Some(session) = self.session.lock().await.as_mut() {
             session
                 .restored(self.storage.clone(), &snapshot, &restored)
                 .await?;
         }
-        Ok(restored.sqlite)
+        Ok(super::recovery::RestoredSqlite {
+            sqlite: restored.sqlite,
+            base: restored.base,
+        })
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         let mut keys: std::collections::BTreeSet<_> = self

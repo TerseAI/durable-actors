@@ -30,16 +30,28 @@ impl LogStorage {
         let started = std::time::Instant::now();
         let object = snapshot.reference.object.clone();
         tracing::info!(event = "sqlite_history_started", object);
+        let base = match &checkpoint {
+            Some(prefetched) if prefetched.source == snapshot.reference => prefetched.base.clone(),
+            _ => self.newest_base(&snapshot.reference).await.unwrap_or_else(|error| {
+                tracing::warn!(error = %format!("{error:#}"), "SQLite bases unavailable; restoring from history");
+                None
+            }),
+        };
         let mut history = LogHistory {
             storage: self,
             epochs: BTreeMap::new(),
             reads: 0,
             probes: 0,
+            base: base
+                .as_ref()
+                .map(|base| (base.name.owner_epoch, base.name.version)),
         };
-        let resolved = resolve(&mut history, snapshot, checkpoint).await?;
+        let resolved = resolve(&mut history, snapshot, checkpoint, base).await?;
         tracing::info!(
             event = "sqlite_history_restored",
             object,
+            base_version = resolved.base.as_ref().map(|base| base.name.version),
+            base_bytes = resolved.base.as_ref().map(|base| base.name.bytes),
             checkpoint = resolved.checkpoint,
             checkpoint_version = resolved.progress.version,
             parents = resolved.parents,
@@ -163,6 +175,8 @@ struct LogHistory<'a> {
     epochs: BTreeMap<String, EpochHistory>,
     reads: usize,
     probes: usize,
+    /// The owner epoch and version of the base the walk stops at, if any.
+    base: Option<(u64, u64)>,
 }
 
 struct EpochHistory {
@@ -211,9 +225,14 @@ impl LogHistory<'_> {
                 .buffered(EPOCHS_PER_WAVE as usize)
                 .try_collect()
                 .await?;
-            floor = wave
+            let checkpoint = wave
                 .iter()
                 .find_map(|(_, epoch)| epoch.checkpoint_at_or_below(version));
+            let based = self
+                .base
+                .filter(|&(epoch, base)| epoch >= lowest && base <= version)
+                .map(|(_, base)| base);
+            floor = checkpoint.max(based);
             planned.extend(
                 wave.iter()
                     .map(|(prefix, epoch)| (prefix.clone(), epoch.indexes.clone())),

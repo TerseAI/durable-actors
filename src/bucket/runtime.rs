@@ -173,7 +173,7 @@ impl RuntimeStorageReader {
     pub(crate) async fn read_sqlite(
         &self,
         snapshot: VerifiedSnapshot,
-    ) -> Result<crate::state_log::SqliteSnapshot> {
+    ) -> Result<super::recovery::RestoredSqlite> {
         self.read_sqlite_prefetched(snapshot, None).await
     }
 
@@ -181,7 +181,7 @@ impl RuntimeStorageReader {
         &self,
         snapshot: VerifiedSnapshot,
         checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
-    ) -> Result<crate::state_log::SqliteSnapshot> {
+    ) -> Result<super::recovery::RestoredSqlite> {
         self.snapshots
             .restore_prefetched(snapshot, checkpoint)
             .await

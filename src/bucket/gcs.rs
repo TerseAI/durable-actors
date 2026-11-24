@@ -180,6 +180,32 @@ impl Bucket for GcsBucket {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
         self.read(key, None).await
     }
+    async fn download_to(&self, key: &str, path: &std::path::Path) -> Result<Option<u64>> {
+        let Some(response) = self.open(key, None).await? else {
+            return Ok(None);
+        };
+        let length = response.object().size as u64;
+        let _transfer = self.clients.transfer(length).await?;
+        let path = path.to_owned();
+        let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+            let file = std::fs::File::create_new(path)?;
+            file.set_len(length)?;
+            Ok(file)
+        })
+        .await??;
+        let crc32c = response.object().checksums.and_then(|c| c.crc32c);
+        let generation = response.object().generation;
+        self.download_parts(
+            key,
+            generation,
+            (0, length),
+            crc32c,
+            response,
+            Arc::new(file),
+        )
+        .await?;
+        Ok(Some(length))
+    }
     async fn range(&self, key: &str, start: u64, length: u64) -> Result<Option<BucketObject>> {
         let result = self.read(key, Some((start, length))).await?;
         anyhow::ensure!(
@@ -287,21 +313,8 @@ mod tests;
 
 impl GcsBucket {
     async fn read(&self, key: &str, range: Option<(u64, u64)>) -> Result<Option<BucketObject>> {
-        let mut request = self.clients.storage.read_object(&self.bucket, key);
-        if let Some((start, length)) = range {
-            request = request.set_read_range(ReadRange::segment(start, length));
-        }
-        let mut response = match request.send().await {
-            Ok(response) => response,
-            Err(error)
-                if error.http_status_code() == Some(404)
-                    || error
-                        .status()
-                        .is_some_and(|status| status.code.name() == "NOT_FOUND") =>
-            {
-                return Ok(None);
-            }
-            Err(error) => return Err(error.into()),
+        let Some(mut response) = self.open(key, range).await? else {
+            return Ok(None);
         };
         let (start, length) = range.unwrap_or((0, response.object().size as u64));
         let _transfer = self.clients.transfer(length).await?;
@@ -312,8 +325,23 @@ impl GcsBucket {
                 .is_none()
                 .then(|| response.object().checksums.and_then(|c| c.crc32c))
                 .flatten();
-            self.download_parts(key, generation, (start, length), crc32c, response)
-                .await?
+            let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+                let file = tempfile::tempfile()?;
+                file.set_len(length)?;
+                Ok(file)
+            })
+            .await??;
+            let file = Arc::new(file);
+            self.download_parts(
+                key,
+                generation,
+                (start, length),
+                crc32c,
+                response,
+                file.clone(),
+            )
+            .await?;
+            crate::payload::Payload::from_file(file, usize::try_from(length)?)
         } else {
             let mut download = crate::payload::Download::new();
             while let Some(chunk) = response.next().await {
@@ -324,8 +352,31 @@ impl GcsBucket {
         Ok(Some(BucketObject { generation, bytes }))
     }
 
-    /// Streams the first part from the response already open and the rest as concurrent ranges
-    /// of the same generation, each written at its offset in one temporary file.
+    async fn open(
+        &self,
+        key: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<ReadObjectResponse>> {
+        let mut request = self.clients.storage.read_object(&self.bucket, key);
+        if let Some((start, length)) = range {
+            request = request.set_read_range(ReadRange::segment(start, length));
+        }
+        match request.send().await {
+            Ok(response) => Ok(Some(response)),
+            Err(error)
+                if error.http_status_code() == Some(404)
+                    || error
+                        .status()
+                        .is_some_and(|status| status.code.name() == "NOT_FOUND") =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Streams the first part from the response already open and, for a large object, the rest
+    /// as concurrent ranges of the same generation, each written at its offset in `file`.
     async fn download_parts(
         &self,
         key: &str,
@@ -333,15 +384,13 @@ impl GcsBucket {
         (start, length): (u64, u64),
         crc32c: Option<u32>,
         first: ReadObjectResponse,
-    ) -> Result<crate::payload::Payload> {
-        let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
-            let file = tempfile::tempfile()?;
-            file.set_len(length)?;
-            Ok(file)
-        })
-        .await??;
-        let file = Arc::new(file);
-        let parts = download_parts(length);
+        file: Arc<std::fs::File>,
+    ) -> Result<()> {
+        let parts = if length >= PARALLEL_DOWNLOAD_BYTES {
+            download_parts(length)
+        } else {
+            vec![(0, length)]
+        };
         let (offset, size) = parts[0];
         let mut downloads = vec![write_part(file.clone(), offset, size, first).boxed()];
         for &(offset, size) in &parts[1..] {
@@ -363,12 +412,9 @@ impl GcsBucket {
         }
         futures_util::future::try_join_all(downloads).await?;
         if let Some(expected) = crc32c {
-            verify_crc32c(file.clone(), length, expected).await?;
+            verify_crc32c(file, length, expected).await?;
         }
-        Ok(crate::payload::Payload::from_file(
-            file,
-            usize::try_from(length)?,
-        ))
+        Ok(())
     }
 }
 

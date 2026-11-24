@@ -5,6 +5,8 @@ mod rapid;
 pub(crate) use rapid::{RAPID_OPERATION_TIMEOUT, RapidSnapshots, transfer_timeout};
 pub(crate) mod recovery;
 mod snapshots;
+pub(crate) use rapid::base::SqliteBase;
+pub(crate) use recovery::RestoredSqlite;
 pub use snapshots::{ArchiveBatchConfig, RapidBucket, RapidPlacement, SnapshotStoreConfig};
 pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};
 mod runtime;
@@ -36,6 +38,18 @@ pub trait Bucket: Send + Sync {
         bytes: Payload,
     ) -> Result<bool>;
     async fn list(&self, prefix: &str) -> Result<Vec<String>>;
+    /// Writes the object to a new file at `path` and returns its size, or `None` when missing.
+    async fn download_to(&self, key: &str, path: &std::path::Path) -> Result<Option<u64>> {
+        let Some(object) = self.get(key).await? else {
+            return Ok(None);
+        };
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut file = std::fs::File::create_new(path)?;
+            Ok(Some(std::io::copy(&mut object.bytes.reader(), &mut file)?))
+        })
+        .await?
+    }
 }
 
 pub(crate) async fn replace(

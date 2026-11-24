@@ -157,12 +157,18 @@ pub(crate) trait SnapshotStore: Send + Sync {
         &self,
         snapshot: crate::storage::VerifiedSnapshot,
         checkpoint: Option<recovery::PrefetchedCheckpoint>,
-    ) -> Result<crate::state_log::SqliteSnapshot> {
-        Ok(
-            recovery::resolve(&mut recovery::StoredHistory(self), snapshot, checkpoint)
-                .await?
-                .sqlite,
+    ) -> Result<recovery::RestoredSqlite> {
+        let resolved = recovery::resolve(
+            &mut recovery::StoredHistory(self),
+            snapshot,
+            checkpoint,
+            None,
         )
+        .await?;
+        Ok(recovery::RestoredSqlite {
+            sqlite: resolved.sqlite,
+            base: resolved.base,
+        })
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>>;
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>>;

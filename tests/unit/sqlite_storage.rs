@@ -22,6 +22,7 @@ async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Re
     let restored = SqliteCapture::restore(
         CaptureDirectory::temporary()?,
         replication.clone(),
+        None,
         &files,
         first,
         None,
@@ -46,6 +47,7 @@ async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Re
     let restored = SqliteCapture::restore(
         CaptureDirectory::temporary()?,
         replication,
+        None,
         &combined,
         second,
         None,
@@ -91,6 +93,7 @@ async fn resumed_restore_captures_the_next_write_as_a_delta() -> Result<()> {
     let mut resumed = SqliteCapture::restore(
         CaptureDirectory::temporary()?,
         replication.clone(),
+        None,
         &files,
         first,
         None,
@@ -109,6 +112,7 @@ async fn resumed_restore_captures_the_next_write_as_a_delta() -> Result<()> {
     let restored = SqliteCapture::restore(
         CaptureDirectory::temporary()?,
         replication,
+        None,
         &files,
         second,
         None,
@@ -163,6 +167,7 @@ async fn a_closed_slot_database_reopens_in_place_and_resumes_its_history() -> Re
     let restored = SqliteCapture::restore(
         CaptureDirectory::temporary()?,
         replication,
+        None,
         &files,
         second,
         None,
