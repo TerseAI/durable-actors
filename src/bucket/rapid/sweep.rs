@@ -81,6 +81,7 @@ pub(super) struct Summary {
     pub actors: u64,
     pub objects: u64,
     pub bytes: u64,
+    pub failed: u64,
 }
 
 pub async fn serve(config: SweepConfig, shutdown: impl Future<Output = ()>) -> Result<()> {
@@ -95,6 +96,7 @@ pub async fn serve(config: SweepConfig, shutdown: impl Future<Output = ()>) -> R
                 actors = summary.actors,
                 objects = summary.objects,
                 bytes = summary.bytes,
+                failed = summary.failed,
                 dry_run = config.dry_run,
                 duration_ms = started.elapsed().as_secs_f64() * 1000.0
             ),
@@ -126,7 +128,7 @@ pub(super) async fn sweep(
                 .is_some_and(|first| actor_of(&first.name) != actor_of(&object.name))
             {
                 let done = std::mem::take(&mut actor);
-                sweep_actor(store, &done, cutoff, dry_run, &mut summary).await?;
+                sweep_or_skip(store, &done, cutoff, dry_run, &mut summary).await;
             }
             actor.push(object);
         }
@@ -135,8 +137,26 @@ pub(super) async fn sweep(
         }
         page = next;
     }
-    sweep_actor(store, &actor, cutoff, dry_run, &mut summary).await?;
+    sweep_or_skip(store, &actor, cutoff, dry_run, &mut summary).await;
     Ok(summary)
+}
+
+/// An actor whose history fails to sweep is logged and retried next pass, never stopping this one.
+async fn sweep_or_skip(
+    store: &dyn SweepStore,
+    objects: &[Listed],
+    cutoff: SystemTime,
+    dry_run: bool,
+    summary: &mut Summary,
+) {
+    if let Err(error) = sweep_actor(store, objects, cutoff, dry_run, summary).await {
+        summary.failed += 1;
+        tracing::warn!(
+            event = "history_sweep_actor_failed",
+            actor = objects.first().map_or("", |object| actor_of(&object.name)),
+            error = %format!("{error:#}")
+        );
+    }
 }
 
 async fn sweep_actor(
@@ -237,7 +257,7 @@ async fn sweep_segment(store: &dyn SweepStore, key: &str, dry_run: bool) -> Resu
     for replica in &manifest.replicas {
         ensure!(
             replica.object == expected
-                && replica.generation > 0
+                && replica.generation >= 0
                 && store.allows_replica(&replica.bucket),
             "invalid sweep replica"
         );
@@ -261,7 +281,9 @@ async fn sweep_segment(store: &dyn SweepStore, key: &str, dry_run: bool) -> Resu
                 .delete(
                     Some(&replica.bucket),
                     &replica.object,
-                    Some(replica.generation),
+                    // A replica recorded without its generation goes by name: segment names are
+                    // never reused.
+                    (replica.generation > 0).then_some(replica.generation),
                 )
                 .await?;
         }

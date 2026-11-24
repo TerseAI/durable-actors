@@ -88,6 +88,10 @@ fn base(actor: &str, epoch: u64, version: u64) -> String {
 }
 
 fn manifest(id: &str) -> Payload {
+    manifest_at(id, 7)
+}
+
+fn manifest_at(id: &str, generation: i64) -> Payload {
     let manifest = Manifest {
         format: 1,
         id: id.into(),
@@ -101,7 +105,7 @@ fn manifest(id: &str) -> Payload {
         replicas: vec![Replica {
             bucket: "projects/_/buckets/rapid-a".into(),
             object: format!("durable-actors-v3-logs-aaa~{id}.segment"),
-            generation: 7,
+            generation,
         }],
     };
     serde_json::to_vec(&manifest).unwrap().into()
@@ -209,5 +213,29 @@ async fn keeps_old_history_through_the_first_rollback_window() -> Result<()> {
             .objects,
         0
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn skips_an_actor_whose_history_fails_and_sweeps_the_rest() -> Result<()> {
+    let store = Memory::new(2);
+    history(&store, false);
+    for (epoch, version, age) in [(1, 2, 40 * DAY), (2, 5, 40 * DAY), (3, 9, DAY)] {
+        store.put(base("a00", epoch, version), age, b"base".as_slice().into());
+    }
+    let foreign = name("a00", 1, "log~s9.manifest");
+    store.put(foreign.clone(), 40 * DAY, manifest("s9"));
+    store.put(
+        name("aaa", 1, "log~s1.manifest"),
+        40 * DAY,
+        manifest_at("s1", 0),
+    );
+    let summary = sweep(&store, SystemTime::now() - 30 * DAY, false).await?;
+    assert_eq!(summary.failed, 1);
+    assert!(store.names().contains(&foreign));
+    assert!(store.deleted.lock().unwrap().contains(&(
+        Some("projects/_/buckets/rapid-a".into()),
+        "durable-actors-v3-logs-aaa~s1.segment".into()
+    )));
     Ok(())
 }
