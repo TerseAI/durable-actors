@@ -20,8 +20,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// A restore answers only when the database is ready, after up to several seconds of silence.
 const RESTORE_TIMEOUT: Duration = Duration::from_secs(120);
-/// Heads up to this size go with the restore request, so the node need not read them again.
-const SENT_HEAD_BYTES: usize = 4 << 20;
+/// Heads up to this size go with the restore request, so the node need not read them again. As
+/// base64 they stay under the 2 MiB the node accepts in a request.
+const SENT_HEAD_BYTES: usize = 1 << 20;
 /// Activation reads code, the database and the snapshot at once, and a read that finds no idle
 /// connection pays for a new one inside gVisor.
 const WARM_CONNECTIONS: usize = 4;
