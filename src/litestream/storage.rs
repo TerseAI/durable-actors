@@ -432,25 +432,33 @@ async fn restore_database(
 ) -> Result<()> {
     let path = directory.join("actor.sqlite");
     match base {
-        Some(base) => restore_onto_base(base, files, &path, txid).await,
+        Some(base) => restore_onto_base(base, files, restoring(directory), &path, txid).await,
         None => restore.restore(files, &path, txid).await,
     }
 }
 
-/// Downloads `base` beside `path`, applies `files` to it and moves it into place.
+/// Where a restore builds the database in `directory` before moving it into place.
+pub(crate) fn restoring(directory: &Path) -> PathBuf {
+    directory.join("actor.restoring")
+}
+
+/// Downloads `base` to `partial`, unless the history read already did, applies `files` to it
+/// and moves it to `path`.
 async fn restore_onto_base(
     base: &SqliteBase,
     files: &[LtxFile],
+    partial: PathBuf,
     path: &Path,
     txid: u64,
 ) -> Result<()> {
     ensure!(!path.exists(), "restore output already exists");
     let started = std::time::Instant::now();
-    let partial = path.with_extension("restoring");
-    if tokio::fs::try_exists(&partial).await? {
-        tokio::fs::remove_file(&partial).await?;
+    if base.downloaded.as_deref() != Some(partial.as_path()) {
+        if tokio::fs::try_exists(&partial).await? {
+            tokio::fs::remove_file(&partial).await?;
+        }
+        base.download_to(&partial).await?;
     }
-    base.download_to(&partial).await?;
     let download_ms = started.elapsed().as_secs_f64() * 1000.0;
     let (files, path, base_txid) = (files.to_vec(), path.to_owned(), base.name.txid);
     let applied = tokio::task::spawn_blocking(move || {

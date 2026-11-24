@@ -18,10 +18,13 @@ pub(super) fn max_log_versions(base_bytes: u64) -> u64 {
 }
 
 impl LogStorage {
+    /// Resolves the history of `snapshot`'s database. Given `download`, the base it starts from
+    /// downloads there while the changes since that base are read.
     pub async fn restore(
         &self,
         snapshot: VerifiedSnapshot,
         checkpoint: Option<crate::bucket::recovery::PrefetchedCheckpoint>,
+        download: Option<&std::path::Path>,
     ) -> Result<ResolvedSqlite> {
         let started = std::time::Instant::now();
         let object = snapshot.reference.object.clone();
@@ -42,12 +45,22 @@ impl LogStorage {
                 .as_ref()
                 .map(|base| (base.name.owner_epoch, base.name.version)),
         };
-        let resolved = resolve(&mut history, snapshot, checkpoint, base).await?;
+        let (mut resolved, base_download_ms) = tokio::try_join!(
+            resolve(&mut history, snapshot, checkpoint, base.clone()),
+            download_base(base.as_ref(), download)
+        )?;
+        if let (Some(path), Some(_)) = (download, base_download_ms) {
+            match resolved.base.as_mut() {
+                Some(base) => base.downloaded = Some(path.to_owned()),
+                None => tokio::fs::remove_file(path).await?,
+            }
+        }
         tracing::info!(
             event = "sqlite_history_restored",
             object,
             base_version = resolved.base.as_ref().map(|base| base.name.version),
             base_bytes = resolved.base.as_ref().map(|base| base.name.bytes),
+            base_download_ms,
             checkpoint = resolved.checkpoint,
             checkpoint_version = resolved.progress.version,
             parents = resolved.parents,
@@ -69,6 +82,19 @@ impl LogStorage {
         );
         Ok(resolved)
     }
+}
+
+/// Downloads `base` to `path`, if both are given, and returns how long it took.
+async fn download_base(
+    base: Option<&super::base::SqliteBase>,
+    path: Option<&std::path::Path>,
+) -> Result<Option<f64>> {
+    let (Some(base), Some(path)) = (base, path) else {
+        return Ok(None);
+    };
+    let started = std::time::Instant::now();
+    base.download_to(path).await?;
+    Ok(Some(started.elapsed().as_secs_f64() * 1000.0))
 }
 
 struct LogHistory<'a> {

@@ -347,11 +347,12 @@ impl ActorStorage for HostStorage {
     async fn read_sqlite(
         &self,
         snapshot: &crate::storage::VerifiedSnapshot,
+        download: &std::path::Path,
     ) -> Result<crate::bucket::RestoredSqlite> {
         self.ensure_authority()?;
         let checkpoint = self.checkpoint.lock().unwrap().take();
         self.runtime
-            .read_sqlite_prefetched(snapshot.clone(), checkpoint)
+            .read_sqlite_prefetched(snapshot.clone(), checkpoint, Some(download))
             .await
     }
 

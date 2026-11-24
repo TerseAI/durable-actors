@@ -24,6 +24,8 @@ pub(crate) struct SqliteBase {
     pub key: String,
     pub name: BaseName,
     pub bucket: Arc<dyn Bucket>,
+    /// Where the restore downloaded it while it read the changes since, if it did.
+    pub downloaded: Option<std::path::PathBuf>,
 }
 
 impl SqliteBase {
@@ -76,6 +78,7 @@ impl LogStorage {
                 key,
                 name,
                 bucket: self.archive.clone(),
+                downloaded: None,
             }))
     }
 }

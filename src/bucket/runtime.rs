@@ -181,7 +181,7 @@ impl RuntimeStorageReader {
         &self,
         snapshot: VerifiedSnapshot,
     ) -> Result<super::recovery::RestoredSqlite> {
-        self.read_sqlite_prefetched(snapshot, None).await
+        self.read_sqlite_prefetched(snapshot, None, None).await
     }
 
     pub(crate) async fn upload_base(
@@ -197,9 +197,10 @@ impl RuntimeStorageReader {
         &self,
         snapshot: VerifiedSnapshot,
         checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
+        download: Option<&std::path::Path>,
     ) -> Result<super::recovery::RestoredSqlite> {
         self.snapshots
-            .restore_prefetched(snapshot, checkpoint)
+            .restore_prefetched(snapshot, checkpoint, download)
             .await
     }
 

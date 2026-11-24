@@ -488,9 +488,11 @@ impl DatabaseSession {
         {
             return Ok((capture, "slot"));
         }
-        let restored = self.storage.read_sqlite(loaded).await?;
+        let directory = emptied(slot.as_deref()).await?;
+        let download = crate::litestream::storage::restoring(directory.database());
+        let restored = self.storage.read_sqlite(loaded, &download).await?;
         let capture = SqliteCapture::restore(
-            emptied(slot.as_deref()).await?,
+            directory,
             self.replication.clone(),
             restored.base.as_ref(),
             &restored.sqlite.files,

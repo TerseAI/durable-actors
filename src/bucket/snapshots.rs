@@ -153,10 +153,13 @@ pub(crate) trait SnapshotStore: Send + Sync {
     ) -> Result<Option<recovery::PrefetchedCheckpoint>> {
         Ok(None)
     }
+    /// Resolves `snapshot`'s SQLite history. A store with bases may download the one the history
+    /// starts from to `download` meanwhile.
     async fn restore_prefetched(
         &self,
         snapshot: crate::storage::VerifiedSnapshot,
         checkpoint: Option<recovery::PrefetchedCheckpoint>,
+        _download: Option<&std::path::Path>,
     ) -> Result<recovery::RestoredSqlite> {
         let resolved = recovery::resolve(
             &mut recovery::StoredHistory(self),

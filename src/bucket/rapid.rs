@@ -190,8 +190,12 @@ impl SnapshotStore for RapidSnapshots {
         &self,
         snapshot: crate::storage::VerifiedSnapshot,
         checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
+        download: Option<&std::path::Path>,
     ) -> Result<super::recovery::RestoredSqlite> {
-        let restored = self.storage.restore(snapshot.clone(), checkpoint).await?;
+        let restored = self
+            .storage
+            .restore(snapshot.clone(), checkpoint, download)
+            .await?;
         if let Some(session) = self.session.lock().await.as_mut() {
             session.restored(&snapshot, &restored).await?;
         }
