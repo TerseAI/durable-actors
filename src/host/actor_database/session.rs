@@ -234,7 +234,6 @@ impl DatabaseSession {
             self.prepared_activation = Some(activation.clone());
             return Ok(PreparedActivation::Hydrate { activation });
         }
-        self.prepare_slot();
         let mut activation = self.storage.acquire_actor().await?;
         if self.cached_state.is_none() {
             let cached = if activation.state_version == 0 {
@@ -596,21 +595,6 @@ impl DatabaseSession {
             self.storage.full_snapshots(),
         )
         .await
-    }
-
-    /// Lets the node start downloading the actor's newest base while this host activates.
-    fn prepare_slot(&self) {
-        let (Some(cache), Some(storage), Some(_)) =
-            (&self.node_cache, self.storage.slot_storage(), &self.slot)
-        else {
-            return;
-        };
-        let cache = cache.clone();
-        tokio::spawn(async move {
-            if let Err(error) = cache.prepare_slot(storage).await {
-                warn!(error = %format!("{error:#}"), "node slot prepare failed");
-            }
-        });
     }
 
     /// Checks out this host's slot, once: it holds the actor's parked database when the node has
