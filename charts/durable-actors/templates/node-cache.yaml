@@ -93,7 +93,10 @@ spec:
             {{- end }}
           volumeMounts:
             - {name: cache, mountPath: {{ ternary "/disk" "/cache" $slots }}}
+            - {name: tmp, mountPath: /tmp}
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: cache
           {{- if $slots }}
           hostPath: {path: {{ .Values.nodeCache.sqliteSlots.diskRoot | quote }}, type: Directory}
