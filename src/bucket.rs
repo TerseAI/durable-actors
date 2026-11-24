@@ -13,7 +13,7 @@ pub(crate) use rapid::base::{
 pub use rapid::sweep::{SweepConfig, serve as serve_history_sweeper};
 pub(crate) use recovery::RestoredSqlite;
 pub use snapshots::{ArchiveBatchConfig, RapidBucket, RapidPlacement, SnapshotStoreConfig};
-pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};
+pub(crate) use snapshots::{Bases, BucketSnapshots, SnapshotStore};
 mod runtime;
 
 use anyhow::Result;

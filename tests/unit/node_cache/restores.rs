@@ -17,7 +17,7 @@ impl crate::bucket::SnapshotStore for FromBase {
     async fn restore_sqlite(
         &self,
         _: VerifiedSnapshot,
-        _: Option<SqliteBase>,
+        _: crate::bucket::Bases,
         _: Option<&Path>,
     ) -> Result<RestoredSqlite> {
         Ok(RestoredSqlite {
@@ -187,7 +187,70 @@ async fn prepares_the_newest_base_through_the_nodes_own_bucket() -> Result<()> {
     )
     .await?;
     assert_eq!(prepared.as_deref(), Some(key.as_str()));
-    assert_eq!(listed.get().map(|base| base.key.as_str()), Some(key.as_str()));
+    assert_eq!(
+        listed.get().map(|base| base.key.as_str()),
+        Some(key.as_str())
+    );
     assert_eq!(std::fs::read(file)?, bytes);
+    Ok(())
+}
+
+/// A store whose history starts from the base `Bases` picks among these, oldest first, with no
+/// changes after it.
+struct Layered(Vec<SqliteBase>);
+
+#[async_trait::async_trait]
+impl crate::bucket::SnapshotStore for Layered {
+    async fn get(&self, _: &str) -> Result<Option<Payload>> {
+        Ok(None)
+    }
+    async fn restore_sqlite(
+        &self,
+        _: VerifiedSnapshot,
+        bases: crate::bucket::Bases,
+        _: Option<&Path>,
+    ) -> Result<RestoredSqlite> {
+        let below = match bases {
+            crate::bucket::Bases::Newest(_) => u64::MAX,
+            crate::bucket::Bases::Below(version) => version,
+        };
+        let base = self
+            .0
+            .iter()
+            .rev()
+            .find(|base| base.name.version < below)
+            .context("no history")?;
+        FromBase(base.clone())
+            .restore_sqlite(head()?, crate::bucket::Bases::Newest(None), None)
+            .await
+    }
+    async fn list(&self, _: &str) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+    async fn latest(&self, _: &str) -> Result<Option<(String, Payload)>> {
+        Ok(None)
+    }
+    async fn put(&self, _: &str, _: Payload) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn restores_from_an_older_base_when_the_newest_fails() -> Result<()> {
+    let slot = tempfile::tempdir()?;
+    let bucket = Arc::new(FileBucket::new(slot.path().join("bucket"))?);
+    let bytes = database(slot.path(), 2)?;
+    assert!(
+        bucket
+            .compare_and_swap("older", None, bytes.clone().into())
+            .await?
+    );
+    let mut newest = base("newest", bytes.len() as u64, Arc::new(Empty));
+    newest.name.version = 2;
+    let store = Layered(vec![base("older", bytes.len() as u64, bucket), newest]);
+    let database = slot.path().join(DATABASE);
+    let restored = restore_into(&store, head()?, None, &database).await?;
+    assert_eq!(restored.base.map(|base| base.version), Some(1));
+    assert_eq!(std::fs::read(database.join(DATABASE_FILE))?, bytes);
     Ok(())
 }

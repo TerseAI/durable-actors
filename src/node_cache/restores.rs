@@ -241,47 +241,55 @@ struct Restored {
     base: Option<BaseName>,
 }
 
-/// Uses the prepared base when the head's history starts from it, and otherwise, or after any
-/// failure, restores the way a host did: download beside the history read, with fallbacks.
+/// Starts from the newest base, using the prepared download when the head's history starts from
+/// it. A base that fails to download or apply gives way to the next older one, then to history
+/// alone.
 async fn restore_into(
     store: &dyn crate::bucket::SnapshotStore,
     head: VerifiedSnapshot,
-    prepared: Option<Prepared>,
+    mut prepared: Option<Prepared>,
     database: &Path,
 ) -> Result<Restored> {
     tokio::fs::create_dir_all(database).await?;
-    match restore_prepared(store, head.clone(), prepared, database).await {
-        Ok(restored) => Ok(restored),
-        Err(error) => {
-            tracing::warn!(error = %format!("{error:#}"), "prepared restore failed, restoring again");
-            clear(database).await?;
-            let restored = store
-                .restore_sqlite(head, None, Some(&restoring(database)))
-                .await?;
-            finish(database, restored, 0.0).await
+    let listed = prepared
+        .as_ref()
+        .and_then(|prepared| prepared.listed.get().cloned());
+    let mut bases = crate::bucket::Bases::Newest(listed);
+    loop {
+        let mut restored = store.restore_sqlite(head.clone(), bases, None).await?;
+        let wait_ms = use_prepared(&mut restored, prepared.take(), database).await;
+        let failed = restored.base.as_ref().map(|base| base.name.version);
+        match finish(database, restored, wait_ms).await {
+            Ok(restored) => return Ok(restored),
+            Err(error) => {
+                let Some(version) = failed else {
+                    return Err(error);
+                };
+                tracing::warn!(base_version = version, error = %format!("{error:#}"), "SQLite base failed to restore, trying an older one");
+                clear(database).await?;
+                bases = crate::bucket::Bases::Below(version);
+            }
         }
     }
 }
 
-async fn restore_prepared(
-    store: &dyn crate::bucket::SnapshotStore,
-    head: VerifiedSnapshot,
+/// Moves the prepared download into place when it is the base `restored` starts from, and
+/// returns how long that waited for it.
+async fn use_prepared(
+    restored: &mut crate::bucket::RestoredSqlite,
     prepared: Option<Prepared>,
     database: &Path,
-) -> Result<Restored> {
-    let listed = prepared
-        .as_ref()
-        .and_then(|prepared| prepared.listed.get().cloned());
-    let mut restored = store.restore_sqlite(head, listed, None).await?;
+) -> f64 {
     let waited = Instant::now();
-    if let (Some(base), Some(prepared)) = (restored.base.as_mut(), prepared)
-        && prepared.task.await??.as_deref() == Some(base.key.as_str())
-    {
-        let partial = restoring(database);
-        tokio::fs::rename(&prepared.file, &partial).await?;
+    let (Some(base), Some(prepared)) = (restored.base.as_mut(), prepared) else {
+        return 0.0;
+    };
+    let downloaded = matches!(prepared.task.await, Ok(Ok(Some(key))) if key == base.key);
+    let partial = restoring(database);
+    if downloaded && tokio::fs::rename(&prepared.file, &partial).await.is_ok() {
         base.downloaded = Some(partial);
     }
-    finish(database, restored, elapsed_ms(waited)).await
+    elapsed_ms(waited)
 }
 
 async fn finish(

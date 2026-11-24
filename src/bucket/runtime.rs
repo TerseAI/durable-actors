@@ -193,7 +193,7 @@ impl RuntimeStorageReader {
         download: Option<&std::path::Path>,
     ) -> Result<super::recovery::RestoredSqlite> {
         self.snapshots
-            .restore_sqlite(snapshot, None, download)
+            .restore_sqlite(snapshot, super::Bases::Newest(None), download)
             .await
     }
 

@@ -144,15 +144,23 @@ impl SnapshotStoreConfig {
     }
 }
 
+/// The base a restore starts from, in a store that keeps bases.
+pub(crate) enum Bases {
+    /// The newest, or this one when the caller already listed it.
+    Newest(Option<super::SqliteBase>),
+    /// The newest below this version, after a restore from that base failed.
+    Below(u64),
+}
+
 #[async_trait]
 pub(crate) trait SnapshotStore: Send + Sync {
     async fn get(&self, object: &str) -> Result<Option<Payload>>;
-    /// Resolves `snapshot`'s SQLite history. A store with bases starts from `newest` when the
-    /// caller already listed it, and may download the base to `download` meanwhile.
+    /// Resolves `snapshot`'s SQLite history. A store with bases starts from the one `bases` picks,
+    /// falling back to older ones and then history alone, and may download it to `download`.
     async fn restore_sqlite(
         &self,
         snapshot: crate::storage::VerifiedSnapshot,
-        _newest: Option<super::SqliteBase>,
+        _bases: Bases,
         _download: Option<&std::path::Path>,
     ) -> Result<recovery::RestoredSqlite> {
         let resolved =
