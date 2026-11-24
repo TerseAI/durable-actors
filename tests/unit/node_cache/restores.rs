@@ -97,17 +97,19 @@ fn head() -> Result<VerifiedSnapshot> {
     VerifiedSnapshot::named(object, bytes)
 }
 
-fn prepared(key: &str, file: PathBuf) -> Prepared {
+/// A prepared download of the base named `key` that has already finished into `file`.
+fn prepared(key: &str, file: PathBuf, store: Arc<dyn crate::bucket::SnapshotStore>) -> Prepared {
+    let key = key.to_owned();
     Prepared {
         actor: ActorKey {
             project_id: "project".into(),
             actor_name: "Counter".into(),
             actor_id: "id".into(),
         },
-        key: key.into(),
+        store: futures_util::future::ready(Ok(store)).boxed().shared(),
         file,
         started: Instant::now(),
-        task: AbortOnDropHandle::new(tokio::spawn(async { Ok(()) })),
+        task: AbortOnDropHandle::new(tokio::spawn(async move { Ok(Some(key)) })),
     }
 }
 
@@ -118,15 +120,11 @@ async fn restores_onto_the_prepared_base_without_downloading_it_again() -> Resul
     let file = slot.path().join(PREPARED_DIR).join(PREPARED_FILE);
     std::fs::create_dir_all(file.parent().unwrap())?;
     std::fs::write(&file, &bytes)?;
-    let store = FromBase(base("base", bytes.len() as u64, Arc::new(Empty)));
+    let store = Arc::new(FromBase(base("base", bytes.len() as u64, Arc::new(Empty))));
     let database = slot.path().join(DATABASE);
-    let (txid, base_bytes) = restore_into(
-        &store,
-        head()?,
-        Some(prepared("base", file.clone())),
-        &database,
-    )
-    .await?;
+    let prepared = prepared("base", file.clone(), store.clone());
+    let (txid, base_bytes) =
+        restore_into(store.as_ref(), head()?, Some(prepared), &database).await?;
     assert_eq!((txid, base_bytes), (1, Some(bytes.len() as u64)));
     assert_eq!(std::fs::read(database.join(DATABASE_FILE))?, bytes);
     assert!(!file.exists());
@@ -146,9 +144,10 @@ async fn downloads_another_base_when_the_history_starts_from_it() -> Result<()> 
     let stale = slot.path().join(PREPARED_DIR).join(PREPARED_FILE);
     std::fs::create_dir_all(stale.parent().unwrap())?;
     std::fs::write(&stale, b"an older base")?;
-    let store = FromBase(base("newer", bytes.len() as u64, bucket));
+    let store = Arc::new(FromBase(base("newer", bytes.len() as u64, bucket)));
     let database = slot.path().join(DATABASE);
-    restore_into(&store, head()?, Some(prepared("older", stale)), &database).await?;
+    let prepared = prepared("older", stale, store.clone());
+    restore_into(store.as_ref(), head()?, Some(prepared), &database).await?;
     assert_eq!(std::fs::read(database.join(DATABASE_FILE))?, bytes);
     Ok(())
 }

@@ -10,6 +10,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use futures_util::{
+    FutureExt,
+    future::{BoxFuture, Shared},
+};
 use serde::{Deserialize, Serialize};
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 
@@ -64,13 +68,18 @@ pub(super) struct Restores {
     restores: tokio::sync::Semaphore,
 }
 
-/// The newest base, downloading into a slot before its host knows its head.
+/// The actor's store, opened once for its prepare and restore.
+type Store =
+    Shared<BoxFuture<'static, Result<Arc<dyn crate::bucket::SnapshotStore>, Arc<anyhow::Error>>>>;
+
+/// The newest base, downloading into a slot before its host knows its head. The task returns the
+/// downloaded base's key, `None` when the actor has no base.
 struct Prepared {
     actor: ActorKey,
-    key: String,
+    store: Store,
     file: PathBuf,
     started: Instant,
-    task: AbortOnDropHandle<Result<()>>,
+    task: AbortOnDropHandle<Result<Option<String>>>,
 }
 
 impl Restores {
@@ -91,24 +100,23 @@ impl Restores {
         storage: SlotStorage,
     ) -> Result<()> {
         self.expire().await;
-        if self.prepared.lock().await.contains_key(slot) {
+        let mut prepared = self.prepared.lock().await;
+        if prepared.contains_key(slot) {
             return Ok(());
         }
-        let store = open(&storage, actor).await?;
-        let Some(base) = store.newest_base(actor).await? else {
-            return Ok(());
-        };
+        let store = open(storage).boxed().shared();
         let file = directory.join(PREPARED_DIR).join(PREPARED_FILE);
-        let task = AbortOnDropHandle::new(tokio::spawn(download(
-            base.clone(),
+        let task = AbortOnDropHandle::new(tokio::spawn(download_newest(
+            store.clone(),
+            actor.clone(),
             file.clone(),
             self.downloads.clone(),
         )));
-        self.prepared.lock().await.insert(
+        prepared.insert(
             slot.to_owned(),
             Prepared {
                 actor: actor.clone(),
-                key: base.key,
+                store,
                 file,
                 started: Instant::now(),
                 task,
@@ -129,7 +137,11 @@ impl Restores {
         let started = Instant::now();
         let prepared = self.take(slot, actor).await;
         let _permit = self.restores.acquire().await?;
-        let store = open(&request.storage, actor).await?;
+        let store = match &prepared {
+            Some(prepared) => prepared.store.clone().await,
+            None => open(request.storage.clone()).await,
+        }
+        .map_err(|error| anyhow::anyhow!("{error:#}"))?;
         let bytes = store
             .get(&request.head.object)
             .await?
@@ -202,9 +214,8 @@ async fn restore_prepared(
 ) -> Result<(u64, Option<u64>)> {
     let mut restored = store.restore_sqlite(head, None).await?;
     if let (Some(base), Some(prepared)) = (restored.base.as_mut(), prepared)
-        && base.key == prepared.key
+        && prepared.task.await??.as_deref() == Some(base.key.as_str())
     {
-        prepared.task.await??;
         let partial = restoring(database);
         tokio::fs::rename(&prepared.file, &partial).await?;
         base.downloaded = Some(partial);
@@ -230,6 +241,20 @@ async fn finish(
     ))
 }
 
+async fn download_newest(
+    store: Store,
+    actor: ActorKey,
+    file: PathBuf,
+    permits: Arc<tokio::sync::Semaphore>,
+) -> Result<Option<String>> {
+    let store = store.await.map_err(|error| anyhow::anyhow!("{error:#}"))?;
+    let Some(base) = store.newest_base(&actor).await? else {
+        return Ok(None);
+    };
+    download(base.clone(), file, permits).await?;
+    Ok(Some(base.key))
+}
+
 async fn download(
     base: SqliteBase,
     file: PathBuf,
@@ -251,22 +276,27 @@ async fn download(
     Ok(())
 }
 
-/// The actor's Rapid store, read with the token its host forwarded.
+/// The actor's Rapid store, read with the token its host forwarded. It names no actor, so it
+/// opens no write segment: only the host writes.
 async fn open(
-    storage: &SlotStorage,
-    actor: &ActorKey,
-) -> Result<Arc<dyn crate::bucket::SnapshotStore>> {
-    let state = crate::bucket::GcsBucket::with_credentials(
-        &storage.bucket,
-        crate::bucket::forwarded_token(storage.access_token.clone()),
-    )
-    .await?;
-    Ok(Arc::new(crate::bucket::RapidSnapshots::gcs(
-        &storage.persistence,
-        state.clients(),
-        CancellationToken::new(),
-        Some(actor),
-    )?))
+    storage: SlotStorage,
+) -> Result<Arc<dyn crate::bucket::SnapshotStore>, Arc<anyhow::Error>> {
+    let opened = async {
+        let state = crate::bucket::GcsBucket::with_credentials(
+            &storage.bucket,
+            crate::bucket::forwarded_token(storage.access_token.clone()),
+        )
+        .await?;
+        let store: Arc<dyn crate::bucket::SnapshotStore> =
+            Arc::new(crate::bucket::RapidSnapshots::gcs(
+                &storage.persistence,
+                state.clients(),
+                CancellationToken::new(),
+                None,
+            )?);
+        anyhow::Ok(store)
+    };
+    opened.await.map_err(Arc::new)
 }
 
 /// The node writes as another user, so the host gets read and write access to the file.
