@@ -134,7 +134,6 @@ impl GcsZone {
         if size < PARALLEL_SEGMENT_BYTES {
             return download(&descriptor, 0, size).await;
         }
-        let _reading = PARALLEL_SEGMENTS.acquire().await?;
         let file = Arc::new(
             tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
                 let file = tempfile::tempfile()?;
@@ -234,6 +233,11 @@ impl LogZone for GcsZone {
         if size == 0 {
             return Ok(Payload::default());
         }
+        // Queued outside the transfer's deadline, which only times the download itself.
+        let _reading = match size as u64 >= PARALLEL_SEGMENT_BYTES {
+            true => Some(PARALLEL_SEGMENTS.acquire().await?),
+            false => None,
+        };
         let bytes = bounded_transfer(
             size as u64,
             self.download_segment(replica, descriptor, size as u64),
