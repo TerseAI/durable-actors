@@ -84,13 +84,24 @@ pub(super) struct Summary {
     pub failed: u64,
 }
 
+/// Sweeps every interval until `shutdown`, which also cuts a pass short: deletions are journaled,
+/// so the next pass finishes what a cut one started. A store that fails to open is retried then.
 pub async fn serve(config: SweepConfig, shutdown: impl Future<Output = ()>) -> Result<()> {
-    let store = GcsSweep::new(&config.archive_bucket, &config.rapid_buckets).await?;
     tokio::pin!(shutdown);
+    let store = tokio::sync::OnceCell::new();
     loop {
         let started = Instant::now();
-        let cutoff = SystemTime::now() - config.min_age;
-        match sweep(&store, cutoff, config.dry_run).await {
+        let pass = async {
+            let store = store
+                .get_or_try_init(|| GcsSweep::new(&config.archive_bucket, &config.rapid_buckets))
+                .await?;
+            sweep(store, SystemTime::now() - config.min_age, config.dry_run).await
+        };
+        let swept = tokio::select! {
+            () = &mut shutdown => return Ok(()),
+            swept = pass => swept,
+        };
+        match swept {
             Ok(summary) => tracing::info!(
                 event = "history_sweep",
                 actors = summary.actors,
