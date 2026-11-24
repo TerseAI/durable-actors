@@ -167,7 +167,9 @@ async fn park(
     }
 }
 
-/// Starts downloading the host's newest base into its slot while the host activates.
+/// Starts downloading the host's newest base into its slot while the host activates. It starts
+/// even when the node holds a parked database, which may not match the head; checkout cancels it
+/// when it reuses one.
 async fn prepare(
     State(cache): State<NodeCache>,
     headers: HeaderMap,
@@ -177,9 +179,6 @@ async fn prepare(
         Ok(holder) => holder,
         Err(status) => return status.into_response(),
     };
-    if cache.slots.holds(&host.actor).await {
-        return StatusCode::NO_CONTENT.into_response();
-    }
     let prepared = match cache.slots.slot(&slot) {
         Ok(directory) => {
             cache

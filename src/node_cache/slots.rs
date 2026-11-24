@@ -158,16 +158,6 @@ impl SqliteSlots {
         }
     }
 
-    /// Whether this node holds a parked database of `actor`, which its next host likely reopens.
-    pub async fn holds(&self, actor: &ActorKey) -> bool {
-        let (parked, actor) = (self.parked(actor), actor_name(actor));
-        blocking(move || Ok(read_record(&parked)))
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|record| record.actor == actor)
-    }
-
     pub(super) fn slot(&self, name: &str) -> Result<PathBuf> {
         match self.layout.as_ref().context("SQLite slots are off here")? {
             SlotLayout::Kubelet(pods) => {
