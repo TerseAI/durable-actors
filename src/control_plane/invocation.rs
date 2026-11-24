@@ -28,32 +28,40 @@ pub(super) async fn invoke_alarm(
     alarm: &super::alarms::ClaimedAlarm,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
-    let target = service
-        .resolve_actor_route(&alarm.actor, None, None, None, None)
-        .await
-        .map_err(|error| {
-            // Without a deployment a retry cannot succeed, so the alarm is finished instead of kept due.
-            if error.is::<super::service::NoRegisteredCode>() {
-                error
-            } else {
-                error.context(super::alarms::AlarmNotDelivered("could not route alarm"))
-            }
-        })?;
+    let deadline = started + super::alarms::ATTEMPT_TIMEOUT;
+    let target = tokio::time::timeout_at(
+        deadline,
+        service.resolve_actor_route(&alarm.actor, None, None, None, None),
+    )
+    .await
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("routing the alarm timed out")))
+    .map_err(|error| {
+        // Without a deployment a retry cannot succeed, so the alarm is finished instead of kept due.
+        if error.is::<super::service::NoRegisteredCode>() {
+            error
+        } else {
+            error.context(super::alarms::AlarmNotDelivered("could not route alarm"))
+        }
+    })?;
     let invocation = ActorInvocation {
         actor: alarm.actor.clone(),
         request_id: format!("alarm-{}", alarm.revision),
         method: "onAlarm".into(),
         args: ActorArgs::default(),
     };
-    let outcome = dispatch(
-        service,
-        client,
-        &target,
-        &invocation,
-        target.host_state,
-        started.elapsed().as_secs_f64() * 1000.0,
+    let outcome = tokio::time::timeout_at(
+        deadline,
+        dispatch(
+            service,
+            client,
+            &target,
+            &invocation,
+            target.host_state,
+            started.elapsed().as_secs_f64() * 1000.0,
+        ),
     )
     .await
+    .map_err(|_| anyhow::anyhow!("alarm attempt timed out"))?
     .map_err(|_| anyhow::anyhow!("alarm outcome could not be confirmed"))?;
     if !outcome.ran {
         let reply = outcome.text.into_text().await?;

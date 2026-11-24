@@ -21,6 +21,7 @@ pub(super) const MAX_IN_FLIGHT: usize = 100;
 pub(super) const MAX_ATTEMPTS: usize = 3;
 pub(super) const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 pub(super) const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
+const ATTEMPT_BACKSTOP: Duration = Duration::from_secs(5);
 // A live delivery must finish before its claim expires, or another poll delivers it concurrently.
 pub(super) const QUEUED_TIMEOUT: Duration = Duration::from_secs(300);
 pub(super) const ALARM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -187,8 +188,9 @@ async fn redeliver_later(store: &dyn AlarmStore, alarm: &ClaimedAlarm) {
     }
 }
 
+/// A backstop for a delivery that ignores its own `ATTEMPT_TIMEOUT` deadline.
 async fn attempt(delivery: &dyn AlarmDelivery, alarm: &ClaimedAlarm) -> Result<()> {
-    tokio::time::timeout(ATTEMPT_TIMEOUT, delivery.attempt(alarm))
+    tokio::time::timeout(ATTEMPT_TIMEOUT + ATTEMPT_BACKSTOP, delivery.attempt(alarm))
         .await
         .context("alarm attempt timed out")?
 }
