@@ -147,43 +147,28 @@ impl SnapshotStoreConfig {
 #[async_trait]
 pub(crate) trait SnapshotStore: Send + Sync {
     async fn get(&self, object: &str) -> Result<Option<Payload>>;
-    async fn prefetch_checkpoint(
-        &self,
-        _source: &crate::storage::SnapshotRef,
-    ) -> Result<Option<recovery::PrefetchedCheckpoint>> {
-        Ok(None)
-    }
     /// Resolves `snapshot`'s SQLite history. A store with bases may download the one the history
     /// starts from to `download` meanwhile.
-    async fn restore_prefetched(
+    async fn restore_sqlite(
         &self,
         snapshot: crate::storage::VerifiedSnapshot,
-        checkpoint: Option<recovery::PrefetchedCheckpoint>,
         _download: Option<&std::path::Path>,
     ) -> Result<recovery::RestoredSqlite> {
-        let resolved = recovery::resolve(
-            &mut recovery::StoredHistory(self),
-            snapshot,
-            checkpoint,
-            None,
-        )
-        .await?;
+        let resolved =
+            recovery::resolve(&mut recovery::StoredHistory(self), snapshot, None).await?;
         Ok(recovery::RestoredSqlite {
             sqlite: resolved.sqlite,
             base: resolved.base,
         })
     }
-    async fn list(&self, prefix: &str) -> Result<Vec<String>>;
-    /// Stores the closed database at `path`, committed at `snapshot` and SQLite `txid`, as the
-    /// actor's base, where the store keeps bases.
-    async fn upload_base(
+    /// The newest base of `actor`, for a store that keeps bases.
+    async fn newest_base(
         &self,
-        _snapshot: &crate::storage::SnapshotRef,
-        _txid: u64,
-        _path: &std::path::Path,
-    ) -> Result<()> {
-        Ok(())
+        _actor: &crate::actor::ActorKey,
+    ) -> Result<Option<super::SqliteBase>> {
+        Ok(None)
     }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>>;
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>>;
     async fn put(&self, object: &str, bytes: Payload) -> Result<()>;
     async fn start(

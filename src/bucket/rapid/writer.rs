@@ -25,7 +25,6 @@ impl Session {
         storage: Arc<LogStorage>,
         stream: StateStream,
         resume: Option<(&SnapshotRef, CheckpointProgress)>,
-        base: Option<super::base::BaseName>,
     ) -> Result<Self> {
         let version = stream.base_version;
         let preparing = prepare(
@@ -48,7 +47,6 @@ impl Session {
             checkpoint: checkpoint::Progress::resume(
                 resume.map(|(_, p)| p).unwrap_or_default(),
                 version,
-                base,
             ),
         })
     }

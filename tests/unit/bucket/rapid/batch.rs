@@ -255,7 +255,6 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
     let restored = SqliteCapture::restore(
         CaptureDirectory::temporary()?,
         replication,
-        None,
         &files,
         txid,
         None,
@@ -294,7 +293,7 @@ async fn restores_prefetch_archived_batches_without_reading_unlisted_versions() 
     let snapshot = VerifiedSnapshot::matching(f.stream.snapshot(&head)?, head)?;
 
     let (reader, archive) = controlled(&f, 1, 10_000)?;
-    let restored = reader.storage.restore(snapshot, None, None).await?;
+    let restored = reader.storage.restore(snapshot, None).await?;
 
     assert_eq!(restored.parents, 19);
     assert_eq!(archive.version_reads.load(Ordering::SeqCst), 0);
@@ -352,7 +351,7 @@ async fn restores_plan_history_spread_across_owner_epochs() -> Result<()> {
     }
     archive_legacy(&f.store()?, &f).await?;
     let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
-    let restored = reader.storage.restore(head.unwrap(), None, None).await?;
+    let restored = reader.storage.restore(head.unwrap(), None).await?;
 
     assert_eq!(restored.parents, 39);
     assert_eq!(archive.version_reads.load(Ordering::SeqCst), 0);
@@ -489,7 +488,7 @@ async fn store_base(
     let crate::bucket::RestoredSqlite {
         sqlite: restored,
         base: previous,
-    } = store.restore_prefetched(snapshot, None, None).await?;
+    } = store.restore_sqlite(snapshot, None).await?;
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("base.sqlite");
     match previous {
@@ -526,12 +525,11 @@ async fn restore_version(
     version: u64,
 ) -> Result<crate::bucket::RestoredSqlite> {
     store
-        .restore_prefetched(
+        .restore_sqlite(
             VerifiedSnapshot::named(
                 f.stream.object(version),
                 history[version as usize - 1].clone(),
             )?,
-            None,
             None,
         )
         .await
@@ -588,9 +586,8 @@ async fn ignores_a_base_whose_transaction_disagrees_with_the_history() -> Result
     let directory = tempfile::tempdir()?;
     let download = crate::litestream::storage::restoring(directory.path());
     let restored = reader
-        .restore_prefetched(
+        .restore_sqlite(
             VerifiedSnapshot::named(f.stream.object(12), history[11].clone())?,
-            None,
             Some(&download),
         )
         .await?;
@@ -611,8 +608,7 @@ async fn ignores_a_base_whose_transaction_disagrees_with_the_history() -> Result
 }
 
 #[tokio::test]
-async fn restores_the_same_rows_from_an_older_base_when_the_newest_is_corrupt_or_disappears()
--> Result<()> {
+async fn restores_the_same_rows_from_an_older_base_when_the_newest_is_corrupt() -> Result<()> {
     let f = Fixture::new()?;
     let writer = f.store()?;
     let (replication, history) = write_history(&f, &writer, 12, None).await?;
@@ -620,8 +616,7 @@ async fn restores_the_same_rows_from_an_older_base_when_the_newest_is_corrupt_or
     store_base(&f, &writer, &replication, &history, 8, None).await?;
     let head = VerifiedSnapshot::named(f.stream.object(12), history[11].clone())?;
     let reader = f.store()?;
-    let checkpoint = reader.prefetch_checkpoint(&head.reference).await?;
-    let newest = checkpoint.as_ref().unwrap().base.as_ref().unwrap();
+    let newest = reader.storage.newest_base(&head.reference).await?.unwrap();
     let object = f.archive.get(&newest.key).await?.unwrap();
     // The file bucket keeps no checksum, so the corruption it can detect is a short base.
     let mut bytes = object.bytes.to_bytes()?.to_vec();
@@ -629,33 +624,25 @@ async fn restores_the_same_rows_from_an_older_base_when_the_newest_is_corrupt_or
     f.archive
         .compare_and_swap(&newest.key, Some(object.generation), bytes.into())
         .await?;
-    for missing in [false, true] {
-        let mut checkpoint = checkpoint.clone().unwrap();
-        if missing {
-            checkpoint.base.as_mut().unwrap().key.push_str(".missing");
-        }
-        let dir = tempfile::tempdir()?;
-        let path = crate::litestream::storage::restoring(dir.path());
-        let restored = reader
-            .restore_prefetched(head.clone(), Some(checkpoint), Some(&path))
-            .await?;
-        assert_eq!(restored.base.as_ref().unwrap().name.version, 4);
-        let fields = crate::litestream::storage::restored_fields(
-            dir,
-            replication.as_ref(),
-            restored.base.as_ref(),
-            &restored.sqlite.files,
-            restored.sqlite.txid,
-        )
-        .await?;
-        assert_eq!(fields, serde_json::json!({"count":12}));
-    }
+    let dir = tempfile::tempdir()?;
+    let path = crate::litestream::storage::restoring(dir.path());
+    let restored = reader.restore_sqlite(head, Some(&path)).await?;
+    assert_eq!(restored.base.as_ref().unwrap().name.version, 4);
+    let fields = crate::litestream::storage::restored_fields(
+        dir,
+        replication.as_ref(),
+        restored.base.as_ref(),
+        &restored.sqlite.files,
+        restored.sqlite.txid,
+    )
+    .await?;
+    assert_eq!(fields, serde_json::json!({"count":12}));
     Ok(())
 }
 
 #[tokio::test]
 async fn downloads_the_base_while_reading_the_history_after_it() -> Result<()> {
-    use crate::litestream::storage::{CaptureDirectory, SqliteCapture, read_fields, restoring};
+    use crate::litestream::storage::{read_fields, restore_database, restoring};
     let f = Fixture::new()?;
     let (writer, _) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
     let (replication, history) = write_history(&f, &writer, 12, None).await?;
@@ -664,26 +651,23 @@ async fn downloads_the_base_while_reading_the_history_after_it() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let download = restoring(directory.path());
     let restored = reader
-        .restore_prefetched(
+        .restore_sqlite(
             VerifiedSnapshot::named(f.stream.object(12), history[11].clone())?,
-            None,
             Some(&download),
         )
         .await?;
     let base = restored.base.as_ref().context("restore ignored the base")?;
     assert_eq!(base.downloaded.as_deref(), Some(download.as_path()));
     assert_eq!(std::fs::metadata(&download)?.len(), base.name.bytes);
-    let capture = SqliteCapture::restore(
-        CaptureDirectory::slot(directory.path().into())?,
-        replication.clone(),
+    restore_database(
+        replication.as_ref(),
+        directory.path(),
         Some(base),
         &restored.sqlite.files,
         restored.sqlite.txid,
-        None,
-        false,
     )
     .await?;
-    let db = rusqlite::Connection::open(capture.path())?;
+    let db = rusqlite::Connection::open(directory.path().join("actor.sqlite"))?;
     assert_eq!(read_fields(&db)?, serde_json::json!({"count":12}));
     assert!(!download.exists());
     Ok(())
@@ -764,7 +748,7 @@ async fn restores_rapid_history_spread_across_owner_epochs() -> Result<()> {
         head = Some(VerifiedSnapshot::matching(reference, bytes)?);
     }
     let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
-    let restored = reader.storage.restore(head.unwrap(), None, None).await?;
+    let restored = reader.storage.restore(head.unwrap(), None).await?;
 
     assert_eq!(restored.parents, 39);
     // The planner read every epoch's segments at once, so the walk read no single version.
@@ -785,7 +769,7 @@ async fn restores_rapid_history_spread_across_owner_epochs() -> Result<()> {
 
 #[tokio::test]
 async fn restores_from_a_legacy_checkpoint_and_refuses_a_corrupt_one() -> Result<()> {
-    use crate::bucket::recovery::{Checkpoint, PrefetchedCheckpoint};
+    use crate::bucket::recovery::Checkpoint;
     let f = Fixture::new()?;
     let (writer, _) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
     let (replication, history) = write_history(&f, &writer, 40, None).await?;
@@ -832,18 +816,15 @@ async fn restores_from_a_legacy_checkpoint_and_refuses_a_corrupt_one() -> Result
         .await?,
         serde_json::json!({"count": 40})
     );
-    let corrupt = PrefetchedCheckpoint {
-        source: source.clone(),
-        bytes: Some(Payload::from(&b"not a checkpoint"[..])),
-        base: None,
-    };
-    let head = VerifiedSnapshot::matching(source, history[29].clone())?;
-    assert!(
-        reader
-            .restore_prefetched(head, Some(corrupt), None)
-            .await
-            .is_err()
-    );
+    let corrupt = f.stream.snapshot(&history[34])?;
+    BucketSnapshots(f.archive.clone())
+        .put(
+            &format!("{}.checkpoint", corrupt.object),
+            Payload::from(&b"not a checkpoint"[..]),
+        )
+        .await?;
+    let head = VerifiedSnapshot::matching(corrupt, history[34].clone())?;
+    assert!(reader.restore_sqlite(head, None).await.is_err());
     Ok(())
 }
 
@@ -894,22 +875,26 @@ fn a_base_is_due_when_none_exists_or_the_changes_outgrow_the_newest() {
         log_bytes: 0,
         base_due: false,
     };
-    assert!(Progress::resume(sealed, 10, None).seal(10).base_due);
+    assert!(Progress::resume(sealed, 10).seal(10).base_due);
 
-    let mut progress = Progress::resume(sealed, 10, base(10, 4 << 20));
+    let mut progress = Progress::resume(sealed, 10);
+    progress.found(base(10, 4 << 20));
     assert!(!progress.seal(10).base_due);
     progress.logged(1 << 20);
     assert!(!progress.seal(11).base_due);
     progress.logged(3 << 20);
     assert!(progress.seal(12).base_due);
 
-    let mut tiny = Progress::resume(sealed, 10, base(10, 4 << 20));
+    let mut tiny = Progress::resume(sealed, 10);
+    tiny.found(base(10, 4 << 20));
     tiny.logged(10);
     assert!(!tiny.seal(10 + 255).base_due);
     assert!(tiny.seal(10 + 256).base_due);
 
     // A node stored a newer base after the last owner sealed.
-    let newer = Progress::resume(sealed, 20, base(20, 8 << 20)).seal(20);
+    let mut newer = Progress::resume(sealed, 20);
+    newer.found(base(20, 8 << 20));
+    let newer = newer.seal(20);
     assert_eq!(
         (newer.version, newer.base_bytes, newer.log_bytes),
         (20, 8 << 20, 0)

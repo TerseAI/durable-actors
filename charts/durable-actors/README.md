@@ -42,7 +42,7 @@ A single controller can interrupt service during replacement; clients must recon
 
 ## Rapid writes
 
-Add one or two precreated Rapid buckets in distinct supported zones. The Standard bucket continues to store ownership, code, and each actor's bases: whole SQLite files the node cache uploads, with `nodeCache.googleServiceAccount`, as an actor's changes outgrow its last base. The history sweeper deletes changes a base covers after `historySweeper.minAgeHours` (720).
+Add one or two precreated Rapid buckets in distinct supported zones. The Standard bucket continues to store ownership, code, and each actor's bases: whole SQLite files the node cache uploads, with `nodeCache.googleServiceAccount`, as an actor's changes outgrow its last base. The node cache also rebuilds cold actors' databases in their slots, so Rapid requires `nodeCache.enabled` and `nodeCache.sqliteSlots.enabled`. The pool manager deletes changes a base covers after `historySweeper.minAgeHours` (720).
 
 ```yaml
 storage:

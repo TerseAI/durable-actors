@@ -23,30 +23,19 @@ impl LogStorage {
     pub async fn restore(
         &self,
         snapshot: VerifiedSnapshot,
-        checkpoint: Option<crate::bucket::recovery::PrefetchedCheckpoint>,
         download: Option<&std::path::Path>,
     ) -> Result<ResolvedSqlite> {
         let reference = &snapshot.reference;
         tracing::info!(event = "sqlite_history_started", object = reference.object);
-        let base = match &checkpoint {
-            Some(prefetched) if &prefetched.source == reference => prefetched.base.clone(),
-            _ => self.newest_base(reference).await.unwrap_or_else(|error| {
-                tracing::warn!(error = %format!("{error:#}"), "SQLite bases unavailable; restoring from history");
-                None
-            }),
-        };
+        let base = self.newest_base(reference).await.unwrap_or_else(|error| {
+            tracing::warn!(error = %format!("{error:#}"), "SQLite bases unavailable; restoring from history");
+            None
+        });
         let Some(newest) = base else {
-            return self
-                .restore_from(snapshot, checkpoint, None, download)
-                .await;
+            return self.restore_from(snapshot, None, download).await;
         };
         match self
-            .restore_from(
-                snapshot.clone(),
-                checkpoint.clone(),
-                Some(newest.clone()),
-                download,
-            )
+            .restore_from(snapshot.clone(), Some(newest.clone()), download)
             .await
         {
             Ok(result) => return Ok(result),
@@ -58,12 +47,7 @@ impl LogStorage {
             && let Some(older) = self.base_at_or_below(reference, version).await?
         {
             match self
-                .restore_from(
-                    snapshot.clone(),
-                    checkpoint.clone(),
-                    Some(older.clone()),
-                    download,
-                )
+                .restore_from(snapshot.clone(), Some(older.clone()), download)
                 .await
             {
                 Ok(result) => return Ok(result),
@@ -72,7 +56,7 @@ impl LogStorage {
                 }
             }
         }
-        self.restore_from(snapshot, checkpoint, None, download)
+        self.restore_from(snapshot, None, download)
             .await
             .context("restore from history after base recovery failed")
     }
@@ -80,7 +64,6 @@ impl LogStorage {
     async fn restore_from(
         &self,
         snapshot: VerifiedSnapshot,
-        checkpoint: Option<crate::bucket::recovery::PrefetchedCheckpoint>,
         base: Option<super::base::SqliteBase>,
         download: Option<&std::path::Path>,
     ) -> Result<ResolvedSqlite> {
@@ -96,7 +79,7 @@ impl LogStorage {
                 .map(|base| (base.name.owner_epoch, base.name.version)),
         };
         let (resolved, downloaded) = tokio::join!(
-            resolve(&mut history, snapshot, checkpoint, base.clone()),
+            resolve(&mut history, snapshot, base.clone()),
             download_base(base.as_ref(), download)
         );
         let mut resolved = resolved?;
@@ -390,10 +373,10 @@ pub(super) struct Progress {
 }
 
 impl Progress {
-    /// Resumes from the progress the last owner sealed, corrected by `base`, the newest base the
-    /// activation found, if it listed them.
-    pub fn resume(progress: CheckpointProgress, version: u64, base: Option<BaseName>) -> Self {
-        let mut state = Self {
+    /// Resumes from the progress the last owner sealed. Sealing lists the actor's bases, since a
+    /// node may have stored a newer one after that owner sealed.
+    pub fn resume(progress: CheckpointProgress, version: u64) -> Self {
+        Self {
             based: false,
             resumed_at: version,
             log_bytes: 0,
@@ -404,9 +387,7 @@ impl Progress {
             } else {
                 0
             },
-        };
-        state.found(base);
-        state
+        }
     }
 
     /// Corrects the progress by the actor's newest base: a node may have stored it after the

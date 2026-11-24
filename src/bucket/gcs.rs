@@ -307,6 +307,53 @@ impl CredentialsProvider for PendingCredentials {
     }
 }
 
+/// Credentials that send one access token a host forwarded, for the node to act with its scope.
+#[derive(Debug)]
+struct ForwardedToken(String);
+
+pub(crate) fn forwarded_token(access_token: String) -> Credentials {
+    ForwardedToken(access_token).into()
+}
+
+impl CredentialsProvider for ForwardedToken {
+    async fn headers(
+        &self,
+        _: axum::http::Extensions,
+    ) -> std::result::Result<
+        CacheableResource<axum::http::HeaderMap>,
+        google_cloud_auth::errors::CredentialsError,
+    > {
+        bearer(&self.0)
+    }
+
+    async fn universe_domain(&self) -> Option<String> {
+        Some("googleapis.com".into())
+    }
+}
+
+/// The headers that authorize requests with `access_token`.
+pub(crate) fn bearer(
+    access_token: &str,
+) -> std::result::Result<
+    CacheableResource<axum::http::HeaderMap>,
+    google_cloud_auth::errors::CredentialsError,
+> {
+    let mut value: axum::http::HeaderValue =
+        format!("Bearer {access_token}").parse().map_err(|_| {
+            google_cloud_auth::errors::CredentialsError::from_msg(
+                false,
+                "invalid storage credential",
+            )
+        })?;
+    value.set_sensitive(true);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(axum::http::header::AUTHORIZATION, value);
+    Ok(CacheableResource::New {
+        entity_tag: EntityTag::new(),
+        data: headers,
+    })
+}
+
 #[cfg(test)]
 #[path = "../../tests/unit/bucket/gcs.rs"]
 mod tests;

@@ -1,0 +1,294 @@
+//! Rebuilds hosts' Rapid databases in their slots, outside the sandbox. A host prepares as its
+//! assignment arrives, so the newest base downloads while it activates, then asks for the
+//! database at its verified head.
+
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+
+use super::slots::{DATABASE, DATABASE_FILE};
+use crate::{
+    actor::ActorKey,
+    bucket::{SnapshotStoreConfig, SqliteBase},
+    litestream::storage::{restore_database, restoring},
+    storage::{SnapshotRef, VerifiedSnapshot},
+};
+
+/// Downloads and restores at once per node, each with its own budget: a restore can wait for its
+/// prepared download, so they must not share permits.
+const CONCURRENT_DOWNLOADS: usize = 4;
+const CONCURRENT_RESTORES: usize = 4;
+/// A prepared download no restore claims within this long is dropped.
+const PREPARED_TTL: Duration = Duration::from_secs(60);
+const PREPARED_DIR: &str = "restore";
+const PREPARED_FILE: &str = "base.sqlite";
+
+/// What a host forwards so the node reads its actor's history with the host's own scope.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct SlotStorage {
+    pub bucket: String,
+    pub persistence: SnapshotStoreConfig,
+    pub access_token: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SlotPrepare {
+    pub storage: SlotStorage,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SlotRestore {
+    pub storage: SlotStorage,
+    pub head: SnapshotRef,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SlotRestored {
+    pub txid: u64,
+    /// `base`, or `history` when no base applied.
+    pub source: String,
+    pub base_bytes: Option<u64>,
+    pub duration_ms: f64,
+}
+
+pub(super) struct Restores {
+    prepared: tokio::sync::Mutex<HashMap<String, Prepared>>,
+    downloads: Arc<tokio::sync::Semaphore>,
+    restores: tokio::sync::Semaphore,
+}
+
+/// The newest base, downloading into a slot before its host knows its head.
+struct Prepared {
+    actor: ActorKey,
+    key: String,
+    file: PathBuf,
+    started: Instant,
+    task: AbortOnDropHandle<Result<()>>,
+}
+
+impl Restores {
+    pub fn new() -> Self {
+        Self {
+            prepared: tokio::sync::Mutex::new(HashMap::new()),
+            downloads: Arc::new(tokio::sync::Semaphore::new(CONCURRENT_DOWNLOADS)),
+            restores: tokio::sync::Semaphore::new(CONCURRENT_RESTORES),
+        }
+    }
+
+    /// Starts downloading `actor`'s newest base into `slot`, unless one is already coming.
+    pub async fn prepare(
+        &self,
+        actor: &ActorKey,
+        slot: &str,
+        directory: &Path,
+        storage: SlotStorage,
+    ) -> Result<()> {
+        self.expire().await;
+        if self.prepared.lock().await.contains_key(slot) {
+            return Ok(());
+        }
+        let store = open(&storage, actor).await?;
+        let Some(base) = store.newest_base(actor).await? else {
+            return Ok(());
+        };
+        let file = directory.join(PREPARED_DIR).join(PREPARED_FILE);
+        let task = AbortOnDropHandle::new(tokio::spawn(download(
+            base.clone(),
+            file.clone(),
+            self.downloads.clone(),
+        )));
+        self.prepared.lock().await.insert(
+            slot.to_owned(),
+            Prepared {
+                actor: actor.clone(),
+                key: base.key,
+                file,
+                started: Instant::now(),
+                task,
+            },
+        );
+        Ok(())
+    }
+
+    /// Writes `actor`'s database at `head` into the slot's database directory and returns its
+    /// SQLite transaction.
+    pub async fn restore(
+        &self,
+        actor: &ActorKey,
+        slot: &str,
+        directory: &Path,
+        request: SlotRestore,
+    ) -> Result<SlotRestored> {
+        let started = Instant::now();
+        let prepared = self.take(slot, actor).await;
+        let _permit = self.restores.acquire().await?;
+        let store = open(&request.storage, actor).await?;
+        let bytes = store
+            .get(&request.head.object)
+            .await?
+            .context("actor head is missing")?;
+        let head = VerifiedSnapshot::matching(request.head, bytes)?;
+        let database = directory.join(DATABASE);
+        let restored = restore_into(store.as_ref(), head, prepared, &database).await;
+        remove_prepared(directory).await;
+        let (txid, base) = restored?;
+        open_to_host(&database.join(DATABASE_FILE)).await?;
+        Ok(SlotRestored {
+            txid,
+            source: if base.is_some() { "base" } else { "history" }.into(),
+            base_bytes: base,
+            duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    /// Drops the slot's prepared download, when its host reopened a parked database or left.
+    pub async fn cancel(&self, slot: &str, directory: &Path) {
+        if self.prepared.lock().await.remove(slot).is_some() {
+            remove_prepared(directory).await;
+        }
+    }
+
+    async fn take(&self, slot: &str, actor: &ActorKey) -> Option<Prepared> {
+        self.prepared
+            .lock()
+            .await
+            .remove(slot)
+            .filter(|prepared| &prepared.actor == actor)
+    }
+
+    /// Drops prepared downloads nobody claimed. Their files go with their slots.
+    async fn expire(&self) {
+        self.prepared
+            .lock()
+            .await
+            .retain(|_, prepared| prepared.started.elapsed() < PREPARED_TTL);
+    }
+}
+
+/// Uses the prepared base when the head's history starts from it, and otherwise, or after any
+/// failure, restores the way a host did: download beside the history read, with fallbacks.
+async fn restore_into(
+    store: &dyn crate::bucket::SnapshotStore,
+    head: VerifiedSnapshot,
+    prepared: Option<Prepared>,
+    database: &Path,
+) -> Result<(u64, Option<u64>)> {
+    tokio::fs::create_dir_all(database).await?;
+    match restore_prepared(store, head.clone(), prepared, database).await {
+        Ok(restored) => Ok(restored),
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "prepared restore failed, restoring again");
+            clear(database).await?;
+            let restored = store
+                .restore_sqlite(head, Some(&restoring(database)))
+                .await?;
+            finish(database, restored).await
+        }
+    }
+}
+
+async fn restore_prepared(
+    store: &dyn crate::bucket::SnapshotStore,
+    head: VerifiedSnapshot,
+    prepared: Option<Prepared>,
+    database: &Path,
+) -> Result<(u64, Option<u64>)> {
+    let mut restored = store.restore_sqlite(head, None).await?;
+    if let (Some(base), Some(prepared)) = (restored.base.as_mut(), prepared)
+        && base.key == prepared.key
+    {
+        prepared.task.await??;
+        let partial = restoring(database);
+        tokio::fs::rename(&prepared.file, &partial).await?;
+        base.downloaded = Some(partial);
+    }
+    finish(database, restored).await
+}
+
+async fn finish(
+    database: &Path,
+    restored: crate::bucket::RestoredSqlite,
+) -> Result<(u64, Option<u64>)> {
+    restore_database(
+        &crate::litestream::EmbeddedRestore,
+        database,
+        restored.base.as_ref(),
+        &restored.sqlite.files,
+        restored.sqlite.txid,
+    )
+    .await?;
+    Ok((
+        restored.sqlite.txid,
+        restored.base.map(|base| base.name.bytes),
+    ))
+}
+
+async fn download(
+    base: SqliteBase,
+    file: PathBuf,
+    permits: Arc<tokio::sync::Semaphore>,
+) -> Result<()> {
+    let _permit = permits.acquire_owned().await?;
+    let directory = file.parent().context("prepared base has no directory")?;
+    tokio::fs::create_dir_all(directory).await?;
+    if tokio::fs::try_exists(&file).await? {
+        tokio::fs::remove_file(&file).await?;
+    }
+    let started = Instant::now();
+    base.download_to(&file).await?;
+    tracing::info!(
+        event = "sqlite_base_prepared",
+        bytes = base.name.bytes,
+        duration_ms = started.elapsed().as_secs_f64() * 1000.0
+    );
+    Ok(())
+}
+
+/// The actor's Rapid store, read with the token its host forwarded.
+async fn open(
+    storage: &SlotStorage,
+    actor: &ActorKey,
+) -> Result<Arc<dyn crate::bucket::SnapshotStore>> {
+    let state = crate::bucket::GcsBucket::with_credentials(
+        &storage.bucket,
+        crate::bucket::forwarded_token(storage.access_token.clone()),
+    )
+    .await?;
+    Ok(Arc::new(crate::bucket::RapidSnapshots::gcs(
+        &storage.persistence,
+        state.clients(),
+        CancellationToken::new(),
+        Some(actor),
+    )?))
+}
+
+/// The node writes as another user, so the host gets read and write access to the file.
+async fn open_to_host(file: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(file, std::fs::Permissions::from_mode(0o666)).await?;
+    Ok(())
+}
+
+async fn clear(database: &Path) -> Result<()> {
+    for file in [restoring(database), database.join(DATABASE_FILE)] {
+        if tokio::fs::try_exists(&file).await? {
+            tokio::fs::remove_file(&file).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn remove_prepared(directory: &Path) {
+    let _ = tokio::fs::remove_dir_all(directory.join(PREPARED_DIR)).await;
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/node_cache/restores.rs"]
+mod tests;

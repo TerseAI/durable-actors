@@ -28,12 +28,9 @@ use session::DatabaseSession;
 pub(crate) trait ActorStorage: Send + Sync {
     async fn acquire_actor(&self) -> Result<ActorActivation>;
     async fn load_actor_state(&self, epoch: u64) -> Result<(u64, Option<VerifiedSnapshot>)>;
-    /// Resolves the SQLite history of `snapshot`, downloading the base it starts from, if any,
-    /// to `download` meanwhile.
     async fn read_sqlite(
         &self,
         snapshot: &VerifiedSnapshot,
-        download: &std::path::Path,
     ) -> Result<crate::bucket::RestoredSqlite>;
     async fn get_alarm(&self) -> Result<Option<i64>>;
     async fn update_alarm(&self, timestamp_ms: Option<i64>) -> Result<()>;
@@ -59,15 +56,10 @@ pub(crate) trait ActorStorage: Send + Sync {
     fn base_due(&self) -> bool {
         false
     }
-    /// Uploads the closed database at `path`, committed at `snapshot` and SQLite `txid`, as the
-    /// actor's base.
-    async fn upload_base(
-        &self,
-        _snapshot: &crate::storage::SnapshotRef,
-        _txid: u64,
-        _path: &std::path::Path,
-    ) -> Result<()> {
-        Ok(())
+    /// What the node file service needs to restore this actor's database, for a store whose
+    /// databases the node restores.
+    fn slot_storage(&self) -> Option<crate::node_cache::SlotStorage> {
+        None
     }
 }
 

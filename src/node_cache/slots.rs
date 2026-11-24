@@ -13,8 +13,8 @@ use super::{
 };
 use crate::{actor::ActorKey, control_plane::ActorPrincipal, storage::SnapshotRef};
 
-const DATABASE: &str = "db";
-const DATABASE_FILE: &str = "actor.sqlite";
+pub(super) const DATABASE: &str = "db";
+pub(super) const DATABASE_FILE: &str = "actor.sqlite";
 const RECORD: &str = "clean.json";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -151,7 +151,17 @@ impl SqliteSlots {
         }
     }
 
-    fn slot(&self, name: &str) -> Result<PathBuf> {
+    /// Whether this node holds a parked database of `actor`, which its next host likely reopens.
+    pub async fn holds(&self, actor: &ActorKey) -> bool {
+        let (parked, actor) = (self.parked(actor), actor_name(actor));
+        blocking(move || Ok(read_record(&parked)))
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|record| record.actor == actor)
+    }
+
+    pub(super) fn slot(&self, name: &str) -> Result<PathBuf> {
         match self.layout.as_ref().context("SQLite slots are off here")? {
             SlotLayout::Kubelet(pods) => {
                 let uid = uuid::Uuid::parse_str(name).context("invalid slot")?;

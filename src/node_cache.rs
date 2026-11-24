@@ -6,11 +6,13 @@ use tokio::net::TcpListener;
 mod bases;
 mod client;
 mod keys;
+mod restores;
 mod server;
 mod slots;
 mod store;
 
 pub(crate) use client::{NodeCacheClient, NodeCacheConnection};
+pub(crate) use restores::{SlotRestored, SlotStorage};
 pub(crate) use slots::SlotFile;
 
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;

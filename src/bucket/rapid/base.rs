@@ -78,12 +78,26 @@ impl LogStorage {
         self.base_at_or_below(head, head.state_version).await
     }
 
+    /// The newest base of `actor` whatever its head: bases exist only for published versions, so
+    /// it is at or below any head the actor's activation can reach.
+    pub(super) async fn newest_base_of(
+        &self,
+        actor: &crate::actor::ActorKey,
+    ) -> Result<Option<SqliteBase>> {
+        let prefix = prefix(&crate::storage_paths::snapshots(actor)?)?;
+        self.newest_listed(&prefix, u64::MAX).await
+    }
+
     pub(super) async fn base_at_or_below(
         &self,
         head: &SnapshotRef,
         version: u64,
     ) -> Result<Option<SqliteBase>> {
-        let keys = self.archive.list(&actor_prefix(head)?).await?;
+        self.newest_listed(&actor_prefix(head)?, version).await
+    }
+
+    async fn newest_listed(&self, prefix: &str, version: u64) -> Result<Option<SqliteBase>> {
+        let keys = self.archive.list(prefix).await?;
         Ok(keys
             .into_iter()
             .filter_map(|key| Some((parse(&key)?, key)))
@@ -95,28 +109,6 @@ impl LogStorage {
                 bucket: self.archive.clone(),
                 downloaded: None,
             }))
-    }
-}
-
-impl LogStorage {
-    /// Stores the closed database at `path` as the base of `snapshot` at SQLite `txid`. A base of
-    /// the same version, transaction and size already stored is that base.
-    pub(super) async fn upload_base(
-        &self,
-        snapshot: &SnapshotRef,
-        txid: u64,
-        path: &std::path::Path,
-    ) -> Result<()> {
-        let started = std::time::Instant::now();
-        let bytes = upload_file(self.archive.as_ref(), snapshot, txid, path).await?;
-        tracing::info!(
-            event = "sqlite_base_uploaded",
-            state_version = snapshot.state_version,
-            bytes,
-            uploader = "host",
-            duration_ms = started.elapsed().as_secs_f64() * 1000.0
-        );
-        Ok(())
     }
 }
 

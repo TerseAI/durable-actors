@@ -234,6 +234,7 @@ impl DatabaseSession {
             self.prepared_activation = Some(activation.clone());
             return Ok(PreparedActivation::Hydrate { activation });
         }
+        self.prepare_slot();
         let mut activation = self.storage.acquire_actor().await?;
         if self.cached_state.is_none() {
             let cached = if activation.state_version == 0 {
@@ -326,9 +327,10 @@ impl DatabaseSession {
         let Some(cached) = &self.cached_state else {
             return Ok(None);
         };
-        let slot = self.node_cache.clone().filter(|_| cached.sqlite.in_slot());
-        let base_due = self.storage.base_due();
-        if cached.published_snapshot().is_none() || (slot.is_none() && !base_due) {
+        let Some(slot) = self.node_cache.clone().filter(|_| cached.sqlite.in_slot()) else {
+            return Ok(None);
+        };
+        if cached.published_snapshot().is_none() {
             return Ok(None);
         }
         let ResidentDatabase {
@@ -347,17 +349,10 @@ impl DatabaseSession {
             position == synced,
             "database has changes its history lacks; leaving it to kubelet"
         );
-        let directory = sqlite.close().await?;
-        match slot {
-            Some(cache) => cache.park_slot(&snapshot, synced, base_due).await.map(Some),
-            None => {
-                let database = directory.database().join("actor.sqlite");
-                self.storage
-                    .upload_base(&snapshot, synced, &database)
-                    .await?;
-                Ok(None)
-            }
-        }
+        sqlite.close().await?;
+        slot.park_slot(&snapshot, synced, self.storage.base_due())
+            .await
+            .map(Some)
     }
 
     pub(super) fn reset(&mut self) {
@@ -489,25 +484,55 @@ impl DatabaseSession {
         {
             return Ok((capture, "slot"));
         }
-        let directory = emptied(slot.as_deref()).await?;
-        let download = crate::litestream::storage::restoring(directory.database());
-        let restored = self.storage.read_sqlite(loaded, &download).await?;
-        let source = if restored.base.is_some() {
-            "base"
-        } else {
-            "history"
-        };
+        if let Some(storage) = self.storage.slot_storage() {
+            return self.restore_in_slot(storage, loaded, resume, slot).await;
+        }
+        let restored = self.storage.read_sqlite(loaded).await?;
         let capture = SqliteCapture::restore(
-            directory,
+            emptied(slot.as_deref()).await?,
             self.replication.clone(),
-            restored.base.as_ref(),
             &restored.sqlite.files,
             restored.sqlite.txid,
             full_snapshots,
             resume,
         )
         .await?;
-        Ok((capture, source))
+        Ok((capture, "history"))
+    }
+
+    /// Has the node write the database at `loaded`'s head into this host's slot, then opens it.
+    async fn restore_in_slot(
+        &self,
+        storage: crate::node_cache::SlotStorage,
+        loaded: &VerifiedSnapshot,
+        resume: bool,
+        slot: Option<PathBuf>,
+    ) -> Result<(SqliteCapture, &'static str)> {
+        let (Some(cache), Some(path)) = (&self.node_cache, slot) else {
+            anyhow::bail!("Rapid restores need the node file service and a slot");
+        };
+        let directory = emptied(Some(&path)).await?;
+        let restored = restore_with_retry(cache, storage, &loaded.reference).await?;
+        ensure!(
+            restored.txid == loaded.snapshot.sqlite.txid,
+            "node restored another SQLite transaction"
+        );
+        let capture = SqliteCapture::reopen(
+            directory,
+            self.replication.clone(),
+            restored.txid,
+            self.storage.full_snapshots(),
+            resume,
+        )
+        .await?;
+        Ok((
+            capture,
+            if restored.source == "base" {
+                "base"
+            } else {
+                "history"
+            },
+        ))
     }
 
     async fn reopen(
@@ -571,6 +596,21 @@ impl DatabaseSession {
             self.storage.full_snapshots(),
         )
         .await
+    }
+
+    /// Lets the node start downloading the actor's newest base while this host activates.
+    fn prepare_slot(&self) {
+        let (Some(cache), Some(storage), Some(_)) =
+            (&self.node_cache, self.storage.slot_storage(), &self.slot)
+        else {
+            return;
+        };
+        let cache = cache.clone();
+        tokio::spawn(async move {
+            if let Err(error) = cache.prepare_slot(storage).await {
+                warn!(error = %format!("{error:#}"), "node slot prepare failed");
+            }
+        });
     }
 
     /// Checks out this host's slot, once: it holds the actor's parked database when the node has
@@ -942,6 +982,27 @@ impl StateWriteTimings {
 }
 
 /// The slot emptied of a database that failed to open, or new temporary storage.
+/// Retries while the node file service restarts, inside the host's start deadline.
+async fn restore_with_retry(
+    cache: &NodeCacheClient,
+    storage: crate::node_cache::SlotStorage,
+    head: &SnapshotRef,
+) -> Result<crate::node_cache::SlotRestored> {
+    let deadline = Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        match cache.restore_slot(storage.clone(), head).await {
+            Err(error)
+                if error.downcast_ref::<reqwest::Error>().is_some()
+                    && Instant::now() < deadline =>
+            {
+                warn!(error = %format!("{error:#}"), "node file service unavailable, retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 async fn emptied(slot: Option<&Path>) -> Result<CaptureDirectory> {
     let Some(path) = slot else {
         return CaptureDirectory::temporary();

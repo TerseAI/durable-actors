@@ -127,11 +127,9 @@ impl SqliteCapture {
 
     /// With `resume`, capture continues the restored history, so the next commit is a delta at
     /// `txid + 1`; otherwise it starts a new history whose first commit holds every page.
-    /// With `base`, `files` apply to the base's file instead of starting from a full copy.
     pub(crate) async fn restore(
         directory: CaptureDirectory,
         replication: Arc<dyn Replicator>,
-        base: Option<&SqliteBase>,
         files: &[LtxFile],
         txid: u64,
         full_snapshots: Option<Duration>,
@@ -140,7 +138,7 @@ impl SqliteCapture {
         restore_database(
             replication.as_ref(),
             directory.database(),
-            base,
+            None,
             files,
             txid,
         )
@@ -423,7 +421,7 @@ pub(crate) async fn restored_fields(
     .await?
 }
 
-async fn restore_database(
+pub(crate) async fn restore_database(
     restore: &dyn DatabaseRestore,
     directory: &Path,
     base: Option<&SqliteBase>,

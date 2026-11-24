@@ -62,8 +62,6 @@ trait LogZone: Send + Sync {
 pub(crate) struct RapidSnapshots {
     storage: Arc<LogStorage>,
     session: Arc<Mutex<Option<Session>>>,
-    /// The newest base the activation's prefetch found, and the head it looked below.
-    prefetched_base: std::sync::Mutex<Option<(SnapshotRef, Option<base::BaseName>)>>,
 }
 
 struct LogStorage {
@@ -128,11 +126,7 @@ impl RapidSnapshots {
         });
         let session = Arc::new(Mutex::new(None));
         writer::start_rotation(storage.clone(), Arc::downgrade(&session), stop);
-        Ok(Self {
-            storage,
-            session,
-            prefetched_base: std::sync::Mutex::new(None),
-        })
+        Ok(Self { storage, session })
     }
 }
 
@@ -169,33 +163,12 @@ impl SnapshotStore for RapidSnapshots {
         let records = self.storage.records(&format!("{prefix}/"), false).await?;
         Ok(records.get(object).cloned())
     }
-    async fn prefetch_checkpoint(
-        &self,
-        source: &crate::storage::SnapshotRef,
-    ) -> Result<Option<super::recovery::PrefetchedCheckpoint>> {
-        let checkpoint = format!("{}.checkpoint", source.object);
-        let (bytes, base) = tokio::try_join!(
-            self.storage.snapshots.get(&checkpoint),
-            self.storage.newest_base(source)
-        )?;
-        *self.prefetched_base.lock().unwrap() =
-            Some((source.clone(), base.as_ref().map(|base| base.name)));
-        Ok(Some(super::recovery::PrefetchedCheckpoint {
-            source: source.clone(),
-            bytes,
-            base,
-        }))
-    }
-    async fn restore_prefetched(
+    async fn restore_sqlite(
         &self,
         snapshot: crate::storage::VerifiedSnapshot,
-        checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
         download: Option<&std::path::Path>,
     ) -> Result<super::recovery::RestoredSqlite> {
-        let restored = self
-            .storage
-            .restore(snapshot.clone(), checkpoint, download)
-            .await?;
+        let restored = self.storage.restore(snapshot.clone(), download).await?;
         if let Some(session) = self.session.lock().await.as_mut() {
             session.restored(&snapshot, &restored).await?;
         }
@@ -219,13 +192,11 @@ impl SnapshotStore for RapidSnapshots {
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Payload)>> {
         self.storage.latest(prefix, false).await
     }
-    async fn upload_base(
+    async fn newest_base(
         &self,
-        snapshot: &SnapshotRef,
-        txid: u64,
-        path: &std::path::Path,
-    ) -> Result<()> {
-        self.storage.upload_base(snapshot, txid, path).await
+        actor: &crate::actor::ActorKey,
+    ) -> Result<Option<base::SqliteBase>> {
+        self.storage.newest_base_of(actor).await
     }
     async fn put(&self, object: &str, bytes: Payload) -> Result<()> {
         let mut session = self.session.lock().await;
@@ -240,18 +211,9 @@ impl SnapshotStore for RapidSnapshots {
         stream: &StateStream,
         resume: Option<(&SnapshotRef, CheckpointProgress)>,
     ) -> Result<()> {
-        let base = match (resume, self.prefetched_base.lock().unwrap().take()) {
-            (Some((head, _)), Some((source, base))) if *head == source => base,
-            _ => None,
-        };
         let mut session = self.session.lock().await;
         ensure!(session.is_none(), "log stream is already activated");
-        *session = Some(Session::open(
-            self.storage.clone(),
-            stream.clone(),
-            resume,
-            base,
-        )?);
+        *session = Some(Session::open(self.storage.clone(), stream.clone(), resume)?);
         Ok(())
     }
     async fn recover(&self, prefix: &str) -> Result<Option<(String, Payload)>> {

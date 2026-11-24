@@ -18,6 +18,7 @@ use tokio_util::io::ReaderStream;
 use super::{
     FILE_CHUNK_BYTES, MAX_ENTRY_BYTES,
     keys::HostTokens,
+    restores::{Restores, SlotPrepare, SlotRestore},
     slots::{SlotCheckout, SlotPark, SqliteSlots},
     store::DiskStore,
     valid_digest,
@@ -28,6 +29,7 @@ use crate::control_plane::ActorPrincipal;
 struct NodeCache {
     store: Arc<DiskStore>,
     slots: Arc<SqliteSlots>,
+    restores: Arc<Restores>,
     tokens: Arc<HostTokens>,
 }
 
@@ -42,9 +44,12 @@ pub(super) fn router(
         .route("/sqlite/parked/{digest}", get(is_parked))
         .route("/slot/checkout", post(check_out))
         .route("/slot/park", post(park))
+        .route("/slot/prepare", post(prepare))
+        .route("/slot/restore", post(restore))
         .with_state(NodeCache {
             store,
             slots,
+            restores: Arc::new(Restores::new()),
             tokens,
         })
 }
@@ -100,6 +105,9 @@ async fn check_out(
         .await
     {
         Ok(reused) => {
+            if reused.is_some() {
+                cache.cancel_prepared(&slot).await;
+            }
             tracing::info!(
                 event = "sqlite_slot_checkout",
                 host_id = %host.host_id,
@@ -128,6 +136,7 @@ async fn park(
         Err(status) => return status.into_response(),
     };
     let started = Instant::now();
+    cache.cancel_prepared(&slot).await;
     match cache
         .slots
         .park(
@@ -157,7 +166,83 @@ async fn park(
     }
 }
 
+/// Starts downloading the host's newest base into its slot while the host activates.
+async fn prepare(
+    State(cache): State<NodeCache>,
+    headers: HeaderMap,
+    Json(request): Json<SlotPrepare>,
+) -> Response {
+    let (host, slot) = match cache.slot_holder(&headers) {
+        Ok(holder) => holder,
+        Err(status) => return status.into_response(),
+    };
+    if cache.slots.holds(&host.actor).await {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let prepared = match cache.slots.slot(&slot) {
+        Ok(directory) => {
+            cache
+                .restores
+                .prepare(&host.actor, &slot, &directory, request.storage)
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    match prepared {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), host_id = %host.host_id, "slot prepare failed");
+            StatusCode::CONFLICT.into_response()
+        }
+    }
+}
+
+/// Writes the host's database at its verified head into its slot.
+async fn restore(
+    State(cache): State<NodeCache>,
+    headers: HeaderMap,
+    Json(request): Json<SlotRestore>,
+) -> Response {
+    let (host, slot) = match cache.slot_holder(&headers) {
+        Ok(holder) => holder,
+        Err(status) => return status.into_response(),
+    };
+    let restored = match cache.slots.slot(&slot) {
+        Ok(directory) => {
+            cache
+                .restores
+                .restore(&host.actor, &slot, &directory, request)
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    match restored {
+        Ok(restored) => {
+            tracing::info!(
+                event = "sqlite_slot_restored",
+                host_id = %host.host_id,
+                txid = restored.txid,
+                source = restored.source,
+                base_bytes = restored.base_bytes,
+                duration_ms = restored.duration_ms
+            );
+            Json(restored).into_response()
+        }
+        Err(error) => {
+            let error = format!("{error:#}");
+            tracing::warn!(error, host_id = %host.host_id, "slot restore failed");
+            (StatusCode::CONFLICT, error).into_response()
+        }
+    }
+}
+
 impl NodeCache {
+    async fn cancel_prepared(&self, slot: &str) {
+        if let Ok(directory) = self.slots.slot(slot) {
+            self.restores.cancel(slot, &directory).await;
+        }
+    }
+
     fn authorize(&self, headers: &HeaderMap, digest: &str) -> Result<ActorPrincipal, StatusCode> {
         let host = self.authenticate(headers)?;
         if !valid_digest(digest) {

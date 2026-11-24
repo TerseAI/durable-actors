@@ -8,14 +8,6 @@ use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
-pub(crate) struct PrefetchedCheckpoint {
-    pub source: SnapshotRef,
-    pub bytes: Option<Payload>,
-    /// The newest base at or below `source`, when the store keeps bases.
-    pub base: Option<super::rapid::base::SqliteBase>,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Checkpoint {
     pub source: SnapshotRef,
@@ -59,7 +51,6 @@ pub(crate) struct CheckpointProgress {
 pub(crate) async fn resolve(
     history: &mut dyn SnapshotHistory,
     snapshot: VerifiedSnapshot,
-    prefetched: Option<PrefetchedCheckpoint>,
     base: Option<super::rapid::base::SqliteBase>,
 ) -> Result<ResolvedSqlite> {
     let VerifiedSnapshot {
@@ -68,7 +59,6 @@ pub(crate) async fn resolve(
         ..
     } = snapshot;
     let txid = current.sqlite.txid;
-    let mut prefetched = prefetched.filter(|checkpoint| checkpoint.source == reference);
     let mut segments = Vec::new();
     let mut checkpoint = false;
     let mut based = None;
@@ -83,8 +73,6 @@ pub(crate) async fn resolve(
         }
         let checkpoint_bytes = if current.sqlite.parent.is_none() {
             None
-        } else if let Some(checkpoint) = prefetched.take() {
-            checkpoint.bytes
         } else {
             history.checkpoint(&reference.object).await?
         };

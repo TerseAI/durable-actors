@@ -97,7 +97,6 @@ pub struct LoadedActor {
     pub state: Option<VerifiedSnapshot>,
     /// The head's reference, also when `state` was not loaded.
     pub head: Option<SnapshotRef>,
-    pub(crate) checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
 }
 
 #[derive(Default)]
@@ -177,24 +176,12 @@ impl std::ops::Deref for RuntimeStorage {
 }
 
 impl RuntimeStorageReader {
-    pub(crate) async fn upload_base(
-        &self,
-        snapshot: &crate::storage::SnapshotRef,
-        txid: u64,
-        path: &std::path::Path,
-    ) -> Result<()> {
-        self.snapshots.upload_base(snapshot, txid, path).await
-    }
-
-    pub(crate) async fn read_sqlite_prefetched(
+    pub(crate) async fn read_sqlite(
         &self,
         snapshot: VerifiedSnapshot,
-        checkpoint: Option<super::recovery::PrefetchedCheckpoint>,
         download: Option<&std::path::Path>,
     ) -> Result<super::recovery::RestoredSqlite> {
-        self.snapshots
-            .restore_prefetched(snapshot, checkpoint, download)
-            .await
+        self.snapshots.restore_sqlite(snapshot, download).await
     }
 
     pub(crate) fn new(
@@ -362,7 +349,6 @@ impl RuntimeStorage {
             placement,
             state: snapshot,
             head,
-            checkpoint: None,
         }
     }
 

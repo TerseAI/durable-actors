@@ -98,7 +98,7 @@ Verify an actor write and read, restart its sandbox, and read the value again. A
 
 ## Speed up writes with GCS Rapid
 
-Rapid stores every write in one or two zones. When an actor's changes since its last base grow as large as that base, the node cache uploads the actor's whole SQLite file to the Standard bucket as a new base, and cold starts restore from the newest base plus the changes after it. The history sweeper deletes changes a base covers once they are older than its minimum age, 30 days by default. Each acknowledged write has durably flushed to every configured Rapid copy. With a single zone, changes since an actor's last base are unavailable while that zone is down. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.
+Rapid stores every write in one or two zones. When an actor's changes since its last base grow as large as that base, the node cache uploads the actor's whole SQLite file to the Standard bucket as a new base. On a cold start the node cache, outside the sandbox, rebuilds the database in the host's slot from the newest base plus the changes after it. Rapid therefore needs the node cache with SQLite slots. The pool manager's history sweep deletes changes a base covers once they are older than its minimum age, 30 days by default. Each acknowledged write has durably flushed to every configured Rapid copy. With a single zone, changes since an actor's last base are unavailable while that zone is down. This can reduce state-write latency; benchmark your workload and account for the extra storage and request costs.
 
 Choose a region with Rapid availability and use Google Cloud CLI 553 or newer. Create two distinct buckets once and grant object access and bucket-metadata access to the controller identity. Add no lifecycle delete rule: the controller refuses to start if one would delete log objects. Give the node cache its own Google service account that can only create bases, the `.sqlite` objects in the Standard bucket. The following placements are examples; verify current [Rapid availability and requirements](https://docs.cloud.google.com/storage/docs/rapid-bucket).
 
@@ -138,11 +138,15 @@ storage:
 nodeCache:
   enabled: true
   googleServiceAccount: node-cache@my-project.iam.gserviceaccount.com
+  hostPath: /mnt/stateful_partition/kube-ephemeral-ssd/node-cache
+  sqliteSlots:
+    enabled: true
+    diskRoot: /mnt/stateful_partition/kube-ephemeral-ssd
 ```
 
 When actor hosts can start in either of two regions, put one Rapid bucket in a zone of each and set `placement: nearest`. Each host then opens its log in both zones at assignment, keeps whichever opens first (normally its own region), and writes only there for that session. Each write has one Rapid copy, as with a single zone. Switching between `all` and `nearest` with the same buckets needs no migration.
 
-The Standard bucket remains required. Startup checks Rapid storage class, actual zonal placement, and that no lifecycle rule deletes log objects. The pool manager deletes history that bases cover, and the chart starts that sweep in dry-run mode. Keep it there through the first 30 days and a rollback drill. `historySweeper.minAgeHours` sets how long covered history stays, which is also how far back the observer's state history reaches. Without the node cache, a host uploads a due base itself as it sleeps. If Rapid streams cannot be opened at activation, the runtime can persist immutable Standard snapshots.
+The Standard bucket remains required. Startup checks Rapid storage class, actual zonal placement, and that no lifecycle rule deletes log objects. The pool manager deletes history that bases cover, and the chart starts that sweep in dry-run mode. Keep it there through the first 30 days and a rollback drill. `historySweeper.minAgeHours` sets how long covered history stays, which is also how far back the observer's state history reaches. If Rapid streams cannot be opened at activation, the runtime can persist immutable Standard snapshots.
 
 Storage mode and bucket identities are bound to existing actor ownership records. Select the mode before creating actors in an installation. Changing an existing installation's mode needs a planned data migration; a Helm values change alone does not migrate actor state.
 
