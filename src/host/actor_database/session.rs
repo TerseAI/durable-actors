@@ -320,8 +320,8 @@ impl DatabaseSession {
 
     /// Closes the database and hands its file to the node with the snapshot and transaction it was
     /// committed at, so the actor's next host on this node reopens it instead of rebuilding it,
-    /// and the node uploads it when a base is due. Without a slot, the host uploads a due base
-    /// itself. Nothing is parked or uploaded with a commit still pending.
+    /// and the node uploads it when a base is due. Nothing is parked or uploaded with a commit
+    /// still pending.
     pub(super) async fn park(&mut self) -> Result<Option<SlotFile>> {
         let Some(cached) = &self.cached_state else {
             return Ok(None);
