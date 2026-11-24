@@ -107,7 +107,7 @@ impl HostProvisioner for FakeRetiringProvisioner {
     }
 }
 
-struct FixedHostProvisioner(HostLease);
+struct FixedHostProvisioner(HostLease, Option<Duration>);
 #[async_trait]
 impl HostProvisioner for FixedHostProvisioner {
     async fn prepare_deployment(
@@ -131,6 +131,9 @@ impl HostProvisioner for FixedHostProvisioner {
         _owner_hint: Option<&crate::bucket::OwnershipHint>,
         _: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
+        if let Some(delay) = self.1 {
+            tokio::time::sleep(delay).await;
+        }
         Ok((self.0.clone(), 42, None))
     }
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
@@ -183,12 +186,15 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
         )?,
         registry,
         issuer.clone(),
-        Arc::new(FixedHostProvisioner(HostLease {
-            id: HostId::new("host.v3.revision.host"),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            route: route.clone(),
-            expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
-        })),
+        Arc::new(FixedHostProvisioner(
+            HostLease {
+                id: HostId::new("host.v3.revision.host"),
+                session_id: uuid::Uuid::new_v4().to_string(),
+                route: route.clone(),
+                expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
+            },
+            None,
+        )),
     );
     let actor = ActorKey {
         project_id: "default".into(),
@@ -1806,6 +1812,7 @@ async fn an_alarm_for_a_project_with_no_code_is_not_kept_due() -> Result<()> {
 async fn invoke_alarm_against(
     status: u16,
     reply: Option<&'static str>,
+    host_delay: Option<Duration>,
 ) -> Result<Option<anyhow::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let route = format!("http://{}", listener.local_addr()?);
@@ -1845,12 +1852,15 @@ async fn invoke_alarm_against(
         auth,
         registry,
         issuer,
-        Arc::new(FixedHostProvisioner(HostLease {
-            id: HostId::new("host.v3.revision.host"),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            route,
-            expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
-        })),
+        Arc::new(FixedHostProvisioner(
+            HostLease {
+                id: HostId::new("host.v3.revision.host"),
+                session_id: uuid::Uuid::new_v4().to_string(),
+                route,
+                expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
+            },
+            host_delay,
+        )),
     );
     let alarm = super::super::alarms::ClaimedAlarm {
         actor: ActorKey {
@@ -1882,7 +1892,7 @@ async fn host_replies_that_say_nothing_ran_leave_the_alarm_undelivered() -> Resu
         (200, None),
     ];
     for (status, reply) in replies {
-        let error = invoke_alarm_against(status, reply)
+        let error = invoke_alarm_against(status, reply, None)
             .await?
             .expect("a reply that ran nothing is an error");
         assert!(
@@ -1901,7 +1911,7 @@ async fn unrecognised_host_replies_do_not_claim_that_nothing_ran() -> Result<()>
         (500, ""),
     ];
     for (status, reply) in replies {
-        let error = invoke_alarm_against(status, Some(reply))
+        let error = invoke_alarm_against(status, Some(reply), None)
             .await?
             .expect("an unconfirmed outcome is an error");
         assert!(
@@ -1909,5 +1919,15 @@ async fn unrecognised_host_replies_do_not_claim_that_nothing_ran() -> Result<()>
             "{reply:?} may have run"
         );
     }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_route_that_takes_too_long_leaves_the_alarm_undelivered() -> Result<()> {
+    let slow = Duration::from_secs(3600);
+    let error = invoke_alarm_against(200, Some("{}"), Some(slow))
+        .await?
+        .expect("a route that never finishes is an error");
+    assert!(error.is::<super::super::alarms::AlarmNotDelivered>());
     Ok(())
 }
