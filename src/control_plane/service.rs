@@ -698,7 +698,7 @@ impl ControlPlaneService {
         let spec = self
             .runtime_deployment(&actor.project_id)
             .await?
-            .context("project has no registered actor code")?;
+            .ok_or(NoRegisteredCode)?;
         let overrides_regions = spec
             .sandboxes
             .get(&actor.actor_name)
@@ -975,6 +975,18 @@ fn placement_regions(
     });
     Ok(regions)
 }
+
+/// The project's deployment is gone, so nothing can run for it until it is deployed again.
+#[derive(Debug)]
+pub(super) struct NoRegisteredCode;
+
+impl std::fmt::Display for NoRegisteredCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("project has no registered actor code")
+    }
+}
+
+impl std::error::Error for NoRegisteredCode {}
 
 #[derive(Debug)]
 pub(super) struct RegionConflict;

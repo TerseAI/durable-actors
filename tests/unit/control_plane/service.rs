@@ -107,43 +107,43 @@ impl HostProvisioner for FakeRetiringProvisioner {
     }
 }
 
+struct FixedHostProvisioner(HostLease, Option<Duration>);
+#[async_trait]
+impl HostProvisioner for FixedHostProvisioner {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        _previous: Option<&HostLaunchSpec>,
+        _region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<crate::control_plane::contracts::PublicActorContract>,
+    )> {
+        Ok((source.clone(), None))
+    }
+
+    async fn ensure_actor_host(
+        &self,
+        _: &HostLaunchSpec,
+        _: &str,
+        _actor: &ActorKey,
+        _new_actor: bool,
+        _owner_hint: Option<&crate::bucket::OwnershipHint>,
+        _: Option<&crate::sandbox::assignment::InitialOperation>,
+    ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
+        if let Some(delay) = self.1 {
+            tokio::time::sleep(delay).await;
+        }
+        Ok((self.0.clone(), 42, None))
+    }
+    async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
+        anyhow::bail!("unused")
+    }
+}
+
 #[tokio::test]
 async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_control_plane()
 -> Result<()> {
-    struct Provisioner(HostLease);
-    #[async_trait]
-    impl HostProvisioner for Provisioner {
-        async fn prepare_deployment(
-            &self,
-            source: &HostLaunchSpec,
-            _previous: Option<&HostLaunchSpec>,
-            _region: &str,
-        ) -> Result<(
-            HostLaunchSpec,
-            Option<crate::control_plane::contracts::PublicActorContract>,
-        )> {
-            Ok((source.clone(), None))
-        }
-
-        async fn ensure_actor_host(
-            &self,
-            _: &HostLaunchSpec,
-            _: &str,
-            _actor: &ActorKey,
-            _new_actor: bool,
-            _owner_hint: Option<&crate::bucket::OwnershipHint>,
-            _: Option<&crate::sandbox::assignment::InitialOperation>,
-        ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
-            Ok((self.0.clone(), 42, None))
-        }
-        async fn terminate_hosts(
-            &self,
-            _: &HostLaunchSpec,
-            _: &[String],
-        ) -> Result<HostTermination> {
-            anyhow::bail!("unused")
-        }
-    }
     let issuer = test_issuer()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let route = format!("http://{}", listener.local_addr()?);
@@ -186,12 +186,15 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
         )?,
         registry,
         issuer.clone(),
-        Arc::new(Provisioner(HostLease {
-            id: HostId::new("host.v3.revision.host"),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            route: route.clone(),
-            expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
-        })),
+        Arc::new(FixedHostProvisioner(
+            HostLease {
+                id: HostId::new("host.v3.revision.host"),
+                session_id: uuid::Uuid::new_v4().to_string(),
+                route: route.clone(),
+                expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
+            },
+            None,
+        )),
     );
     let actor = ActorKey {
         project_id: "default".into(),
@@ -1770,4 +1773,175 @@ async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<Control
         sockets,
     )?);
     Ok(service)
+}
+
+#[tokio::test]
+async fn an_alarm_for_a_project_with_no_code_is_not_kept_due() -> Result<()> {
+    let issuer = test_issuer()?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    let service = ControlPlaneService::new(
+        Arc::new(LocalObjectPlacementStore::default()),
+        auth,
+        Arc::new(LocalAdminRegistry::default()),
+        issuer,
+        Arc::new(UnavailableProvisioner),
+    );
+    let alarm = super::super::alarms::ClaimedAlarm {
+        actor: ActorKey {
+            project_id: "deleted".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        },
+        revision: 1,
+    };
+    let error = super::super::invocation::invoke_alarm(&service, &reqwest::Client::new(), &alarm)
+        .await
+        .unwrap_err();
+    assert!(error.is::<NoRegisteredCode>());
+    assert!(!error.is::<super::super::alarms::AlarmNotDelivered>());
+    Ok(())
+}
+
+/// What `invoke_alarm` returns when the host answers with `reply`, never answers for `hang`, or cannot be reached for `None`.
+async fn invoke_alarm_against(
+    status: u16,
+    reply: Option<&'static str>,
+    host_delay: Option<Duration>,
+) -> Result<Option<anyhow::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let route = format!("http://{}", listener.local_addr()?);
+    match reply {
+        Some(reply) => {
+            let status = axum::http::StatusCode::from_u16(status)?;
+            let router = axum::Router::new().fallback(move || async move {
+                if reply == "hang" {
+                    std::future::pending::<()>().await;
+                }
+                (status, reply)
+            });
+            tokio::spawn(async move { axum::serve(listener, router).await });
+        }
+        None => drop(listener),
+    }
+    let issuer = test_issuer()?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    let registry = Arc::new(LocalAdminRegistry::default());
+    registry
+        .register_test_deployment(&HostLaunchSpec {
+            image_policy: Default::default(),
+            organization_id: "org-test".into(),
+            sandboxes: Default::default(),
+            project_id: "default".into(),
+            source: None,
+            code_snapshot: None,
+            image_ref: "image".into(),
+            working_directory: "/app".into(),
+            actor_entrypoint: None,
+            secret_refs: vec![],
+        })
+        .await?;
+    let service = ControlPlaneService::new(
+        Arc::new(LocalObjectPlacementStore::default()),
+        auth,
+        registry,
+        issuer,
+        Arc::new(FixedHostProvisioner(
+            HostLease {
+                id: HostId::new("host.v3.revision.host"),
+                session_id: uuid::Uuid::new_v4().to_string(),
+                route,
+                expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
+            },
+            host_delay,
+        )),
+    );
+    let alarm = super::super::alarms::ClaimedAlarm {
+        actor: ActorKey {
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        },
+        revision: 1,
+    };
+    Ok(
+        super::super::invocation::invoke_alarm(&service, &reqwest::Client::new(), &alarm)
+            .await
+            .err(),
+    )
+}
+
+#[tokio::test]
+async fn host_replies_that_say_nothing_ran_leave_the_alarm_undelivered() -> Result<()> {
+    let replies = [
+        (
+            200,
+            Some(r#"{"type":"not_executed","reason":"host_unavailable"}"#),
+        ),
+        (
+            200,
+            Some(r#"{"type":"not_executed","reason":"upstream_not_reached"}"#),
+        ),
+        (401, Some(r#"{"type":"unauthenticated"}"#)),
+        (200, None),
+    ];
+    for (status, reply) in replies {
+        let error = invoke_alarm_against(status, reply, None)
+            .await?
+            .expect("a reply that ran nothing is an error");
+        assert!(
+            error.is::<super::super::alarms::AlarmNotDelivered>(),
+            "{reply:?} must keep the alarm due"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unrecognised_host_replies_do_not_claim_that_nothing_ran() -> Result<()> {
+    let replies = [
+        (200, r#"{"type":"not_executed","reason":"something_else"}"#),
+        (200, "not json"),
+        (500, ""),
+    ];
+    for (status, reply) in replies {
+        let error = invoke_alarm_against(status, Some(reply), None)
+            .await?
+            .expect("an unconfirmed outcome is an error");
+        assert!(
+            !error.is::<super::super::alarms::AlarmNotDelivered>(),
+            "{reply:?} may have run"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_route_that_takes_too_long_leaves_the_alarm_undelivered() -> Result<()> {
+    let slow = Duration::from_secs(3600);
+    let error = invoke_alarm_against(200, Some("{}"), Some(slow))
+        .await?
+        .expect("a route that never finishes is an error");
+    assert!(error.is::<super::super::alarms::AlarmNotDelivered>());
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_host_that_never_answers_may_have_run_the_alarm() -> Result<()> {
+    let error = invoke_alarm_against(200, Some("hang"), None)
+        .await?
+        .expect("a reply that never comes is an error");
+    assert!(!error.is::<super::super::alarms::AlarmNotDelivered>());
+    Ok(())
 }

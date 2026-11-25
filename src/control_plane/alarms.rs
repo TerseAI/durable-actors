@@ -21,10 +21,24 @@ pub(super) const MAX_IN_FLIGHT: usize = 100;
 pub(super) const MAX_ATTEMPTS: usize = 3;
 pub(super) const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 pub(super) const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
+const ATTEMPT_BACKSTOP: Duration = Duration::from_secs(5);
 // A live delivery must finish before its claim expires, or another poll delivers it concurrently.
 pub(super) const QUEUED_TIMEOUT: Duration = Duration::from_secs(300);
 pub(super) const ALARM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const ALARM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const REDELIVERY_DELAY: Duration = Duration::from_secs(5);
+
+/// A delivery attempt that did not run `onAlarm`, so attempting it again cannot run the handler twice.
+#[derive(Debug)]
+pub(super) struct AlarmNotDelivered(pub &'static str);
+
+impl std::fmt::Display for AlarmNotDelivered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for AlarmNotDelivered {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ClaimedAlarm {
@@ -43,6 +57,8 @@ pub(super) trait AlarmStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<ClaimedAlarm>>;
     async fn finish(&self, alarm: &ClaimedAlarm) -> Result<()>;
+    /// Moves the claim time of this revision, so it can be claimed again once its window from `queued_at_ms` passes.
+    async fn requeue(&self, alarm: &ClaimedAlarm, queued_at_ms: i64) -> Result<()>;
 }
 
 #[async_trait]
@@ -121,6 +137,11 @@ async fn deliver(store: &dyn AlarmStore, delivery: &dyn AlarmDelivery, alarm: &C
         if error.is::<super::access::AccessDisabled>() {
             return;
         }
+        if error.is::<AlarmNotDelivered>() {
+            tracing::warn!(error = %format!("{error:#}"), %actor, "alarm not delivered, redelivering later");
+            redeliver_later(store, alarm).await;
+            return;
+        }
         tracing::warn!(error = %format!("{error:#}"), %actor, "alarm abandoned after retries");
     }
     if let Err(error) = store.finish(alarm).await {
@@ -129,7 +150,8 @@ async fn deliver(store: &dyn AlarmStore, delivery: &dyn AlarmDelivery, alarm: &C
 }
 
 async fn attempt_with_retries(delivery: &dyn AlarmDelivery, alarm: &ClaimedAlarm) -> Result<()> {
-    (|| attempt(delivery, alarm))
+    let mut may_have_run = false;
+    let result = (|| attempt(delivery, alarm))
         .retry(
             ExponentialBuilder::default()
                 .with_min_delay(MIN_RETRY_DELAY)
@@ -137,11 +159,38 @@ async fn attempt_with_retries(delivery: &dyn AlarmDelivery, alarm: &ClaimedAlarm
                 .with_jitter(),
         )
         .when(|error| !error.is::<super::access::AccessDisabled>())
-        .await
+        .notify(|error, _| may_have_run |= !error.is::<AlarmNotDelivered>())
+        .await;
+    // A refusal after an attempt that may have run must not make the whole delivery look undelivered.
+    result.map_err(|error| {
+        if may_have_run
+            && error.is::<AlarmNotDelivered>()
+            && !error.is::<super::access::AccessDisabled>()
+        {
+            anyhow::anyhow!("{error:#}")
+        } else {
+            error
+        }
+    })
 }
 
+/// A store failure here only delays redelivery: the claim still expires after `QUEUED_TIMEOUT`.
+async fn redeliver_later(store: &dyn AlarmStore, alarm: &ClaimedAlarm) {
+    let requeued = async {
+        let now_ms = i64::try_from(crate::clock::SystemClock.now_ms()?)?;
+        let delay_ms = i64::try_from(REDELIVERY_DELAY.as_millis())?;
+        let window_ms = i64::try_from(QUEUED_TIMEOUT.as_millis())?;
+        store.requeue(alarm, now_ms + delay_ms - window_ms).await
+    };
+    if let Err(error) = requeued.await {
+        let actor = alarm.actor.storage_key();
+        tracing::warn!(error = %format!("{error:#}"), %actor, "could not requeue alarm");
+    }
+}
+
+/// A backstop for a delivery that ignores its own `ATTEMPT_TIMEOUT` deadline.
 async fn attempt(delivery: &dyn AlarmDelivery, alarm: &ClaimedAlarm) -> Result<()> {
-    tokio::time::timeout(ATTEMPT_TIMEOUT, delivery.attempt(alarm))
+    tokio::time::timeout(ATTEMPT_TIMEOUT + ATTEMPT_BACKSTOP, delivery.attempt(alarm))
         .await
         .context("alarm attempt timed out")?
 }
@@ -268,6 +317,26 @@ impl AlarmStore for PostgresAlarmStore {
                     &alarm.actor.actor_name,
                     &alarm.actor.actor_id,
                     &revision,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn requeue(&self, alarm: &ClaimedAlarm, queued_at_ms: i64) -> Result<()> {
+        let revision = i64::try_from(alarm.revision).context("alarm revision overflow")?;
+        self.database
+            .execute(
+                "UPDATE durable_actors_alarm
+                 SET queued_at_ms = $5
+                 WHERE project_id = $1 AND actor_name = $2 AND actor_id = $3
+                   AND revision = $4",
+                &[
+                    &alarm.actor.project_id,
+                    &alarm.actor.actor_name,
+                    &alarm.actor.actor_id,
+                    &revision,
+                    &queued_at_ms,
                 ],
             )
             .await?;
@@ -401,6 +470,27 @@ impl AlarmStore for SqliteAlarmStore {
         })
         .await
     }
+
+    async fn requeue(&self, alarm: &ClaimedAlarm, queued_at_ms: i64) -> Result<()> {
+        let revision = i64::try_from(alarm.revision).context("alarm revision overflow")?;
+        let actor = alarm.actor.clone();
+        self.run(move |connection| {
+            connection.execute(
+                "UPDATE alarms SET queued_at_ms = ?5
+                 WHERE project_id = ?1 AND actor_name = ?2 AND actor_id = ?3
+                   AND revision = ?4",
+                params![
+                    actor.project_id,
+                    actor.actor_name,
+                    actor.actor_id,
+                    revision,
+                    queued_at_ms
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[derive(Default)]
@@ -483,6 +573,15 @@ impl AlarmStore for MemoryAlarmStore {
         {
             current.timestamp_ms = None;
             current.queued_at_ms = None;
+        }
+        Ok(())
+    }
+
+    async fn requeue(&self, alarm: &ClaimedAlarm, queued_at_ms: i64) -> Result<()> {
+        if let Some(current) = self.alarms.lock().unwrap().get_mut(&alarm.actor)
+            && current.revision == alarm.revision
+        {
+            current.queued_at_ms = Some(queued_at_ms);
         }
         Ok(())
     }
