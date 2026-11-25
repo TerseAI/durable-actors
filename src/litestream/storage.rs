@@ -1,12 +1,18 @@
 use super::{DatabaseRestore, Replicator};
 use crate::{bucket::SqliteBase, payload::Payload};
 use anyhow::{Context, Result, ensure};
+use futures_util::future::BoxFuture;
+use rusqlite::config::DbConfig;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
+
+/// How long closing waits for an unconfirmed base copy, inside the host's park budget. Past it the
+/// database stays unparked and its file untouched.
+const COPY_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LtxFile {
@@ -75,6 +81,7 @@ pub(crate) struct SqliteCapture {
     registered: bool,
     txid: u64,
     published: u64,
+    hold: Option<CheckpointHold>,
 }
 
 /// Where the database lives: a temporary directory, or a node slot whose `db` directory outlives
@@ -122,7 +129,7 @@ impl SqliteCapture {
         replication: Arc<dyn Replicator>,
         full_snapshots: Option<Duration>,
     ) -> Result<Self> {
-        Self::open(replication, directory, full_snapshots, None).await
+        Self::open(replication, directory, full_snapshots, None, None).await
     }
 
     /// With `resume`, capture continues the restored history, so the next commit is a delta at
@@ -148,23 +155,27 @@ impl SqliteCapture {
             directory,
             full_snapshots,
             resume.then_some(txid),
+            None,
         )
         .await
     }
 
-    /// Opens a database already in `directory` that was closed at `txid`.
+    /// Opens a database already in `directory` that was closed at `txid`. Given `copied`, nothing
+    /// is checkpointed into the file until it resolves.
     pub(crate) async fn reopen(
         directory: CaptureDirectory,
         replication: Arc<dyn Replicator>,
         txid: u64,
         full_snapshots: Option<Duration>,
         resume: bool,
+        copied: Option<BoxFuture<'static, ()>>,
     ) -> Result<Self> {
         Self::open(
             replication,
             directory,
             full_snapshots,
             resume.then_some(txid),
+            copied,
         )
         .await
     }
@@ -173,6 +184,11 @@ impl SqliteCapture {
     /// WAL folded in, so another host can reopen it. A temporary directory lasts as long as the
     /// returned value.
     pub(crate) async fn close(mut self) -> Result<CaptureDirectory> {
+        if let Some(CheckpointHold(released)) = self.hold.take() {
+            let _ = tokio::time::timeout(COPY_WAIT, released)
+                .await
+                .context("the node never confirmed its base copy")?;
+        }
         let path = self.path();
         self.registered = false;
         self.replication.unregister(&path).await?;
@@ -239,6 +255,7 @@ impl SqliteCapture {
         directory: CaptureDirectory,
         full_snapshots: Option<Duration>,
         resume_at: Option<u64>,
+        copied: Option<BoxFuture<'static, ()>>,
     ) -> Result<Self> {
         let mut capture = Self {
             replication,
@@ -246,7 +263,11 @@ impl SqliteCapture {
             registered: false,
             txid: 0,
             published: 0,
+            hold: None,
         };
+        if let Some(copied) = copied {
+            capture.hold = Some(CheckpointHold::start(capture.path(), copied).await?);
+        }
         let path = capture.path();
         tokio::task::spawn_blocking(move || -> Result<()> {
             let db = rusqlite::Connection::open(path)?;
@@ -286,6 +307,30 @@ impl Drop for SqliteCapture {
                 drop(directory);
             });
         }
+    }
+}
+
+/// A read begun while the WAL is empty, before anything writes: every checkpoint waits for it, so
+/// the file stays as it was until `released` resolves. It may outlive the capture, so closing it
+/// never checkpoints or deletes the WAL, whose path may name another database by then.
+struct CheckpointHold(tokio::task::JoinHandle<()>);
+
+impl CheckpointHold {
+    async fn start(path: PathBuf, released: BoxFuture<'static, ()>) -> Result<Self> {
+        let reader = tokio::task::spawn_blocking(move || -> Result<rusqlite::Connection> {
+            let reader = rusqlite::Connection::open(path)?;
+            reader.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+            reader.execute_batch("BEGIN")?;
+            reader.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+            Ok(reader)
+        })
+        .await??;
+        Ok(Self(tokio::spawn(async move {
+            released.await;
+            let _ = tokio::task::spawn_blocking(move || drop(reader)).await;
+        })))
     }
 }
 

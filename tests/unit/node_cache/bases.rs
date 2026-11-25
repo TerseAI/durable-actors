@@ -103,6 +103,29 @@ async fn an_upload_waiting_for_a_permit_is_dropped_before_it_copies() -> Result<
 }
 
 #[tokio::test]
+async fn a_copy_reads_the_parked_file_even_after_a_host_moves_it() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let bucket = Arc::new(Stuck(Default::default()));
+    let uploads = BaseUploads::new(Some(bucket), directory.path().join("staging"));
+    let busy = uploads
+        .permits
+        .clone()
+        .acquire_many_owned(CONCURRENT_UPLOADS as u32)
+        .await?;
+    let parked = directory.path().join("actor.sqlite");
+    std::fs::write(&parked, b"pages")?;
+    uploads.start(&actor(), parked.clone(), snapshot(), 7).await;
+
+    std::fs::rename(&parked, directory.path().join("slot.sqlite"))?;
+    drop(busy);
+    copied(&uploads).await?;
+
+    let copies: Vec<_> = std::fs::read_dir(directory.path().join("staging"))?.collect();
+    assert_eq!(std::fs::read(copies[0].as_ref().unwrap().path())?, b"pages");
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_symlinked_parked_file_is_not_copied() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let other = directory.path().join("other.sqlite");
@@ -110,9 +133,7 @@ async fn a_symlinked_parked_file_is_not_copied() -> Result<()> {
     let parked = directory.path().join("actor.sqlite");
     std::os::unix::fs::symlink(&other, &parked)?;
 
-    let copied = copy(&parked, &directory.path().join("staging")).await;
-
-    assert!(copied.is_err());
+    assert!(parked_file(&parked).is_err());
     Ok(())
 }
 

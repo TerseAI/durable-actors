@@ -154,8 +154,21 @@ impl NodeCacheClient {
     ) -> Result<Option<SlotFile>> {
         let request = SlotCheckout {
             snapshot: snapshot.cloned(),
+            hold_checkpoints: true,
         };
         self.slot_call("checkout", &request).await
+    }
+
+    /// Returns once the node has finished copying the database this host checked out.
+    pub(crate) async fn wait_for_copy(&self) -> Result<()> {
+        self.connection
+            .restores
+            .post(self.connection.url.join("slot/copied")?)
+            .header(AUTHORIZATION, self.authorization.header()?)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
     }
 
     /// Hands the closed database in this host's slot to the node, recorded at `snapshot`, whose

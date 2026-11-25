@@ -65,6 +65,10 @@ async fn routes_follow_host_lifecycle(routes: &dyn RouteStore) {
         .map(|owner| owner.placement());
     assert_eq!(taken, Some(sealed.placement()));
     assert!(routes.take_sealed_owner(&actor).await.is_none());
+
+    routes.keep_last_node(&actor, "node-a").await;
+    assert_eq!(routes.last_node(&actor).await.as_deref(), Some("node-a"));
+    assert_eq!(routes.last_node(&actor).await.as_deref(), Some("node-a"));
 }
 
 fn route(actor: &ActorKey, epoch: u64) -> CachedRoute {
