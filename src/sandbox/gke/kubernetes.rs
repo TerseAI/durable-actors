@@ -40,6 +40,8 @@ pub(crate) struct GkeConfig {
     /// The size of each spare's database slot, which kubelet enforces and deletes with the pod.
     pub sqlite_slot_gib: Option<u32>,
     pub runtime_class: String,
+    /// Added to every spare pod, for cluster tooling such as log agents.
+    pub pod_annotations: BTreeMap<String, String>,
 }
 
 /// Reads pod state from one shared watch so provisioning costs a single API call per pod.
@@ -142,6 +144,7 @@ impl SandboxCluster for Kubernetes {
             self.config.node_cache_url.as_deref(),
             self.config.sqlite_slot_gib,
             &self.config.runtime_class,
+            &self.config.pod_annotations,
         )?;
         let ready = self.start(pod).await?;
         let ip: std::net::IpAddr = ready
@@ -299,9 +302,16 @@ fn spare_pod(
     node_cache_url: Option<&str>,
     sqlite_slot_gib: Option<u32>,
     runtime_class: &str,
+    annotations: &BTreeMap<String, String>,
 ) -> Result<Pod> {
     let mut pod: Pod = serde_yaml::from_str(SPARE_POD).context("spare pod manifest")?;
     pod.metadata.name = Some(request.name.clone());
+    if !annotations.is_empty() {
+        pod.metadata
+            .annotations
+            .get_or_insert_with(BTreeMap::new)
+            .extend(annotations.clone());
+    }
     pod.metadata
         .labels
         .get_or_insert_with(BTreeMap::new)
