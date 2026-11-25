@@ -48,6 +48,7 @@ fn diagnostic_logs_use_finalized_request_timing() -> Result<()> {
     tracker.admitted();
     tracker.mark(crate::request_tracking::RequestStage::StateCacheChecked);
     tracker.mark(crate::request_tracking::RequestStage::ActorExecutionCompleted);
+    tracker.rows_written(3);
     let result = Ok(ActorExecutionResult::Completed {
         result: Default::default(),
         effects: vec![],
@@ -86,6 +87,7 @@ fn diagnostic_logs_use_finalized_request_timing() -> Result<()> {
     let fields = &invocations[0]["fields"];
     assert_eq!(fields["completed_at_ms"], reply["metadata"]["durationMs"]);
     assert_eq!(fields["host_state"], reply["metadata"]["hostState"]);
+    assert_eq!(fields["rows_written"], 3);
     assert_eq!(
         fields["queue_admitted_at_ms"],
         reply["metadata"]["queueWaitMs"]

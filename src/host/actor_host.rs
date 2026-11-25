@@ -1036,6 +1036,7 @@ fn log_invocation_result(
             actor_execution_completed_at_ms = completion.checkpoints.actor_execution_completed_at_ms,
             state_publication_completed_at_ms = completion.checkpoints.state_publication_completed_at_ms,
             completed_at_ms = completion.timings.duration_ms,
+            rows_written = completion.rows_written,
             outcome,
             failure_code,
             error,
