@@ -330,6 +330,7 @@ impl Fixture {
                     resources: Default::default(),
                     resident: Some(kind != LifecycleKind::Stopped),
                     last_active_at_ms: None,
+                    active_ms: None,
                     database_bytes: None,
                     waiting,
                 },
