@@ -693,7 +693,7 @@ impl ControlPlaneService {
                     .await
                     .context("actor host is still shutting down; retry discovery")??;
                 }
-                Err(error) if error.is::<ClaimPending>() => {
+                Err(error) if error.is::<ClaimPending>() || error.is::<OwnershipHeld>() => {
                     ensure!(
                         tokio::time::Instant::now() < deadline,
                         "actor host is still starting; retry discovery"

@@ -48,8 +48,9 @@ impl Ownerships {
         actor.validate()?;
         crate::placement::validate_region(region)?;
         let started = Instant::now();
+        // An unsealed hint can predate a renewal, and sealing it would cut off a live writer.
         let mut known = known
-            .filter(|hint| hint.record.actor == *actor)
+            .filter(|hint| hint.record.actor == *actor && hint.record.sealed)
             .map(|hint| Stored {
                 version: hint.version,
                 record: hint.record,

@@ -429,6 +429,34 @@ async fn a_stale_hint_rereads_and_preserves_the_current_owner() -> Result<()> {
 }
 
 #[tokio::test]
+async fn an_unsealed_hint_is_reread_instead_of_recovered() -> Result<()> {
+    let f = Fixture::new()?;
+    f.won("first").await?;
+    let stale = f.hint().await?;
+    f.clock.0.store(30_000, Ordering::SeqCst);
+    let renewal = HostLeaseRequest {
+        duration_ms: 60_000,
+        ..request("first")
+    };
+    f.ownerships.renew(&f.actor, &renewal).await?;
+    f.clock.0.store(EXPIRED + 1, Ordering::SeqCst);
+    let writes = f.bucket.writes.load(Ordering::SeqCst);
+    let claimed = f
+        .ownerships
+        .claim(
+            &f.actor,
+            &request("next").id,
+            "next",
+            "us-east",
+            Some(stale),
+        )
+        .await?;
+    assert!(matches!(claimed, Claim::Held));
+    assert_eq!(f.bucket.writes.load(Ordering::SeqCst), writes);
+    Ok(())
+}
+
+#[tokio::test]
 async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_session_reads()
 -> Result<()> {
     for written in [true, false] {

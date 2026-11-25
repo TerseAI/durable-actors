@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 
 use super::*;
 use crate::{
-    bucket::{FileBucket, RuntimeStorageReader},
+    bucket::{Bucket, FileBucket, RuntimeStorageReader},
     clock::{Clock, SystemClock},
     host::HostId,
     postgres::{PostgresDatabase, testing::with_postgres},
@@ -105,9 +105,36 @@ async fn backfill_moves_ended_leases_and_leaves_live_ones() -> Result<()> {
     .await
 }
 
+#[tokio::test]
+async fn backfill_finishes_interrupted_moves_and_counts_unreadable_records() -> Result<()> {
+    with_postgres(async |fixture| {
+        let f = Moving::new(&fixture.url).await?;
+        assert!(
+            f.bucket
+                .mark_moved(&record(&actor(), 4, true), None)
+                .await?
+        );
+        let mut broken = actor();
+        broken.actor_id = "broken".into();
+        let key = crate::storage_paths::owner(&broken.storage_key())?;
+        let garbage = crate::payload::encode(&serde_json::json!({"movedToPostgres": "old"}))?;
+        assert!(f.files.compare_and_swap(&key, None, garbage).await?);
+        assert_eq!(f.moving.backfill().await?, 1);
+        let stored = f
+            .postgres
+            .load(&actor())
+            .await?
+            .context("move not finished")?;
+        assert_eq!(stored.record.epoch, 4);
+        Ok(())
+    })
+    .await
+}
+
 /// A cluster moving from a bucket to PostgreSQL, with direct access to both stores.
 struct Moving {
     _directory: tempfile::TempDir,
+    files: Arc<FileBucket>,
     bucket: BucketOwnership,
     postgres: PostgresOwnership,
     moving: Arc<MovingOwnership>,
@@ -131,7 +158,8 @@ impl Moving {
         )?;
         Ok(Self {
             _directory: directory,
-            bucket: BucketOwnership::new(files),
+            bucket: BucketOwnership::new(files.clone()),
+            files,
             postgres: PostgresOwnership::new(database),
             ownerships: Ownerships::new(moving.clone(), Arc::new(reader)),
             moving,

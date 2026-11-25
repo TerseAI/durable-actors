@@ -54,21 +54,20 @@ impl BucketOwnership {
         self.write(&record.actor, expected, &moved).await
     }
 
-    /// Every readable record a `keep` returns something for. Unreadable records are skipped.
+    /// Every record `keep` returns something for, and an error for each that could not be read.
     pub(super) async fn scan<T: Send>(
         &self,
         keep: impl Fn(i64, Object) -> Option<T> + Sync,
-    ) -> Result<Vec<T>> {
+    ) -> Result<Vec<Result<T>>> {
         let keys = self.0.list(&storage_paths::owners()).await?;
         let keep = &keep;
         Ok(stream::iter(keys)
             .map(|key| async move {
                 match self.read_key(&key).await {
-                    Ok(object) => object.and_then(|(generation, object)| keep(generation, object)),
-                    Err(error) => {
-                        tracing::warn!(error = %format!("{error:#}"), key, "unreadable ownership record skipped");
-                        None
-                    }
+                    Ok(object) => object
+                        .and_then(|(generation, object)| keep(generation, object))
+                        .map(Ok),
+                    Err(error) => Some(Err(error.context(format!("read {key}")))),
                 }
             })
             .buffer_unordered(CONCURRENT_READS)
@@ -127,14 +126,25 @@ impl OwnershipStore for BucketOwnership {
     }
 
     async fn unsealed(&self) -> Result<Vec<Stored>> {
-        self.scan(|generation, object| match object {
-            Object::Owned(record) if !record.sealed => Some(Stored {
-                version: Version::Bucket(generation),
-                record,
-            }),
-            _ => None,
-        })
-        .await
+        let scanned = self
+            .scan(|generation, object| match object {
+                Object::Owned(record) if !record.sealed => Some(Stored {
+                    version: Version::Bucket(generation),
+                    record,
+                }),
+                _ => None,
+            })
+            .await?;
+        Ok(scanned
+            .into_iter()
+            .filter_map(|stored| {
+                stored
+                    .inspect_err(|error| {
+                        tracing::warn!(error = %format!("{error:#}"), "unreadable ownership record skipped")
+                    })
+                    .ok()
+            })
+            .collect())
     }
 }
 
