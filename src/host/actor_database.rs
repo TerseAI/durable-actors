@@ -178,6 +178,7 @@ impl HostDatabase {
                 origin,
                 committed: AtomicU64::new(0),
                 active: AtomicBool::new(true),
+                rows_written: AtomicU64::new(0),
             }),
         })
     }
@@ -308,6 +309,10 @@ impl DatabaseInvocation {
         self.scope.committed.load(Ordering::Acquire) > 0
     }
 
+    pub(super) fn rows_written(&self) -> u64 {
+        self.scope.rows_written.load(Ordering::Relaxed)
+    }
+
     /// `result` is `None` when it passes on as it arrives, which only a call that wrote nothing
     /// can do.
     pub(super) async fn complete(
@@ -359,6 +364,7 @@ struct InvocationScope {
     origin: CommitOrigin,
     committed: AtomicU64,
     active: AtomicBool,
+    rows_written: AtomicU64,
 }
 
 #[derive(Default)]
@@ -381,6 +387,7 @@ enum DatabaseReply {
     Executed {
         result: DatabaseResult,
         committed: Option<u64>,
+        rows_written: u64,
     },
     Rejected(anyhow::Error),
 }
@@ -527,7 +534,14 @@ impl DatabaseService {
             )
             .await;
         match result {
-            Ok(DatabaseReply::Executed { result, committed }) => {
+            Ok(DatabaseReply::Executed {
+                result,
+                committed,
+                rows_written,
+            }) => {
+                scope
+                    .rows_written
+                    .fetch_add(rows_written, Ordering::Relaxed);
                 if let Some(txid) = committed {
                     scope.committed.store(txid, Ordering::Release);
                 }

@@ -173,6 +173,38 @@ async fn rows_written_before_a_statement_fails_are_not_finished() -> Result<()> 
 }
 
 #[tokio::test]
+async fn calls_report_table_and_index_rows_written() -> Result<()> {
+    let (_directory, database) = database().await?;
+    let written = async |sql: &str| {
+        Ok::<_, anyhow::Error>(exec(&database, sql, vec![], false).await?.rows_written)
+    };
+    written("CREATE TABLE entries(key TEXT PRIMARY KEY, value TEXT, note TEXT)").await?;
+    written("CREATE INDEX entries_value ON entries(value)").await?;
+    assert_eq!(
+        written("INSERT INTO entries VALUES ('a', '1', ''), ('b', '2', '')").await?,
+        6
+    );
+    assert_eq!(written("UPDATE entries SET note = 'seen'").await?, 2);
+    assert_eq!(
+        written("UPDATE entries SET value = '3' WHERE key = 'a'").await?,
+        2
+    );
+    let upsert = "INSERT INTO entries VALUES ('a', '3', 'again') ON CONFLICT(key) DO UPDATE SET note = excluded.note";
+    assert_eq!(written(upsert).await?, 1);
+    assert_eq!(written("SELECT * FROM entries").await?, 0);
+    assert_eq!(written("DELETE FROM entries WHERE key = 'b'").await?, 3);
+    written("CREATE TABLE pairs(key TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID").await?;
+    assert_eq!(written("INSERT INTO pairs VALUES ('a', '1')").await?, 1);
+    let field = DatabaseCall::PersistField {
+        name: "count".into(),
+        value: raw(json!(1)),
+        immediate: false,
+    };
+    assert_eq!(database.call(field, rows::ignored()).await?.rows_written, 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn runtime_owned_statements_are_rejected() -> Result<()> {
     let (_directory, database) = database().await?;
     for (sql, message) in [

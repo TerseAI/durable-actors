@@ -164,6 +164,7 @@ impl DatabaseSession {
                 return Ok(DatabaseReply::Executed {
                     result: DatabaseResult::Alarm { timestamp_ms },
                     committed: None,
+                    rows_written: 0,
                 });
             }
             DatabaseCall::SetAlarm { timestamp_ms, .. } => {
@@ -171,6 +172,7 @@ impl DatabaseSession {
                 return Ok(DatabaseReply::Executed {
                     result: DatabaseResult::Done,
                     committed: None,
+                    rows_written: 1,
                 });
             }
             DatabaseCall::DeleteAlarm { .. } => {
@@ -178,6 +180,7 @@ impl DatabaseSession {
                 return Ok(DatabaseReply::Executed {
                     result: DatabaseResult::Done,
                     committed: None,
+                    rows_written: 0,
                 });
             }
             _ => {}
@@ -201,6 +204,7 @@ impl DatabaseSession {
             Ok(result) => DatabaseReply::Executed {
                 result,
                 committed: commit.then_some(cached.synced),
+                rows_written: executed.rows_written,
             },
             Err(error) => DatabaseReply::Rejected(error),
         })
