@@ -2,12 +2,17 @@ use super::{DatabaseRestore, Replicator};
 use crate::{bucket::SqliteBase, payload::Payload};
 use anyhow::{Context, Result, ensure};
 use futures_util::future::BoxFuture;
+use rusqlite::config::DbConfig;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
+
+/// How long closing waits for an unconfirmed base copy, inside the host's park budget. Past it the
+/// database stays unparked and its file untouched.
+const COPY_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LtxFile {
@@ -180,7 +185,9 @@ impl SqliteCapture {
     /// returned value.
     pub(crate) async fn close(mut self) -> Result<CaptureDirectory> {
         if let Some(CheckpointHold(released)) = self.hold.take() {
-            let _ = released.await;
+            let _ = tokio::time::timeout(COPY_WAIT, released)
+                .await
+                .context("the node never confirmed its base copy")?;
         }
         let path = self.path();
         self.registered = false;
@@ -304,13 +311,15 @@ impl Drop for SqliteCapture {
 }
 
 /// A read begun while the WAL is empty, before anything writes: every checkpoint waits for it, so
-/// the file stays as it was until `released` resolves.
+/// the file stays as it was until `released` resolves. It may outlive the capture, so closing it
+/// never checkpoints or deletes the WAL, whose path may name another database by then.
 struct CheckpointHold(tokio::task::JoinHandle<()>);
 
 impl CheckpointHold {
     async fn start(path: PathBuf, released: BoxFuture<'static, ()>) -> Result<Self> {
         let reader = tokio::task::spawn_blocking(move || -> Result<rusqlite::Connection> {
             let reader = rusqlite::Connection::open(path)?;
+            reader.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
             reader.execute_batch("BEGIN")?;
             reader.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
                 row.get::<_, i64>(0)

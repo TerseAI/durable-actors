@@ -1002,12 +1002,13 @@ async fn restore_with_retry(
     }
 }
 
-/// Resolves once the node has copied the reopened file. A node that fails to answer has lost its
-/// copy too.
+/// Resolves once the node confirms it has copied the reopened file; a failed request may leave the
+/// copy running.
 fn copy_finished(cache: NodeCacheClient) -> BoxFuture<'static, ()> {
     Box::pin(async move {
-        if let Err(error) = cache.wait_for_copy().await {
-            warn!(error = %format!("{error:#}"), "node did not confirm its base copy");
+        while let Err(error) = cache.wait_for_copy().await {
+            warn!(error = %format!("{error:#}"), "node did not confirm its base copy, retrying");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     })
 }

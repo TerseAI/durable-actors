@@ -67,6 +67,14 @@ impl BaseUploads {
             );
             return;
         }
+        // Opened while the park holds the file, so a host taking it back mid-copy can't move it first.
+        let source = match parked_file(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                tracing::warn!(event = "sqlite_base_upload_failed", error = %format!("{error:#}"));
+                return;
+            }
+        };
         let (stage, watching) = tokio::sync::watch::channel(Stage::Waiting);
         let (staging, permits) = (self.staging.clone(), self.permits.clone());
         let task = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -74,7 +82,7 @@ impl BaseUploads {
                 return;
             };
             stage.send_replace(Stage::Copying);
-            let copy = copy(&path, &staging).await;
+            let copy = copy(source, &staging).await;
             stage.send_replace(Stage::Copied);
             match copy {
                 Ok(copy) => upload(bucket.as_ref(), &copy, &snapshot, txid).await,
@@ -109,20 +117,24 @@ impl BaseUploads {
     }
 }
 
-/// A copy of the parked database in `staging`, deleted when dropped. A host may have left the
-/// parked directory holding a symlink, so the copy reads only a regular file.
-async fn copy(path: &Path, staging: &Path) -> Result<tempfile::TempPath> {
+/// The parked database, opened only as a regular file: a host may have left a symlink there.
+fn parked_file(path: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let (path, staging) = (path.to_owned(), staging.to_owned());
+    let source = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(path)?;
+    ensure!(
+        source.metadata()?.is_file(),
+        "parked database is not a file"
+    );
+    Ok(source)
+}
+
+/// A copy of the parked database in `staging`, deleted when dropped.
+async fn copy(mut source: std::fs::File, staging: &Path) -> Result<tempfile::TempPath> {
+    let staging = staging.to_owned();
     tokio::task::spawn_blocking(move || {
-        let mut source = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(nix::libc::O_NOFOLLOW)
-            .open(&path)?;
-        ensure!(
-            source.metadata()?.is_file(),
-            "parked database is not a file"
-        );
         std::fs::create_dir_all(&staging)?;
         let mut copy = tempfile::NamedTempFile::new_in(&staging)?;
         std::io::copy(&mut source, copy.as_file_mut())?;
