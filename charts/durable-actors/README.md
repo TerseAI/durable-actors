@@ -48,7 +48,7 @@ actors:
     ad.datadoghq.com/runtime.logs: '[{"source":"durable-actors","service":"durable-actors","log_processing_rules":[{"type":"include_at_match","name":"platform_logs","pattern":"\"target\":\"(durable_actors|terse_)"}]}]'
 ```
 
-The pool manager logs `spare_pool_status` once a minute for each pool, with its `idle_target`, `ready` and `starting` spares, and each `actor_host_provisioning` event that started without a spare says why in `spare_miss`: `no_snapshot`, `no_tier` or `exhausted`.
+The pool manager logs `spare_pool_status` once a minute for each pool, with its unexpired `ready` and `starting` spares against its `idle_target`. Its `pool` field is the same ID as the spare pods' `terse.ai/spare-pool` label, and each `actor_host_provisioning` event that started without a spare says why in `spare_miss`: `no_snapshot`, `no_tier` or `exhausted`.
 
 ## Rapid writes
 

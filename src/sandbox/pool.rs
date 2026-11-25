@@ -407,12 +407,15 @@ impl SparePool {
                 .unwrap_or(0)
         };
         for target in targets {
+            let resources = &target.tier.resources;
             info!(
                 event = "spare_pool_status",
+                pool = super::spare_pool_id(&target.image, resources)?,
                 region = %target.region,
-                image = image_name(&target.image),
-                cpu_millis = target.tier.resources.cpu_millis,
-                memory_mib = target.tier.resources.memory_mib,
+                cpu_millis = resources.cpu_millis,
+                cpu_limit_millis = resources.cpu_limit_millis,
+                memory_mib = resources.memory_mib,
+                memory_limit_mib = resources.memory_limit_mib,
                 idle_target = target.tier.idle,
                 ready = count(&target.key, "ready"),
                 starting = count(&target.key, "starting"),
@@ -559,11 +562,6 @@ enum Background {
     Cleanup(Result<()>),
 }
 
-fn image_name(image: &str) -> &str {
-    let name = image.rsplit('/').next().unwrap_or(image);
-    name.split(['@', ':']).next().unwrap_or(name)
-}
-
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -624,7 +622,7 @@ impl PoolStore {
         let client = self.0.connection().await?;
         Ok(client
             .query(
-                "SELECT pool_key, status, count(*) FROM durable_actors_spares WHERE kind = $1 GROUP BY pool_key, status",
+                "SELECT pool_key, status, count(*) FROM durable_actors_spares WHERE kind = $1 AND expires_at > clock_timestamp() GROUP BY pool_key, status",
                 &[&self.1.as_str()],
             )
             .await?

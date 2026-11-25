@@ -315,7 +315,10 @@ fn spare_pod(
     pod.metadata
         .labels
         .get_or_insert_with(BTreeMap::new)
-        .insert(SPARE_POOL.into(), spare_pool(request)?);
+        .insert(
+            SPARE_POOL.into(),
+            crate::sandbox::spare_pool_id(&request.image_ref, &request.resources)?,
+        );
     let spec = pod
         .spec
         .as_mut()
@@ -357,16 +360,6 @@ fn spare_pod(
             .extend(mounts);
     }
     Ok(pod)
-}
-
-/// A digest, since an image reference is longer than a label value can be.
-fn spare_pool(request: &CreateSpareRequest) -> Result<String> {
-    let pool = serde_json::to_vec(&(&request.image_ref, &request.resources))?;
-    let hash = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &pool);
-    Ok(hash.as_ref()[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
 }
 
 /// The scratch volume the actor's database lives in, which the node cache finds by the pod's UID
