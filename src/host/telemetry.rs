@@ -181,6 +181,10 @@ fn completion_attributes(completion: &RequestCompletion) -> impl Iterator<Item =
             .state_version
             .and_then(|version| i64::try_from(version).ok())
             .map(|version| KeyValue::new(otlp::STATE_VERSION, version)),
+        completion
+            .rows_written
+            .and_then(|rows| i64::try_from(rows).ok())
+            .map(|rows| KeyValue::new(otlp::SQLITE_ROWS_WRITTEN, rows)),
     ]
     .into_iter()
     .flatten()

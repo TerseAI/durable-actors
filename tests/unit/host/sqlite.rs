@@ -172,6 +172,77 @@ async fn rows_written_before_a_statement_fails_are_not_finished() -> Result<()> 
     Ok(())
 }
 
+async fn written(database: &SqliteDatabase, sql: &str) -> Result<u64> {
+    Ok(exec(database, sql, vec![], false).await?.rows_written)
+}
+
+#[tokio::test]
+async fn rows_a_failed_statement_kept_still_count() -> Result<()> {
+    let (_directory, database) = database().await?;
+    written(
+        &database,
+        "CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT UNIQUE)",
+    )
+    .await?;
+    let call = DatabaseCall::Exec {
+        sql: "INSERT OR FAIL INTO items(name) VALUES ('a'), ('a')".into(),
+        bindings: vec![],
+        immediate: false,
+    };
+    let executed = database.call(call, rows::ignored()).await?;
+    assert!(executed.result.is_err());
+    assert_eq!(executed.rows_written, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn indexes_a_rollback_removed_stop_counting() -> Result<()> {
+    let (_directory, database) = database().await?;
+    written(&database, "CREATE TABLE entries(value TEXT)").await?;
+    written(&database, "BEGIN").await?;
+    written(&database, "CREATE INDEX entries_value ON entries(value)").await?;
+    assert_eq!(
+        written(&database, "INSERT INTO entries VALUES ('a')").await?,
+        2
+    );
+    written(&database, "ROLLBACK").await?;
+    assert_eq!(
+        written(&database, "INSERT INTO entries VALUES ('b')").await?,
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn calls_report_table_and_index_rows_written() -> Result<()> {
+    let (_directory, database) = database().await?;
+    let written = async |sql| written(&database, sql).await;
+    written("CREATE TABLE entries(key TEXT PRIMARY KEY, value TEXT, note TEXT)").await?;
+    written("CREATE INDEX entries_value ON entries(value)").await?;
+    assert_eq!(
+        written("INSERT INTO entries VALUES ('a', '1', ''), ('b', '2', '')").await?,
+        6
+    );
+    assert_eq!(written("UPDATE entries SET note = 'seen'").await?, 2);
+    assert_eq!(
+        written("UPDATE entries SET value = '3' WHERE key = 'a'").await?,
+        2
+    );
+    let upsert = "INSERT INTO entries VALUES ('a', '3', 'again') ON CONFLICT(key) DO UPDATE SET note = excluded.note";
+    assert_eq!(written(upsert).await?, 1);
+    assert_eq!(written("SELECT * FROM entries").await?, 0);
+    assert_eq!(written("DELETE FROM entries WHERE key = 'b'").await?, 3);
+    written("CREATE TABLE pairs(key TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID").await?;
+    assert_eq!(written("INSERT INTO pairs VALUES ('a', '1')").await?, 1);
+    let field = DatabaseCall::PersistField {
+        name: "count".into(),
+        value: raw(json!(1)),
+        immediate: false,
+    };
+    assert_eq!(database.call(field, rows::ignored()).await?.rows_written, 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn runtime_owned_statements_are_rejected() -> Result<()> {
     let (_directory, database) = database().await?;

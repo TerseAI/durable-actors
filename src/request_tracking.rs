@@ -13,6 +13,7 @@ pub(crate) struct RequestTracker {
     host_state: HostState,
     routing_ms: f64,
     state_version: Option<u64>,
+    rows_written: Option<u64>,
     completion: Option<RequestCompletion>,
     response: Option<oneshot::Sender<RequestMetadata>>,
     observer: Option<Box<dyn RequestObserver>>,
@@ -38,6 +39,7 @@ impl RequestTracker {
             host_state,
             routing_ms,
             state_version: None,
+            rows_written: None,
             completion: None,
             response: Some(response),
             observer,
@@ -81,6 +83,10 @@ impl RequestTracker {
         self.state_version = version;
     }
 
+    pub(crate) fn rows_written(&mut self, rows: u64) {
+        self.rows_written = Some(rows);
+    }
+
     pub(crate) fn complete(&mut self, result: &Result<ActorExecutionResult>) {
         self.finish(match result {
             Ok(ActorExecutionResult::Completed { .. }) => RequestOutcome::Completed,
@@ -96,6 +102,7 @@ impl RequestTracker {
         let completion = RequestCompletion {
             started_at_ms: self.started_at_ms,
             state_version: self.state_version,
+            rows_written: self.rows_written,
             outcome,
             checkpoints: self.checkpoints.clone(),
             timings: RequestMetadata {
@@ -137,6 +144,7 @@ pub(crate) trait RequestObserver: Send + Sync {
 pub(crate) struct RequestCompletion {
     pub started_at_ms: u64,
     pub state_version: Option<u64>,
+    pub rows_written: Option<u64>,
     pub outcome: RequestOutcome,
     pub timings: RequestMetadata,
     pub checkpoints: RequestCheckpoints,

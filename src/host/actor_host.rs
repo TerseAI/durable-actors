@@ -687,6 +687,7 @@ async fn run_request(
         .tracker
         .mark(RequestStage::StatePublicationCompleted);
     request.tracker.state_version(database.state_version());
+    request.tracker.rows_written(scope.rows_written());
     Completion {
         id,
         request,

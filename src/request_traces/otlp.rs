@@ -28,6 +28,7 @@ pub(crate) const QUEUE_WAIT_MS: &str = "durable_actors.queue_wait_ms";
 pub(crate) const ROUTING_MS: &str = "durable_actors.routing_ms";
 pub(crate) const HOST_STATE: &str = "durable_actors.host_state";
 pub(crate) const STATE_VERSION: &str = "durable_actors.state_version";
+pub(crate) const SQLITE_ROWS_WRITTEN: &str = "durable_actors.sqlite.rows_written";
 pub(crate) const METADATA: &str = "durable_actors.metadata";
 pub(crate) const GATEWAY_ID: &str = "durable_actors.gateway_id";
 pub(crate) const CLOSE_CODE: &str = "durable_actors.close_code";

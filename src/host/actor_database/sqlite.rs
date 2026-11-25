@@ -7,6 +7,7 @@ use rusqlite::{
 };
 use serde_json::value::RawValue;
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     path::PathBuf,
     sync::{
@@ -14,6 +15,9 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+mod written;
+use written::{Indexes, WriteTarget};
 
 const FILES: &str = "actor invocations own SQLite database files";
 const RESERVED: &str = "SQLite runtime table names are reserved";
@@ -41,6 +45,7 @@ pub(crate) struct SqliteDatabase {
 pub(crate) struct Executed {
     pub result: Result<DatabaseResult>,
     pub committed: bool,
+    pub rows_written: u64,
 }
 
 impl SqliteDatabase {
@@ -82,6 +87,8 @@ impl SqliteDatabase {
 struct Engine {
     connection: Connection,
     committed: Arc<AtomicBool>,
+    indexes: Indexes,
+    index_rows: Cell<u64>,
 }
 
 impl Engine {
@@ -103,10 +110,13 @@ impl Engine {
         Ok(Self {
             connection,
             committed,
+            indexes: Indexes::default(),
+            index_rows: Cell::new(0),
         })
     }
 
     fn call(&mut self, call: DatabaseCall, rows: &mut dyn RowSink) -> Result<Executed> {
+        let changes = self.connection.total_changes();
         let result = match call {
             DatabaseCall::Commit => self.finish("COMMIT"),
             DatabaseCall::Rollback => self.finish("ROLLBACK"),
@@ -121,7 +131,12 @@ impl Engine {
         // A statement such as INSERT OR FAIL can commit rows even when it returns an error.
         let committed =
             self.committed.swap(false, Ordering::Relaxed) && self.connection.is_autocommit();
-        Ok(Executed { result, committed })
+        let rows_written = self.connection.total_changes() - changes + self.index_rows.take();
+        Ok(Executed {
+            result,
+            committed,
+            rows_written,
+        })
     }
 
     fn size(&self) -> Result<Option<u64>> {
@@ -161,19 +176,24 @@ impl Engine {
         bindings: &[SqlValue],
         rows: &mut dyn RowSink,
     ) -> Result<DatabaseResult> {
-        let statement = self.prepare_actor_statement(sql)?;
+        let (statement, target) = self.prepare_actor_statement(sql)?;
         // The commit hook misses some writes, such as VACUUM, so a statement that can write counts
         // as a commit outside a transaction. The rollback hook clears it if the statement fails.
         if !statement.readonly() {
             self.committed.store(true, Ordering::Relaxed);
         }
-        send_rows(statement, rusqlite::params_from_iter(bindings), rows)
+        let result = send_rows(statement, rusqlite::params_from_iter(bindings), rows);
+        // Usage reporting never fails the actor's statement.
+        let index_rows = self.indexes.written(&self.connection, &target).unwrap_or(0);
+        self.index_rows.set(self.index_rows.get() + index_rows);
+        result
     }
 
-    fn prepare_actor_statement(&self, sql: &str) -> Result<rusqlite::Statement<'_>> {
+    fn prepare_actor_statement(&self, sql: &str) -> Result<(rusqlite::Statement<'_>, WriteTarget)> {
         let denied = Arc::new(Mutex::new(None));
+        let target = Arc::new(Mutex::new(WriteTarget::default()));
         self.connection
-            .authorizer(Some(authorize(denied.clone())))?;
+            .authorizer(Some(authorize(denied.clone(), target.clone())))?;
         let prepared = self.connection.prepare(sql);
         self.connection
             .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
@@ -184,11 +204,13 @@ impl Engine {
         {
             bail!(reason);
         }
+        let target =
+            std::mem::take(&mut *target.lock().map_err(|_| anyhow!("authorizer poisoned"))?);
         match prepared {
             Err(rusqlite::Error::MultipleStatement) => {
                 bail!("actor database exec accepts one SQL statement")
             }
-            prepared => Ok(prepared?),
+            prepared => Ok((prepared?, target)),
         }
     }
 
@@ -306,15 +328,23 @@ fn send_rows(
 
 fn authorize(
     denied: Arc<Mutex<Option<&'static str>>>,
+    target: Arc<Mutex<WriteTarget>>,
 ) -> impl for<'r> FnMut(AuthContext<'r>) -> Authorization + Send + 'static {
-    move |context| match denial(&context.action) {
-        Some(reason) => {
-            if let Ok(mut denied) = denied.lock() {
-                denied.get_or_insert(reason);
-            }
-            Authorization::Deny
+    move |context| {
+        if context.accessor.is_none()
+            && let Ok(mut target) = target.lock()
+        {
+            target.record(&context.action);
         }
-        None => Authorization::Allow,
+        match denial(&context.action) {
+            Some(reason) => {
+                if let Ok(mut denied) = denied.lock() {
+                    denied.get_or_insert(reason);
+                }
+                Authorization::Deny
+            }
+            None => Authorization::Allow,
+        }
     }
 }
 
