@@ -160,6 +160,7 @@ pub(super) async fn serve_assigned_host(
         database.clone(),
         host.status(),
     )?;
+    let session_started = Instant::now();
     if let Some(readiness) = readiness {
         let _ = readiness.send(Ok(ready));
     }
@@ -215,6 +216,10 @@ pub(super) async fn serve_assigned_host(
     let renewal_result = renewal.shutdown().await;
     info!(
         event = "host_shutdown",
+        project_id = %host.actor().project_id,
+        actor_name = %host.actor().actor_name,
+        active_ms = host.status().borrow().active.millis(),
+        session_ms = session_started.elapsed().as_millis() as u64,
         duration_ms = shutdown_started.elapsed().as_secs_f64() * 1000.0,
         storage_released = unregister_result.is_ok(),
         error = unregister_result
