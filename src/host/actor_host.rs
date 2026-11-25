@@ -535,6 +535,7 @@ impl Drop for Actor {
         self.status.send_modify(|status| {
             status.phase = ActorPhase::Stopped;
             status.waiting.clear();
+            status.active = status.active.update(false, tokio::time::Instant::now());
         });
         self.requests.close();
         for queued in self.pending.drain(..) {
