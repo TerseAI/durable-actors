@@ -119,10 +119,7 @@ impl Engine {
         let changes = self.connection.total_changes();
         let result = match call {
             DatabaseCall::Commit => self.finish("COMMIT"),
-            DatabaseCall::Rollback => {
-                self.indexes.clear();
-                self.finish("ROLLBACK")
-            }
+            DatabaseCall::Rollback => self.finish("ROLLBACK"),
             DatabaseCall::Fields { names } => self.fields(names.as_deref(), rows),
             DatabaseCall::Alarm
             | DatabaseCall::SetAlarm { .. }
@@ -185,11 +182,11 @@ impl Engine {
         if !statement.readonly() {
             self.committed.store(true, Ordering::Relaxed);
         }
-        let result = send_rows(statement, rusqlite::params_from_iter(bindings), rows)?;
+        let result = send_rows(statement, rusqlite::params_from_iter(bindings), rows);
         // Usage reporting never fails the actor's statement.
         let index_rows = self.indexes.written(&self.connection, &target).unwrap_or(0);
         self.index_rows.set(self.index_rows.get() + index_rows);
-        Ok(result)
+        result
     }
 
     fn prepare_actor_statement(&self, sql: &str) -> Result<(rusqlite::Statement<'_>, WriteTarget)> {

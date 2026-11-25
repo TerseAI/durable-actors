@@ -133,9 +133,10 @@ impl DatabaseSession {
         rows: Box<dyn RowSink>,
     ) -> Result<DatabaseReply> {
         let Some(mut cached) = self.cached_state.take() else {
-            return Ok(DatabaseReply::Rejected(anyhow::anyhow!(
-                "actor database is not activated"
-            )));
+            return Ok(DatabaseReply::Rejected {
+                error: anyhow::anyhow!("actor database is not activated"),
+                rows_written: 0,
+            });
         };
         let reply = self
             .execute_database_call(invocation, owner_epoch, origin, &mut cached, call, rows)
@@ -189,7 +190,12 @@ impl DatabaseSession {
         let commit = matches!(call, DatabaseCall::Commit);
         let executed = match cached.database.call(call, rows).await {
             Ok(executed) => executed,
-            Err(error) => return Ok(DatabaseReply::Rejected(error)),
+            Err(error) => {
+                return Ok(DatabaseReply::Rejected {
+                    error,
+                    rows_written: 0,
+                });
+            }
         };
         if executed.committed {
             let previous = cached.synced;
@@ -206,7 +212,10 @@ impl DatabaseSession {
                 committed: commit.then_some(cached.synced),
                 rows_written: executed.rows_written,
             },
-            Err(error) => DatabaseReply::Rejected(error),
+            Err(error) => DatabaseReply::Rejected {
+                error,
+                rows_written: executed.rows_written,
+            },
         })
     }
 

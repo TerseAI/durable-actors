@@ -389,7 +389,10 @@ enum DatabaseReply {
         committed: Option<u64>,
         rows_written: u64,
     },
-    Rejected(anyhow::Error),
+    Rejected {
+        error: anyhow::Error,
+        rows_written: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -550,7 +553,13 @@ impl DatabaseService {
                 let _ = reply.send(Ok(result));
                 true
             }
-            Ok(DatabaseReply::Rejected(error)) => {
+            Ok(DatabaseReply::Rejected {
+                error,
+                rows_written,
+            }) => {
+                scope
+                    .rows_written
+                    .fetch_add(rows_written, Ordering::Relaxed);
                 let _ = reply.send(Err(error));
                 true
             }
