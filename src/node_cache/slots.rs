@@ -25,11 +25,17 @@ pub(crate) struct SlotFile {
     /// The SQLite transaction the database was closed at, so a host can reopen it without the
     /// snapshot.
     pub txid: u64,
+    /// The node is still copying the file for a base upload.
+    #[serde(default)]
+    pub copying: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SlotCheckout {
     pub snapshot: Option<SnapshotRef>,
+    /// The host holds its checkpoints while a copy runs, so it need not wait for one.
+    #[serde(default)]
+    pub hold_checkpoints: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -106,13 +112,21 @@ impl SqliteSlots {
         actor: &ActorKey,
         slot: &str,
         snapshot: Option<SnapshotRef>,
+        hold_checkpoints: bool,
     ) -> Result<Option<SlotFile>> {
         let target = self.slot(slot)?.join(DATABASE);
         let (key, parked, name) = (self.key(actor), self.parked(actor), actor_name(actor));
-        let _moving = self.moving(actor).await;
+        let (_moving, copying) = self.moving(actor, hold_checkpoints).await;
         let file = blocking(move || check_out(&parked, &target, &name, snapshot.as_ref())).await;
         self.store.forget(&key).await;
-        file
+        Ok(file?.map(|file| SlotFile { copying, ..file }))
+    }
+
+    /// Waits until the node no longer copies the actor's database for a base upload.
+    pub async fn copied(&self, actor: &ActorKey) {
+        if let Some(mut copying) = self.uploads.release(actor).await {
+            let _ = copying.wait_for(|stage| *stage != Stage::Copying).await;
+        }
     }
 
     pub async fn park(
@@ -135,7 +149,7 @@ impl SqliteSlots {
             snapshot: snapshot.clone(),
             txid,
         };
-        let _moving = self.moving(actor).await;
+        let _moving = self.moving(actor, false).await;
         self.store.forget(&key).await;
         let file = blocking(move || park(&source, &parked, &record)).await?;
         self.store.track(&key, file.bytes).await;
@@ -153,13 +167,21 @@ impl SqliteSlots {
         }
     }
 
-    /// The lock every move holds, taken once no upload is copying the actor's parked file.
-    async fn moving(&self, actor: &ActorKey) -> tokio::sync::MutexGuard<'_, ()> {
+    /// The lock every move holds, taken once no upload is copying the actor's parked file, or
+    /// beside a running copy, which the flag reports.
+    async fn moving(
+        &self,
+        actor: &ActorKey,
+        beside_copy: bool,
+    ) -> (tokio::sync::MutexGuard<'_, ()>, bool) {
         loop {
             let moving = self.lock.lock().await;
             let Some(mut copying) = self.uploads.release(actor).await else {
-                return moving;
+                return (moving, false);
             };
+            if beside_copy {
+                return (moving, true);
+            }
             // Other actors park and check out while this one's base finishes its copy.
             drop(moving);
             let _ = copying.wait_for(|stage| *stage != Stage::Copying).await;
@@ -270,6 +292,7 @@ fn describe(directory: &Path, txid: u64) -> Result<SlotFile> {
         device: database.dev(),
         inode: database.ino(),
         txid,
+        copying: false,
     })
 }
 

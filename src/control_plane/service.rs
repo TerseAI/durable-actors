@@ -601,9 +601,13 @@ impl ControlPlaneService {
         };
         let actor = &principal.actor;
         match report.kind {
-            LifecycleKind::Started | LifecycleKind::Heartbeat => {
-                self.routes.renew(actor, &identity).await
+            LifecycleKind::Started => {
+                self.routes.renew(actor, &identity).await;
+                if let Some(node) = self.provisioner.host_node(&principal.host_id).await {
+                    self.routes.keep_last_node(actor, &node).await;
+                }
             }
+            LifecycleKind::Heartbeat => self.routes.renew(actor, &identity).await,
             LifecycleKind::Draining => self.routes.put(actor, RouteEntry::Draining(identity)).await,
             LifecycleKind::Stopped => {
                 self.routes.put(actor, RouteEntry::Stopped(identity)).await;
@@ -764,9 +768,14 @@ impl ControlPlaneService {
         if let Some(owner) = self.routes.take_sealed_owner(actor).await {
             return Ok((Some(owner.placement()), Some(owner)));
         }
-        self.placements
-            .get_owner_with_hint(&actor.storage_key())
-            .await
+        // A wake between the host sealing and its `Stopped` report finds no sealed owner yet.
+        let key = actor.storage_key();
+        let (owner, node) = tokio::join!(
+            self.placements.get_owner_with_hint(&key),
+            self.routes.last_node(actor)
+        );
+        let (placement, owner) = owner?;
+        Ok((placement, owner.map(|owner| owner.on_node(node))))
     }
 
     async fn provision_in_regions(

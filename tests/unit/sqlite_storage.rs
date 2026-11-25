@@ -149,7 +149,7 @@ async fn a_closed_slot_database_reopens_in_place_and_resumes_its_history() -> Re
     );
 
     let mut reopened =
-        SqliteCapture::reopen(directory()?, replication.clone(), first, None, true).await?;
+        SqliteCapture::reopen(directory()?, replication.clone(), first, None, true, None).await?;
     assert_eq!(
         std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&path)?),
         inode
@@ -174,5 +174,52 @@ async fn a_closed_slot_database_reopens_in_place_and_resumes_its_history() -> Re
         db.query_row("SELECT count(*) FROM entries", [], |r| r.get::<_, i64>(0))?,
         65
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reopened_file_gets_no_checkpoint_until_its_copy_is_done() -> Result<()> {
+    let replication = Arc::new(Litestream::default());
+    let slot = tempfile::tempdir()?;
+    let directory = || CaptureDirectory::slot(slot.path().to_owned());
+    let capture = SqliteCapture::new(directory()?, replication.clone(), None).await?;
+    let db = rusqlite::Connection::open(capture.path())?;
+    db.execute_batch("CREATE TABLE entries(value BLOB); INSERT INTO entries VALUES (x'01');")?;
+    let first = replication.sync(&capture.path()).await?;
+    drop(db);
+    let path = capture.path();
+    capture.close().await?;
+    let parked = std::fs::read(&path)?;
+
+    let (finish_copy, copy) = tokio::sync::oneshot::channel::<()>();
+    let copied = Box::pin(async move {
+        let _ = copy.await;
+    });
+    let reopened = SqliteCapture::reopen(
+        directory()?,
+        replication.clone(),
+        first,
+        None,
+        true,
+        Some(copied),
+    )
+    .await?;
+    let db = rusqlite::Connection::open(reopened.path())?;
+    db.execute_batch(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+        INSERT INTO entries SELECT zeroblob(4000) FROM n;",
+    )?;
+    // Past Litestream's 1000-page threshold, so this sync tries a checkpoint.
+    replication.sync(&reopened.path()).await?;
+    db.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
+    assert_eq!(std::fs::read(&path)?, parked);
+    drop(db);
+
+    let mut closing = std::pin::pin!(reopened.close());
+    let waiting = Duration::from_millis(100);
+    assert!(tokio::time::timeout(waiting, &mut closing).await.is_err());
+    let _ = finish_copy.send(());
+    closing.await?;
+    assert_ne!(std::fs::read(&path)?, parked);
     Ok(())
 }

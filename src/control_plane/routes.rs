@@ -18,6 +18,7 @@ const LIVENESS: Duration = Duration::from_secs(3 * HEARTBEAT_INTERVAL.as_secs())
 const SHUTDOWN_RETENTION: Duration = Duration::from_millis(2 * MAX_HOST_LEASE_DURATION_MS);
 // Only bounds the store: the ownership CAS rejects a sealed record that changed since.
 const SEALED_OWNER_RETENTION: Duration = Duration::from_secs(72 * 60 * 60);
+const LAST_NODE_RETENTION: Duration = Duration::from_secs(72 * 60 * 60);
 
 #[async_trait]
 pub(super) trait RouteStore: Send + Sync {
@@ -31,6 +32,8 @@ pub(super) trait RouteStore: Send + Sync {
     async fn remove_project(&self, project: &str);
     async fn keep_sealed_owner(&self, actor: &ActorKey, owner: &OwnershipHint);
     async fn take_sealed_owner(&self, actor: &ActorKey) -> Option<OwnershipHint>;
+    async fn keep_last_node(&self, actor: &ActorKey, node: &str);
+    async fn last_node(&self, actor: &ActorKey) -> Option<String>;
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -86,6 +89,7 @@ impl RouteEntry {
 pub(super) struct MemoryRoutes {
     entries: Cache<ActorKey, Stamped>,
     sealed: Cache<ActorKey, OwnershipHint>,
+    nodes: Cache<ActorKey, String>,
     generation: AtomicU64,
 }
 
@@ -99,6 +103,10 @@ impl Default for MemoryRoutes {
             sealed: Cache::builder()
                 .max_capacity(100_000)
                 .time_to_live(SEALED_OWNER_RETENTION)
+                .build(),
+            nodes: Cache::builder()
+                .max_capacity(100_000)
+                .time_to_live(LAST_NODE_RETENTION)
                 .build(),
             generation: AtomicU64::new(0),
         }
@@ -145,6 +153,14 @@ impl RouteStore for MemoryRoutes {
 
     async fn take_sealed_owner(&self, actor: &ActorKey) -> Option<OwnershipHint> {
         self.sealed.remove(actor).await
+    }
+
+    async fn keep_last_node(&self, actor: &ActorKey, node: &str) {
+        self.nodes.insert(actor.clone(), node.to_owned()).await;
+    }
+
+    async fn last_node(&self, actor: &ActorKey) -> Option<String> {
+        self.nodes.get(actor).await
     }
 }
 
@@ -326,6 +342,22 @@ impl RouteStore for RedisRoutes {
         let owner: Option<String> = self.run(command).await.flatten();
         serde_json::from_str(&owner?).ok()
     }
+
+    async fn keep_last_node(&self, actor: &ActorKey, node: &str) {
+        let mut command = redis::cmd("SET");
+        command
+            .arg(self.last_node_key(actor))
+            .arg(node)
+            .arg("PX")
+            .arg(LAST_NODE_RETENTION.as_millis() as u64);
+        self.run::<()>(command).await;
+    }
+
+    async fn last_node(&self, actor: &ActorKey) -> Option<String> {
+        let mut command = redis::cmd("GET");
+        command.arg(self.last_node_key(actor));
+        self.run(command).await.flatten()
+    }
 }
 
 impl RedisRoutes {
@@ -380,6 +412,14 @@ impl RedisRoutes {
     fn sealed_owner_key(&self, actor: &ActorKey) -> String {
         format!(
             "{}:sealed-owner:{}",
+            self.namespace,
+            serde_json::to_string(actor).expect("actor key is serializable")
+        )
+    }
+
+    fn last_node_key(&self, actor: &ActorKey) -> String {
+        format!(
+            "{}:last-node:{}",
             self.namespace,
             serde_json::to_string(actor).expect("actor key is serializable")
         )

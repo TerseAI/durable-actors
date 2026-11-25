@@ -46,6 +46,7 @@ pub(super) fn router(
         .route("/sqlite/parked/{digest}", get(is_parked))
         .route("/slot/checkout", post(check_out))
         .route("/slot/park", post(park))
+        .route("/slot/copied", post(copied))
         .route("/slot/prepare", post(prepare))
         .route("/slot/restore", post(restore))
         .with_state(NodeCache {
@@ -103,7 +104,12 @@ async fn check_out(
     let started = Instant::now();
     match cache
         .slots
-        .check_out(&host.actor, &slot, request.snapshot)
+        .check_out(
+            &host.actor,
+            &slot,
+            request.snapshot,
+            request.hold_checkpoints,
+        )
         .await
     {
         Ok(reused) => {
@@ -117,6 +123,7 @@ async fn check_out(
                 bytes = reused.as_ref().map(|file| file.bytes),
                 device = reused.as_ref().map(|file| file.device),
                 inode = reused.as_ref().map(|file| file.inode),
+                copying = reused.as_ref().is_some_and(|file| file.copying),
                 duration_ms = started.elapsed().as_secs_f64() * 1000.0
             );
             Json(reused).into_response()
@@ -165,6 +172,17 @@ async fn park(
             tracing::warn!(error = %format!("{error:#}"), host_id = %host.host_id, "slot park failed");
             StatusCode::CONFLICT.into_response()
         }
+    }
+}
+
+/// Answers once the node has finished copying the database the host checked out.
+async fn copied(State(cache): State<NodeCache>, headers: HeaderMap) -> StatusCode {
+    match cache.slot_holder(&headers) {
+        Ok((host, _)) => {
+            cache.slots.copied(&host.actor).await;
+            StatusCode::NO_CONTENT
+        }
+        Err(status) => status,
     }
 }
 

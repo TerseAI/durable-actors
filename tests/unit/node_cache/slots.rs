@@ -6,7 +6,7 @@ async fn a_parked_database_moves_to_the_next_spare_with_its_inode() -> Result<()
     let (first, second) = (node.spare()?, node.spare()?);
     assert!(
         node.slots
-            .check_out(&actor("one"), &first, None)
+            .check_out(&actor("one"), &first, None, false)
             .await?
             .is_none()
     );
@@ -20,7 +20,7 @@ async fn a_parked_database_moves_to_the_next_spare_with_its_inode() -> Result<()
     assert!(node.slots.is_parked(&actor("one"), "d1").await);
     let reused = node
         .slots
-        .check_out(&actor("one"), &second, Some(snapshot(1)))
+        .check_out(&actor("one"), &second, Some(snapshot(1)), false)
         .await?
         .unwrap();
 
@@ -37,7 +37,9 @@ async fn a_parked_database_moves_to_the_next_spare_with_its_inode() -> Result<()
 async fn a_database_parked_at_another_snapshot_is_dropped() -> Result<()> {
     let node = Node::start().await?;
     let (first, second) = (node.spare()?, node.spare()?);
-    node.slots.check_out(&actor("one"), &first, None).await?;
+    node.slots
+        .check_out(&actor("one"), &first, None, false)
+        .await?;
     write_value(&node.database(&first), 89)?;
     node.slots
         .park(&actor("one"), &first, snapshot(1), 7, false)
@@ -46,7 +48,7 @@ async fn a_database_parked_at_another_snapshot_is_dropped() -> Result<()> {
     assert!(!node.slots.is_parked(&actor("two"), "d1").await);
     let checked_out = node
         .slots
-        .check_out(&actor("one"), &second, Some(snapshot(2)))
+        .check_out(&actor("one"), &second, Some(snapshot(2)), false)
         .await?;
 
     assert!(checked_out.is_none());
@@ -59,7 +61,9 @@ async fn a_database_parked_at_another_snapshot_is_dropped() -> Result<()> {
 async fn only_a_closed_database_of_plain_files_is_parked() -> Result<()> {
     let node = Node::start().await?;
     let slot = node.spare()?;
-    node.slots.check_out(&actor("one"), &slot, None).await?;
+    node.slots
+        .check_out(&actor("one"), &slot, None, false)
+        .await?;
     let database = node.database(&slot);
     write_value(&database, 89)?;
     std::fs::write(database.join("actor.sqlite-wal"), b"frames")?;

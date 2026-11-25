@@ -19,6 +19,7 @@ use crate::{
     storage::{SnapshotRef, VerifiedSnapshot, WritePlan},
 };
 use anyhow::{Context, Result, ensure};
+use futures_util::future::BoxFuture;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -526,6 +527,7 @@ impl DatabaseSession {
             restored.txid,
             self.storage.full_snapshots(),
             resume,
+            None,
         )
         .await?;
         info!(event = "actor_slot_restore", host_id = %self.endpoint.id, emptied_ms, request_ms,
@@ -549,12 +551,18 @@ impl DatabaseSession {
     ) -> Option<SqliteCapture> {
         let directory = CaptureDirectory::slot(slot.to_owned()).ok()?;
         let full_snapshots = self.storage.full_snapshots();
+        let copied = self
+            .node_cache
+            .clone()
+            .filter(|_| file.copying)
+            .map(copy_finished);
         match SqliteCapture::reopen(
             directory,
             self.replication.clone(),
             txid,
             full_snapshots,
             resume,
+            copied,
         )
         .await
         {
@@ -992,6 +1000,16 @@ async fn restore_with_retry(
             result => return result,
         }
     }
+}
+
+/// Resolves once the node has copied the reopened file. A node that fails to answer has lost its
+/// copy too.
+fn copy_finished(cache: NodeCacheClient) -> BoxFuture<'static, ()> {
+    Box::pin(async move {
+        if let Err(error) = cache.wait_for_copy().await {
+            warn!(error = %format!("{error:#}"), "node did not confirm its base copy");
+        }
+    })
 }
 
 async fn emptied(slot: Option<&Path>) -> Result<CaptureDirectory> {
