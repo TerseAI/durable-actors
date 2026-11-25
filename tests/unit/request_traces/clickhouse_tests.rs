@@ -46,6 +46,7 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
             resources: Default::default(),
             resident: Some(true),
             last_active_at_ms: None,
+            active_ms: None,
             database_bytes: None,
             waiting: Vec::new(),
         },

@@ -59,6 +59,7 @@ async fn reports_activation_heartbeat_and_graceful_shutdown() -> Result<()> {
     let changed_at = tokio::time::Instant::now();
     status.send_modify(|status| {
         status.last_active_at_ms = Some(started.occurred_at_ms);
+        status.active = status.active.update(true, changed_at);
         status.waiting.push(crate::host_leases::WaitingOperation {
             id: "request".into(),
             operation: "increment".into(),
@@ -71,6 +72,12 @@ async fn reports_activation_heartbeat_and_graceful_shutdown() -> Result<()> {
     assert_eq!(heartbeat.resident, Some(true));
     assert_eq!(heartbeat.waiting[0].operation, "increment");
     assert_eq!(heartbeat.last_active_at_ms, Some(started.occurred_at_ms));
+    tokio::time::advance(Duration::from_millis(1500)).await;
+    status.send_if_modified(|status| {
+        status.active = status.active.update(false, tokio::time::Instant::now());
+        false
+    });
+    tokio::time::advance(Duration::from_secs(5)).await;
     drop(status);
     tokio::task::yield_now().await;
     lifecycle.draining();
@@ -86,5 +93,6 @@ async fn reports_activation_heartbeat_and_graceful_shutdown() -> Result<()> {
     assert_eq!(stopped.resident, Some(false));
     assert!(stopped.waiting.is_empty());
     assert_eq!(stopped.database_bytes, Some(4096));
+    assert_eq!(stopped.active_ms, Some(1500));
     Ok(())
 }

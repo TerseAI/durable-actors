@@ -68,6 +68,7 @@ impl HostLifecycle {
                 resources,
                 resident: None,
                 last_active_at_ms: None,
+                active_ms: None,
                 waiting: Vec::new(),
                 database_bytes: None,
             },
@@ -145,6 +146,7 @@ impl Reporter {
         let status = self.status.borrow_and_update().clone();
         self.report.waiting = status.waiting;
         self.report.last_active_at_ms = status.last_active_at_ms;
+        self.report.active_ms = Some(status.active.millis());
         if kind == LifecycleKind::Stopped {
             self.report.resident = Some(false);
             self.report.waiting.clear();

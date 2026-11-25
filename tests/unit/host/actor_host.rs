@@ -758,6 +758,22 @@ async fn controlled_host() -> (
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_time_stops_when_a_busy_actor_stops() -> Result<()> {
+    let (host, _started, _release) = controlled_host().await;
+    let mut status = host.status();
+    invoke(&host, "panic").await?;
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        status.wait_for(|status| status.phase == ActorPhase::Stopped),
+    )
+    .await??;
+    let stopped = status.borrow().active.millis();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(status.borrow().active.millis(), stopped);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_state() -> Result<()> {
     for _ in 0..64 {
         let (host, mut started, release) = controlled_host().await;

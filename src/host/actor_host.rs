@@ -47,6 +47,14 @@ pub(crate) struct ActorStatus {
     pub idle_since: Option<tokio::time::Instant>,
     pub waiting: Vec<WaitingOperation>,
     pub last_active_at_ms: Option<u64>,
+    pub active: ActiveTime,
+}
+
+/// Time with work running or queued; idle time between calls is not counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ActiveTime {
+    total: Duration,
+    since: Option<tokio::time::Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +71,7 @@ impl Default for ActorStatus {
             idle_since: Some(tokio::time::Instant::now()),
             waiting: Vec::new(),
             last_active_at_ms: None,
+            active: ActiveTime::default(),
         }
     }
 }
@@ -70,6 +79,27 @@ impl Default for ActorStatus {
 impl ActorStatus {
     fn drained(&self) -> bool {
         self.phase == ActorPhase::Stopped
+    }
+}
+
+impl ActiveTime {
+    pub(crate) fn update(self, busy: bool, now: tokio::time::Instant) -> Self {
+        match (self.since, busy) {
+            (None, true) => Self {
+                since: Some(now),
+                ..self
+            },
+            (Some(since), false) => Self {
+                total: self.total + now.saturating_duration_since(since),
+                since: None,
+            },
+            _ => self,
+        }
+    }
+
+    pub(crate) fn millis(&self) -> u64 {
+        let running = self.since.map(|since| since.elapsed()).unwrap_or_default();
+        u64::try_from((self.total + running).as_millis()).unwrap_or(u64::MAX)
     }
 }
 
@@ -491,6 +521,7 @@ impl Actor {
                 idle_since,
                 waiting,
                 last_active_at_ms: status.last_active_at_ms,
+                active: status.active.update(busy, tokio::time::Instant::now()),
             };
             let changed = *status != next;
             *status = next;
@@ -504,6 +535,7 @@ impl Drop for Actor {
         self.status.send_modify(|status| {
             status.phase = ActorPhase::Stopped;
             status.waiting.clear();
+            status.active = status.active.update(false, tokio::time::Instant::now());
         });
         self.requests.close();
         for queued in self.pending.drain(..) {
