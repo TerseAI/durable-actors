@@ -22,6 +22,7 @@ use crate::{
     control_plane::{ControlPlaneClient, LeaseFence},
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
     node_cache::NodeCacheClient,
+    ownership::{ActorClaim, SessionCheckpoint},
     storage::WritePlan,
 };
 
@@ -30,12 +31,12 @@ pub(crate) struct HostStorage {
     objects: Option<google_cloud_storage::client::Storage>,
     pub(super) stop: CancellationToken,
     observer: Arc<ControlPlaneClient>,
+    leases: Arc<dyn HostLeases>,
     host: HostId,
     session: String,
     region: String,
     actor: ActorKey,
-    new_actor: bool,
-    owner_hint: Option<crate::bucket::OwnershipHint>,
+    claim: Option<ActorClaim>,
     node_cache: Option<NodeCacheClient>,
     /// What the node needs to restore this Rapid actor's database with the host's scope.
     forwarding: Option<SlotForwarding>,
@@ -89,6 +90,7 @@ impl HostStorage {
         };
         Ok(Self {
             objects,
+            leases: client.clone(),
             observer: client,
             stop,
             runtime: Arc::new(runtime),
@@ -96,8 +98,7 @@ impl HostStorage {
             session,
             region: config.region,
             actor,
-            new_actor: false,
-            owner_hint: None,
+            claim: None,
             node_cache: None,
             forwarding,
             activation: Mutex::new(None),
@@ -170,13 +171,8 @@ impl HostStorage {
         Ok(())
     }
 
-    pub(crate) fn with_activation(
-        mut self,
-        new_actor: bool,
-        owner_hint: Option<crate::bucket::OwnershipHint>,
-    ) -> Self {
-        self.new_actor = new_actor;
-        self.owner_hint = owner_hint;
+    pub(crate) fn with_claim(mut self, claim: ActorClaim) -> Self {
+        self.claim = Some(claim);
         self
     }
 
@@ -234,15 +230,11 @@ impl HostStorage {
         let storage_ms = started.elapsed().as_secs_f64() * 1000.0;
         let release_started = Instant::now();
         self.fence.lock().unwrap().fenced = true;
-        // Ownership CAS prevents an in-flight renewal from reviving the released lease.
-        let released = tokio::time::timeout_at(
-            deadline,
-            self.runtime
-                .release_with_checkpoint(actor, &self.host, &self.session, checkpoint),
-        )
-        .await
-        .context("ownership release timed out")
-        .and_then(|result| result);
+        // The ownership CAS prevents an in-flight renewal from reviving the released lease.
+        let released = tokio::time::timeout_at(deadline, self.leases.release_lease(checkpoint))
+            .await
+            .context("ownership release timed out")
+            .and_then(|result| result);
         tracing::info!(
             event = "host_storage_shutdown",
             sealed = sealed && released.is_ok(),
@@ -402,15 +394,29 @@ impl HostLeaseRegistry for HostStorage {
         let _renewal = self.renewal.lock().await;
         let started = Instant::now();
         self.fence.lock().unwrap().begin(started)?;
+        let started_ms = SystemClock.now_ms()?;
         let first = self.lease.lock().unwrap().is_none();
         let lease = if first {
-            self.activate(request).await?
+            // A claim has no route until its host names one.
+            let lease = HostLease {
+                route: request.route.clone(),
+                ..self.activate().await?
+            };
+            self.runtime.renewed(&self.actor, &lease)?;
+            lease
         } else {
-            self.runtime.renew_activation(&self.actor, request).await?
+            let lease = self.leases.renew_lease(request).await?;
+            self.runtime.renewed(&self.actor, &lease)?;
+            lease
         };
+        // A claimed lease began before this host started, so it can end sooner than a renewal's.
+        let remaining_ms = lease
+            .expires_at_ms
+            .saturating_sub(started_ms)
+            .min(request.duration_ms);
         self.fence.lock().unwrap().confirm(
             started,
-            Duration::from_millis(request.duration_ms),
+            Duration::from_millis(remaining_ms),
             Instant::now(),
         )?;
         self.lease.lock().unwrap().replace(lease.clone());
@@ -427,23 +433,26 @@ impl HostLeaseRegistry for HostStorage {
 }
 
 impl HostStorage {
-    /// When this node parked the database at the hinted base, the host reopens that file and needs
-    /// neither the base's snapshot nor its checkpoint.
-    async fn activate(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+    /// Starts the claimed session. When this node parked the database at the claim's base, the host
+    /// reopens that file and needs neither the base's snapshot nor its checkpoint.
+    async fn activate(&self) -> Result<HostLease> {
+        let claim = self.claim.as_ref().context("ownership claim missing")?;
         let cached = crate::bucket::CachedBase {
             parked: self.find_parked().await,
         };
-        let loaded = self
-            .runtime
-            .register_activation_with(
-                &self.actor,
-                request,
-                &self.region,
-                self.new_actor,
-                self.owner_hint.as_ref(),
-                &cached,
-            )
-            .await?;
+        let loaded = match self.runtime.adopt(claim, &cached).await {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let unchanged = SessionCheckpoint {
+                    snapshot: claim.record.base.clone(),
+                    progress: claim.progress,
+                };
+                if let Err(release) = self.leases.release_lease(Some(unchanged)).await {
+                    tracing::warn!(%release, "failed activation lease release deferred to recovery");
+                }
+                return Err(error);
+            }
+        };
         *self.activation.lock().unwrap() = Some(ActorActivation {
             owner_epoch: loaded.placement.owner_epoch,
             state_version: loaded.placement.state_version,
@@ -456,7 +465,7 @@ impl HostStorage {
     async fn find_parked(&self) -> Option<crate::storage::SnapshotRef> {
         let cache = self.node_cache.as_ref()?;
         cache.slot_database()?;
-        let base = self.owner_hint.as_ref()?.sealed_base()?;
+        let base = self.claim.as_ref()?.record.base.as_ref()?;
         match cache.is_parked(&base.digest).await {
             Ok(parked) => parked.then(|| base.clone()),
             Err(error) => {
@@ -464,6 +473,24 @@ impl HostStorage {
                 None
             }
         }
+    }
+}
+
+/// Where a host renews and releases the lease its control plane claimed for it.
+#[async_trait]
+pub(crate) trait HostLeases: Send + Sync {
+    async fn renew_lease(&self, request: &HostLeaseRequest) -> Result<HostLease>;
+    async fn release_lease(&self, checkpoint: Option<SessionCheckpoint>) -> Result<()>;
+}
+
+#[async_trait]
+impl HostLeases for ControlPlaneClient {
+    async fn renew_lease(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+        ControlPlaneClient::renew_lease(self, request).await
+    }
+
+    async fn release_lease(&self, checkpoint: Option<SessionCheckpoint>) -> Result<()> {
+        ControlPlaneClient::release_lease(self, checkpoint).await
     }
 }
 

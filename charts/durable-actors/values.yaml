@@ -4,6 +4,7 @@ placement:
 storage:
   bucket: ""
   mode: standard
+  ownership: bucket
   rapid:
     buckets: []
     placement: all

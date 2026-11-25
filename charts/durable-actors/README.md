@@ -68,6 +68,12 @@ Set `storage.rapid.placement: nearest` with one bucket in each of two regions to
 
 Every configured copy must durably flush before a Rapid write is acknowledged. With one zone, changes since an actor's last base are unavailable while that zone is down. Mode and bucket identities are fixed for existing actor ownership records; choose Rapid before creating actors in that installation. An existing installation needs a planned data migration, not a values-only mode change.
 
+## Actor ownership
+
+The control plane claims each actor before it assigns a host, and hosts renew and release their 60-second leases through it. `storage.ownership` chooses where those records live: `bucket` (default) keeps one object per actor in the Standard bucket, and `postgres` keeps them in the `actor_ownership` table.
+
+To move a running installation from `bucket` to `postgres`, roll out `bucket-to-postgres` first. It reads PostgreSQL before the bucket and moves each actor's record the next time it changes, replacing the bucket object with a marker that earlier releases cannot claim. A background backfill moves the rest and logs `ownership_backfill` with the number still `remaining`. Once every control plane runs `bucket-to-postgres` and `remaining` is 0, roll out `postgres`.
+
 ## Advanced settings
 
 `credentialsSecret` defaults to `actors-credentials`; it must contain `postgres-url`, `api-key`, and `jwt-signing-key`. An optional `invoke-api-key` entry sets `DURABLE_ACTORS_INVOKE_API_KEY`, a long-lived key limited to actor invocation, discovery, and WebSocket URLs; the controller does not start if it equals `api-key`. For Redis, add the keys named by `redis.urlSecretKey` and, optionally, `redis.caSecretKey`. `nodeSelector` places controllers on ordinary nodes. `networkPolicy.dnsCidrs` permits specific host-networked or link-local DNS endpoints, for example a NodeLocal DNS `/32`. Add only the address your cluster uses.

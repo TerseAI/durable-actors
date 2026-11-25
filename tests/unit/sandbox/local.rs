@@ -1,8 +1,6 @@
 use super::*;
-use crate::{
-    actor::ActorKey, host_leases::HostLease, placement::testing::LocalObjectPlacementStore,
-};
-use crate::{bucket::testing::RuntimeFixture, host::HostId};
+use crate::host::HostId;
+use crate::{actor::ActorKey, host_leases::HostLease, ownership::testing::TestOwnership};
 use tokio_util::task::AbortOnDropHandle;
 
 const DEADLINE: Duration = Duration::from_secs(5);
@@ -284,7 +282,7 @@ impl AbandonedLeases for ReleasedLeases {
 
 struct LocalFixture {
     provider: Arc<LocalSandboxProvider>,
-    placements: Arc<LocalObjectPlacementStore>,
+    placements: TestOwnership,
     leases: Arc<ReleasedLeases>,
     directory: TempDir,
 }
@@ -296,13 +294,13 @@ impl LocalFixture {
         let executable = directory.path().join("host");
         std::fs::write(&executable, include_str!("fixtures/local-host.cjs"))?;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
-        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let placements = TestOwnership::default();
         let leases = Arc::new(ReleasedLeases::default());
         let provider = Arc::new(
             LocalSandboxProvider::new(
                 executable,
                 directory.path().into(),
-                placements.clone(),
+                placements.ownerships.clone(),
                 Some(leases.clone()),
                 None,
                 directory.path().join("hosts.sqlite3"),
@@ -322,8 +320,7 @@ impl LocalFixture {
     fn request(&self, id: &str) -> EnsureHostRequest {
         EnsureHostRequest {
             initial_operation: None,
-            actor_is_new: true,
-            owner_hint: None,
+            ownership_claim: None,
             actor: Some(ActorKey {
                 project_id: "test".into(),
                 actor_name: "Counter".into(),
@@ -416,11 +413,10 @@ impl LocalFixture {
 async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let project = directory.path().to_path_buf();
-    let fixture = RuntimeFixture::new()?;
     let provider = LocalSandboxProvider::new(
         project.join("unused-executable"),
         project.clone(),
-        fixture.runtime,
+        crate::ownership::testing::TestOwnership::default().ownerships,
         None,
         None,
         project.join("hosts.sqlite3"),
@@ -431,8 +427,7 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
     provider.shutdown().await;
     let request = EnsureHostRequest {
         initial_operation: None,
-        actor_is_new: true,
-        owner_hint: Some("{\"generation\":17,\"record\":{\"epoch\":3}}".into()),
+        ownership_claim: Some("{\"record\":{\"epoch\":3}}".into()),
         actor: None,
         code_snapshot: None,
         spare: None,
@@ -465,8 +460,8 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         Some(&"300000".to_owned())
     );
     assert_eq!(
-        host_environment(&request, &directory).get("DURABLE_ACTORS_OWNER_HINT"),
-        request.owner_hint.as_ref()
+        host_environment(&request, &directory).get("DURABLE_ACTORS_OWNERSHIP_CLAIM"),
+        request.ownership_claim.as_ref()
     );
     let error = provider.ensure_host(&request).await.unwrap_err();
     assert!(error.to_string().contains("shutting down"), "{error:#}");

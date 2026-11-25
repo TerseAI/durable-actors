@@ -23,8 +23,8 @@ pub use crate::payload::Payload;
 pub use file::FileBucket;
 pub use gcs::GcsBucket;
 pub(crate) use gcs::{WarmStorage, bearer as bearer_headers, forwarded_token};
-pub(crate) use runtime::{ActorStateReader, CachedBase};
-pub use runtime::{LoadedActor, OwnershipHint, RuntimeStorage, RuntimeStorageReader};
+pub(crate) use runtime::{ActorStateReader, CachedBase, advance};
+pub use runtime::{LoadedActor, RuntimeStorage, RuntimeStorageReader};
 
 #[derive(Clone, Debug)]
 pub struct BucketObject {

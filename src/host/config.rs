@@ -5,9 +5,10 @@ use anyhow::{Context, Result, ensure};
 use super::HostId;
 use crate::{
     actor::ActorKey,
-    bucket::{OwnershipHint, access::HostStorageConfig},
+    bucket::access::HostStorageConfig,
     bundle::{ActorBundle, ActorRuntime},
     host_leases::max_host_lease_duration_ms,
+    ownership::ActorClaim,
 };
 
 const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 10_000;
@@ -148,7 +149,7 @@ pub(super) struct LeaseTiming {
 
 impl LeaseTiming {
     fn from_lookup(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Self> {
-        let duration = duration_ms(get, "DURABLE_ACTORS_LEASE_MS", 30_000)?;
+        let duration = duration_ms(get, "DURABLE_ACTORS_LEASE_MS", 60_000)?;
         let renew_every = duration_ms(get, "DURABLE_ACTORS_RENEW_MS", 10_000)?;
         ensure!(
             duration.as_millis() <= u128::from(max_host_lease_duration_ms()?),
@@ -167,24 +168,20 @@ impl LeaseTiming {
 
 pub(super) struct ActorAssignment {
     pub actor: ActorKey,
-    pub new_actor: bool,
-    pub owner_hint: Option<OwnershipHint>,
+    pub claim: ActorClaim,
 }
 
 impl ActorAssignment {
     fn from_lookup(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let actor: ActorKey = serde_json::from_str(&required(get, "DURABLE_ACTORS_ACTOR")?)?;
         actor.validate()?;
-        Ok(Self {
-            actor,
-            new_actor: get("DURABLE_ACTORS_ACTOR_IS_NEW")
-                .map(|value| value.parse())
-                .transpose()?
-                .unwrap_or(false),
-            owner_hint: get("DURABLE_ACTORS_OWNER_HINT")
-                .map(|value| serde_json::from_str(&value))
-                .transpose()?,
-        })
+        let claim: ActorClaim =
+            serde_json::from_str(&required(get, "DURABLE_ACTORS_OWNERSHIP_CLAIM")?)?;
+        ensure!(
+            claim.record.actor == actor,
+            "ownership claim names another actor"
+        );
+        Ok(Self { actor, claim })
     }
 }
 

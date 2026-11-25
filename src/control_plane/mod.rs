@@ -37,6 +37,9 @@ mod routes;
 mod service;
 pub(crate) mod session;
 pub(crate) mod socket_ticket;
+#[cfg(test)]
+#[path = "../../tests/support/control_plane.rs"]
+pub(crate) mod testing;
 
 use std::time::Duration;
 

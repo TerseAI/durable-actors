@@ -148,7 +148,14 @@ async fn actors_start_on_a_spare_of_their_own_size_which_is_then_replaced() -> R
                 actor_id: "one".into(),
             };
             provisioner
-                .ensure_actor_host(&spec, REGION, &actor, true, None, None)
+                .ensure_actor_host(
+                    &spec,
+                    REGION,
+                    &actor,
+                    &crate::ownership::testing::new_claim(&actor, &spec.host_config_key()),
+                    None,
+                    None,
+                )
                 .await?;
         }
 

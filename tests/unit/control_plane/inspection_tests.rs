@@ -13,7 +13,6 @@ use crate::{
     bucket::{RuntimeStorage, testing::RuntimeFixture},
     clock::{Clock, SystemClock},
     host::HostId,
-    host_leases::HostLeaseRequest,
 };
 
 use super::{ActorJwtIssuer, admin::AdminService, inspection::ActorInspector};
@@ -1044,19 +1043,8 @@ async fn state_inspection_reads_committed_values_and_retained_attribution() -> R
     let fixture = Fixture::start().await?;
     let actor = fixture.actor("state-demo");
     let loaded = fixture
-        .store
-        .register_activation(
-            &actor,
-            &HostLeaseRequest {
-                id: fixture.host.clone(),
-                session_id: "state-session".into(),
-                route: "http://localhost:7101".into(),
-                duration_ms: 60_000,
-            },
-            "north-america-east",
-            true,
-            None,
-        )
+        ._runtime
+        .activate(&actor, &fixture.host, "state-session")
         .await?;
     for version in 1..=3 {
         let plan = fixture

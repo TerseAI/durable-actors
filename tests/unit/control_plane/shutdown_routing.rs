@@ -51,7 +51,12 @@ async fn handoff(routes: Option<Arc<dyn RouteStore>>) -> Result<()> {
             .is_err()
     );
     let key = principal.actor.storage_key();
-    let mut placement = fixture.placements.get_owner(&key).await?.unwrap();
+    let mut placement = fixture
+        .placements
+        .ownerships
+        .get_owner(&key)
+        .await?
+        .unwrap();
     placement.lease.expires_at_ms = 0;
     fixture
         .placements

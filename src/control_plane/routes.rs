@@ -8,8 +8,9 @@ use moka::{Expiry, future::Cache, ops::compute::Op};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    actor::ActorKey, actor_lifecycle::HEARTBEAT_INTERVAL, bucket::OwnershipHint, host::HostId,
-    host_leases::MAX_HOST_LEASE_DURATION_MS, placement::ObjectPlacement, redis_client::Redis,
+    actor::ActorKey, actor_lifecycle::HEARTBEAT_INTERVAL, host::HostId,
+    host_leases::MAX_HOST_LEASE_DURATION_MS, ownership::OwnershipHint, placement::ObjectPlacement,
+    redis_client::Redis,
 };
 
 // Heartbeats keep a live host's route; one that dies without reporting `Stopped` ages out.

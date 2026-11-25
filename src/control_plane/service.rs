@@ -10,7 +10,6 @@ use tracing::{info, warn};
 
 use crate::{
     actor::{ActorKey, ActorSocketEvent},
-    bucket::OwnershipHint,
     clock::{Clock, SystemClock},
     grpc::proto::{
         ControlPlaneReply, ControlPlaneRequest,
@@ -20,6 +19,7 @@ use crate::{
     },
     host::HostId,
     host_leases::HostLease,
+    ownership::{ActorClaim, Claim, OwnershipHint, Ownerships},
     placement::{ObjectPlacement, ObjectPlacementStore},
     platform_events::{NoPlatformEvents, PlatformEvents, deployments::DeploymentEvent},
     sandbox::{
@@ -46,7 +46,7 @@ pub struct ControlPlaneService {
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     pub(super) routes: Arc<dyn super::routes::RouteStore>,
     pub(super) gateway: Option<super::gateway::Gateway>,
-    placements: Arc<dyn ObjectPlacementStore>,
+    ownerships: Arc<Ownerships>,
     pub(super) auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
     pub(super) registry: Arc<dyn AdminRegistry>,
@@ -75,7 +75,7 @@ impl ControlPlaneService {
     }
 
     pub(crate) fn new(
-        placements: Arc<dyn ObjectPlacementStore>,
+        ownerships: Arc<Ownerships>,
         auth: ActorJwtVerifier,
         registry: Arc<dyn AdminRegistry>,
         issuer: ActorJwtIssuer,
@@ -87,7 +87,7 @@ impl ControlPlaneService {
             gateway: None,
             routes: Arc::new(super::routes::MemoryRoutes::default()),
             region: None,
-            placements,
+            ownerships,
             auth,
             host_token_issuer: issuer,
             registry,
@@ -548,6 +548,26 @@ impl ControlPlaneService {
                 let outcome = super::invocation::invoke_from_host(self, &invocation).await;
                 Ok(ControlPlaneCommandReply::Invocation { outcome })
             }
+            ControlPlaneCommand::RenewLease { request } => {
+                ensure!(
+                    request.id == principal.host_id && request.session_id == principal.session_id,
+                    "host lease scope mismatch"
+                );
+                validate_host_route(&request.route)?;
+                let lease = self.ownerships.renew(&principal.actor, &request).await?;
+                Ok(ControlPlaneCommandReply::Lease { lease })
+            }
+            ControlPlaneCommand::ReleaseLease { checkpoint } => {
+                self.ownerships
+                    .release(
+                        &principal.actor,
+                        &principal.host_id,
+                        &principal.session_id,
+                        checkpoint,
+                    )
+                    .await?;
+                Ok(ControlPlaneCommandReply::Unit)
+            }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
                 let spec = self
@@ -620,7 +640,7 @@ impl ControlPlaneService {
     async fn keep_sealed_owner(&self, principal: &ActorPrincipal) {
         let actor = &principal.actor;
         match self
-            .placements
+            .ownerships
             .get_owner_with_hint(&actor.storage_key())
             .await
         {
@@ -673,6 +693,13 @@ impl ControlPlaneService {
                     .await
                     .context("actor host is still shutting down; retry discovery")??;
                 }
+                Err(error) if error.is::<ClaimPending>() => {
+                    ensure!(
+                        tokio::time::Instant::now() < deadline,
+                        "actor host is still starting; retry discovery"
+                    );
+                    tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
+                }
                 result => return result,
             }
         }
@@ -699,10 +726,11 @@ impl ControlPlaneService {
     ) -> Result<RoutedActor> {
         self.validate_home_region(home_region)?;
         let generation = self.routes.generation(&actor.project_id).await;
-        let spec = self
-            .runtime_deployment(&actor.project_id)
-            .await?
-            .context("project has no registered actor code")?;
+        let (spec, owner) = tokio::join!(
+            self.runtime_deployment(&actor.project_id),
+            self.current_owner(actor)
+        );
+        let spec = spec?.context("project has no registered actor code")?;
         let overrides_regions = spec
             .sandboxes
             .get(&actor.actor_name)
@@ -715,7 +743,7 @@ impl ControlPlaneService {
         if let Some(timings) = timings.as_deref_mut() {
             timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
         }
-        let (current, owner_hint) = self.current_owner(actor).await?;
+        let (current, owner_hint) = owner?;
         if let (Some(assigned), Some(placement)) = (home_region, current.as_ref())
             && assigned != placement.home_region
         {
@@ -771,7 +799,7 @@ impl ControlPlaneService {
         // A wake between the host sealing and its `Stopped` report finds no sealed owner yet.
         let key = actor.storage_key();
         let (owner, node) = tokio::join!(
-            self.placements.get_owner_with_hint(&key),
+            self.ownerships.get_owner_with_hint(&key),
             self.routes.last_node(actor)
         );
         let (placement, owner) = owner?;
@@ -801,7 +829,12 @@ impl ControlPlaneService {
                     return Err(error);
                 }
                 Err(error) => {
-                    let current = self.placements.get_owner(&actor.storage_key()).await?;
+                    let now = SystemClock.now_ms()?;
+                    let current = self
+                        .ownerships
+                        .get_owner(&actor.storage_key())
+                        .await?
+                        .filter(|placement| placement.lease.expires_at_ms > now);
                     if let Some(placement) = &current {
                         if !regions.contains(&placement.home_region) {
                             return Err(RegionConflict.into());
@@ -819,6 +852,8 @@ impl ControlPlaneService {
         Err(last_error.context("actor has no eligible sandbox region")?)
     }
 
+    /// Claims the actor for a new host before assigning one, so concurrent activations wait on the
+    /// claim instead of starting hosts that race for it.
     async fn ensure_actor_host(
         &self,
         actor: &ActorKey,
@@ -831,21 +866,43 @@ impl ControlPlaneService {
         let region = current
             .map(|p| p.home_region.clone())
             .unwrap_or_else(|| requested_region.to_owned());
-        let (lease, owner_epoch, initial_reply) = self
+        let host = new_host_id(&spec.host_config_key());
+        let session = uuid::Uuid::new_v4().to_string();
+        let claim = match self
+            .ownerships
+            .claim(actor, &host, &session, &region, owner_hint.cloned())
+            .await?
+        {
+            Claim::Won(claim) => claim,
+            Claim::Held => return Err(OwnershipHeld.into()),
+        };
+        let node = owner_hint.and_then(OwnershipHint::node);
+        let (lease, owner_epoch, initial_reply) = match self
             .provisioner
-            .ensure_actor_host(
-                spec,
-                &region,
-                actor,
-                current.is_none(),
-                owner_hint,
-                operation,
-            )
-            .await?;
+            .ensure_actor_host(spec, &region, actor, &claim, node, operation)
+            .await
+        {
+            Ok(ready) => ready,
+            Err(error) => {
+                if error.is::<Unassigned>() {
+                    self.release_claim(&claim).await;
+                }
+                return Err(error);
+            }
+        };
         ensure!(
-            owner_epoch > 0,
-            "host readiness returned no ownership epoch"
+            owner_epoch == claim.record.epoch
+                && lease.id == claim.record.lease.id
+                && lease.session_id == claim.record.lease.session_id,
+            "host readiness does not match its ownership claim"
         );
+        let ownerships = self.ownerships.clone();
+        let (routed, ready) = (actor.clone(), lease.clone());
+        tokio::spawn(async move {
+            if let Err(error) = ownerships.record_route(&routed, &ready).await {
+                warn!(error = %format!("{error:#}"), "claimed host route left to its first renewal");
+            }
+        });
         Ok(RoutedActor {
             initial_reply,
             host_state: HostState::Cold,
@@ -861,6 +918,27 @@ impl ControlPlaneService {
             },
             host_config_key: spec.host_config_key(),
         })
+    }
+
+    /// Gives back a claim no host received, leaving the record as its predecessor sealed it.
+    async fn release_claim(&self, claim: &ActorClaim) {
+        let unchanged = crate::ownership::SessionCheckpoint {
+            snapshot: claim.record.base.clone(),
+            progress: claim.progress,
+        };
+        let lease = &claim.record.lease;
+        if let Err(error) = self
+            .ownerships
+            .release(
+                &claim.record.actor,
+                &lease.id,
+                &lease.session_id,
+                Some(unchanged),
+            )
+            .await
+        {
+            warn!(error = %format!("{error:#}"), "unassigned ownership claim left to expire");
+        }
     }
 
     async fn require_active_host(&self, principal: &ActorPrincipal) -> Result<HostLease> {
@@ -884,7 +962,7 @@ impl ControlPlaneService {
     }
 
     async fn current_placement(&self, actor: &ActorKey) -> Result<ObjectPlacement> {
-        self.placements
+        self.ownerships
             .get_owner(&actor.storage_key())
             .await?
             .context("actor has no current placement")
@@ -909,15 +987,32 @@ impl ControlPlaneService {
             return Ok(None);
         }
         let identity = RouteIdentity::of(placement);
+        let route = self.routes.get(actor).await;
         if let Some(RouteEntry::Draining(shutting_down) | RouteEntry::Stopped(shutting_down)) =
-            self.routes.get(actor).await
-            && shutting_down == identity
+            &route
+            && *shutting_down == identity
         {
             return Err(ShuttingDownHost {
                 lease: lease.clone(),
                 identity,
             }
             .into());
+        }
+        if lease.route.is_empty() {
+            // A claim's route is published once its host is ready, and stored by its first renewal.
+            return match route {
+                Some(RouteEntry::Active(route))
+                    if RouteIdentity::of(&route.placement) == identity =>
+                {
+                    Ok(Some(RoutedActor {
+                        initial_reply: None,
+                        host_state: HostState::Warm,
+                        placement: route.placement,
+                        host_config_key: spec.host_config_key(),
+                    }))
+                }
+                _ => Err(ClaimPending.into()),
+            };
         }
         self.provisioner.wait_ready(&placement.owner).await?;
         Ok(Some(RoutedActor {
@@ -942,6 +1037,48 @@ impl std::fmt::Display for ShuttingDownHost {
 }
 
 impl std::error::Error for ShuttingDownHost {}
+
+const CLAIM_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Another host's lease on the actor is live.
+#[derive(Debug)]
+struct OwnershipHeld;
+
+impl std::fmt::Display for OwnershipHeld {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("another host holds the actor")
+    }
+}
+
+impl std::error::Error for OwnershipHeld {}
+
+/// The actor is claimed for a host that is not ready yet.
+#[derive(Debug)]
+struct ClaimPending;
+
+impl std::fmt::Display for ClaimPending {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("actor host is still starting")
+    }
+}
+
+impl std::error::Error for ClaimPending {}
+
+/// Provisioning failed before any host received the claim, so the claim can be given back.
+#[derive(Debug)]
+pub(crate) struct Unassigned;
+
+impl std::fmt::Display for Unassigned {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("no host was assigned the actor")
+    }
+}
+
+impl std::error::Error for Unassigned {}
+
+pub(crate) fn new_host_id(config_key: &str) -> HostId {
+    HostId::new(format!("host.v3.{config_key}.{}", uuid::Uuid::new_v4()))
+}
 
 fn select_target_region(current: Option<&ObjectPlacement>, requested: &str) -> Result<String> {
     if let Some(placement) = current {
@@ -1026,8 +1163,8 @@ pub(crate) trait HostProvisioner: Send + Sync {
         spec: &HostLaunchSpec,
         region: &str,
         actor: &ActorKey,
-        new_actor: bool,
-        owner_hint: Option<&OwnershipHint>,
+        claim: &ActorClaim,
+        node: Option<&str>,
         operation: Option<&InitialOperation>,
     ) -> Result<(HostLease, u64, Option<JsonText>)>;
     async fn terminate_hosts(
@@ -1168,11 +1305,11 @@ impl HostProvisioner for SandboxHostProvisioner {
         spec: &HostLaunchSpec,
         region: &str,
         actor: &ActorKey,
-        new_actor: bool,
-        owner_hint: Option<&OwnershipHint>,
+        claim: &ActorClaim,
+        node: Option<&str>,
         operation: Option<&InitialOperation>,
     ) -> Result<(HostLease, u64, Option<JsonText>)> {
-        self.launch(spec, region, actor, new_actor, owner_hint, operation)
+        self.launch(spec, region, actor, claim, node, operation)
             .await
     }
 
@@ -1202,16 +1339,13 @@ impl SandboxHostProvisioner {
         spec: &HostLaunchSpec,
         region: &str,
         actor: &ActorKey,
-        new_actor: bool,
-        owner_hint: Option<&OwnershipHint>,
+        claim: &ActorClaim,
+        node: Option<&str>,
         operation: Option<&InitialOperation>,
     ) -> Result<(HostLease, u64, Option<JsonText>)> {
         let started_at = Instant::now();
-        let mut request = self.request(spec, region, actor)?;
+        let mut request = self.request(spec, region, actor, claim)?;
         request.initial_operation = operation.cloned();
-        request.actor_is_new = new_actor;
-        request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
-        let node = owner_hint.and_then(OwnershipHint::node);
         let Some(admission) = &self.admission else {
             return self
                 .provision(spec, region, actor, request, node, started_at)
@@ -1221,7 +1355,8 @@ impl SandboxHostProvisioner {
         let organization = &spec.organization_id;
         admission
             .reserve(organization, actor, &host, &session)
-            .await?;
+            .await
+            .context(Unassigned)?;
         let launched = self
             .provision(spec, region, actor, request, node, started_at)
             .await;
@@ -1305,7 +1440,7 @@ impl SandboxHostProvisioner {
             }
         };
         let (runtime_config, spare) = tokio::join!(token, spare);
-        request.spare = spare?;
+        request.spare = spare.context(Unassigned)?;
         let spare_miss = match (&self.pool, &request.spare) {
             (Some(pool), None) => Some(pool.miss(spec, &request.resources).as_str()),
             _ => None,
@@ -1317,7 +1452,7 @@ impl SandboxHostProvisioner {
             .as_ref()
             .and_then(|spare| crate::sandbox::slot_of(&spare.resource_id))
         {
-            Some(slot) => request.host_token = (in_slot.0)(slot)?,
+            Some(slot) => request.host_token = (in_slot.0)(slot).context(Unassigned)?,
             None => request.slot_token = Some(in_slot),
         }
         if let Some(pool) = &self.pool {
@@ -1328,7 +1463,8 @@ impl SandboxHostProvisioner {
                     &spec.host_config_key(),
                     Some(actor),
                 )
-                .await?;
+                .await
+                .context(Unassigned)?;
             }
         }
         request.runtime_config = match runtime_config {
@@ -1337,7 +1473,7 @@ impl SandboxHostProvisioner {
                 if let Some(pool) = &self.pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
-                return Err(error);
+                return Err(error.context(Unassigned));
             }
         };
         if let Some(operation) = &mut request.initial_operation {
@@ -1461,6 +1597,7 @@ impl SandboxHostProvisioner {
         spec: &HostLaunchSpec,
         region: &str,
         actor: &ActorKey,
+        claim: &ActorClaim,
     ) -> Result<EnsureHostRequest> {
         let options = spec
             .sandboxes
@@ -1469,8 +1606,8 @@ impl SandboxHostProvisioner {
             .unwrap_or_default();
         options.validate()?;
         let config_key = spec.host_config_key();
-        let host_id = HostId::new(format!("host.v3.{}.{}", config_key, uuid::Uuid::new_v4()));
-        let session_id = uuid::Uuid::new_v4().to_string();
+        let host_id = claim.record.lease.id.clone();
+        let session_id = claim.record.lease.session_id.clone();
         let host_token = self
             .issuer
             .issue_host(
@@ -1484,8 +1621,7 @@ impl SandboxHostProvisioner {
             .token;
         Ok(EnsureHostRequest {
             initial_operation: None,
-            actor_is_new: false,
-            owner_hint: None,
+            ownership_claim: Some(serde_json::to_string(claim)?),
             actor: Some(actor.clone()),
             code_snapshot: spec.code_snapshot.clone(),
             spare: None,

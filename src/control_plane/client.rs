@@ -72,6 +72,34 @@ impl ControlPlaneClient {
         }
     }
 
+    pub(crate) async fn renew_lease(
+        &self,
+        request: &crate::host_leases::HostLeaseRequest,
+    ) -> Result<crate::host_leases::HostLease> {
+        match self
+            .execute(ControlPlaneCommand::RenewLease {
+                request: request.clone(),
+            })
+            .await?
+        {
+            ControlPlaneCommandReply::Lease { lease } => Ok(lease),
+            _ => anyhow::bail!("unexpected lease renewal reply"),
+        }
+    }
+
+    pub(crate) async fn release_lease(
+        &self,
+        checkpoint: Option<crate::ownership::SessionCheckpoint>,
+    ) -> Result<()> {
+        match self
+            .execute(ControlPlaneCommand::ReleaseLease { checkpoint })
+            .await?
+        {
+            ControlPlaneCommandReply::Unit => Ok(()),
+            _ => anyhow::bail!("unexpected lease release reply"),
+        }
+    }
+
     async fn invoke_actor(&self, call: crate::actor::ActorCall) -> Result<serde_json::Value> {
         match self
             .execute(ControlPlaneCommand::InvokeActor { call })

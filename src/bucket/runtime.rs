@@ -10,20 +10,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     actor::ActorKey,
-    actor_state::ActorStorageKey,
     host::HostId,
     host_leases::HostLease,
+    ownership::{Ownership, apply_snapshot},
     payload::Payload,
-    placement::{ObjectPlacement, ObjectPlacementStore},
-    storage::{
-        SnapshotReader, SnapshotRef, StateStream, VerifiedSnapshot, WritePlan,
-        snapshot_object_name, snapshot_position,
-    },
+    placement::ObjectPlacement,
+    storage::{SnapshotReader, SnapshotRef, VerifiedSnapshot, WritePlan, snapshot_position},
 };
 
-use super::{Bucket, recovery::CheckpointProgress, replace};
+use super::{Bucket, replace};
 
-mod abandoned;
 mod activation;
 pub(crate) use activation::CachedBase;
 mod history;
@@ -41,55 +37,10 @@ pub struct RuntimeStorage {
 
 pub struct RuntimeStorageReader {
     restore: Arc<dyn crate::litestream::DatabaseRestore>,
-    clock: Arc<dyn crate::clock::Clock>,
+    pub(crate) clock: Arc<dyn crate::clock::Clock>,
     authority: Arc<dyn Bucket>,
     snapshots: Arc<dyn super::SnapshotStore>,
     pub(crate) persistence: super::SnapshotStoreConfig,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Ownership {
-    persistence: super::SnapshotStoreConfig,
-    #[serde(default)]
-    sealed: bool,
-    lease: HostLease,
-    mutation: String,
-    actor: ActorKey,
-    epoch: u64,
-    region: String,
-    base: Option<SnapshotRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    checkpoint_progress: Option<CheckpointProgress>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct OwnershipHint {
-    generation: i64,
-    record: Ownership,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    node: Option<String>,
-}
-
-impl OwnershipHint {
-    pub(crate) fn sealed_base(&self) -> Option<&SnapshotRef> {
-        self.record.base.as_ref().filter(|_| self.record.sealed)
-    }
-
-    pub(crate) fn sealed(&self) -> bool {
-        self.record.sealed
-    }
-
-    pub(crate) fn placement(&self) -> ObjectPlacement {
-        self.record.placement()
-    }
-
-    pub(crate) fn node(&self) -> Option<&str> {
-        self.node.as_deref()
-    }
-
-    pub(crate) fn on_node(self, node: Option<String>) -> Self {
-        Self { node, ..self }
-    }
 }
 
 pub struct LoadedActor {
@@ -104,45 +55,6 @@ struct UploadedSnapshots {
     started: u64,
     completed: u64,
     latest: Option<SnapshotRef>,
-}
-
-pub(crate) struct SessionCheckpoint {
-    snapshot: Option<SnapshotRef>,
-    progress: Option<CheckpointProgress>,
-}
-
-impl SessionCheckpoint {
-    /// Whether the sealed session found a new base due.
-    pub(crate) fn base_due(&self) -> bool {
-        self.progress.is_some_and(|progress| progress.base_due)
-    }
-}
-
-impl Ownership {
-    fn placement(&self) -> ObjectPlacement {
-        let mut placement = ObjectPlacement {
-            lease: self.lease.clone(),
-            object: self.actor.storage_key(),
-            owner: self.lease.id.clone(),
-            owner_epoch: self.epoch,
-            home_region: self.region.clone(),
-            state_version: 0,
-            state_object: None,
-            last_request_id: None,
-        };
-        apply_snapshot(&mut placement, self.base.as_ref());
-        placement
-    }
-
-    fn stream(&self) -> Result<StateStream> {
-        let name = snapshot_object_name(&self.actor, 1, &format!("{:032x}", self.epoch))?;
-        Ok(StateStream {
-            session: self.lease.session_id.clone(),
-            prefix: name.strip_suffix("1.json").unwrap().into(),
-            owner_epoch: self.epoch,
-            base_version: self.base.as_ref().map_or(0, |base| base.state_version),
-        })
-    }
 }
 
 impl RuntimeStorage {
@@ -224,32 +136,6 @@ impl RuntimeStorageReader {
 }
 
 #[async_trait]
-impl ObjectPlacementStore for RuntimeStorageReader {
-    async fn get_owner_with_hint(
-        &self,
-        object: &ActorStorageKey,
-    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
-        Ok(match self.load(object).await? {
-            Some((generation, record)) => (
-                Some(record.placement()),
-                Some(OwnershipHint {
-                    generation,
-                    record,
-                    node: None,
-                }),
-            ),
-            None => (None, None),
-        })
-    }
-    async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-        match self.load(object).await? {
-            Some((_, record)) => Ok(Some(self.current_placement(&record).await?)),
-            None => Ok(None),
-        }
-    }
-}
-
-#[async_trait]
 impl SnapshotReader for RuntimeStorageReader {
     async fn read_snapshot(&self, _region: &str, object: &str) -> Result<Payload> {
         self.read_persisted(object)
@@ -265,17 +151,8 @@ impl RuntimeStorage {
         lease: &HostLease,
         region: &str,
     ) -> Result<LoadedActor> {
-        let (_, record) = self
-            .load(&actor.storage_key())
-            .await?
-            .context("actor has no ownership")?;
-        ensure!(
-            record.actor == *actor
-                && record.region == region
-                && record.lease.id == lease.id
-                && record.lease.session_id == lease.session_id,
-            "actor ownership changed"
-        );
+        let record = self.owned_record(actor, lease)?;
+        ensure!(record.region == region, "actor ownership changed");
         self.load_actor(record).await
     }
 
@@ -285,25 +162,21 @@ impl RuntimeStorage {
         lease: &HostLease,
         epoch: u64,
     ) -> Result<LoadedActor> {
-        let record = self.owned_actor(actor, lease, epoch).await?;
+        let record = self.owned_record(actor, lease)?;
+        ensure!(record.epoch == epoch, "actor ownership changed");
         self.load_actor(record).await
     }
 
-    async fn owned_actor(
-        &self,
-        actor: &ActorKey,
-        lease: &HostLease,
-        epoch: u64,
-    ) -> Result<Ownership> {
-        let (_, record) = self
-            .load(&actor.storage_key())
-            .await?
-            .context("actor has no ownership")?;
+    fn owned_record(&self, actor: &ActorKey, lease: &HostLease) -> Result<Ownership> {
+        let record = self
+            .owned
+            .lock()
+            .unwrap()
+            .get(actor.storage_key().as_str())
+            .cloned()
+            .context("actor is not locally activated")?;
         ensure!(
-            record.actor == *actor
-                && record.lease.id == lease.id
-                && record.lease.session_id == lease.session_id
-                && record.epoch == epoch,
+            record.lease.id == lease.id && record.lease.session_id == lease.session_id,
             "actor ownership changed"
         );
         Ok(record)
@@ -316,19 +189,8 @@ impl RuntimeStorage {
         epoch: u64,
         version: u64,
     ) -> Result<WritePlan> {
-        let record = self
-            .owned
-            .lock()
-            .unwrap()
-            .get(actor.storage_key().as_str())
-            .cloned()
-            .context("actor is not locally activated")?;
-        ensure!(
-            record.lease.id == lease.id
-                && record.lease.session_id == lease.session_id
-                && record.epoch == epoch,
-            "actor ownership changed"
-        );
+        let record = self.owned_record(actor, lease)?;
+        ensure!(record.epoch == epoch, "actor ownership changed");
         self.write_plan(&record, version)
     }
 
@@ -418,7 +280,18 @@ impl RuntimeStorageReader {
         self.snapshots.get(object).await
     }
 
-    async fn current_placement(&self, record: &Ownership) -> Result<ObjectPlacement> {
+    /// The newest state a session that was never sealed wrote, which recovering also keeps.
+    pub(crate) async fn recover_session(&self, record: &Ownership) -> Result<Option<SnapshotRef>> {
+        Ok(self
+            .snapshots
+            .recover(&record.stream()?.prefix)
+            .await?
+            .map(|(object, bytes)| VerifiedSnapshot::named(object, bytes))
+            .transpose()?
+            .map(|snapshot| snapshot.reference))
+    }
+
+    pub(crate) async fn current_placement(&self, record: &Ownership) -> Result<ObjectPlacement> {
         let mut placement = record.placement();
         apply_snapshot(
             &mut placement,
@@ -429,35 +302,8 @@ impl RuntimeStorageReader {
         );
         Ok(placement)
     }
-
-    async fn load(&self, object: &ActorStorageKey) -> Result<Option<(i64, Ownership)>> {
-        self.authority
-            .get(&ownership_key(object)?)
-            .await?
-            .map(|value| {
-                let record: Ownership = serde_json::from_reader(value.bytes.reader())?;
-                ensure!(
-                    record.persistence.same_backend(&self.persistence),
-                    "actor persistence backend changed; an explicit state migration is required"
-                );
-                Ok((value.generation, record))
-            })
-            .transpose()
-    }
 }
 
-#[async_trait]
-impl ObjectPlacementStore for RuntimeStorage {
-    async fn get_owner_with_hint(
-        &self,
-        object: &ActorStorageKey,
-    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
-        self.reader.get_owner_with_hint(object).await
-    }
-    async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-        self.reader.get(object).await
-    }
-}
 #[async_trait]
 impl SnapshotReader for RuntimeStorage {
     async fn read_snapshot(&self, region: &str, object: &str) -> Result<Payload> {
@@ -465,19 +311,10 @@ impl SnapshotReader for RuntimeStorage {
     }
 }
 
-fn ownership_key(object: &ActorStorageKey) -> Result<String> {
-    crate::storage_paths::owner(object)
-}
-
-fn apply_snapshot(placement: &mut ObjectPlacement, snapshot: Option<&SnapshotRef>) {
-    if let Some(snapshot) = snapshot {
-        placement.state_version = snapshot.state_version;
-        placement.state_object = Some(snapshot.object.clone());
-        placement.last_request_id = Some(snapshot.request_id.clone());
-    }
-}
-
-fn advance(current: &mut Option<SnapshotRef>, candidate: Option<SnapshotRef>) -> Result<()> {
+pub(crate) fn advance(
+    current: &mut Option<SnapshotRef>,
+    candidate: Option<SnapshotRef>,
+) -> Result<()> {
     if let Some(candidate) = candidate {
         if let Some(current) = current.as_ref() {
             ensure!(

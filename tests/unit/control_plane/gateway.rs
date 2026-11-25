@@ -137,9 +137,11 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         started: tokio::sync::Semaphore::new(0),
         ready: tokio::sync::Semaphore::new(0),
         unavailable: AtomicUsize::new(0),
+        claims: std::sync::Mutex::new(Vec::new()),
     });
+    let ownership = crate::ownership::testing::TestOwnership::default();
     let service = ControlPlaneService::new(
-        Arc::new(crate::placement::testing::LocalObjectPlacementStore::default()),
+        ownership.ownerships.clone(),
         ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
             "issuer",
@@ -192,10 +194,8 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                 tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
             sockets.push(socket);
         }
-        for _ in 0..2 {
-            provisioner.started.acquire().await?.forget();
-        }
-        provisioner.ready.add_permits(2);
+        provisioner.started.acquire().await?.forget();
+        provisioner.ready.add_permits(1);
         for socket in &mut sockets {
             assert_eq!(
                 socket.next().await.transpose()?,
@@ -209,12 +209,17 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                 .iter()
                 .filter(|&&state| state == HostState::Cold)
                 .count(),
-            2
+            1
         );
         assert_eq!(gateways[0].connections.registry.count(&actor).await, 1);
         assert_eq!(gateways[1].connections.registry.count(&actor).await, 1);
         assert_eq!(gateways[1].connections.bus.count(&actor).await?, 2);
         retiring.store(true, Ordering::SeqCst);
+        let retired = provisioner.claims.lock().unwrap()[0].record.lease.clone();
+        ownership
+            .ownerships
+            .release(&actor, &retired.id, &retired.session_id, None)
+            .await?;
         *provisioner.route.lock().unwrap() = host_routes[1].clone();
         provisioner.unavailable.store(2, Ordering::SeqCst);
         provisioner.ready.add_permits(20);
@@ -262,6 +267,7 @@ struct PausedProvisioner {
     started: tokio::sync::Semaphore,
     ready: tokio::sync::Semaphore,
     unavailable: std::sync::atomic::AtomicUsize,
+    claims: std::sync::Mutex<Vec<crate::ownership::ActorClaim>>,
 }
 
 #[async_trait::async_trait]
@@ -283,8 +289,8 @@ impl super::super::service::HostProvisioner for PausedProvisioner {
         _: &super::super::admin::HostLaunchSpec,
         region: &str,
         actor: &crate::actor::ActorKey,
-        new_actor: bool,
-        _: Option<&crate::bucket::OwnershipHint>,
+        claim: &crate::ownership::ActorClaim,
+        _node: Option<&str>,
         _: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(
         crate::host_leases::HostLease,
@@ -293,7 +299,7 @@ impl super::super::service::HostProvisioner for PausedProvisioner {
     )> {
         assert_eq!(region, "north-america-east");
         assert_eq!(actor.actor_id, "one");
-        assert!(new_actor);
+        assert!(claim.is_new());
         if self
             .unavailable
             .fetch_update(
@@ -303,18 +309,16 @@ impl super::super::service::HostProvisioner for PausedProvisioner {
             )
             .is_ok()
         {
-            return Err(crate::sandbox::HostNotReady.into());
+            return Err(anyhow::Error::from(crate::sandbox::HostNotReady)
+                .context(super::super::service::Unassigned));
         }
+        self.claims.lock().unwrap().push(claim.clone());
         self.started.add_permits(1);
         self.ready.acquire().await?.forget();
+        let route = self.route.lock().unwrap().clone();
         Ok((
-            crate::host_leases::HostLease {
-                id: crate::host::HostId::new("host"),
-                session_id: "session".into(),
-                route: self.route.lock().unwrap().clone(),
-                expires_at_ms: u64::MAX,
-            },
-            7,
+            crate::ownership::testing::ready_lease(claim, &route),
+            claim.record.epoch,
             None,
         ))
     }

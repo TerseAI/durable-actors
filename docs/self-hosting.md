@@ -32,7 +32,7 @@ gcloud iam service-accounts add-iam-policy-binding "$GSA" --project="$PROJECT" \
   --member="serviceAccount:${PROJECT}.svc.id.goog[actors/actors-durable-actors]"
 ```
 
-The bucket stores ownership, immutable code, and state snapshots under separate prefixes. Actor pods receive credentials scoped to their own state and deployed code. Do not configure lifecycle deletion for referenced state or code. Take PostgreSQL backups and rehearse recovery alongside the retained bucket data.
+The bucket stores immutable code, state snapshots and, unless `storage.ownership` is `postgres`, actor ownership under separate prefixes. Actor pods receive credentials scoped to their own state and deployed code. Do not configure lifecycle deletion for referenced state or code. Take PostgreSQL backups and rehearse recovery alongside the retained bucket data.
 
 ## Create credentials
 

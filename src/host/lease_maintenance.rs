@@ -119,6 +119,10 @@ impl HostLeaseMaintainer {
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
     ) -> bool {
+        // Renews `renew_every` into a full lease, or sooner when a lease began before this host.
+        let renewal = local_deadline
+            .checked_sub(Duration::from_millis(self.lease_duration_ms) - self.renew_every)
+            .unwrap_or_else(Instant::now);
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => false,
@@ -130,7 +134,7 @@ impl HostLeaseMaintainer {
                 let _ = lease_lost.send(true);
                 false
             }
-            _ = tokio::time::sleep(self.renew_every) => true,
+            _ = tokio::time::sleep_until(renewal) => true,
         }
     }
 
@@ -195,7 +199,9 @@ impl HostLeaseMaintainer {
         // above. This makes the process fence no later than the locally confirmed
         // lease window, even when a renewal RPC consumed most of that window.
         let deadline_anchor = Instant::now();
-        let remaining_ms = local_valid_until_ms.saturating_sub(self.clock.now_ms()?);
+        let remaining_ms = local_valid_until_ms
+            .min(lease.expires_at_ms)
+            .saturating_sub(self.clock.now_ms()?);
         ensure!(
             remaining_ms > 0,
             "host lease expired before its registration response arrived"

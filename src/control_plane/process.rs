@@ -57,6 +57,7 @@ pub struct ControlPlaneProcessConfig {
 }
 
 pub struct ControlPlaneStorageConfig {
+    pub ownership: OwnershipStore,
     pub postgres_url: String,
     pub postgres_max_connections: usize,
     pub trace_retention: Duration,
@@ -64,6 +65,17 @@ pub struct ControlPlaneStorageConfig {
     pub bucket: String,
     pub persistence: crate::bucket::SnapshotStoreConfig,
     pub artifact_bucket: String,
+}
+
+/// Where actor ownership records live.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OwnershipStore {
+    #[default]
+    Bucket,
+    Postgres,
+    /// PostgreSQL, moving each record over from the bucket. Every control plane must run this
+    /// before any runs `Postgres`.
+    BucketToPostgres,
 }
 
 #[derive(Default)]
@@ -229,14 +241,25 @@ async fn control_plane_routes(
         snapshot_store(authority.clone(), &config.storage.persistence, stop.clone()).await?;
     let storage = Arc::new(
         RuntimeStorageReader::new(
-            authority,
+            authority.clone(),
             Arc::new(crate::clock::SystemClock),
             Arc::new(crate::litestream::EmbeddedRestore),
         )?
         .with_persistence(config.storage.persistence, snapshots)?,
     );
+    let ownerships = Arc::new(crate::ownership::Ownerships::new(
+        ownership_store(
+            config.storage.ownership,
+            &database,
+            authority.clone(),
+            &stop,
+        ),
+        storage.clone(),
+    ));
     if storage.persistence.rapid_settings().is_some() {
-        storage.clone().start_abandoned_recovery(stop.child_token());
+        ownerships
+            .clone()
+            .start_abandoned_recovery(stop.child_token());
     }
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::Gcs {
@@ -245,7 +268,6 @@ async fn control_plane_routes(
         },
         storage.persistence.clone(),
     )?);
-    let placements = storage.clone();
     let connections = crate::sandbox::connections::HostConnections::new()?;
     let socket_bus = match &redis {
         Some(redis) => super::socket_bus::RedisSocketBus::start(
@@ -301,7 +323,7 @@ async fn control_plane_routes(
         lifecycle = lifecycle.with_observer(admission);
     }
     let mut service = ControlPlaneService::new(
-        placements.clone(),
+        ownerships,
         auth,
         registry.clone(),
         issuer.clone(),
@@ -624,6 +646,7 @@ impl ControlPlaneProcessConfig {
             crate::placement::validate_region(region)?;
         }
         let storage = ControlPlaneStorageConfig {
+            ownership: ownership_store_config(&mut get)?,
             persistence,
             artifact_bucket,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
@@ -668,6 +691,39 @@ impl ControlPlaneProcessConfig {
             redis: redis_config(&mut get)?,
             organization_limits: super::OrganizationLimits::from_lookup(&mut get, true)?,
         })
+    }
+}
+
+fn ownership_store_config(get: &mut impl FnMut(&str) -> Option<String>) -> Result<OwnershipStore> {
+    Ok(match get("DURABLE_ACTORS_OWNERSHIP_STORE").as_deref() {
+        None | Some("bucket") => OwnershipStore::Bucket,
+        Some("postgres") => OwnershipStore::Postgres,
+        Some("bucket-to-postgres") => OwnershipStore::BucketToPostgres,
+        Some(other) => anyhow::bail!(
+            "DURABLE_ACTORS_OWNERSHIP_STORE must be bucket, postgres, or bucket-to-postgres, not {other}"
+        ),
+    })
+}
+
+fn ownership_store(
+    kind: OwnershipStore,
+    database: &PostgresDatabase,
+    authority: Arc<GcsBucket>,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Arc<dyn crate::ownership::OwnershipStore> {
+    use crate::ownership::{BucketOwnership, MovingOwnership, PostgresOwnership};
+    match kind {
+        OwnershipStore::Bucket => Arc::new(BucketOwnership::new(authority)),
+        OwnershipStore::Postgres => Arc::new(PostgresOwnership::new(database.clone())),
+        OwnershipStore::BucketToPostgres => {
+            let moving = Arc::new(MovingOwnership::new(
+                PostgresOwnership::new(database.clone()),
+                BucketOwnership::new(authority),
+                Arc::new(crate::clock::SystemClock),
+            ));
+            moving.clone().start_backfill(stop.child_token());
+            moving
+        }
     }
 }
 

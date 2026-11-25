@@ -202,11 +202,15 @@ impl LocalSandboxProvider {
             .placements
             .get_owner(&record.actor.storage_key())
             .await?;
-        Ok(placement.map(|placement| placement.lease).filter(|lease| {
-            lease.id == expected.id
-                && lease.session_id == expected.session_id
-                && lease.expires_at_ms > SystemClock.now_ms().unwrap_or(u64::MAX)
-        }))
+        // The record has no route until the host's first renewal, so the host's readiness names it.
+        let owned = placement
+            .map(|placement| placement.lease)
+            .is_some_and(|lease| {
+                lease.id == expected.id
+                    && lease.session_id == expected.session_id
+                    && lease.expires_at_ms > SystemClock.now_ms().unwrap_or(u64::MAX)
+            });
+        Ok(owned.then(|| expected.clone()))
     }
 }
 
@@ -455,12 +459,8 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
             serde_json::to_string(actor).expect("actor identity serializable"),
         );
     }
-    environment.insert(
-        "DURABLE_ACTORS_ACTOR_IS_NEW".into(),
-        request.actor_is_new.to_string(),
-    );
-    if let Some(hint) = &request.owner_hint {
-        environment.insert("DURABLE_ACTORS_OWNER_HINT".into(), hint.clone());
+    if let Some(claim) = &request.ownership_claim {
+        environment.insert("DURABLE_ACTORS_OWNERSHIP_CLAIM".into(), claim.clone());
     }
     if let Some(endpoint) = &request.otlp_endpoint {
         environment.insert("OTEL_EXPORTER_OTLP_ENDPOINT".into(), endpoint.clone());

@@ -2,7 +2,7 @@ use std::{sync::Mutex, time::Duration};
 
 use super::super::{ActorTokenPurpose, admin::LocalAdminRegistry};
 use super::*;
-use crate::{actor_state::ActorStorageKey, placement::testing::LocalObjectPlacementStore};
+use crate::ownership::testing::TestOwnership;
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
 use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -43,8 +43,8 @@ impl HostProvisioner for UnavailableProvisioner {
         _spec: &HostLaunchSpec,
         _region: &str,
         _actor: &ActorKey,
-        _new_actor: bool,
-        _owner_hint: Option<&crate::bucket::OwnershipHint>,
+        _claim: &crate::ownership::ActorClaim,
+        _node: Option<&str>,
         _: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         anyhow::bail!("host creation is outside this test")
@@ -83,8 +83,8 @@ impl HostProvisioner for FakeRetiringProvisioner {
         _spec: &HostLaunchSpec,
         _region: &str,
         _actor: &ActorKey,
-        _new_actor: bool,
-        _owner_hint: Option<&crate::bucket::OwnershipHint>,
+        _claim: &crate::ownership::ActorClaim,
+        _node: Option<&str>,
         _: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         anyhow::bail!("host creation is outside this test")
@@ -108,9 +108,8 @@ impl HostProvisioner for FakeRetiringProvisioner {
 }
 
 #[tokio::test]
-async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_control_plane()
--> Result<()> {
-    struct Provisioner(HostLease);
+async fn a_cold_route_claims_the_actor_before_assigning_its_host() -> Result<()> {
+    struct Provisioner(String);
     #[async_trait]
     impl HostProvisioner for Provisioner {
         async fn prepare_deployment(
@@ -130,11 +129,15 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
             _: &HostLaunchSpec,
             _: &str,
             _actor: &ActorKey,
-            _new_actor: bool,
-            _owner_hint: Option<&crate::bucket::OwnershipHint>,
+            claim: &crate::ownership::ActorClaim,
+            _node: Option<&str>,
             _: Option<&crate::sandbox::assignment::InitialOperation>,
         ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
-            Ok((self.0.clone(), 42, None))
+            Ok((
+                crate::ownership::testing::ready_lease(claim, &self.0),
+                claim.record.epoch,
+                None,
+            ))
         }
         async fn terminate_hosts(
             &self,
@@ -174,9 +177,9 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
             secret_refs: vec![],
         })
         .await?;
-    let placements = Arc::new(LocalObjectPlacementStore::default());
+    let placements = TestOwnership::default();
     let service = ControlPlaneService::new(
-        placements.clone(),
+        placements.ownerships.clone(),
         ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
             "issuer",
@@ -186,12 +189,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
         )?,
         registry,
         issuer.clone(),
-        Arc::new(Provisioner(HostLease {
-            id: HostId::new("host.v3.revision.host"),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            route: route.clone(),
-            expires_at_ms: crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 10,
-        })),
+        Arc::new(Provisioner(route.clone())),
     );
     let actor = ActorKey {
         project_id: "default".into(),
@@ -202,10 +200,23 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
         .resolve_actor_route(&actor, None, None, None, None)
         .await?;
     assert_eq!(target.route, route);
-    assert_eq!(target.owner_epoch, 42);
-    assert!(placements.get(&actor.storage_key()).await?.is_none());
+    assert_eq!(target.owner_epoch, 1);
+    let recorded = async {
+        loop {
+            let owner = placements
+                .ownerships
+                .get_owner(&actor.storage_key())
+                .await?
+                .unwrap();
+            if owner.lease.route == route {
+                return anyhow::Ok(owner);
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    let owner = tokio::time::timeout(Duration::from_secs(5), recorded).await??;
+    assert_eq!(owner.owner_epoch, 1);
     let ownership_reads = placements.reads();
-    tokio::time::sleep(Duration::from_millis(20)).await;
     let warm = service
         .resolve_actor_route(&actor, None, None, None, None)
         .await?;
@@ -246,7 +257,7 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
         fail: std::sync::atomic::AtomicBool::new(true),
     });
     let service = ControlPlaneService::new(
-        Arc::new(LocalObjectPlacementStore::default()),
+        TestOwnership::default().ownerships,
         auth,
         registry,
         issuer,
@@ -383,7 +394,7 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
 
 #[test]
 fn existing_actors_stay_pinned_to_the_assigned_region() -> Result<()> {
-    let actor = ActorStorageKey::new("object.v1.project.Counter.one");
+    let actor = crate::actor_state::ActorStorageKey::new("object.v1.project.Counter.one");
     let current = ObjectPlacement {
         lease: test_lease(&HostId::new("host.v3.revision.host")),
         object: actor,
@@ -472,7 +483,7 @@ async fn sandbox_regions_constrain_new_and_existing_actors() -> Result<()> {
             "sandboxes":{"Counter":{"regions":["canada","north-america-east"]}}
         }))?;
         registry.register_test_deployment(&spec).await?;
-        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let placements = TestOwnership::default();
         let actor = ActorKey {
             project_id: "default".into(),
             actor_name: "Counter".into(),
@@ -481,7 +492,10 @@ async fn sandbox_regions_constrain_new_and_existing_actors() -> Result<()> {
         if let Some(region) = existing {
             placements.set_owner(
                 &actor.storage_key(),
-                test_lease(&HostId::new("old-host")),
+                HostLease {
+                    expires_at_ms: 0,
+                    ..test_lease(&HostId::new("old-host"))
+                },
                 region,
             )?;
         }
@@ -489,8 +503,13 @@ async fn sandbox_regions_constrain_new_and_existing_actors() -> Result<()> {
             failed_regions: failures,
             calls: Mutex::new(vec![]),
         });
-        let mut service =
-            ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
+        let mut service = ControlPlaneService::new(
+            placements.ownerships.clone(),
+            auth,
+            registry,
+            issuer,
+            provisioner.clone(),
+        );
         service.region = Some("north-america-east".into());
         let result = service
             .route_actor(&actor, "north-america-east", assigned, None, None)
@@ -551,7 +570,12 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
             actor_name: actor_name.into(),
             actor_id: "one".into(),
         };
-        let request = provisioner.request(&spec, "canada", &actor)?;
+        let request = provisioner.request(
+            &spec,
+            "canada",
+            &actor,
+            &crate::ownership::testing::new_claim(&actor, &spec.host_config_key()),
+        )?;
         assert_eq!(
             request.resources,
             crate::sandbox::ResourceLimits {
@@ -573,53 +597,8 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
     Ok(())
 }
 
-struct LosingActivation {
-    placements: Arc<LocalObjectPlacementStore>,
-    actor: ActorKey,
-    waited: std::sync::atomic::AtomicBool,
-}
-
-#[async_trait]
-impl HostProvisioner for LosingActivation {
-    async fn prepare_deployment(
-        &self,
-        source: &HostLaunchSpec,
-        _previous: Option<&HostLaunchSpec>,
-        _region: &str,
-    ) -> Result<(
-        HostLaunchSpec,
-        Option<crate::control_plane::contracts::PublicActorContract>,
-    )> {
-        Ok((source.clone(), None))
-    }
-
-    async fn ensure_actor_host(
-        &self,
-        spec: &HostLaunchSpec,
-        region: &str,
-        _actor: &ActorKey,
-        _new_actor: bool,
-        _owner_hint: Option<&crate::bucket::OwnershipHint>,
-        _: Option<&crate::sandbox::assignment::InitialOperation>,
-    ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
-        let host = HostId::new(format!("host.v3.{}.winner", spec.host_config_key()));
-        let mut lease = test_lease(&host);
-        lease.route = "https://winner.example.com".into();
-        self.placements
-            .set_owner(&self.actor.storage_key(), lease, region)?;
-        anyhow::bail!("another activation won ownership")
-    }
-    async fn wait_ready(&self, _: &HostId) -> Result<()> {
-        self.waited.store(true, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
-    }
-    async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
-        unreachable!()
-    }
-}
-
 #[tokio::test]
-async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
+async fn a_pending_claim_routes_to_its_host_once_ready() -> Result<()> {
     let issuer = test_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -629,37 +608,55 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
         Duration::from_secs(60),
     )?;
     let registry = Arc::new(LocalAdminRegistry::default());
-    registry
-        .register_test_deployment(&HostLaunchSpec {
-            image_policy: Default::default(),
-            organization_id: "org-test".into(),
-            sandboxes: Default::default(),
-            project_id: "default".into(),
-            source: None,
-            image_ref: "im-runtime".into(),
-            code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
-            working_directory: "/customer".into(),
-            actor_entrypoint: None,
-            secret_refs: vec![],
-        })
-        .await?;
-    let placements = Arc::new(LocalObjectPlacementStore::default());
+    let spec = HostLaunchSpec {
+        image_policy: Default::default(),
+        organization_id: "org-test".into(),
+        sandboxes: Default::default(),
+        project_id: "default".into(),
+        source: None,
+        image_ref: "im-runtime".into(),
+        code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
+        working_directory: "/customer".into(),
+        actor_entrypoint: None,
+        secret_refs: vec![],
+    };
+    registry.register_test_deployment(&spec).await?;
+    let placements = TestOwnership::default();
     let actor = ActorKey {
         project_id: "default".into(),
         actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
-    let provisioner = Arc::new(LosingActivation {
-        placements: placements.clone(),
-        actor: actor.clone(),
-        waited: false.into(),
-    });
-    let service = ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
-    let target = service
-        .route_actor(&actor, "north-america-east", None, None, None)
+    let claimed = placements
+        .ownerships
+        .claim(
+            &actor,
+            &HostId::new(format!("host.v3.{}.winner", spec.host_config_key())),
+            "winner",
+            "north-america-east",
+            None,
+        )
         .await?;
-    assert_eq!(target.placement.lease.route, "https://winner.example.com");
-    assert!(provisioner.waited.load(std::sync::atomic::Ordering::SeqCst));
+    let crate::ownership::Claim::Won(claim) = claimed else {
+        anyhow::bail!("the first claim must win");
+    };
+    let service = ControlPlaneService::new(
+        placements.ownerships.clone(),
+        auth,
+        registry,
+        issuer,
+        Arc::new(UnavailableProvisioner),
+    );
+    let ready = async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        placements.adopt(&claim, "https://winner.example.com").await
+    };
+    let (target, ready) = tokio::join!(
+        service.route_actor_when_ready(&actor, "north-america-east", None, None, None),
+        ready
+    );
+    ready?;
+    assert_eq!(target?.placement.lease.route, "https://winner.example.com");
     Ok(())
 }
 
@@ -684,26 +681,20 @@ impl HostProvisioner for FakeRoutingProvisioner {
 
     async fn ensure_actor_host(
         &self,
-        spec: &HostLaunchSpec,
+        _spec: &HostLaunchSpec,
         region: &str,
         _actor: &ActorKey,
-        _new_actor: bool,
-        _owner_hint: Option<&crate::bucket::OwnershipHint>,
+        claim: &crate::ownership::ActorClaim,
+        _node: Option<&str>,
         _: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         self.calls.lock().unwrap().push(region.to_owned());
-        ensure!(
-            !self.failed_regions.contains(&region),
-            "host unavailable in {region}"
-        );
+        if self.failed_regions.contains(&region) {
+            return Err(anyhow::anyhow!("host unavailable in {region}").context(Unassigned));
+        }
         Ok((
-            HostLease {
-                id: HostId::new(format!("host.v3.{}.{region}", spec.host_config_key())),
-                session_id: uuid::Uuid::new_v4().to_string(),
-                route: "https://host.example.com".into(),
-                expires_at_ms: u64::MAX,
-            },
-            1,
+            crate::ownership::testing::ready_lease(claim, "https://host.example.com"),
+            claim.record.epoch,
             None,
         ))
     }
@@ -771,7 +762,7 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
                 secret_refs: vec![],
             })
             .await?;
-        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let placements = TestOwnership::default();
         let actor = ActorKey {
             project_id: "default".into(),
             actor_name: "Counter".into(),
@@ -780,17 +771,23 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         if existing {
             placements.set_owner(
                 &actor.storage_key(),
-                test_lease(&HostId::new("old-host")),
+                HostLease {
+                    expires_at_ms: 0,
+                    ..test_lease(&HostId::new("old-host"))
+                },
                 south,
             )?;
         }
-        let before = placements.get(&actor.storage_key()).await?;
+        let before = placements
+            .ownerships
+            .get_owner(&actor.storage_key())
+            .await?;
         let provisioner = Arc::new(FakeRoutingProvisioner {
             failed_regions,
             calls: Mutex::new(vec![]),
         });
         let service = ControlPlaneService::new(
-            placements.clone(),
+            placements.ownerships.clone(),
             auth,
             registry.clone(),
             issuer,
@@ -815,14 +812,12 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         if let Some(region) = expected_region {
             let selected = result?;
             assert_eq!(selected.placement.home_region, region);
-            assert_eq!(placements.get(&actor.storage_key()).await?, before);
         } else {
             assert!(result.is_err());
             if expected_calls.len() == 2 {
                 let error = format!("{:#}", result.err().unwrap());
                 assert!(error.contains(south) && error.contains(central), "{error}");
             }
-            assert_eq!(placements.get(&actor.storage_key()).await?, before);
         }
     }
     Ok(())
@@ -863,7 +858,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
         )),
         issuer.clone(),
     )?;
-    let placements = Arc::new(LocalObjectPlacementStore::default());
+    let placements = TestOwnership::default();
     let host_id = fixture_host("fixture");
     let actor = ActorKey {
         project_id: "default".into(),
@@ -876,7 +871,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
         "north-america-east",
     )?;
     let service = ControlPlaneService::new(
-        placements,
+        placements.ownerships.clone(),
         auth,
         registry,
         issuer.clone(),
@@ -945,7 +940,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     )?;
     let registry = Arc::new(LocalAdminRegistry::default());
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
-    let placements = Arc::new(LocalObjectPlacementStore::default());
+    let placements = TestOwnership::default();
     let host_id = HostId::new(format!(
         "host.v3.{}.fixture",
         HostLaunchSpec {
@@ -973,7 +968,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         "north-america-east",
     )?;
     let service = ControlPlaneService::new(
-        placements,
+        placements.ownerships.clone(),
         auth,
         registry,
         issuer.clone(),
@@ -1083,7 +1078,7 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
     )?;
     let registry = Arc::new(LocalAdminRegistry::default());
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
-    let placements = Arc::new(LocalObjectPlacementStore::default());
+    let placements = TestOwnership::default();
     {
         let host = HostId::new(format!(
             "host.v3.{}.fixture",
@@ -1108,12 +1103,15 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
         };
         placements.set_owner(
             &actor.storage_key(),
-            test_lease(&host),
+            HostLease {
+                expires_at_ms: 0,
+                ..test_lease(&host)
+            },
             "north-america-east",
         )?;
     }
     let service = ControlPlaneService::new(
-        placements,
+        placements.ownerships.clone(),
         auth,
         registry,
         issuer.clone(),
@@ -1223,7 +1221,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
         .await?;
     let (retired, _retired_rx) = tokio::sync::mpsc::unbounded_channel();
     let service = ControlPlaneService::new(
-        Arc::new(LocalObjectPlacementStore::default()),
+        TestOwnership::default().ownerships,
         auth,
         registry,
         issuer,
@@ -1311,7 +1309,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
         .token;
     let (retired, _retired_rx) = tokio::sync::mpsc::unbounded_channel();
     let service = ControlPlaneService::new(
-        Arc::new(LocalObjectPlacementStore::default()),
+        TestOwnership::default().ownerships,
         auth,
         registry,
         issuer,
@@ -1448,7 +1446,7 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
     let (retired, mut retired_rx) = tokio::sync::mpsc::unbounded_channel();
     let service = ControlPlaneService::new(
-        Arc::new(LocalObjectPlacementStore::default()),
+        TestOwnership::default().ownerships,
         auth,
         registry,
         issuer,
@@ -1565,7 +1563,7 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                     .await?;
                 let admin =
                     AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
-                let placements = Arc::new(LocalObjectPlacementStore::default());
+                let placements = TestOwnership::default();
                 let actor = ActorKey {
                     project_id: project.into(),
                     actor_name: "Room".into(),
@@ -1574,7 +1572,10 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                 if existing {
                     placements.set_owner(
                         &actor.storage_key(),
-                        test_lease(&HostId::new("old-host")),
+                        HostLease {
+                            expires_at_ms: 0,
+                            ..test_lease(&HostId::new("old-host"))
+                        },
                         "north-america-east",
                     )?;
                 }
@@ -1583,7 +1584,7 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                     calls: Mutex::new(vec![]),
                 });
                 let mut service = ControlPlaneService::new(
-                    placements,
+                    placements.ownerships.clone(),
                     auth,
                     registry,
                     issuer.clone(),
@@ -1684,50 +1685,25 @@ fn local_document(digest: &str) -> serde_json::Value {
 
 #[test]
 fn socket_authorization_uses_actor_scope_without_reading_ownership() -> Result<()> {
-    struct RenewingPlacement(std::sync::atomic::AtomicU64, ObjectPlacement);
-    #[async_trait]
-    impl ObjectPlacementStore for RenewingPlacement {
-        async fn get_owner_with_hint(
-            &self,
-            object: &ActorStorageKey,
-        ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
-            Ok((self.get(object).await?, None))
-        }
-        async fn get(&self, _: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-            let mut placement = self.1.clone();
-            placement.lease.expires_at_ms +=
-                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(Some(placement))
-        }
-    }
     let actor = ActorKey {
         project_id: "p".into(),
         actor_name: "Room".into(),
         actor_id: "one".into(),
     };
     let host = HostId::new("host.v3.test.one");
-    let mut lease = test_lease(&host);
-    lease.expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 60_000;
+    let lease = test_lease(&host);
     let principal = ActorPrincipal {
         organization_id: Some("org-test".into()),
         actor: actor.clone(),
-        host_id: host.clone(),
+        host_id: host,
         session_id: lease.session_id.clone(),
         region: "us-east".into(),
         host_config_key: None,
         invocation: None,
         slot: None,
     };
-    let placement = ObjectPlacement {
-        object: actor.storage_key(),
-        owner: host,
-        owner_epoch: 1,
-        home_region: principal.region.clone(),
-        state_version: 0,
-        state_object: None,
-        last_request_id: None,
-        lease,
-    };
+    let placements = TestOwnership::default();
+    placements.set_owner(&actor.storage_key(), lease, &principal.region)?;
     let issuer = test_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -1736,9 +1712,8 @@ fn socket_authorization_uses_actor_scope_without_reading_ownership() -> Result<(
         ActorTokenPurpose::ControlPlane,
         Duration::from_secs(60),
     )?;
-    let placement = Arc::new(RenewingPlacement(Default::default(), placement));
     let service = ControlPlaneService::new(
-        placement.clone(),
+        placements.ownerships.clone(),
         auth,
         Arc::new(LocalAdminRegistry::default()),
         issuer,
@@ -1748,7 +1723,7 @@ fn socket_authorization_uses_actor_scope_without_reading_ownership() -> Result<(
     let mut stale = principal.clone();
     stale.session_id = "other-session".into();
     service.authorize_socket_host(&stale, &actor)?;
-    assert_eq!(placement.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(placements.reads(), 0);
     stale.actor.actor_id = "another-actor".into();
     assert!(service.authorize_socket_host(&stale, &actor).is_err());
     Ok(())
