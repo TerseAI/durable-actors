@@ -11,6 +11,7 @@ use super::{
 use crate::{actor::ActorKey, clock::Clock};
 
 const BACKFILL_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const BACKFILL_LOCK: &str = "ownership-backfill";
 const CONCURRENT_MOVES: usize = 16;
 
 /// Ownership while a cluster moves from the bucket to PostgreSQL. Reads try PostgreSQL first. A
@@ -35,20 +36,29 @@ impl MovingOwnership {
         }
     }
 
-    /// Moves records until none are left in the bucket. Live leases move once they end.
+    /// Moves bucket records to PostgreSQL every interval for as long as this mode runs, since
+    /// control planes that predate it can still write the bucket. One control plane at a time does
+    /// this, holding a PostgreSQL lock, and gives up after a pass once that lock's session ends.
     pub(crate) fn start_backfill(self: Arc<Self>, stop: CancellationToken) {
         tokio::spawn(async move {
             loop {
-                match self.backfill().await {
-                    Ok(0) => return,
-                    Ok(_) => {}
+                let lock = match self.postgres.try_lock(BACKFILL_LOCK).await {
+                    Ok(lock) => lock,
                     Err(error) => {
-                        tracing::warn!(error = %format!("{error:#}"), "ownership backfill deferred")
+                        tracing::warn!(error = %format!("{error:#}"), "ownership backfill lock deferred");
+                        None
+                    }
+                };
+                while lock.as_ref().is_some_and(|lock| !lock.is_lost()) {
+                    if let Err(error) = self.backfill().await {
+                        tracing::warn!(error = %format!("{error:#}"), "ownership backfill deferred");
+                    }
+                    if !wait(&stop).await {
+                        return;
                     }
                 }
-                tokio::select! {
-                    _ = stop.cancelled() => return,
-                    _ = tokio::time::sleep(BACKFILL_INTERVAL) => {}
+                if lock.is_none() && !wait(&stop).await {
+                    return;
                 }
             }
         });
@@ -74,20 +84,22 @@ impl MovingOwnership {
                 Ok(entry) => candidates.push(entry),
             }
         }
+        // A marker without a PostgreSQL row is a move that stopped between its two writes.
+        let in_postgres = self.postgres.actors().await?;
+        candidates.retain(|(_, object)| match object {
+            Object::Moved { moved_to_postgres } => !in_postgres.contains(&moved_to_postgres.actor),
+            Object::Owned(_) => true,
+        });
         let outcomes: Vec<_> = stream::iter(candidates)
-            .map(|(generation, object)| self.finish_move(generation, object))
+            .map(|(generation, object)| async move {
+                self.replace(&object.into_record(), Some(Version::Bucket(generation)))
+                    .await
+            })
             .buffer_unordered(CONCURRENT_MOVES)
             .collect()
             .await;
-        let moved = outcomes
-            .iter()
-            .filter(|o| matches!(o, Ok(Move::Moved)))
-            .count();
-        let pending = outcomes
-            .iter()
-            .filter(|o| !matches!(o, Ok(Move::Moved | Move::Done)))
-            .count();
-        let remaining = live + unreadable + pending;
+        let moved = outcomes.iter().filter(|o| matches!(o, Ok(true))).count();
+        let remaining = live + unreadable + outcomes.len() - moved;
         tracing::info!(
             event = "ownership_backfill",
             moved,
@@ -98,32 +110,6 @@ impl MovingOwnership {
         );
         Ok(remaining)
     }
-
-    /// Moves an ended bucket record, or finishes a move that marked the bucket but never reached
-    /// PostgreSQL.
-    async fn finish_move(&self, generation: i64, object: Object) -> Result<Move> {
-        if let Object::Moved { moved_to_postgres } = &object
-            && self
-                .postgres
-                .load(&moved_to_postgres.actor)
-                .await?
-                .is_some()
-        {
-            return Ok(Move::Done);
-        }
-        let moved = self
-            .replace(&object.into_record(), Some(Version::Bucket(generation)))
-            .await?;
-        Ok(if moved { Move::Moved } else { Move::Pending })
-    }
-}
-
-enum Move {
-    Moved,
-    /// PostgreSQL already holds the record.
-    Done,
-    /// The record changed since it was read.
-    Pending,
 }
 
 #[async_trait]
@@ -154,5 +140,13 @@ impl OwnershipStore for MovingOwnership {
         let mut unsealed = self.postgres.unsealed().await?;
         unsealed.extend(self.bucket.unsealed().await?);
         Ok(unsealed)
+    }
+}
+
+/// Waits one backfill interval; `false` once the control plane stops.
+async fn wait(stop: &CancellationToken) -> bool {
+    tokio::select! {
+        _ = stop.cancelled() => false,
+        _ = tokio::time::sleep(BACKFILL_INTERVAL) => true,
     }
 }

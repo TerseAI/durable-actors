@@ -89,6 +89,20 @@ impl PostgresDatabase {
         Ok(client.query_one(&statement, params).await?)
     }
 
+    /// Holds a session advisory lock named `name` until the guard drops, or `None` while another
+    /// session holds it. The lock's connection leaves the pool, so dropping it ends the session.
+    pub(crate) async fn try_advisory_lock(&self, name: &str) -> Result<Option<AdvisoryLock>> {
+        let client = deadpool_postgres::Object::take(self.connection().await?);
+        let locked: bool = client
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtext('durable-actors'), hashtext($1))",
+                &[&name],
+            )
+            .await?
+            .get(0);
+        Ok(locked.then_some(AdvisoryLock { session: client }))
+    }
+
     pub(crate) async fn query(
         &self,
         query: &str,
@@ -113,6 +127,17 @@ impl PostgresDatabase {
             .context("acquire PostgreSQL connection")?;
         let statement = client.prepare_cached(query).await?;
         Ok(client.execute(&statement, params).await?)
+    }
+}
+
+pub(crate) struct AdvisoryLock {
+    session: deadpool_postgres::ClientWrapper,
+}
+
+impl AdvisoryLock {
+    /// Whether the session that held the lock ended, which released it.
+    pub(crate) fn is_lost(&self) -> bool {
+        self.session.is_closed()
     }
 }
 

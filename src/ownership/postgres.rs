@@ -1,9 +1,14 @@
+use std::collections::HashSet;
+
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use tokio_postgres::{Row, types::Json};
 
 use super::{Ownership, OwnershipStore, Stored, Version};
-use crate::{actor::ActorKey, postgres::PostgresDatabase};
+use crate::{
+    actor::ActorKey,
+    postgres::{AdvisoryLock, PostgresDatabase},
+};
 
 /// Ownership records as rows of `actor_ownership`, replaced by their `version`.
 pub(crate) struct PostgresOwnership(PostgresDatabase);
@@ -11,6 +16,28 @@ pub(crate) struct PostgresOwnership(PostgresDatabase);
 impl PostgresOwnership {
     pub(crate) fn new(database: PostgresDatabase) -> Self {
         Self(database)
+    }
+
+    pub(super) async fn try_lock(&self, name: &str) -> Result<Option<AdvisoryLock>> {
+        self.0.try_advisory_lock(name).await
+    }
+
+    /// Every actor with a record.
+    pub(super) async fn actors(&self) -> Result<HashSet<ActorKey>> {
+        Ok(self
+            .0
+            .query(
+                "SELECT project_id, actor_name, actor_id FROM actor_ownership",
+                &[],
+            )
+            .await?
+            .into_iter()
+            .map(|row| ActorKey {
+                project_id: row.get(0),
+                actor_name: row.get(1),
+                actor_id: row.get(2),
+            })
+            .collect())
     }
 }
 
