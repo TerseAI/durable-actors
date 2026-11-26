@@ -21,6 +21,12 @@ pub(crate) enum ControlPlaneCommand {
     InvokeActor {
         call: crate::actor::ActorCall,
     },
+    RenewLease {
+        request: crate::host_leases::HostLeaseRequest,
+    },
+    ReleaseLease {
+        checkpoint: Option<crate::ownership::SessionCheckpoint>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -38,6 +44,9 @@ pub(crate) enum ControlPlaneCommandReply {
     },
     Invocation {
         outcome: serde_json::Value,
+    },
+    Lease {
+        lease: crate::host_leases::HostLease,
     },
     Unit,
 }

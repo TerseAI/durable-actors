@@ -240,7 +240,7 @@ async fn fixture(
     let contract = crate::control_plane::contracts::PublicActorContract::new(document)?;
     admin.register_deployment(&spec, Some(&contract)).await?;
     let service = ControlPlaneService::new(
-        Arc::new(LocalObjectPlacementStore::default()),
+        TestOwnership::default().ownerships,
         auth,
         registry,
         issuer,

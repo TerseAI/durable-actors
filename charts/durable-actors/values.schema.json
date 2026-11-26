@@ -36,6 +36,14 @@
             "rapid"
           ]
         },
+        "ownership": {
+          "type": "string",
+          "enum": [
+            "bucket",
+            "postgres",
+            "bucket-to-postgres"
+          ]
+        },
         "rapid": {
           "type": "object",
           "additionalProperties": false,

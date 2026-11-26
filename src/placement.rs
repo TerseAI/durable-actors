@@ -1,7 +1,3 @@
-#[cfg(test)]
-#[path = "../tests/support/placement.rs"]
-pub(crate) mod testing;
-
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -31,7 +27,7 @@ pub trait ObjectPlacementStore: Send + Sync {
         object: &ActorStorageKey,
     ) -> Result<(
         Option<ObjectPlacement>,
-        Option<crate::bucket::OwnershipHint>,
+        Option<crate::ownership::OwnershipHint>,
     )>;
 
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>>;

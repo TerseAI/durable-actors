@@ -1,4 +1,5 @@
 use super::*;
+use crate::ownership::SessionCheckpoint;
 
 impl RuntimeStorage {
     pub(crate) async fn drain_activation(

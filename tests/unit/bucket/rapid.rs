@@ -356,58 +356,19 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
 
 #[tokio::test]
 async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() -> Result<()> {
-    use crate::{
-        bucket::{RapidBucket, RuntimeStorage, SnapshotStoreConfig},
-        clock::Clock,
-        host::HostId,
-        host_leases::HostLeaseRequest,
-        state_transport::SnapshotWriter,
-    };
-    struct TestClock(AtomicU64);
-    impl Clock for TestClock {
-        fn now_ms(&self) -> Result<u64> {
-            Ok(self.0.load(Ordering::SeqCst))
-        }
-    }
+    use crate::state_transport::SnapshotWriter;
     let f = Fixture::new()?;
-    let clock = Arc::new(TestClock(AtomicU64::new(1)));
-    let config = SnapshotStoreConfig::Rapid {
-        archive_batch: Default::default(),
-        placement: Default::default(),
-        archive_bucket: "archive".into(),
-        buckets: vec![
-            RapidBucket {
-                bucket: "a".into(),
-                zone: "us-west4-a".into(),
-            },
-            RapidBucket {
-                bucket: "b".into(),
-                zone: "us-west4-b".into(),
-            },
-        ],
-    };
+    let owners = Owners::new(&f)?;
     let actor = crate::storage_paths::actor_from_snapshot(&f.stream.object(1))?;
-    let runtime = || {
-        RuntimeStorage::new(f.archive.clone(), clock.clone())?
-            .with_persistence(config.clone(), Arc::new(f.store()?))
-    };
-    let first = runtime()?;
-    let request = |name: &str| HostLeaseRequest {
-        id: HostId::new(name),
-        session_id: name.into(),
-        route: format!("http://{name}"),
-        duration_ms: 1000,
-    };
-    let active = first
-        .register_activation(&actor, &request("first"), "us-west", true, None)
-        .await?;
+    let first = owners.host(&f)?;
+    let active = owners.activate(&first, &actor, "first").await?;
     let plan = first
         .prepare_actor_write(&actor, &active.placement.lease, 1, 1)
         .await?;
     first.write_snapshot(&plan, state(1, 1)?).await?;
     assert!(
-        runtime()?
-            .register_activation(&actor, &request("early"), "us-west", false, None)
+        owners
+            .activate(&owners.host(&f)?, &actor, "early")
             .await
             .is_err()
     );
@@ -419,12 +380,10 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
             state(2, 1)?,
         )
         .await?;
-    clock.0.store(2000, Ordering::SeqCst);
+    owners.expire();
     f.zones[1].offline.store(true, Ordering::SeqCst);
-    let second = runtime()?;
-    let recovered = second
-        .register_activation(&actor, &request("second"), "us-west", false, None)
-        .await?;
+    let second = owners.host(&f)?;
+    let recovered = owners.activate(&second, &actor, "second").await?;
     assert_eq!(recovered.placement.owner_epoch, 2);
     assert_eq!(
         recovered.state.map(|snapshot| snapshot.bytes),
@@ -453,18 +412,16 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
             tokio::time::Instant::now() + std::time::Duration::from_secs(30),
         )
         .await?;
-
-    second
-        .release_with_checkpoint(
+    owners
+        .ownerships
+        .release(
             &actor,
             &recovered.placement.owner,
             &recovered.placement.lease.session_id,
             Some(checkpoint),
         )
         .await?;
-    let third = runtime()?
-        .register_activation(&actor, &request("third"), "us-west", false, None)
-        .await?;
+    let third = owners.activate(&owners.host(&f)?, &actor, "third").await?;
     assert_eq!(third.placement.owner_epoch, 3);
     assert_eq!(
         third.state.map(|snapshot| snapshot.bytes),
@@ -475,72 +432,27 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
 
 #[tokio::test]
 async fn control_plane_archives_and_seals_an_abandoned_activation() -> Result<()> {
-    use crate::{
-        bucket::{RapidBucket, RuntimeStorage, RuntimeStorageReader, SnapshotStoreConfig},
-        clock::Clock,
-        host::HostId,
-        host_leases::HostLeaseRequest,
-        state_transport::SnapshotWriter,
-    };
-    struct TestClock(AtomicU64);
-    impl Clock for TestClock {
-        fn now_ms(&self) -> Result<u64> {
-            Ok(self.0.load(Ordering::SeqCst))
-        }
-    }
+    use crate::state_transport::SnapshotWriter;
     let f = Fixture::new()?;
-    let clock = Arc::new(TestClock(AtomicU64::new(1)));
-    let config = SnapshotStoreConfig::Rapid {
-        archive_batch: Default::default(),
-        placement: Default::default(),
-        archive_bucket: "archive".into(),
-        buckets: vec![
-            RapidBucket {
-                bucket: "a".into(),
-                zone: "us-west4-a".into(),
-            },
-            RapidBucket {
-                bucket: "b".into(),
-                zone: "us-west4-b".into(),
-            },
-        ],
-    };
+    let owners = Owners::new(&f)?;
     let actor = crate::storage_paths::actor_from_snapshot(&f.stream.object(1))?;
-    let runtime = || {
-        RuntimeStorage::new(f.archive.clone(), clock.clone())?
-            .with_persistence(config.clone(), Arc::new(f.store()?))
-    };
-    let request = |name: &str| HostLeaseRequest {
-        id: HostId::new(name),
-        session_id: name.into(),
-        route: format!("http://{name}"),
-        duration_ms: 1000,
-    };
-    let control_plane = RuntimeStorageReader::new(
-        f.archive.clone(),
-        clock.clone(),
-        Arc::new(crate::litestream::EmbeddedRestore),
-    )?
-    .with_persistence(config.clone(), Arc::new(f.store()?))?;
-    let host = runtime()?;
-    let active = host
-        .register_activation(&actor, &request("crashed"), "us-west", true, None)
-        .await?;
+    let host = owners.host(&f)?;
+    let active = owners.activate(&host, &actor, "crashed").await?;
     let lease = &active.placement.lease;
     host.write_snapshot(
         &host.prepare_actor_write(&actor, lease, 1, 1).await?,
         state(1, 1)?,
     )
     .await?;
-    control_plane.seal_abandoned().await?;
+    owners.ownerships.seal_abandoned().await?;
     host.write_snapshot(
         &host.prepare_actor_write(&actor, lease, 1, 2).await?,
         state(2, 1)?,
     )
     .await?;
 
-    clock.0.store(1_000_000, Ordering::SeqCst);
-    control_plane.seal_abandoned().await?;
+    owners.clock.0.store(1_000_000, Ordering::SeqCst);
+    owners.ownerships.seal_abandoned().await?;
     let fenced = host
         .write_snapshot(
             &host.prepare_actor_write(&actor, lease, 1, 3).await?,
@@ -551,15 +463,102 @@ async fn control_plane_archives_and_seals_an_abandoned_activation() -> Result<()
     for zone in &f.zones {
         zone.objects.lock().unwrap().clear();
     }
-    let next = runtime()?
-        .register_activation(&actor, &request("next"), "us-west", false, None)
-        .await?;
+    let next = owners.activate(&owners.host(&f)?, &actor, "next").await?;
     assert_eq!(next.placement.owner_epoch, 2);
     assert_eq!(
         next.state.map(|snapshot| snapshot.bytes),
         Some(state(2, 1)?)
     );
     Ok(())
+}
+
+struct OwnersClock(AtomicU64);
+
+impl crate::clock::Clock for OwnersClock {
+    fn now_ms(&self) -> Result<u64> {
+        Ok(self.0.load(Ordering::SeqCst))
+    }
+}
+
+/// A control plane's ownership over the fixture's archive, and the hosts it assigns.
+struct Owners {
+    clock: Arc<OwnersClock>,
+    config: crate::bucket::SnapshotStoreConfig,
+    ownerships: crate::ownership::Ownerships,
+}
+
+impl Owners {
+    fn new(f: &Fixture) -> Result<Self> {
+        use crate::bucket::{RapidBucket, RuntimeStorageReader, SnapshotStoreConfig};
+        let clock = Arc::new(OwnersClock(AtomicU64::new(1)));
+        let config = SnapshotStoreConfig::Rapid {
+            archive_batch: Default::default(),
+            placement: Default::default(),
+            archive_bucket: "archive".into(),
+            buckets: vec![
+                RapidBucket {
+                    bucket: "a".into(),
+                    zone: "us-west4-a".into(),
+                },
+                RapidBucket {
+                    bucket: "b".into(),
+                    zone: "us-west4-b".into(),
+                },
+            ],
+        };
+        let reader = RuntimeStorageReader::new(
+            f.archive.clone(),
+            clock.clone(),
+            Arc::new(crate::litestream::EmbeddedRestore),
+        )?
+        .with_persistence(config.clone(), Arc::new(f.store()?))?;
+        let ownerships = crate::ownership::Ownerships::new(
+            Arc::new(crate::ownership::BucketOwnership::new(f.archive.clone())),
+            Arc::new(reader),
+        );
+        Ok(Self {
+            clock,
+            config,
+            ownerships,
+        })
+    }
+
+    fn host(&self, f: &Fixture) -> Result<crate::bucket::RuntimeStorage> {
+        crate::bucket::RuntimeStorage::new(f.archive.clone(), self.clock.clone())?
+            .with_persistence(self.config.clone(), Arc::new(f.store()?))
+    }
+
+    fn expire(&self) {
+        self.clock.0.fetch_add(
+            crate::host_leases::MAX_HOST_LEASE_DURATION_MS,
+            Ordering::SeqCst,
+        );
+    }
+
+    async fn activate(
+        &self,
+        host: &crate::bucket::RuntimeStorage,
+        actor: &crate::actor::ActorKey,
+        name: &str,
+    ) -> Result<crate::bucket::LoadedActor> {
+        let claimed = self
+            .ownerships
+            .claim(
+                actor,
+                &crate::host::HostId::new(name),
+                name,
+                "us-west",
+                None,
+            )
+            .await?;
+        match claimed {
+            crate::ownership::Claim::Won(claim) => {
+                host.adopt(&claim, &crate::bucket::CachedBase::default())
+                    .await
+            }
+            crate::ownership::Claim::Held => anyhow::bail!("previous owner lease is still active"),
+        }
+    }
 }
 
 #[tokio::test]

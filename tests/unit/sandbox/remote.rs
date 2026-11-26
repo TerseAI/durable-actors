@@ -104,8 +104,7 @@ fn request() -> Result<EnsureHostRequest> {
     };
     Ok(EnsureHostRequest {
         initial_operation: None,
-        actor_is_new: true,
-        owner_hint: None,
+        ownership_claim: None,
         actor: Some(crate::actor::ActorKey {
             project_id: "project".into(),
             actor_name: "Counter".into(),

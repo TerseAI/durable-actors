@@ -21,7 +21,7 @@ use tracing::{Span, info, info_span};
 
 use crate::{
     bucket::{
-        Bucket, FileBucket, GcsBucket, RuntimeStorage,
+        Bucket, FileBucket, GcsBucket, RuntimeStorageReader,
         access::{BucketLocation, RuntimeAccess},
     },
     clock::SystemClock,
@@ -142,7 +142,7 @@ pub async fn serve_local(
         LocalSandboxProvider::new(
             host_binary,
             project.clone(),
-            storage.runtime.clone(),
+            storage.ownerships.clone(),
             abandoned_leases,
             options.sdk_host.clone(),
             directory.join("local-hosts.sqlite3"),
@@ -303,7 +303,8 @@ struct LocalState {
         Arc<crate::request_traces::persistence::sqlite::SqliteTracePersistence>,
         crate::request_traces::live::InProcessFeed,
     ),
-    runtime: Arc<RuntimeStorage>,
+    reader: Arc<RuntimeStorageReader>,
+    ownerships: Arc<crate::ownership::Ownerships>,
     access: Arc<RuntimeAccess>,
     region: String,
 }
@@ -324,8 +325,16 @@ async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalSt
         BucketLocation::File { directory } => Arc::new(FileBucket::new(directory.clone())?),
         BucketLocation::Gcs { bucket, .. } => Arc::new(GcsBucket::new(bucket).await?),
     };
-    let runtime = Arc::new(RuntimeStorage::new(bucket, Arc::new(SystemClock))?);
-    let bootstrap = Arc::new(RuntimeAccess::new(location, runtime.persistence.clone())?);
+    let reader = Arc::new(RuntimeStorageReader::new(
+        bucket.clone(),
+        Arc::new(SystemClock),
+        Arc::new(crate::litestream::EmbeddedRestore),
+    )?);
+    let ownerships = Arc::new(crate::ownership::Ownerships::new(
+        Arc::new(crate::ownership::BucketOwnership::new(bucket)),
+        reader.clone(),
+    ));
+    let bootstrap = Arc::new(RuntimeAccess::new(location, reader.persistence.clone())?);
     let telemetry = Arc::new(
         crate::request_traces::persistence::sqlite::SqliteTracePersistence::new(
             directory.join("request-traces.sqlite3"),
@@ -335,7 +344,8 @@ async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalSt
     Ok(LocalState {
         traces: crate::request_traces::TraceStore::new(telemetry.clone(), Arc::new(live.clone())),
         telemetry: (telemetry, live),
-        runtime,
+        reader,
+        ownerships,
         access: bootstrap,
         region: "north-america-east".into(),
     })
@@ -352,9 +362,9 @@ async fn abandoned_leases(
         return Ok(None);
     }
     if matches!(options.storage, DevStorage::Local) {
-        storage.runtime.release_leases().await?;
+        storage.ownerships.release_leases().await?;
     }
-    Ok(Some(storage.runtime.clone()))
+    Ok(Some(storage.ownerships.clone()))
 }
 
 async fn local_routes(
@@ -418,7 +428,7 @@ async fn local_routes(
     )?;
     let gateway = super::gateway::Gateway::new(&issuer, origin.to_owned(), socket_gateway)?;
     let mut service = ControlPlaneService::new(
-        storage.runtime.clone(),
+        storage.ownerships.clone(),
         auth,
         registry.clone(),
         issuer.clone(),
@@ -449,7 +459,7 @@ async fn local_routes(
         Arc::new(service.lifecycle.clone()),
         storage.traces.clone(),
     ));
-    let inspector = super::inspection::ActorInspector::new(inventory, storage.runtime.clone())
+    let inspector = super::inspection::ActorInspector::new(inventory, storage.reader.clone())
         .with_traces(storage.traces.clone());
     let reload = LocalReload {
         service: service.clone(),

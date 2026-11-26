@@ -25,7 +25,7 @@ async fn lifecycle_reports_use_authenticated_identity() -> Result<()> {
         .token;
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
     let mut service = ControlPlaneService::new(
-        Arc::new(NoOwner),
+        crate::ownership::testing::TestOwnership::default().ownerships,
         auth,
         Arc::new(LocalAdminRegistry::default()),
         issuer,
@@ -86,21 +86,5 @@ impl LifecyclePersistence for Persistence {
 
     async fn latest(&self, _: &str) -> Result<Vec<LifecycleEvent>> {
         unreachable!("this test only records reports")
-    }
-}
-
-struct NoOwner;
-
-#[async_trait]
-impl ObjectPlacementStore for NoOwner {
-    async fn get_owner_with_hint(
-        &self,
-        _: &ActorStorageKey,
-    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
-        Ok((None, None))
-    }
-
-    async fn get(&self, _: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-        unreachable!("lifecycle telemetry must not read ownership")
     }
 }

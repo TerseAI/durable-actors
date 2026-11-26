@@ -219,10 +219,6 @@ fn assignment_environment(
         ),
         ("DURABLE_ACTORS_ACTOR".into(), serde_json::to_string(actor)?),
         (
-            "DURABLE_ACTORS_ACTOR_IS_NEW".into(),
-            request.actor_is_new.to_string(),
-        ),
-        (
             "DURABLE_ACTORS_RUNTIME_CONFIG".into(),
             request
                 .runtime_config
@@ -230,8 +226,8 @@ fn assignment_environment(
                 .context("host storage configuration required")?,
         ),
     ]);
-    if let Some(hint) = &request.owner_hint {
-        environment.insert("DURABLE_ACTORS_OWNER_HINT".into(), hint.clone());
+    if let Some(claim) = &request.ownership_claim {
+        environment.insert("DURABLE_ACTORS_OWNERSHIP_CLAIM".into(), claim.clone());
     }
     Ok(environment)
 }

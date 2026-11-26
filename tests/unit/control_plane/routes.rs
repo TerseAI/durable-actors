@@ -57,7 +57,7 @@ async fn routes_follow_host_lifecycle(routes: &dyn RouteStore) {
         Some(RouteEntry::Draining(identity))
     );
 
-    let sealed = crate::placement::testing::sealed_owner(&actor, "north-america-east");
+    let sealed = crate::ownership::testing::sealed_owner(&actor, "north-america-east");
     routes.keep_sealed_owner(&actor, &sealed).await;
     let taken = routes
         .take_sealed_owner(&actor)

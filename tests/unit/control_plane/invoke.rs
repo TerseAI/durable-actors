@@ -457,7 +457,7 @@ async fn backend_socket_effects_reach_clients_connected_to_another_replica() -> 
 struct Fixture {
     service: ControlPlaneService,
     gateway: ControlPlaneService,
-    placements: Arc<LocalObjectPlacementStore>,
+    placements: TestOwnership,
     origin: String,
     replica: String,
     admin: AdminService,
@@ -544,7 +544,7 @@ impl Fixture {
                 Some(&contract),
             )
             .await?;
-        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let placements = TestOwnership::default();
         if existing {
             let spec = registry.launch_spec("default").await?.unwrap();
             let actor = ActorKey {
@@ -565,7 +565,7 @@ impl Fixture {
             )?;
         }
         let mut service = ControlPlaneService::new(
-            placements.clone(),
+            placements.ownerships.clone(),
             auth,
             registry,
             issuer.clone(),
@@ -763,7 +763,7 @@ async fn host_socket_event(
 struct InvocationProvisioner {
     host: Arc<HostFixture>,
     route: String,
-    placements: Arc<LocalObjectPlacementStore>,
+    placements: TestOwnership,
 }
 #[async_trait]
 impl HostProvisioner for InvocationProvisioner {
@@ -780,25 +780,16 @@ impl HostProvisioner for InvocationProvisioner {
     }
     async fn ensure_actor_host(
         &self,
-        spec: &HostLaunchSpec,
-        region: &str,
-        actor: &ActorKey,
-        _: bool,
-        _: Option<&crate::bucket::OwnershipHint>,
+        _spec: &HostLaunchSpec,
+        _region: &str,
+        _actor: &ActorKey,
+        claim: &crate::ownership::ActorClaim,
+        _node: Option<&str>,
         operation: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         tokio::time::sleep(Duration::from_millis(25)).await;
-        let lease = HostLease {
-            route: self.route.clone(),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            ..test_lease(&HostId::new(format!(
-                "host.v3.{}.fixture",
-                spec.host_config_key()
-            )))
-        };
-        let owner_epoch = self
-            .placements
-            .set_owner(&actor.storage_key(), lease.clone(), region)?;
+        let lease = self.placements.adopt(claim, &self.route).await?;
+        let owner_epoch = claim.record.epoch;
         let initial_reply = if self.host.assign_operation.load(Ordering::SeqCst) {
             use crate::sandbox::assignment::InitialRequest;
             let operation = operation.context("missing initial operation")?;

@@ -10,6 +10,7 @@ pub mod host;
 pub mod host_leases;
 mod litestream;
 pub mod node_cache;
+pub(crate) mod ownership;
 mod payload;
 pub mod placement;
 mod postgres;

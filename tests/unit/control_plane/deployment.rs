@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     control_plane::{ActorTokenPurpose, admin::LocalAdminRegistry},
-    placement::testing::LocalObjectPlacementStore,
+    ownership::testing::TestOwnership,
     sandbox::ActorHostHandle,
 };
 use std::sync::Mutex;
@@ -52,7 +52,12 @@ async fn persisted_deployments_cold_start_on_the_current_runtime_without_redeplo
             actor_id: "one".into(),
         };
         let saved = registry.launch_spec("default").await?.unwrap();
-        let request = provisioner.request(&saved, "north-america-west", &actor)?;
+        let request = provisioner.request(
+            &saved,
+            "north-america-west",
+            &actor,
+            &crate::ownership::testing::new_claim(&actor, &saved.host_config_key()),
+        )?;
         assert_eq!(request.image_ref, current);
         assert_eq!(request.code_snapshot, deployed.code_snapshot);
         assert_eq!(request.host_config_key, identity);
@@ -65,7 +70,12 @@ async fn persisted_deployments_cold_start_on_the_current_runtime_without_redeplo
         let custom = registry.launch_spec("default").await?.unwrap();
         assert_eq!(
             provisioner
-                .request(&custom, "north-america-west", &actor)?
+                .request(
+                    &custom,
+                    "north-america-west",
+                    &actor,
+                    &crate::ownership::testing::new_claim(&actor, &custom.host_config_key()),
+                )?
                 .image_ref,
             deployed.image_ref
         );
@@ -440,7 +450,7 @@ fn fixture_with_idle_timeout(
         )?)),
     );
     let service = ControlPlaneService::new(
-        Arc::new(LocalObjectPlacementStore::default()),
+        TestOwnership::default().ownerships,
         auth,
         registry,
         issuer,

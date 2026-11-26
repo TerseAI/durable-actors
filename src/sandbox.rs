@@ -107,9 +107,8 @@ pub struct CreateSpareRequest {
 pub struct EnsureHostRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) initial_operation: Option<assignment::InitialOperation>,
-    pub actor_is_new: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub owner_hint: Option<String>,
+    pub ownership_claim: Option<String>,
     pub actor: Option<crate::actor::ActorKey>,
     pub code_snapshot: Option<String>,
     pub spare: Option<SpareHandle>,

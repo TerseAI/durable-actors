@@ -24,6 +24,17 @@ async fn generic_bun_host_restores_committed_state_before_becoming_ready() -> Re
         actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
+    let files = Arc::new(FileBucket::new(data.path().to_path_buf())?);
+    let ownerships = Arc::new(crate::ownership::Ownerships::new(
+        Arc::new(crate::ownership::BucketOwnership::new(files.clone())),
+        Arc::new(crate::bucket::RuntimeStorageReader::new(
+            files,
+            Arc::new(crate::clock::SystemClock),
+            Arc::new(crate::litestream::EmbeddedRestore),
+        )?),
+    ));
+    let (control_plane, server) =
+        crate::control_plane::testing::serve_leases(ownerships.clone(), &issuer).await?;
     for before in [-1, 0, 1, 3] {
         run_activation(
             project.path(),
@@ -33,9 +44,11 @@ async fn generic_bun_host_restores_committed_state_before_becoming_ready() -> Re
             &issuer,
             &actor,
             before,
+            (&ownerships, &control_plane),
         )
         .await?;
     }
+    server.abort();
     Ok(())
 }
 
@@ -47,6 +60,7 @@ async fn run_activation(
     issuer: &ActorJwtIssuer,
     actor: &ActorKey,
     before: i64,
+    (ownerships, control_plane): (&crate::ownership::Ownerships, &str),
 ) -> Result<()> {
     let socket_dir = tempfile::tempdir_in("/tmp")?;
     let socket = socket_dir.path().join("executor.sock");
@@ -60,6 +74,12 @@ async fn run_activation(
     let actor_spool = std::env::temp_dir().join(format!("durable-actors-{host_id}"));
     assert!(!actor_spool.exists());
     let session = uuid::Uuid::new_v4().to_string();
+    let crate::ownership::Claim::Won(claim) = ownerships
+        .claim(actor, &host_id, &session, "north-america-east", None)
+        .await?
+    else {
+        anyhow::bail!("the previous session still holds the actor");
+    };
     let token = issuer
         .issue_host(
             "org-test",
@@ -93,7 +113,7 @@ async fn run_activation(
         "generic executor must warm without customer code"
     );
     let environment: HashMap<String, String> = serde_json::from_value(serde_json::json!({
-        "DURABLE_ACTORS_CONTROL_PLANE_URL": "http://127.0.0.1:1",
+        "DURABLE_ACTORS_CONTROL_PLANE_URL": control_plane,
         "DURABLE_ACTORS_HOST_TOKEN": token,
         "DURABLE_ACTORS_JWT_PUBLIC_KEYS": issuer.verifier_keys_json()?,
         "DURABLE_ACTORS_HOST_ID": host_id.as_str(), "DURABLE_ACTORS_SESSION_ID": session,
@@ -102,7 +122,7 @@ async fn run_activation(
         "DURABLE_ACTORS_HOST_READY_FILE": ready.to_str().unwrap(),
         "DURABLE_ACTORS_ENTRYPOINT": code.to_str().unwrap(),
         "DURABLE_ACTORS_ACTOR": serde_json::to_string(actor)?,
-        "DURABLE_ACTORS_ACTOR_IS_NEW": (before < 0).to_string(),
+        "DURABLE_ACTORS_OWNERSHIP_CLAIM": serde_json::to_string(&claim)?,
         "DURABLE_ACTORS_RUNTIME_CONFIG": serde_json::json!({
             "bucket": {"type": "file", "directory": data}, "region": "north-america-east", "persistence": {"type":"local"},
             "tokens": null

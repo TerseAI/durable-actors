@@ -13,6 +13,7 @@ use crate::{
 use super::HostEndpoint;
 
 const LEASE_RENEWAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const MIN_RENEWAL_RETRY: Duration = Duration::from_millis(250);
 
 pub(crate) struct HostLeaseMaintainer {
     endpoint: HostEndpoint,
@@ -96,29 +97,42 @@ impl HostLeaseMaintainer {
         shutdown: CancellationToken,
         lease_lost: watch::Sender<bool>,
     ) {
+        let mut failed = false;
         loop {
             if !self
-                .wait_until_renewal(local_deadline, &shutdown, &lease_lost)
+                .wait_until_renewal(local_deadline, failed, &shutdown, &lease_lost)
                 .await
             {
                 return;
             }
-            let Some(deadline) = self
+            let Some((deadline, renewed)) = self
                 .renew_before_deadline(local_deadline, &shutdown, &lease_lost)
                 .await
             else {
                 return;
             };
             local_deadline = deadline;
+            failed = !renewed;
         }
     }
 
     async fn wait_until_renewal(
         &self,
         local_deadline: Instant,
+        failed: bool,
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
     ) -> bool {
+        // Renews `renew_every` into a full lease, or sooner when a lease began before this host. After
+        // a failure, retries within what is left of the lease.
+        let renewal = if failed {
+            let left = local_deadline.saturating_duration_since(Instant::now());
+            Instant::now() + self.renew_every.min(left / 2).max(MIN_RENEWAL_RETRY)
+        } else {
+            local_deadline
+                .checked_sub(Duration::from_millis(self.lease_duration_ms) - self.renew_every)
+                .unwrap_or_else(Instant::now)
+        };
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => false,
@@ -130,7 +144,7 @@ impl HostLeaseMaintainer {
                 let _ = lease_lost.send(true);
                 false
             }
-            _ = tokio::time::sleep(self.renew_every) => true,
+            _ = tokio::time::sleep_until(renewal) => true,
         }
     }
 
@@ -139,7 +153,7 @@ impl HostLeaseMaintainer {
         local_deadline: Instant,
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
-    ) -> Option<Instant> {
+    ) -> Option<(Instant, bool)> {
         let renewal = self.renew_once_with_deadline();
         tokio::pin!(renewal);
         tokio::select! {
@@ -154,14 +168,14 @@ impl HostLeaseMaintainer {
                 None
             }
             result = &mut renewal => Some(match result {
-                Ok(confirmed) => confirmed.local_deadline,
+                Ok(confirmed) => (confirmed.local_deadline, true),
                 Err(error) => {
                     warn!(
                         host_id = %self.endpoint.id,
                         error = %format!("{error:#}"),
                         "host lease renewal failed; ownership checks will self-fence after expiry"
                     );
-                    local_deadline
+                    (local_deadline, false)
                 }
             }),
         }
@@ -195,7 +209,9 @@ impl HostLeaseMaintainer {
         // above. This makes the process fence no later than the locally confirmed
         // lease window, even when a renewal RPC consumed most of that window.
         let deadline_anchor = Instant::now();
-        let remaining_ms = local_valid_until_ms.saturating_sub(self.clock.now_ms()?);
+        let remaining_ms = local_valid_until_ms
+            .min(lease.expires_at_ms)
+            .saturating_sub(self.clock.now_ms()?);
         ensure!(
             remaining_ms > 0,
             "host lease expired before its registration response arrived"

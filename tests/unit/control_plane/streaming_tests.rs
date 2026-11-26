@@ -556,7 +556,7 @@ impl Stack {
             Duration::from_secs(60),
         )?;
         let mut service = ControlPlaneService::new(
-            runtime.runtime.clone(),
+            runtime.ownerships.clone(),
             auth,
             registry.clone(),
             issuer.clone(),
@@ -642,16 +642,25 @@ impl Stack {
                 actor.clone(),
             )
             .await?
-            .with_activation(true, None),
+            .with_claim(
+                runtime
+                    .claim(
+                        &actor,
+                        &host_id,
+                        "00000000-0000-4000-8000-000000000001",
+                        "us-east",
+                    )
+                    .await?,
+            ),
         );
-        storage
-            .register(&HostLeaseRequest {
-                id: host_id.clone(),
-                session_id: "00000000-0000-4000-8000-000000000001".into(),
-                route: host_route.clone(),
-                duration_ms: 60_000,
-            })
-            .await?;
+        let lease = HostLeaseRequest {
+            id: host_id.clone(),
+            session_id: "00000000-0000-4000-8000-000000000001".into(),
+            route: host_route.clone(),
+            duration_ms: 60_000,
+        };
+        storage.register(&lease).await?;
+        runtime.ownerships.renew(&actor, &lease).await?;
 
         let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(
             actor.clone(),
@@ -935,8 +944,8 @@ impl HostProvisioner for SocketTestProvisioner {
         _spec: &HostLaunchSpec,
         _region: &str,
         _actor: &ActorKey,
-        _new_actor: bool,
-        _owner_hint: Option<&crate::bucket::OwnershipHint>,
+        _claim: &crate::ownership::ActorClaim,
+        _node: Option<&str>,
         _: Option<&crate::sandbox::assignment::InitialOperation>,
     ) -> Result<(HostLease, u64, Option<crate::payload::JsonText>)> {
         anyhow::bail!("fixture host must be active")

@@ -6,7 +6,6 @@ mod local_project;
 mod sqlite;
 
 mod actor_calls;
-mod bucket_authority;
 mod immutable_state;
 mod local_contract;
 mod reentrant;
