@@ -13,6 +13,7 @@ use crate::{
 use super::HostEndpoint;
 
 const LEASE_RENEWAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const MIN_RENEWAL_RETRY: Duration = Duration::from_millis(250);
 
 pub(crate) struct HostLeaseMaintainer {
     endpoint: HostEndpoint,
@@ -122,9 +123,11 @@ impl HostLeaseMaintainer {
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
     ) -> bool {
-        // Renews `renew_every` into a full lease, or sooner when a lease began before this host.
+        // Renews `renew_every` into a full lease, or sooner when a lease began before this host. After
+        // a failure, retries within what is left of the lease.
         let renewal = if failed {
-            Instant::now() + self.renew_every
+            let left = local_deadline.saturating_duration_since(Instant::now());
+            Instant::now() + self.renew_every.min(left / 2).max(MIN_RENEWAL_RETRY)
         } else {
             local_deadline
                 .checked_sub(Duration::from_millis(self.lease_duration_ms) - self.renew_every)
