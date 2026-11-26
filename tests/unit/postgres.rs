@@ -322,3 +322,23 @@ async fn check_concurrent_connections(url: &str) -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn an_advisory_lock_admits_one_session_until_it_drops() -> Result<()> {
+    with_postgres(async |fixture| {
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        let held = database.try_advisory_lock("test").await?;
+        assert!(held.is_some());
+        assert!(database.try_advisory_lock("test").await?.is_none());
+        drop(held);
+        let released = async {
+            while database.try_advisory_lock("test").await?.is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            anyhow::Ok(())
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), released).await??;
+        Ok(())
+    })
+    .await
+}

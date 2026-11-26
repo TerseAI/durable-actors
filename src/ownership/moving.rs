@@ -11,6 +11,7 @@ use super::{
 use crate::{actor::ActorKey, clock::Clock};
 
 const BACKFILL_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const BACKFILL_LOCK: &str = "ownership-backfill";
 const CONCURRENT_MOVES: usize = 16;
 
 /// Ownership while a cluster moves from the bucket to PostgreSQL. Reads try PostgreSQL first. A
@@ -35,22 +36,36 @@ impl MovingOwnership {
         }
     }
 
-    /// Moves records until none are left in the bucket. Live leases move once they end.
+    /// Moves records until none are left in the bucket; live leases move once they end. One
+    /// control plane at a time does this, holding a PostgreSQL lock, and the one that finishes keeps
+    /// the lock so the others never scan the bucket again.
     pub(crate) fn start_backfill(self: Arc<Self>, stop: CancellationToken) {
         tokio::spawn(async move {
+            let _lock = loop {
+                match self.postgres.try_lock(BACKFILL_LOCK).await {
+                    Ok(Some(lock)) => break lock,
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "ownership backfill lock deferred")
+                    }
+                }
+                if !wait(&stop).await {
+                    return;
+                }
+            };
             loop {
                 match self.backfill().await {
-                    Ok(0) => return,
+                    Ok(0) => break,
                     Ok(_) => {}
                     Err(error) => {
                         tracing::warn!(error = %format!("{error:#}"), "ownership backfill deferred")
                     }
                 }
-                tokio::select! {
-                    _ = stop.cancelled() => return,
-                    _ = tokio::time::sleep(BACKFILL_INTERVAL) => {}
+                if !wait(&stop).await {
+                    return;
                 }
             }
+            stop.cancelled().await;
         });
     }
 
@@ -154,5 +169,13 @@ impl OwnershipStore for MovingOwnership {
         let mut unsealed = self.postgres.unsealed().await?;
         unsealed.extend(self.bucket.unsealed().await?);
         Ok(unsealed)
+    }
+}
+
+/// Waits one backfill interval; `false` once the control plane stops.
+async fn wait(stop: &CancellationToken) -> bool {
+    tokio::select! {
+        _ = stop.cancelled() => false,
+        _ = tokio::time::sleep(BACKFILL_INTERVAL) => true,
     }
 }

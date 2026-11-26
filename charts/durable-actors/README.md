@@ -72,7 +72,7 @@ Every configured copy must durably flush before a Rapid write is acknowledged. W
 
 The control plane claims each actor before it assigns a host, and hosts renew and release their 60-second leases through it. `storage.ownership` chooses where those records live: `bucket` (default) keeps one object per actor in the Standard bucket, and `postgres` keeps them in the `actor_ownership` table.
 
-To move a running installation from `bucket` to `postgres`, roll out `bucket-to-postgres` first. It reads PostgreSQL before the bucket and moves each actor's record the next time it changes, replacing the bucket object with a marker that earlier releases cannot claim. A background backfill moves the rest and logs `ownership_backfill` with the number still `remaining`, which counts live leases and records it could not read (`unreadable`). Once every control plane runs `bucket-to-postgres` and `remaining` is 0, roll out `postgres`.
+To move a running installation from `bucket` to `postgres`, roll out `bucket-to-postgres` first. It reads PostgreSQL before the bucket and moves each actor's record the next time it changes, replacing the bucket object with a marker that earlier releases cannot claim. A background backfill, run by one control plane at a time, moves the rest and logs `ownership_backfill` with the number still `remaining`, which counts live leases and records it could not read (`unreadable`). Once every control plane runs `bucket-to-postgres` and `remaining` is 0, roll out `postgres`.
 
 ## Advanced settings
 
