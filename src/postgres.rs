@@ -100,7 +100,7 @@ impl PostgresDatabase {
             )
             .await?
             .get(0);
-        Ok(locked.then_some(AdvisoryLock { _session: client }))
+        Ok(locked.then_some(AdvisoryLock { session: client }))
     }
 
     pub(crate) async fn query(
@@ -131,7 +131,14 @@ impl PostgresDatabase {
 }
 
 pub(crate) struct AdvisoryLock {
-    _session: deadpool_postgres::ClientWrapper,
+    session: deadpool_postgres::ClientWrapper,
+}
+
+impl AdvisoryLock {
+    /// Whether the session that held the lock ended, which released it.
+    pub(crate) fn is_lost(&self) -> bool {
+        self.session.is_closed()
+    }
 }
 
 async fn migrate(pool: &Pool) -> Result<()> {
