@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use super::{RequestOutcome, TRACE_CAPACITY, logs::MAX_HISTOGRAM_BUCKETS};
+use super::{RequestKind, RequestOutcome, TRACE_CAPACITY, logs::MAX_HISTOGRAM_BUCKETS};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -97,6 +97,7 @@ fn page_size() -> usize {
 pub(crate) struct RequestHistogramQuery {
     pub actor_name: Option<String>,
     pub actor_id: Option<String>,
+    pub kind: Option<RequestKind>,
     pub from_ms: u64,
     pub to_ms: u64,
     pub bucket_ms: u64,
@@ -167,6 +168,8 @@ pub(crate) struct RequestCounts {
     pub queue_waits: u64,
     /// Summed time excluding the queue wait.
     pub run_ms: f64,
+    /// Summed time spent routing requests to the host.
+    pub routing_ms: f64,
 }
 
 impl RequestCounts {
@@ -177,6 +180,7 @@ impl RequestCounts {
         queue_wait_ms: f64,
         queue_waits: u64,
         run_ms: f64,
+        routing_ms: f64,
     ) {
         let count = match outcome {
             RequestOutcome::Completed => &mut self.ok,
@@ -189,5 +193,6 @@ impl RequestCounts {
         self.queue_wait_ms += queue_wait_ms;
         self.queue_waits += queue_waits;
         self.run_ms += run_ms;
+        self.routing_ms += routing_ms;
     }
 }

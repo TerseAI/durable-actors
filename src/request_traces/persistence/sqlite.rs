@@ -128,10 +128,21 @@ impl TraceQueries for SqliteTracePersistence {
         to_ms: u64,
         open_only: bool,
         limit: usize,
+        actor: Option<(&str, Option<&str>)>,
     ) -> Result<Vec<crate::request_traces::sockets::SocketRecord>> {
         let project_id = project_id.to_owned();
+        let actor_name = actor.map(|(name, _)| name.to_owned());
+        let actor_id = actor.and_then(|(_, id)| id.map(str::to_owned));
         self.run(move |connection| {
-            platform::socket_records(connection, &project_id, to_ms, open_only, limit)
+            platform::socket_records(
+                connection,
+                &project_id,
+                to_ms,
+                open_only,
+                limit,
+                actor_name.as_deref(),
+                actor_id.as_deref(),
+            )
         })
         .await
     }

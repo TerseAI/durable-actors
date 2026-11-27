@@ -110,8 +110,9 @@ impl TraceQueries for ClickHouseTracePersistence {
         to_ms: u64,
         open_only: bool,
         limit: usize,
+        actor: Option<(&str, Option<&str>)>,
     ) -> Result<Vec<crate::request_traces::sockets::SocketRecord>> {
-        self.read_socket_records(project, to_ms, open_only, limit)
+        self.read_socket_records(project, to_ms, open_only, limit, actor)
             .await
     }
 

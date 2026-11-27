@@ -1,10 +1,11 @@
 import type { ReactNode } from "react"
 
 import { formatBytes, formatClock, formatCpu, formatMebibytes, scaleBytes } from "../../format.js"
+import { killLabels } from "../../lib/kills.js"
 import { bucketLatest, bucketMax } from "../../lib/resources.js"
 import { bucketLabel, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import { cn } from "../../lib/utils.js"
-import type { ActorKill, KillReason } from "../../types/Kills.js"
+import type { ActorKill } from "../../types/Kills.js"
 import type { ResourceUsage, SandboxResources, UsagePoint } from "../../types/Resources.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
 import { Skeleton } from "../ui/skeleton.js"
@@ -13,13 +14,6 @@ import { TrendCard } from "../ui/trendCard.js"
 
 const mebibyte = 1_048_576
 const noSamples = "No samples in this window. Local development doesn't measure CPU or memory."
-
-const killLabels: Record<KillReason, string> = {
-    out_of_memory: "Out of memory",
-    out_of_disk: "Out of disk",
-    evicted: "Evicted",
-    killed: "Killed"
-}
 
 export type ResourceCardProps = {
     resources: ResourceUsage | null

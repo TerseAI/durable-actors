@@ -11,7 +11,8 @@ use crate::{
     host_leases::WaitingOperation,
     placement::{
         ActorInstanceOverview, ActorInventory, ActorInventoryReader, ActorInventorySnapshot,
-        ActorResidency, ResidencyHistory, ResidencyQuery,
+        ActorResidency, ActorTypesPage, ActorTypesQuery, InstancePage, InstancePageQuery,
+        InstanceRow, ObservedActorType, ResidencyHistory, ResidencyQuery,
     },
     platform_events::{NoPlatformEvents, PlatformEvents},
     sandbox::ResourceLimits,
@@ -109,6 +110,81 @@ impl UsageUpdate {
 pub(crate) trait LifecyclePersistence: Send + Sync {
     async fn record(&self, event: &LifecycleEvent) -> Result<()>;
     async fn latest(&self, project: &str) -> Result<Vec<LifecycleEvent>>;
+
+    async fn instance_page(
+        &self,
+        project: &str,
+        query: &InstancePageQuery,
+        now: u64,
+        sockets: &BTreeMap<String, u64>,
+    ) -> Result<InstancePage> {
+        let mut remaining = sockets.clone();
+        let mut rows: Vec<_> = self
+            .latest(project)
+            .await?
+            .into_iter()
+            .filter(|event| event.actor.actor_name == query.actor_name)
+            .map(|event| {
+                let count = remaining.remove(&event.actor.actor_id).unwrap_or_default();
+                InstanceRow::from_overview(instance_overview(event, now), count)
+            })
+            .collect();
+        rows.extend(
+            remaining
+                .into_iter()
+                .map(|(id, count)| InstanceRow::socket_only(id, count)),
+        );
+        Ok(InstancePage::from_rows(rows, query))
+    }
+
+    async fn actor_types_page(
+        &self,
+        project: &str,
+        query: &ActorTypesQuery,
+        now: u64,
+        sockets: &BTreeMap<(String, String), u64>,
+        deployed: &[String],
+    ) -> Result<ActorTypesPage> {
+        let mut types: BTreeMap<_, _> = deployed
+            .iter()
+            .cloned()
+            .map(|name| {
+                (
+                    name.clone(),
+                    ObservedActorType {
+                        actor_name: name,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let mut remaining = sockets.clone();
+        for event in self.latest(project).await? {
+            let status = residency(&event, now);
+            let name = event.actor.actor_name;
+            remaining.remove(&(name.clone(), event.actor.actor_id));
+            types
+                .entry(name.clone())
+                .or_insert_with(|| ObservedActorType {
+                    actor_name: name,
+                    ..Default::default()
+                })
+                .count(status);
+        }
+        for (name, _) in remaining.into_keys() {
+            types
+                .entry(name.clone())
+                .or_insert_with(|| ObservedActorType {
+                    actor_name: name,
+                    ..Default::default()
+                })
+                .count(ActorResidency::Dormant);
+        }
+        Ok(ActorTypesPage::from_types(
+            types.into_values().collect(),
+            query,
+        ))
+    }
 
     /// The runs formed by the reports the query covers.
     async fn residency_runs(
@@ -295,6 +371,31 @@ impl LifecycleStore {
     }
 }
 
+impl LifecycleStore {
+    pub(crate) async fn read_actor_types_page(
+        &self,
+        project: &str,
+        query: &ActorTypesQuery,
+        sockets: &BTreeMap<(String, String), u64>,
+        deployed: &[String],
+    ) -> Result<ActorTypesPage> {
+        self.persistence
+            .actor_types_page(project, query, SystemClock.now_ms()?, sockets, deployed)
+            .await
+    }
+
+    pub(crate) async fn read_instance_page(
+        &self,
+        project: &str,
+        query: &InstancePageQuery,
+        sockets: &BTreeMap<String, u64>,
+    ) -> Result<InstancePage> {
+        self.persistence
+            .instance_page(project, query, SystemClock.now_ms()?, sockets)
+            .await
+    }
+}
+
 #[async_trait]
 impl ActorInventoryReader for LifecycleStore {
     async fn actor_inventory(&self, project: &str) -> Result<ActorInventorySnapshot> {
@@ -352,6 +453,7 @@ pub(crate) fn instance_overview(event: LifecycleEvent, now: u64) -> ActorInstanc
             ActorResidency::Dormant if stopped => Some(Vec::new()),
             _ => Some(event.report.waiting),
         },
+        database_bytes: event.report.database_bytes,
     }
 }
 

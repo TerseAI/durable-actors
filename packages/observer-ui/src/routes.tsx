@@ -32,7 +32,7 @@ export function ObserverRoutes() {
 }
 
 // Views on a page read the store when they mount; the shared ones re-read on each navigation.
-const sharedViews = ["actors", "websockets", "requests"]
+const sharedViews = ["websockets"]
 
 function RefreshOnNavigate() {
     const { pathname } = useLocation()

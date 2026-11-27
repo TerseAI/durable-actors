@@ -1,20 +1,47 @@
 import { Link } from "react-router"
 
-import { useData } from "../../client/DatatContext.js"
 import { formatCount, formatPercent, formatPlural } from "../../format.js"
-import { type ActorTypeSummary, actorTypePath, summarizeActorType } from "../../lib/actorTypes.js"
+import { type ActorTypeSummary, actorTypePath } from "../../lib/actorTypes.js"
+import type { ActorTypesPage } from "../../types/Actors.js"
+import { Button } from "../ui/button.js"
+import { Pagination } from "../ui/pagination.js"
 import { ResidencyBar } from "../ui/residencyBar.js"
 import { SectionCard } from "../ui/sectionCard.js"
 import { Skeleton } from "../ui/skeleton.js"
 
-export function ActorTypesCard() {
-    const { actorTypes, isError } = useData()
-    const rows = actorTypes && actorTypes.actors.map(summarizeActorType).sort((a, b) => b.total - a.total)
+export function ActorTypesCard({
+    data,
+    failed,
+    retry,
+    page,
+    pageCount,
+    pageSize,
+    onPage
+}: {
+    data: ActorTypesPage | undefined
+    failed: boolean
+    retry: () => void
+    page: number
+    pageCount: number
+    pageSize: number
+    onPage: (page: number) => void
+}) {
+    const rows = data?.actors.map(actor => ({ ...actor, total: actor.live + actor.dormant + actor.unknown })) ?? null
     return (
-        <SectionCard title="Actor Types" aside={<ResidencyKey />} busy={!rows && !isError} className="pb-2.5">
+        <SectionCard title="Actor Types" aside={<ResidencyKey />} busy={!rows && !failed} className="pb-2.5">
             <div className="mt-1.5">
-                <ActorTypeLanes rows={rows} failed={isError} />
+                {failed ? (
+                    <div className="flex items-center gap-2 py-4 text-[13px] text-muted-foreground">
+                        <p role="alert">Couldn't load actor types.</p>
+                        <Button type="button" variant="outline" size="xs" onClick={retry}>
+                            Retry
+                        </Button>
+                    </div>
+                ) : (
+                    <ActorTypeLanes rows={rows} largest={Math.max(data?.largest ?? 0, 1)} />
+                )}
             </div>
+            {data && data.total > 0 && <Pagination page={page} pageCount={pageCount} pageSize={pageSize} total={data.total} noun="actor types" onPage={onPage} />}
         </SectionCard>
     )
 }
@@ -34,11 +61,9 @@ function ResidencyKey() {
     )
 }
 
-function ActorTypeLanes({ rows, failed }: { rows: ActorTypeSummary[] | null; failed: boolean }) {
-    if (failed) return <p className="py-4 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
+function ActorTypeLanes({ rows, largest }: { rows: ActorTypeSummary[] | null; largest: number }) {
     if (!rows) return <LaneSkeletons />
     if (!rows.length) return <p className="py-4 text-[13px] text-muted-foreground">No actor types deployed yet.</p>
-    const largest = Math.max(...rows.map(row => row.total), 1)
     return (
         <ul>
             {rows.map(row => (

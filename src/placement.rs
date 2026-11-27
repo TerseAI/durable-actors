@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{actor_state::ActorStorageKey, host::HostId};
 
+mod instances;
+pub use instances::{
+    ActorTypesPage, ActorTypesQuery, InstancePage, InstancePageQuery, InstanceRow, InstanceSort,
+    ObservedActorType,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectPlacement {
     pub lease: crate::host_leases::HostLease,
@@ -47,7 +53,7 @@ pub fn validate_region(region: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ActorResidency {
     Live,
@@ -68,6 +74,8 @@ pub struct ActorInstanceOverview {
     pub stale_at_ms: Option<u64>,
     pub connections: Vec<ActorConnectionInventory>,
     pub waiting: Option<Vec<crate::host_leases::WaitingOperation>>,
+    /// The SQLite database size in the latest report; null when that report did not measure it.
+    pub database_bytes: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -93,6 +101,80 @@ pub struct ActorInventory {
 #[async_trait]
 pub trait ActorInventoryReader: Send + Sync {
     async fn actor_inventory(&self, project_id: &str) -> Result<ActorInventorySnapshot>;
+
+    async fn instance_page(
+        &self,
+        project: &str,
+        query: &InstancePageQuery,
+    ) -> Result<InstancePage> {
+        let Some(actor) = self
+            .actor_inventory(project)
+            .await?
+            .actors
+            .into_iter()
+            .find(|actor| actor.actor_name == query.actor_name)
+        else {
+            return Ok(InstancePage::default());
+        };
+        let rows = actor
+            .instances
+            .into_iter()
+            .map(|instance| {
+                let count = instance.connections.len() as u64;
+                InstanceRow::from_overview(instance, count)
+            })
+            .collect();
+        Ok(InstancePage::from_rows(rows, query))
+    }
+
+    async fn actor_types_page(
+        &self,
+        project: &str,
+        query: &ActorTypesQuery,
+        deployed: &[String],
+    ) -> Result<ActorTypesPage> {
+        let snapshot = self.actor_inventory(project).await?;
+        let open_sockets = snapshot
+            .actors
+            .iter()
+            .flat_map(|actor| &actor.instances)
+            .map(|instance| instance.connections.len() as u64)
+            .sum();
+        let mut by_name: std::collections::BTreeMap<_, _> = snapshot
+            .actors
+            .into_iter()
+            .map(|actor| {
+                let ActorInventory {
+                    actor_name,
+                    live,
+                    dormant,
+                    unknown,
+                    ..
+                } = actor;
+                (
+                    actor_name.clone(),
+                    ObservedActorType {
+                        actor_name,
+                        live,
+                        dormant,
+                        unknown,
+                    },
+                )
+            })
+            .collect();
+        for name in deployed {
+            by_name
+                .entry(name.clone())
+                .or_insert_with(|| ObservedActorType {
+                    actor_name: name.clone(),
+                    ..Default::default()
+                });
+        }
+        let mut page = ActorTypesPage::from_types(by_name.into_values().collect(), query);
+        page.open_sockets = open_sockets;
+        page.gateways = snapshot.gateways;
+        Ok(page)
+    }
 
     async fn residency_history(
         &self,

@@ -1,106 +1,92 @@
-import { useState } from "react"
 import { useParams } from "react-router"
 
 import { useData } from "../../client/DatatContext.js"
 import { useTimeWindow } from "../../client/TimeRangeContext.js"
 import { formatAgo, formatClock, formatDuration } from "../../format.js"
-import { useInstanceRequests } from "../../hooks/useActorRequests.js"
 import { useEventHistory } from "../../hooks/useEventHistory.js"
+import { useInstancePage } from "../../hooks/useInstancePage.js"
 import { useRequestHistogram } from "../../hooks/useRequests.js"
 import { useResidency } from "../../hooks/useResidency.js"
 import { useResources } from "../../hooks/useResources.js"
-import { averageQueueWait, averageRunTime } from "../../lib/requestStats.js"
+import { averageQueueWait, averageServerTime } from "../../lib/requestStats.js"
 import { describeWindow } from "../../lib/timeRange.js"
-import type { ActorInstance } from "../../types/Actors.js"
+import type { InstanceRow } from "../../types/Actors.js"
 import type { ResidencyPeriod } from "../../types/Residency.js"
 import type { TimeWindow } from "../../types/TimeRange.js"
 import { InstanceStatus } from "../actorType/instanceStatus.js"
-import { groupLivePeriods } from "../actorType/residencyCard.js"
 import { TimingCard } from "../actorType/timingCard.js"
+import { LogsCard } from "../logs/logsCard.js"
 import { RequestRateTrend } from "../overview/requestRateCard.js"
 import { TimeRangeControl } from "../timeRange/timeRangeControl.js"
 import { PageHeader } from "../ui/pageHeader.js"
 import { Skeleton } from "../ui/skeleton.js"
 
-import { ConnectionsCard } from "./connectionsCard.js"
-import { EventsCard } from "./eventsCard.js"
-import { LogsCard, logsCardId } from "./logsCard.js"
-import { RequestsCard } from "./requestsCard.js"
 import { CpuCard, MemoryCard, StorageCard } from "./resourceCards.js"
 
 export function InstancePage() {
     const { actorName = "", actorId = "" } = useParams()
-    const { baseUrl, events, actorTypes, isError, sessions, isSocketsError } = useData()
     const timeWindow = useTimeWindow()
-    const { requests: ownRequests, isError: isRequestsError } = useInstanceRequests(actorName, actorId)
-    const { histogram, isError: isHistogramError } = useRequestHistogram(baseUrl, timeWindow, { actorName, actorId }, events)
-    const { residency, isError: isResidencyError } = useResidency(actorName, timeWindow, actorId)
-    const { resources, isError: isResourcesError } = useResources(actorName, actorId, timeWindow)
-    const { history: killHistory } = useEventHistory(["kill"], timeWindow, actorName, actorId)
-    const kills = (killHistory?.events ?? []).map(event => event.item).reverse()
-    const instance = actorTypes?.actors.find(type => type.actorName === actorName)?.instances.find(candidate => candidate.actorId === actorId) ?? null
-    const ownSessions = sessions?.filter(session => session.actorName === actorName && session.actorId === actorId) ?? null
-    const livePeriods = residency && (groupLivePeriods(residency).get(actorId) ?? [])
-    const [logRequestId, setLogRequestId] = useState<string | null>(null)
-    function showRequestLogs(requestId: string) {
-        setLogRequestId(requestId)
-        document.getElementById(logsCardId)?.scrollIntoView({ behavior: "smooth", block: "start" })
-    }
+    const { residency } = useResidency(actorName, timeWindow, actorId)
+    const { data, error } = useInstancePage({ actorName, actorId, limit: 1 }, timeWindow.live)
+    const instance = data?.instances[0] ?? null
+    const livePeriods = residency && residency.periods.filter(period => period.actorId === actorId && period.status === "live")
 
     return (
         <section aria-labelledby="instance-heading" className="flex flex-col gap-5">
-            <InstanceHeader actorName={actorName} actorId={actorId} instance={instance} livePeriods={livePeriods} timeWindow={timeWindow} loading={!actorTypes && !isError} />
-            {actorTypes && !instance ? (
+            <InstanceHeader actorName={actorName} actorId={actorId} instance={instance} livePeriods={livePeriods} timeWindow={timeWindow} loading={!data && !error} />
+            {data && !instance ? (
                 <p className="text-[13px] text-muted-foreground">
                     No {actorName} instance named {actorId} is deployed.
                 </p>
             ) : (
-                <div className="flex flex-col gap-4">
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        <RequestRateTrend histogram={histogram} failed={isHistogramError} timeWindow={timeWindow} color="var(--foreground)" />
-                        <TimingCard
-                            label="Avg Queue Wait"
-                            pick={averageQueueWait}
-                            color="var(--chart-1)"
-                            chartLabel={`Average queue wait, ${describeWindow(timeWindow)}`}
-                            histogram={histogram}
-                            failed={isHistogramError}
-                            timeWindow={timeWindow}
-                        />
-                        <TimingCard
-                            label="Avg Request Time"
-                            pick={averageRunTime}
-                            color="var(--foreground)"
-                            chartLabel={`Average request time excluding the queue, ${describeWindow(timeWindow)}`}
-                            histogram={histogram}
-                            failed={isHistogramError}
-                            timeWindow={timeWindow}
-                        />
-                        <CpuCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
-                        <MemoryCard resources={resources} kills={kills} failed={isResourcesError} timeWindow={timeWindow} />
-                        <StorageCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
-                    </div>
-                    <RequestsCard requests={ownRequests} failed={isRequestsError} timeWindow={timeWindow} onShowLogs={showRequestLogs} />
-                    <ConnectionsCard
-                        instance={instance}
-                        sessions={ownSessions}
-                        livePeriods={livePeriods}
-                        requests={ownRequests}
-                        failed={isError || isSocketsError || isResidencyError}
-                        timeWindow={timeWindow}
-                    />
-                    <LogsCard actorName={actorName} actorId={actorId} requests={ownRequests} requestId={logRequestId} onRequestChange={setLogRequestId} timeWindow={timeWindow} />
-                    <EventsCard actorName={actorName} actorId={actorId} timeWindow={timeWindow} />
-                </div>
+                <>
+                    <InstanceMetrics actorName={actorName} actorId={actorId} />
+                    <LogsCard actorName={actorName} actorId={actorId} methods={data?.methods} timeWindow={timeWindow} />
+                </>
             )}
         </section>
+    )
+}
+
+function InstanceMetrics({ actorName, actorId }: { actorName: string; actorId: string }) {
+    const { baseUrl, events } = useData()
+    const timeWindow = useTimeWindow()
+    const { histogram, isError: isHistogramError } = useRequestHistogram(baseUrl, timeWindow, { actorName, actorId }, events)
+    const { resources, isError: isResourcesError } = useResources(actorName, actorId, timeWindow)
+    const { history: killHistory } = useEventHistory(["kill"], timeWindow, actorName, actorId)
+    const kills = (killHistory?.events ?? []).map(event => event.item).reverse()
+    return (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <RequestRateTrend histogram={histogram} failed={isHistogramError} timeWindow={timeWindow} color="var(--foreground)" />
+            <TimingCard
+                label="Avg Server Time"
+                pick={averageServerTime}
+                color="var(--chart-2)"
+                chartLabel={`Average server time, ${describeWindow(timeWindow)}`}
+                histogram={histogram}
+                failed={isHistogramError}
+                timeWindow={timeWindow}
+            />
+            <TimingCard
+                label="Avg Queue Wait"
+                pick={averageQueueWait}
+                color="var(--chart-1)"
+                chartLabel={`Average queue wait, ${describeWindow(timeWindow)}`}
+                histogram={histogram}
+                failed={isHistogramError}
+                timeWindow={timeWindow}
+            />
+            <CpuCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
+            <MemoryCard resources={resources} kills={kills} failed={isResourcesError} timeWindow={timeWindow} />
+            <StorageCard resources={resources} failed={isResourcesError} timeWindow={timeWindow} />
+        </div>
     )
 }
 
 type InstanceHeaderProps = {
     actorName: string
     actorId: string
-    instance: ActorInstance | null
+    instance: InstanceRow | null
     livePeriods: ResidencyPeriod[] | null
     timeWindow: TimeWindow
     loading: boolean
@@ -145,7 +131,7 @@ function StatusPill({ live }: { live: boolean }) {
     )
 }
 
-function residencyLabel(instance: ActorInstance, livePeriods: ResidencyPeriod[] | null, { fromMs, toMs }: TimeWindow): string {
+function residencyLabel(instance: InstanceRow, livePeriods: ResidencyPeriod[] | null, { fromMs, toMs }: TimeWindow): string {
     if (instance.status !== "live") return instance.lastActiveAtMs ? `Last active ${formatAgo(instance.lastActiveAtMs, toMs)}` : "Dormant"
     const since = livePeriods?.at(-1)?.fromMs
     if (since === undefined) return "Live"

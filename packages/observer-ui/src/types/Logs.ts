@@ -22,11 +22,3 @@ export interface LogHistogram {
     bucketMs: number
     buckets: LevelCounts[]
 }
-
-export interface LogFilter {
-    actorName: string
-    actorId: string
-    requestId: string | null
-    level: LogLevel | null
-    search: string
-}

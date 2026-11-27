@@ -4,13 +4,15 @@ import { cn } from "../../lib/utils.js"
 
 export type StatCardProps = {
     label: string
+    /** One line under the label saying exactly what the figure measures. */
+    hint?: string
     value?: ReactNode
     unit?: ReactNode
     busy?: boolean
     children?: ReactNode
 }
 
-export function StatCard({ label, value, unit, busy, children }: StatCardProps) {
+export function StatCard({ label, hint, value, unit, busy, children }: StatCardProps) {
     const labelId = useId()
     return (
         <article
@@ -21,7 +23,8 @@ export function StatCard({ label, value, unit, busy, children }: StatCardProps) 
             <span id={labelId} className="truncate text-[13px] font-medium text-muted-foreground">
                 {label}
             </span>
-            {value !== undefined && <StatFigure value={value} unit={unit} className="mt-3.5" />}
+            {hint && <span className="mt-0.5 truncate text-[11.5px] text-muted-foreground/75">{hint}</span>}
+            {value !== undefined && <StatFigure value={value} unit={unit} className={hint ? "mt-3" : "mt-3.5"} />}
             {children}
         </article>
     )

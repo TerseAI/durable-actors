@@ -24,10 +24,12 @@ export type LogChartProps = {
     histogram: LogHistogram | undefined
     level: LogLevel | null
     live: boolean
+    /** The counts cover only the newest records the search reads. */
+    partial?: boolean
     onZoom: (span: TimeSpan) => void
 }
 
-export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
+export function LogChart({ histogram, level, live, partial, onZoom }: LogChartProps) {
     const [hovered, setHovered] = useState<number | null>(null)
     const [drag, setDrag] = useState<Drag | null>(null)
     if (!histogram) return <ChartSkeleton />
@@ -51,7 +53,7 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
                 <Gridlines scale={scale} />
                 <div
                     role="img"
-                    aria-label={`Log lines per ${formatDuration(bucketMs)}; drag across the chart to zoom into a time range`}
+                    aria-label={`Entries per ${formatDuration(bucketMs)}; drag across the chart to zoom into a time range`}
                     className="relative ml-[42px] h-24 cursor-crosshair touch-none select-none"
                     onPointerDown={event => {
                         event.currentTarget.setPointerCapture(event.pointerId)
@@ -74,6 +76,7 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
                 </div>
             </div>
             <TimeLabels histogram={histogram} live={live} />
+            {partial && <p className="mt-2 text-[11.5px] text-muted-foreground">This search counts only its newest matches. Narrow the time range to count them all.</p>}
         </div>
     )
 }

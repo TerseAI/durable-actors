@@ -212,7 +212,7 @@ impl TraceStore {
         let (from_ms, to_ms) = (query.from_ms.unwrap_or(0), query.to_ms.unwrap_or(u64::MAX));
         let (records, heartbeats) = tokio::try_join!(
             self.queries
-                .socket_records(project_id, to_ms, false, sockets::SESSION_LIMIT),
+                .socket_records(project_id, to_ms, false, sockets::SESSION_LIMIT, None),
             self.queries.gateway_heartbeats(project_id),
         )?;
         let mut sessions = sockets::sessions(records, &heartbeats, SystemClock.now_ms()?);
@@ -245,11 +245,12 @@ impl TraceStore {
     pub(crate) async fn open_connections(
         &self,
         project_id: &str,
+        actor: Option<(&str, Option<&str>)>,
     ) -> Result<sockets::OpenConnections> {
         validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
         let (records, heartbeats) = tokio::try_join!(
             self.queries
-                .socket_records(project_id, u64::MAX, true, sockets::OPEN_LIMIT),
+                .socket_records(project_id, u64::MAX, true, sockets::OPEN_LIMIT, actor),
             self.queries.gateway_heartbeats(project_id),
         )?;
         let sessions = sockets::sessions(records, &heartbeats, SystemClock.now_ms()?);
