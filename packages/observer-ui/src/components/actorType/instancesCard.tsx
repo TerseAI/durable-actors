@@ -27,7 +27,7 @@ type Column = {
     render: (instance: InstanceRow, now: number) => ReactNode
 }
 
-const pageRows = 25
+const pageRows = 10
 const defaultSort: Sort = { key: "lastActive", descending: true }
 
 const columns: Column[] = [
