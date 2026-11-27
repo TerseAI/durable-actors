@@ -18,6 +18,16 @@ export interface InstanceChange {
     databaseBytes: number | null
 }
 
+/** An instance that started or stopped; instance changes carry its state, this marks the moment. */
+export interface ActorLifecycle {
+    actorName: string
+    actorId: string
+    atMs: number
+    kind: "started" | "stopped"
+    /** How long a stopped instance had been live, when its start is known. */
+    liveForMs?: number
+}
+
 /** One sample of the CPU and memory of the sandbox an instance runs in. */
 export interface ActorUsage {
     actorName: string
@@ -71,8 +81,9 @@ export type ObserveEvent =
     | { type: "deployment"; item: Deployment }
     | { type: "kill"; item: ActorKill }
     | { type: "usage"; item: ActorUsage }
+    | { type: "lifecycle"; item: ActorLifecycle }
 
-export const observeEventTypes: ObserveEvent["type"][] = ["request", "log", "instance", "connectionOpened", "connectionClosed", "gatewayAlive", "deployment", "kill", "usage"]
+export const observeEventTypes: ObserveEvent["type"][] = ["request", "log", "instance", "connectionOpened", "connectionClosed", "gatewayAlive", "deployment", "kill", "usage", "lifecycle"]
 
 /** An event `observe/events/history` keeps: one that happens once. The other types have their own views. */
 export type RecordedEvent = Extract<ObserveEvent, { type: "kill" }>

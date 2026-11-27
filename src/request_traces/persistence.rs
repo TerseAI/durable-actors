@@ -47,6 +47,7 @@ pub(crate) trait TraceQueries: Send + Sync {
         to_ms: u64,
         open_only: bool,
         limit: usize,
+        actor: Option<(&str, Option<&str>)>,
     ) -> Result<Vec<SocketRecord>>;
     /// Each gateway's latest heartbeat for the project.
     async fn gateway_heartbeats(&self, project_id: &str) -> Result<HashMap<String, u64>>;
@@ -108,6 +109,7 @@ impl TraceQueries for NoTraceQueries {
         _: u64,
         _: bool,
         _: usize,
+        _: Option<(&str, Option<&str>)>,
     ) -> Result<Vec<SocketRecord>> {
         Ok(Vec::new())
     }

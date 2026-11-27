@@ -1,17 +1,13 @@
-import { useData } from "../../client/DatatContext.js"
 import { formatClock, formatCount, formatPlural } from "../../format.js"
 import { sessionSpan } from "../../lib/sockets.js"
 import { bucketCount, emptySeries, trendAxis, trendWindowMs } from "../../lib/trendWindow.js"
-import type { ActorInventory } from "../../types/Actors.js"
 import type { SocketMetrics } from "../../types/Overview.js"
 import type { SocketSession } from "../../types/Sockets.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { TrendCard } from "../ui/trendCard.js"
 
-export function SocketsCard() {
-    const { actorTypes, sessions, isError, isSocketsError, nowMs: now } = useData()
-    const failed = isError || isSocketsError
-    const metrics = actorTypes && sessions && getMetrics(actorTypes, sessions, now)
+export function SocketsCard({ open, sessions, failed, now }: { open: number | undefined; sessions: SocketSession[] | null; failed: boolean; now: number }) {
+    const metrics = open !== undefined && sessions ? getMetrics(open, sessions, now) : undefined
     const loading = !metrics && !failed
     const value = metrics ? formatCount(metrics.open) : loading ? <Skeleton className="h-11 w-28" /> : "—"
     const series = metrics?.series ?? emptySeries
@@ -31,9 +27,7 @@ export function SocketsCard() {
     )
 }
 
-function getMetrics(inventory: ActorInventory, sessions: SocketSession[], now: number): SocketMetrics {
-    const instances = inventory.actors.flatMap(actor => actor.instances)
-    const open = instances.reduce((sum, instance) => sum + instance.connections.length, 0)
+function getMetrics(open: number, sessions: SocketSession[], now: number): SocketMetrics {
     return { open, series: [...openSeries(sessions, now).slice(0, -1), open] }
 }
 

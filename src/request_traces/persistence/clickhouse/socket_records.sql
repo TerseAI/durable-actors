@@ -26,6 +26,8 @@ SELECT ConnectionId AS connection_id,
         EventName = 'durable_actors.socket.closed') AS duration_ms
 FROM platform_events
 WHERE ProjectId = {project:String}
+    AND ({actor_name:String} = '' OR ActorName = {actor_name:String})
+    AND ({actor_id:String} = '' OR ActorId = {actor_id:String})
     AND ConnectionId != ''
     AND ReceivedAt > now64(3) - toIntervalSecond({retention:UInt64})
 GROUP BY ConnectionId

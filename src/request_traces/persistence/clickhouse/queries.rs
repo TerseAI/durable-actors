@@ -146,6 +146,7 @@ impl ClickHouseTracePersistence {
                     row.queue_wait_ms,
                     row.queue_waits,
                     row.run_ms,
+                    row.routing_ms,
                 );
             }
         }
@@ -216,11 +217,15 @@ impl ClickHouseTracePersistence {
         to_ms: u64,
         open_only: bool,
         limit: usize,
+        actor: Option<(&str, Option<&str>)>,
     ) -> Result<Vec<SocketRecord>> {
+        let (actor_name, actor_id) = actor.unwrap_or_default();
         let rows = tokio::time::timeout(
             Duration::from_secs(15),
             self.query(include_str!("socket_records.sql"), project)
                 .param("to", to_ms)
+                .param("actor_name", actor_name)
+                .param("actor_id", actor_id.unwrap_or_default())
                 .param("open_only", open_only)
                 .param("limit", limit as u64)
                 .fetch_all::<SocketRow>(),
@@ -360,6 +365,7 @@ struct RequestBucketRow {
     queue_wait_ms: f64,
     queue_waits: u64,
     run_ms: f64,
+    routing_ms: f64,
 }
 
 #[derive(Row, Deserialize)]

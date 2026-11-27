@@ -35,7 +35,8 @@ pub(super) fn histogram(
     let wait = "json_extract(event, '$.queueWaitMs')";
     let mut statement = connection.prepare(&format!(
         "SELECT (started_at_ms - ?) / ?, outcome, count(*), coalesce(sum({wait}), 0), count({wait}),
-            coalesce(sum(json_extract(event, '$.durationMs') - coalesce({wait}, 0)), 0)
+            coalesce(sum(json_extract(event, '$.durationMs') - coalesce({wait}, 0)), 0),
+            coalesce(sum(json_extract(event, '$.routingMs')), 0)
         FROM traces WHERE {} GROUP BY 1, 2",
         clauses.join(" AND ")
     ))?;
@@ -47,11 +48,12 @@ pub(super) fn histogram(
             row.get::<_, f64>(3)?,
             row.get::<_, i64>(4)?,
             row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
         ))
     })?;
     let mut histogram = RequestHistogram::empty(query);
     for row in rows {
-        let (bucket, outcome, requests, queue_wait_ms, queue_waits, run_ms) = row?;
+        let (bucket, outcome, requests, queue_wait_ms, queue_waits, run_ms, routing_ms) = row?;
         if let (Some(counts), Some(outcome)) = (
             histogram.bucket(u64::try_from(bucket)?),
             RequestOutcome::parse(&outcome),
@@ -62,6 +64,7 @@ pub(super) fn histogram(
                 queue_wait_ms,
                 u64::try_from(queue_waits)?,
                 run_ms,
+                routing_ms,
             );
         }
     }

@@ -167,6 +167,8 @@ pub(crate) struct RequestCounts {
     pub queue_waits: u64,
     /// Summed time excluding the queue wait.
     pub run_ms: f64,
+    /// Summed time spent routing requests to the host.
+    pub routing_ms: f64,
 }
 
 impl RequestCounts {
@@ -177,6 +179,7 @@ impl RequestCounts {
         queue_wait_ms: f64,
         queue_waits: u64,
         run_ms: f64,
+        routing_ms: f64,
     ) {
         let count = match outcome {
             RequestOutcome::Completed => &mut self.ok,
@@ -189,5 +192,6 @@ impl RequestCounts {
         self.queue_wait_ms += queue_wait_ms;
         self.queue_waits += queue_waits;
         self.run_ms += run_ms;
+        self.routing_ms += routing_ms;
     }
 }

@@ -1,11 +1,8 @@
+import { countQuery } from "../lib/entries.js"
 import type { RequestFilter } from "../lib/views/requests.js"
-import type { LogFilter } from "../types/Logs.js"
+import type { EntryFilter } from "../types/Entries.js"
 
 // Every key carries the base URL so observers for different projects never share cached data.
-
-export const actorsKey = (baseUrl: string) => ["actors", baseUrl] as const
-
-export const requestsKey = (baseUrl: string) => ["requests", baseUrl] as const
 
 export const requestHistogramKey = (baseUrl: string, { actorName, actorId }: RequestFilter) => ["requests/histogram", baseUrl, actorName, actorId] as const
 
@@ -17,8 +14,8 @@ export const eventHistoryKey = (baseUrl: string, types: string[], actorName?: st
 
 export const webSocketsKey = (baseUrl: string) => ["websockets", baseUrl] as const
 
-export const logsKey = (baseUrl: string, { actorName, actorId, requestId, level, search }: LogFilter) => ["logs", baseUrl, actorName, actorId, requestId, level, search] as const
+export const entriesKey = (baseUrl: string, { actorName, actorId, query }: EntryFilter) => ["entries", baseUrl, actorName, actorId, JSON.stringify(query)] as const
 
-export const logHistogramKey = (baseUrl: string, { actorName, actorId, requestId, search }: LogFilter) => ["logs/histogram", baseUrl, actorName, actorId, requestId, search] as const
+export const entryHistogramKey = (baseUrl: string, { actorName, actorId, query }: EntryFilter) => ["entries/histogram", baseUrl, actorName, actorId, JSON.stringify(countQuery(query))] as const
 
-export const logLinesKey = (baseUrl: string, filter: LogFilter) => ["logs/streamed", ...logsKey(baseUrl, filter).slice(1)] as const
+export const streamedEntriesKey = (baseUrl: string, filter: EntryFilter) => ["entries/streamed", ...entriesKey(baseUrl, filter).slice(1)] as const

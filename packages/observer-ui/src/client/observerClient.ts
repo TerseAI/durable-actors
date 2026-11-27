@@ -1,39 +1,43 @@
 import type { RequestFilter } from "../lib/views/requests.js"
-import type { ActorInventory } from "../types/Actors.js"
+import type { ActorTypesPage, InstancePage, InstancePageQuery } from "../types/Actors.js"
+import type { EntryFilter, EntryHistogram, EntryPage } from "../types/Entries.js"
 import type { EventHistory, RecordedEvent } from "../types/Events.js"
-import type { ActorLogPage, LogFilter, LogHistogram } from "../types/Logs.js"
-import type { RequestHistogram, RequestHistoryQuery, RequestTrace, RequestTracePage } from "../types/Requests.js"
+import type { RequestHistogram, RequestHistoryQuery, RequestTracePage } from "../types/Requests.js"
 import type { ResidencyHistory } from "../types/Residency.js"
 import type { ResourceUsage } from "../types/Resources.js"
 import type { SocketSession } from "../types/Sockets.js"
 import type { TimeBounds } from "../types/TimeRange.js"
 
+import { EntryReader } from "./entryReader.js"
+
 const requestPageSize = 500
-const maxRequestPages = 20
 
 export const defaultBaseUrl = "/api/observe"
 
-const logPageSize = 200
-
-type totalActorInstancesPayload = Map<string, ActorInventory>
-
 export interface ObserverClient {
-    listActorTypes(): Promise<ActorInventory>
     listRequests(query: RequestHistoryQuery): Promise<RequestTracePage>
     getRequestHistogram(filter: RequestFilter, bounds: TimeBounds, bucketMs: number): Promise<RequestHistogram>
     listResidency(actorName: string, bounds: TimeBounds, actorId?: string): Promise<ResidencyHistory>
     getResources(actorName: string, actorId: string, bounds: TimeBounds, bucketMs: number): Promise<ResourceUsage>
     listEventHistory(types: RecordedEvent["type"][], bounds: TimeBounds, actorName?: string, actorId?: string): Promise<EventHistory>
     listWebSockets(): Promise<SocketSession[]>
-    listLogs(filter: LogFilter, bounds: TimeBounds, cursor: string | null): Promise<ActorLogPage>
-    getLogHistogram(filter: LogFilter, bounds: TimeBounds, bucketMs: number): Promise<LogHistogram>
+    listEntries(filter: EntryFilter, bounds: TimeBounds, cursor: string | null): Promise<EntryPage>
+    getEntryHistogram(filter: EntryFilter, bounds: TimeBounds, bucketMs: number): Promise<EntryHistogram>
 }
 
 export class HttpObserverClient implements ObserverClient {
+    private readonly entries = new EntryReader(<T>(path: string) => this.get<T>(path))
+
     constructor(private readonly baseUrl: string = defaultBaseUrl) {}
 
-    async listActorTypes(): Promise<ActorInventory> {
-        return await this.get<ActorInventory>("actors")
+    async listObservedActorTypes(offset: number, limit: number): Promise<ActorTypesPage> {
+        return await this.get<ActorTypesPage>(`actor-types?offset=${offset}&limit=${limit}`)
+    }
+
+    async listInstances(query: InstancePageQuery): Promise<InstancePage> {
+        const params = new URLSearchParams()
+        for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value))
+        return await this.get<InstancePage>(`instances?${params}`)
     }
 
     async listRequests({ fromMs, toMs, limit = requestPageSize, cursor, actorName, actorId }: RequestHistoryQuery): Promise<RequestTracePage> {
@@ -75,34 +79,12 @@ export class HttpObserverClient implements ObserverClient {
         return await this.get<SocketSession[]>("websockets")
     }
 
-    async listLogs(filter: LogFilter, { fromMs, toMs }: TimeBounds, cursor: string | null): Promise<ActorLogPage> {
-        const query = logFilterParams(filter)
-        query.set("fromMs", String(fromMs))
-        query.set("toMs", String(toMs))
-        query.set("limit", String(logPageSize))
-        if (cursor) query.set("cursor", cursor)
-        return await this.get<ActorLogPage>(`logs?${query}`)
+    async listEntries(filter: EntryFilter, bounds: TimeBounds, cursor: string | null): Promise<EntryPage> {
+        return await this.entries.listEntries(filter, bounds, cursor)
     }
 
-    // Counts every level so the level control can show what each choice would keep.
-    async getLogHistogram(filter: LogFilter, { fromMs, toMs }: TimeBounds, bucketMs: number): Promise<LogHistogram> {
-        const query = logFilterParams({ ...filter, level: null })
-        query.set("fromMs", String(fromMs))
-        query.set("toMs", String(toMs))
-        query.set("bucketMs", String(bucketMs))
-        return await this.get<LogHistogram>(`logs/histogram?${query}`)
-    }
-
-    async collectRequests(bounds: TimeBounds, filter: { actorName?: string; actorId?: string } = {}): Promise<RequestTrace[]> {
-        const records: RequestTrace[] = []
-        let cursor: string | undefined
-        for (let page = 0; page < maxRequestPages; page++) {
-            const result = await this.listRequests({ ...bounds, ...filter, cursor })
-            records.push(...result.records)
-            if (!result.nextCursor || result.nextCursor === cursor || result.records.length === 0) break
-            cursor = result.nextCursor
-        }
-        return records
+    async getEntryHistogram(filter: EntryFilter, bounds: TimeBounds, bucketMs: number): Promise<EntryHistogram> {
+        return await this.entries.getEntryHistogram(filter, bounds, bucketMs)
     }
 
     private async get<T>(path: string): Promise<T> {
@@ -120,12 +102,4 @@ export class HttpObserverClient implements ObserverClient {
 
         return (await response.json()) as T
     }
-}
-
-export function logFilterParams({ actorName, actorId, requestId, level, search }: LogFilter): URLSearchParams {
-    const query = new URLSearchParams({ actorName, actorId })
-    if (requestId) query.set("requestId", requestId)
-    if (level) query.set("level", level)
-    if (search) query.set("search", search)
-    return query
 }

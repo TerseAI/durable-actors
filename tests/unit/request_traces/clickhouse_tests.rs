@@ -91,6 +91,54 @@ async fn lifecycle_inventory_is_shared_and_tracks_activation_handoffs() -> Resul
             );
         }
     }
+    let mut query =
+        serde_json::from_value::<crate::placement::InstancePageQuery>(serde_json::json!({
+            "actorName": "Counter", "sort": "sockets", "limit": 1, "offset": 1,
+            "search": "O", "status": "dormant"
+        }))?;
+    let sockets = [("socket-only".to_owned(), 2)].into();
+    let page = reader
+        .read_instance_page(&project, &query, &sockets)
+        .await?;
+    assert_eq!(
+        (page.live, page.dormant, page.unknown, page.total),
+        (0, 2, 0, 2)
+    );
+    assert_eq!(page.instances[0].actor_id, "one");
+    query.offset = 0;
+    let page = reader
+        .read_instance_page(&project, &query, &sockets)
+        .await?;
+    assert_eq!(page.instances[0].actor_id, "socket-only");
+    assert_eq!(page.instances[0].socket_count, 2);
+    query.offset = 100;
+    let page = reader
+        .read_instance_page(&project, &query, &sockets)
+        .await?;
+    assert!(page.instances.is_empty());
+    assert_eq!(page.total, 2);
+    let overview = reader
+        .read_actor_types_page(
+            &project,
+            &crate::placement::ActorTypesQuery {
+                offset: 1,
+                limit: 1,
+            },
+            &[(("Counter".into(), "socket-only".into()), 2)].into(),
+            &["Deployed".into()],
+        )
+        .await?;
+    assert_eq!(
+        (
+            overview.total,
+            overview.live,
+            overview.dormant,
+            overview.largest
+        ),
+        (2, 0, 2, 2)
+    );
+    assert_eq!(overview.actors.len(), 1);
+    assert_eq!(overview.actors[0].actor_name, "Deployed");
     let stopped = event.clone();
     event.event_id = "next-session:1".into();
     event.host_id = "next-host".into();
@@ -243,6 +291,7 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
              'durable-actors-host', '', map('durable_actors.request_id', 'request-1', \
              'durable_actors.kind', 'websocket', 'durable_actors.connection_id', 'socket-1', \
              'durable_actors.outcome', 'completed', 'durable_actors.queue_wait_ms', '2.5', \
+             'durable_actors.routing_ms', '3.5', \
              'durable_actors.metadata', '{{\"userId\":\"alice\"}}'), 12500000, 'Unset', '', \
              [], [], [], [], [], [], [])"
         ))
@@ -322,6 +371,7 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
             total.queue_wait_ms += bucket.queue_wait_ms;
             total.queue_waits += bucket.queue_waits;
             total.run_ms += bucket.run_ms;
+            total.routing_ms += bucket.routing_ms;
             total
         });
     assert_eq!(
@@ -331,6 +381,7 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
             queue_wait_ms: 2.5,
             queue_waits: 1,
             run_ms: 10.0,
+            routing_ms: 3.5,
             ..Default::default()
         }
     );
@@ -538,7 +589,9 @@ async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() 
         ))
         .execute()
         .await?;
-    let records = store.socket_records(&project, u64::MAX, false, 10).await?;
+    let records = store
+        .socket_records(&project, u64::MAX, false, 10, None)
+        .await?;
     let ids: Vec<_> = records
         .iter()
         .map(|record| record.connection_id.as_str())
@@ -563,13 +616,16 @@ async fn socket_events_from_the_collector_assemble_connections_and_heartbeats() 
     );
     assert_eq!(
         store
-            .socket_records(&project, u64::MAX, true, 10)
+            .socket_records(&project, u64::MAX, true, 10, None)
             .await?
             .len(),
         1
     );
     assert_eq!(
-        store.socket_records(&project, 1500, false, 10).await?.len(),
+        store
+            .socket_records(&project, 1500, false, 10, None)
+            .await?
+            .len(),
         1
     );
     assert_eq!(

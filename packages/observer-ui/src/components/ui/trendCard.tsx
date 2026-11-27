@@ -6,6 +6,7 @@ import { StatCard } from "./statCard.js"
 
 export type TrendCardProps = {
     label: string
+    hint?: string
     value: ReactNode
     unit: ReactNode
     busy?: boolean
@@ -20,9 +21,9 @@ export type TrendCardProps = {
     children?: ReactNode
 }
 
-export function TrendCard({ label, value, unit, busy, failed, series, axis, color, chartLabel, describePoint, references, children }: TrendCardProps) {
+export function TrendCard({ label, hint, value, unit, busy, failed, series, axis, color, chartLabel, describePoint, references, children }: TrendCardProps) {
     return (
-        <StatCard label={label} value={value} unit={busy ? <Skeleton className="h-3.5 w-9" /> : unit} busy={busy}>
+        <StatCard label={label} hint={hint} value={value} unit={busy ? <Skeleton className="h-3.5 w-9" /> : unit} busy={busy}>
             {failed && <p className="mt-2 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>}
             {children && !busy && <div className="mt-2 flex flex-wrap items-center gap-x-4.5 gap-y-1 text-[13px] text-muted-foreground tabular-nums">{children}</div>}
             {busy ? (

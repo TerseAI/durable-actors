@@ -1,10 +1,13 @@
 use super::*;
 use crate::{
     actor_lifecycle::{
-        LifecycleEvent, LifecyclePersistence, STALE_AFTER_MS,
+        LifecycleEvent, LifecyclePersistence, STALE_AFTER_MS, instance_overview,
         residency::{RUN_LIMIT, ResidencyRun},
     },
-    placement::{ActorResidency, ResidencyQuery},
+    placement::{
+        ActorResidency, ActorTypesPage, ActorTypesQuery, InstancePage, InstancePageQuery,
+        InstanceRow, InstanceSort, ObservedActorType, ResidencyQuery,
+    },
 };
 
 #[async_trait]
@@ -32,6 +35,119 @@ impl LifecyclePersistence for ClickHouseTracePersistence {
             .collect()
     }
 
+    async fn instance_page(
+        &self,
+        project: &str,
+        query: &InstancePageQuery,
+        now: u64,
+        sockets: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<InstancePage> {
+        let order = instance_order(query);
+        let sql =
+            inventory_query(include_str!("instance_page.sql")).replace("/* page order */", &order);
+        let sockets = serde_json::to_string(
+            &sockets
+                .iter()
+                .map(|(id, count)| (&query.actor_name, id, count))
+                .collect::<Vec<_>>(),
+        )?;
+        let row = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client
+                .query(&sql)
+                .param("project", project)
+                .param("actor_name", &query.actor_name)
+                .param("actor_id", query.actor_id.as_deref().unwrap_or_default())
+                .param("status", status_filter(query.status))
+                .param("search", &query.search)
+                .param("now", now)
+                .param("stale", STALE_AFTER_MS)
+                .param("sockets", sockets)
+                .param("limit", query.limit)
+                .param("offset", query.offset)
+                .fetch_one::<InstancePageRow>(),
+        )
+        .await??;
+        let (live, dormant, unknown, total) = row.counts;
+        let mut instances = row
+            .instances
+            .into_iter()
+            .map(|(id, event, count)| {
+                if event.is_empty() {
+                    return Ok(InstanceRow::socket_only(id, count));
+                }
+                let event = serde_json::from_str(&event)?;
+                Ok(InstanceRow::from_overview(
+                    instance_overview(event, now),
+                    count,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        query.sort_rows(&mut instances);
+        Ok(InstancePage {
+            live,
+            dormant,
+            unknown,
+            total,
+            instances,
+            methods: None,
+        })
+    }
+
+    async fn actor_types_page(
+        &self,
+        project: &str,
+        query: &ActorTypesQuery,
+        now: u64,
+        sockets: &std::collections::BTreeMap<(String, String), u64>,
+        deployed: &[String],
+    ) -> Result<ActorTypesPage> {
+        let sql = inventory_query(include_str!("actor_types_page.sql"));
+        let sockets = serde_json::to_string(
+            &sockets
+                .iter()
+                .map(|((name, id), count)| (name, id, count))
+                .collect::<Vec<_>>(),
+        )?;
+        let row = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client
+                .query(&sql)
+                .param("project", project)
+                .param("actor_name", "")
+                .param("actor_id", "")
+                .param("now", now)
+                .param("stale", STALE_AFTER_MS)
+                .param("sockets", sockets)
+                .param("deployed", serde_json::to_string(deployed)?)
+                .param("limit", query.limit)
+                .param("offset", query.offset)
+                .fetch_one::<ActorTypesPageRow>(),
+        )
+        .await??;
+        let (live, dormant, total, largest) = row.counts;
+        let mut page = ActorTypesPage::from_types(
+            row.actors
+                .into_iter()
+                .map(|(actor_name, live, dormant, unknown)| ObservedActorType {
+                    actor_name,
+                    live,
+                    dormant,
+                    unknown,
+                })
+                .collect(),
+            &ActorTypesQuery {
+                offset: 0,
+                limit: query.limit,
+            },
+        );
+        page.live = live;
+        page.dormant = dormant;
+        page.total = total;
+        page.largest = largest;
+        Ok(page)
+    }
+
     /// One more run than the limit keeps, so truncation shows.
     async fn residency_runs(
         &self,
@@ -54,6 +170,45 @@ impl LifecyclePersistence for ClickHouseTracePersistence {
         .await??;
         Ok(rows.into_iter().map(ResidencyRun::from).collect())
     }
+}
+
+fn inventory_query(sql: &str) -> String {
+    sql.replace(
+        "/* inventory snapshot */",
+        include_str!("inventory_snapshot.sql").trim_end(),
+    )
+}
+
+#[derive(Row, Deserialize)]
+struct ActorTypesPageRow {
+    counts: (u64, u64, u64, u64),
+    actors: Vec<(String, u64, u64, u64)>,
+}
+
+fn instance_order(query: &InstancePageQuery) -> String {
+    let direction = if query.descending { "DESC" } else { "ASC" };
+    let column = match query.sort {
+        InstanceSort::Instance => "actor_id",
+        InstanceSort::Sockets => "socket_count",
+        InstanceSort::LastActive => "last_active",
+        InstanceSort::Disk => "disk",
+    };
+    format!("{column} {direction} NULLS LAST, actor_id ASC")
+}
+
+fn status_filter(status: Option<ActorResidency>) -> &'static str {
+    match status {
+        Some(ActorResidency::Live) => "live",
+        Some(ActorResidency::Dormant) => "dormant",
+        Some(ActorResidency::Unknown) => "unknown",
+        None => "",
+    }
+}
+
+#[derive(Row, Deserialize)]
+struct InstancePageRow {
+    counts: (u64, u64, u64, u64),
+    instances: Vec<(String, String, u64)>,
 }
 
 #[derive(Row, Deserialize)]

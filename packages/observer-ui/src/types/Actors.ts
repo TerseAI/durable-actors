@@ -1,18 +1,3 @@
-export interface ActorType {
-    actorName: string
-    methods?: string[]
-    live: number
-    dormant: number
-    unknown: number
-    instances: ActorInstance[]
-}
-
-export interface ActorInventory {
-    actors: ActorType[]
-    /** When each gateway holding an open connection last showed it was alive. */
-    gateways: Record<string, number>
-}
-
 export type ActorResidency = "live" | "dormant" | "unknown"
 
 export interface WaitingOperation {
@@ -20,20 +5,49 @@ export interface WaitingOperation {
     operation: string
 }
 
-export interface ActorInstance {
+export interface InstanceRow {
     actorId: string
     status: ActorResidency
-    lastActiveAtMs?: number | null
-    /** When the control plane received the instance's latest report. */
-    reportedAtMs?: number | null
-    /** When a live or dormant status turns unknown unless another report arrives. */
-    staleAtMs?: number | null
-    connections: ActorConnection[]
-    waiting?: WaitingOperation[] | null
+    lastActiveAtMs: number | null
+    databaseBytes: number | null
+    socketCount: number
 }
 
-export interface ActorConnection {
-    id: string
-    gatewayId: string
-    metadata: unknown
+export interface InstancePage {
+    live: number
+    dormant: number
+    unknown: number
+    total: number
+    instances: InstanceRow[]
+    methods?: string[]
+}
+
+export type InstanceSortKey = "instance" | "sockets" | "lastActive" | "disk"
+
+export interface InstancePageQuery {
+    actorName: string
+    actorId?: string
+    search?: string
+    status?: ActorResidency
+    sort?: InstanceSortKey
+    descending?: boolean
+    offset?: number
+    limit?: number
+}
+
+export interface ObservedActorType {
+    actorName: string
+    live: number
+    dormant: number
+    unknown: number
+}
+
+export interface ActorTypesPage {
+    live: number
+    dormant: number
+    total: number
+    largest: number
+    openSockets: number
+    gateways: Record<string, number>
+    actors: ObservedActorType[]
 }

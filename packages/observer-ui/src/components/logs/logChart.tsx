@@ -51,7 +51,7 @@ export function LogChart({ histogram, level, live, onZoom }: LogChartProps) {
                 <Gridlines scale={scale} />
                 <div
                     role="img"
-                    aria-label={`Log lines per ${formatDuration(bucketMs)}; drag across the chart to zoom into a time range`}
+                    aria-label={`Entries per ${formatDuration(bucketMs)}; drag across the chart to zoom into a time range`}
                     className="relative ml-[42px] h-24 cursor-crosshair touch-none select-none"
                     onPointerDown={event => {
                         event.currentTarget.setPointerCapture(event.pointerId)

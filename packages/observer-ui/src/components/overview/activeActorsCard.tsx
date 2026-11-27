@@ -1,14 +1,10 @@
-import { useData } from "../../client/DatatContext.js"
 import { formatCount } from "../../format.js"
-import type { ActorInventory } from "../../types/Actors.js"
 import type { ActorResidencyMetrics } from "../../types/Overview.js"
 import { ResidencyBar, ResidencyBarSkeleton, ResidencyLegend } from "../ui/residencyBar.js"
 import { Skeleton } from "../ui/skeleton.js"
 import { StatCard } from "../ui/statCard.js"
 
-export function ActiveActorsCard() {
-    const { actorTypes, isError } = useData()
-    const metrics = actorTypes && getMetrics(actorTypes)
+export function ActiveActorsCard({ metrics, isError }: { metrics: ActorResidencyMetrics | undefined; isError: boolean }) {
     const loading = !metrics && !isError
     const value = metrics ? formatCount(metrics.live) : loading ? <Skeleton className="h-11 w-28" /> : "—"
     const unit = loading ? <Skeleton className="h-3.5 w-7" /> : "live"
@@ -17,13 +13,6 @@ export function ActiveActorsCard() {
             {metrics ? <Residency {...metrics} /> : <ResidencySkeleton failed={isError} />}
         </StatCard>
     )
-}
-
-function getMetrics(actorTypes: ActorInventory): ActorResidencyMetrics {
-    const actorInstances = actorTypes.actors.flatMap(actor => actor.instances)
-    const live = actorInstances.filter(instance => instance.status === "live").length
-    const dormant = actorInstances.filter(instance => instance.status === "dormant").length
-    return { live, dormant }
 }
 
 function Residency({ live, dormant }: ActorResidencyMetrics) {

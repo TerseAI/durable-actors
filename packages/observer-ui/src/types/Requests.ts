@@ -46,6 +46,8 @@ export interface RequestCounts {
     queueWaits: number
     /** Summed time excluding the queue wait. */
     runMs: number
+    /** Summed routing time. Older servers omit this field. */
+    routingMs?: number
 }
 
 export type RequestHistogram = Histogram<RequestCounts>

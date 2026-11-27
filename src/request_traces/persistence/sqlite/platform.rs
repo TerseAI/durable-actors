@@ -66,6 +66,8 @@ pub(super) fn socket_records(
     to_ms: u64,
     open_only: bool,
     limit: usize,
+    actor_name: Option<&str>,
+    actor_id: Option<&str>,
 ) -> Result<Vec<SocketRecord>> {
     let mut statement = connection.prepare(
         "SELECT opened.connection_id, opened.actor_name, opened.actor_id, opened.gateway_id,
@@ -75,6 +77,8 @@ pub(super) fn socket_records(
              AND closed.name = ?5 AND closed.connection_id = opened.connection_id
          WHERE opened.project_id = ?1 AND opened.name = ?4 AND opened.at_ms <= ?2
              AND (?3 = 0 OR closed.connection_id IS NULL)
+             AND (?7 IS NULL OR opened.actor_name = ?7)
+             AND (?8 IS NULL OR opened.actor_id = ?8)
          ORDER BY opened.at_ms DESC, opened.connection_id
          LIMIT ?6",
     )?;
@@ -85,7 +89,9 @@ pub(super) fn socket_records(
             open_only,
             OPENED,
             CLOSED,
-            limit as i64
+            limit as i64,
+            actor_name,
+            actor_id
         ],
         |row| {
             Ok((

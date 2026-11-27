@@ -62,6 +62,72 @@ async fn inventory_reads_filter_projects_before_grouping() -> Result<()> {
 }
 
 #[tokio::test]
+async fn instance_page_filters_and_sorts_before_applying_offset() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    for (name, kind) in [
+        ("blue-a", LifecycleKind::Started),
+        ("blue-b", LifecycleKind::Started),
+        ("blue-c", LifecycleKind::Stopped),
+        ("red", LifecycleKind::Started),
+    ] {
+        fixture
+            .report_lifecycle(fixture.actor(name), kind, 1, vec![])
+            .await?;
+    }
+    let base = "/v1/projects/default/observe/instances?actorName=Room.with.dots";
+    let page: Value = fixture
+        .get(&format!(
+            "{base}&search=BLUE&status=live&sort=instance&descending=false&limit=1&offset=1"
+        ))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["live"], 3);
+    assert_eq!(page["dormant"], 1);
+    assert_eq!(page["instances"].as_array().unwrap().len(), 1);
+    assert_eq!(page["instances"][0]["actorId"], "blue-b");
+    let lookup: Value = fixture
+        .get(&format!("{base}&actorId=blue-c"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(lookup["total"], 1);
+    assert_eq!(lookup["instances"][0]["status"], "dormant");
+    assert_eq!(
+        fixture.get(&format!("{base}&limit=101")).await?.status(),
+        StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn actor_type_page_returns_project_totals_and_one_type_page() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    for (actor_name, actor_id) in [("Room", "a"), ("Room", "b"), ("EmptyWorker", "a")] {
+        let actor = ActorKey {
+            actor_name: actor_name.into(),
+            ..fixture.actor(actor_id)
+        };
+        fixture
+            .report_lifecycle(actor, LifecycleKind::Started, 1, vec![])
+            .await?;
+    }
+    let path = "/v1/projects/default/observe/actor-types?offset=1&limit=1";
+    let page: Value = fixture.get(path).await?.error_for_status()?.json().await?;
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["largest"], 2);
+    assert_eq!(page["live"], 3);
+    assert_eq!(
+        page["actors"],
+        json!([{"actorName": "EmptyWorker", "live": 1, "dormant": 0, "unknown": 0}])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn project_observability_isolates_history_metrics_and_streams() -> Result<()> {
     let fixture = Fixture::start().await?;
     for (project, duration) in [("alpha", 10), ("beta", 90)] {
@@ -629,9 +695,9 @@ async fn request_histogram_counts_outcomes_and_timings_per_bucket() -> Result<()
         ("two-ok", "two", 1200, RequestOutcome::Completed),
         ("one-rerouted", "one", 2600, RequestOutcome::Rerouted),
     ] {
-        fixture
-            .record(request_trace(id, "Room", actor_id, time, outcome))
-            .await?;
+        let mut trace = request_trace(id, "Room", actor_id, time, outcome);
+        trace.routing_ms = 2.75;
+        fixture.record(trace).await?;
     }
     let histogram: Value = fixture
         .get("/v1/projects/default/observe/requests/histogram?fromMs=0&toMs=3000&bucketMs=1000&actorName=Room&actorId=one")
@@ -642,9 +708,9 @@ async fn request_histogram_counts_outcomes_and_timings_per_bucket() -> Result<()
     assert_eq!(
         histogram["buckets"],
         json!([
-            {"ok": 0, "failed": 0, "rejected": 0, "interrupted": 0, "queueWaitMs": 0.0, "queueWaits": 0, "runMs": 0.0},
-            {"ok": 1, "failed": 1, "rejected": 0, "interrupted": 0, "queueWaitMs": 20.0, "queueWaits": 2, "runMs": 30.0},
-            {"ok": 0, "failed": 0, "rejected": 0, "interrupted": 0, "queueWaitMs": 0.0, "queueWaits": 0, "runMs": 0.0}
+            {"ok": 0, "failed": 0, "rejected": 0, "interrupted": 0, "queueWaitMs": 0.0, "queueWaits": 0, "runMs": 0.0, "routingMs": 0.0},
+            {"ok": 1, "failed": 1, "rejected": 0, "interrupted": 0, "queueWaitMs": 20.0, "queueWaits": 2, "runMs": 30.0, "routingMs": 5.5},
+            {"ok": 0, "failed": 0, "rejected": 0, "interrupted": 0, "queueWaitMs": 0.0, "queueWaits": 0, "runMs": 0.0, "routingMs": 0.0}
         ])
     );
     let invalid = "/v1/projects/default/observe/requests/histogram?fromMs=0&toMs=3000&bucketMs=1";

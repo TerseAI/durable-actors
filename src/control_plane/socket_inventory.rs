@@ -1,8 +1,10 @@
 use crate::{
     actor::ActorKey,
+    actor_lifecycle::LifecycleStore,
     placement::{
         ActorConnectionInventory, ActorInstanceOverview, ActorInventory, ActorInventoryReader,
-        ActorInventorySnapshot, ActorResidency,
+        ActorInventorySnapshot, ActorResidency, ActorTypesPage, ActorTypesQuery, InstancePage,
+        InstancePageQuery,
     },
 };
 use anyhow::Result;
@@ -12,13 +14,13 @@ use std::sync::Arc;
 /// The actor inventory with each instance's open WebSocket connections, as the gateways reported
 /// them through socket events.
 pub(super) struct ConnectionInventoryReader {
-    actors: Arc<dyn ActorInventoryReader>,
+    actors: Arc<LifecycleStore>,
     sockets: crate::request_traces::TraceStore,
 }
 
 impl ConnectionInventoryReader {
     pub(super) fn new(
-        actors: Arc<dyn ActorInventoryReader>,
+        actors: Arc<LifecycleStore>,
         sockets: crate::request_traces::TraceStore,
     ) -> Self {
         Self { actors, sockets }
@@ -30,13 +32,56 @@ impl ActorInventoryReader for ConnectionInventoryReader {
     async fn actor_inventory(&self, project: &str) -> Result<ActorInventorySnapshot> {
         let (actors, open) = tokio::try_join!(
             self.actors.actor_inventory(project),
-            self.sockets.open_connections(project)
+            self.sockets.open_connections(project, None)
         )?;
         Ok(ActorInventorySnapshot {
             actors: merge_rooms(actors.actors, open.rooms),
             connections_complete: actors.connections_complete,
             gateways: open.gateways,
         })
+    }
+
+    async fn instance_page(
+        &self,
+        project: &str,
+        query: &InstancePageQuery,
+    ) -> Result<InstancePage> {
+        let open = self
+            .sockets
+            .open_connections(
+                project,
+                Some((&query.actor_name, query.actor_id.as_deref())),
+            )
+            .await?;
+        let sockets = open
+            .rooms
+            .into_iter()
+            .map(|(key, connections)| (key.actor_id, connections.len() as u64))
+            .collect();
+        self.actors
+            .read_instance_page(project, query, &sockets)
+            .await
+    }
+
+    async fn actor_types_page(
+        &self,
+        project: &str,
+        query: &ActorTypesQuery,
+        deployed: &[String],
+    ) -> Result<ActorTypesPage> {
+        let open = self.sockets.open_connections(project, None).await?;
+        let sockets = open
+            .rooms
+            .into_iter()
+            .map(|(key, connections)| ((key.actor_name, key.actor_id), connections.len() as u64))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut page = self
+            .actors
+            .read_actor_types_page(project, query, &sockets, deployed)
+            .await?;
+        page.open_sockets = sockets.values().sum();
+        page.gateways = open.gateways;
+        Ok(page)
     }
 
     async fn residency_history(
@@ -82,6 +127,7 @@ fn merge_rooms(
                 stale_at_ms: None,
                 connections: vec![],
                 waiting: None,
+                database_bytes: None,
             });
             actor.instances.len() - 1
         });

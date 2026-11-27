@@ -33,6 +33,14 @@ pub(super) fn local_router(inspector: ActorInspector) -> Router {
             get(actor_inventory),
         )
         .route(
+            "/v1/projects/{project_id}/observe/actor-types",
+            get(actor_types_page),
+        )
+        .route(
+            "/v1/projects/{project_id}/observe/instances",
+            get(instance_page),
+        )
+        .route(
             "/v1/projects/{project_id}/observe/residency",
             get(residency_history),
         )
@@ -116,6 +124,74 @@ async fn actor_inventory(
         .map_err(|_| ApiError::unavailable("Actor inventory timed out"))?
         .map_err(ApiError::internal)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(inventory)).into_response())
+}
+
+async fn actor_types_page(
+    State(state): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<crate::placement::ActorTypesQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let project = project_id(path)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    if !(1..=100).contains(&query.limit) {
+        return Err(ApiError::bad_request("limit must be between 1 and 100"));
+    }
+    let page = tokio::time::timeout(Duration::from_secs(25), async {
+        let deployed = match state.inspector.traces.deployed_contract(&project).await? {
+            Some(contract) => super::contracts::actor_methods(&contract)?
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect(),
+            None => Vec::new(),
+        };
+        state
+            .inspector
+            .inventory
+            .actor_types_page(&project, &query, &deployed)
+            .await
+    })
+    .await
+    .map_err(|_| ApiError::unavailable("Actor inventory timed out"))?
+    .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(page)).into_response())
+}
+
+async fn instance_page(
+    State(state): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<crate::placement::InstancePageQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let project = project_id(path)?;
+    let Query(mut query) = query.map_err(ApiError::bad_request)?;
+    crate::actor::ActorKey {
+        project_id: project.clone(),
+        actor_name: query.actor_name.clone(),
+        actor_id: query.actor_id.clone().unwrap_or_else(|| "actor".into()),
+    }
+    .validate()
+    .map_err(ApiError::bad_request)?;
+    query.search = query.search.trim().to_owned();
+    if !(1..=100).contains(&query.limit) || query.search.len() > 256 {
+        return Err(ApiError::bad_request(
+            "limit must be between 1 and 100 and search at most 256 bytes",
+        ));
+    }
+    let (mut page, contract) = tokio::time::timeout(Duration::from_secs(25), async {
+        tokio::try_join!(
+            state.inspector.inventory.instance_page(&project, &query),
+            state.inspector.traces.deployed_contract(&project),
+        )
+    })
+    .await
+    .map_err(|_| ApiError::unavailable("Actor inventory timed out"))?
+    .map_err(ApiError::internal)?;
+    if let Some(contract) = contract {
+        page.methods = super::contracts::actor_methods(&contract)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .find_map(|(name, methods)| (name == query.actor_name).then_some(methods));
+    }
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(page)).into_response())
 }
 
 async fn read_inventory(

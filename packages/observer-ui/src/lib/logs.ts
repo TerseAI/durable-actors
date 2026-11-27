@@ -1,7 +1,7 @@
 import type { LevelCounts, LogHistogram, LogLevel } from "../types/Logs.js"
 import type { TimeBounds } from "../types/TimeRange.js"
 
-type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
+export type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
 
 export type ParsedMessage = { firstLine: string; moreLines: number; json: Json[] | { [key: string]: Json } | undefined }
 

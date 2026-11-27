@@ -1,5 +1,5 @@
 import { formatDecimal } from "../../format.js"
-import { requestTotal } from "../../lib/requestStats.js"
+import { histogramTotals, requestTotal } from "../../lib/requestStats.js"
 import { bucketCount, describeWindow, windowTicks } from "../../lib/timeRange.js"
 import { bucketEndLabel } from "../../lib/views/histogram.js"
 import type { RequestHistogram } from "../../types/Requests.js"
@@ -17,7 +17,8 @@ export type RequestRateTrendProps = {
 export function RequestRateTrend({ histogram, failed, timeWindow, color }: RequestRateTrendProps) {
     const series = histogram?.buckets.map(counts => requestTotal(counts) / (histogram.bucketMs / 1000))
     const loading = !series && !failed
-    const value = series ? formatDecimal(series.at(-1) ?? 0) : loading ? <Skeleton className="h-11 w-28" /> : "—"
+    const average = histogram && requestTotal(histogramTotals(histogram)) / ((histogram.buckets.length * histogram.bucketMs) / 1000)
+    const value = series ? formatDecimal(average ?? 0) : loading ? <Skeleton className="h-11 w-28" /> : "—"
     const shown = series ?? Array<number>(bucketCount(timeWindow)).fill(0)
     return (
         <TrendCard
