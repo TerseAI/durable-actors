@@ -31,4 +31,6 @@ export interface EntryHistogram {
     fromMs: number
     bucketMs: number
     buckets: SourceCounts[]
+    /** The counts cover only the newest records a search reads, not the whole range. */
+    partial?: boolean
 }

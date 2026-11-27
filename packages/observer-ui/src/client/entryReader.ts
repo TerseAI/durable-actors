@@ -3,6 +3,7 @@ import { logLevels } from "../lib/logs.js"
 import { type Query, type QueryKey, allows, isSimple, queryKeys, requiredValue, requires } from "../lib/query.js"
 import type { EntryFilter, EntryHistogram, EntryPage, EntryRecord, EntrySource } from "../types/Entries.js"
 import type { EventHistory } from "../types/Events.js"
+import type { Histogram } from "../types/Histogram.js"
 import type { ActorLog, ActorLogPage, LevelCounts, LogHistogram, LogLevel } from "../types/Logs.js"
 import type { RequestCounts, RequestHistogram, RequestTrace, RequestTracePage } from "../types/Requests.js"
 import type { SocketSession } from "../types/Sockets.js"
@@ -12,8 +13,12 @@ export type Get = <T>(path: string) => Promise<T>
 
 type PagedSource = "console" | "request"
 type SourceCursor = { next: string; oldestMs: number }
-type Cursor = Partial<Record<PagedSource, SourceCursor>>
+type Sources = Partial<Record<PagedSource, SourceCursor>>
+// Later pages keep the first page's bounds: the server continues a source's pages only with the filters they began with.
+type Cursor = { bounds: TimeBounds; sources: Sources }
 type Read = { records: EntryRecord[]; cursor: SourceCursor | undefined }
+// What a source adds to the chart: the server's counts, or records to count, which stop short when incomplete.
+type Counted = { levels: [EntrySource, Histogram<LevelCounts>][]; records: EntryRecord[]; complete: boolean }
 type Params = Record<string, string | null | undefined>
 
 const pageSize = 200
@@ -43,7 +48,10 @@ export class EntryReader {
     constructor(private readonly get: Get) {}
 
     async listEntries(filter: EntryFilter, bounds: TimeBounds, cursor: string | null): Promise<EntryPage> {
-        if (cursor !== null) return this.fill(filter, bounds, [], JSON.parse(cursor) as Cursor)
+        if (cursor !== null) {
+            const { bounds: first, sources } = JSON.parse(cursor) as Cursor
+            return this.fill(filter, first, [], sources)
+        }
         const none: Read = { records: [], cursor: undefined }
         const [console, requests, whole] = await Promise.all([
             canMatch("console", filter.query) ? this.readConsole(filter, bounds, null) : none,
@@ -56,24 +64,25 @@ export class EntryReader {
     // Counts every source and level so the chart and suggestions can apply the search's source and level clauses.
     async getEntryHistogram(filter: EntryFilter, bounds: TimeBounds, bucketMs: number): Promise<EntryHistogram> {
         const counting = { ...filter, query: countQuery(filter.query) }
-        const whole = await this.readWhole(counting, bounds)
-        // The server's request counts cannot tell method calls from socket callbacks, which an actor with sockets has.
-        const hasSockets = whole.some(record => record.type === "connectionOpened" || record.type === "connectionClosed")
-        const [console, requests] = await Promise.all([
-            canMatch("console", counting.query) ? this.consoleCounts(counting, bounds, bucketMs) : [],
-            canMatch("requests", counting.query) ? this.requestCounts(counting, bounds, bucketMs, hasSockets) : []
+        const none: Counted = { levels: [], records: [], complete: true }
+        const [whole, console, requests] = await Promise.all([
+            this.readWhole(counting, bounds),
+            canMatch("console", counting.query) ? this.consoleCounts(counting, bounds, bucketMs) : none,
+            canMatch("requests", counting.query) ? this.requestCounts(counting, bounds, bucketMs) : none
         ])
         const histogram = emptyHistogram(bounds, bucketMs)
-        if (!Array.isArray(console)) placeLevels(histogram, "console", console)
-        if (!Array.isArray(requests)) placeLevels(histogram, "rpc", { ...requests, buckets: requests.buckets.map(requestLevels) })
-        const counted = [...whole, ...(Array.isArray(console) ? console : []), ...(Array.isArray(requests) ? requests : [])]
-        return addCounts(
-            histogram,
-            counted.map(toEntry).filter((entry: Entry) => countedBy(entry, filter))
-        )
+        for (const [source, counts] of [...console.levels, ...requests.levels]) placeLevels(histogram, source, counts)
+        const counted = [...whole, ...console.records, ...requests.records]
+        return {
+            ...addCounts(
+                histogram,
+                counted.map(toEntry).filter((entry: Entry) => countedBy(entry, filter))
+            ),
+            partial: !console.complete || !requests.complete
+        }
     }
 
-    private async fill(filter: EntryFilter, bounds: TimeBounds, records: EntryRecord[], cursor: Cursor): Promise<EntryPage> {
+    private async fill(filter: EntryFilter, bounds: TimeBounds, records: EntryRecord[], cursor: Sources): Promise<EntryPage> {
         for (let reads = 0; reads < maxReadsPerPage && behind(cursor) && !records.some(record => toEntry(record).atMs >= cutoffOf(cursor)!); reads++) {
             const source = behind(cursor)!
             const next = cursor[source]!.next
@@ -82,7 +91,7 @@ export class EntryReader {
             cursor = { ...cursor, [source]: read.cursor }
         }
         const cutoffMs = cutoffOf(cursor)
-        return { records, nextCursor: cutoffMs === null ? null : JSON.stringify(cursor), cutoffMs }
+        return { records, nextCursor: cutoffMs === null ? null : JSON.stringify({ bounds, sources: cursor } satisfies Cursor), cutoffMs }
     }
 
     private async readConsole(filter: EntryFilter, bounds: TimeBounds, cursor: string | null, limit = pageSize): Promise<Read> {
@@ -119,30 +128,43 @@ export class EntryReader {
     }
 
     // The server counts what its parameters can say; anything finer counts the newest records themselves.
-    private async consoleCounts(filter: EntryFilter, bounds: TimeBounds, bucketMs: number): Promise<LogHistogram | EntryRecord[]> {
+    private async consoleCounts(filter: EntryFilter, bounds: TimeBounds, bucketMs: number): Promise<Counted> {
         const { query } = filter
-        if (isSimple(query, "request") && isSimple(query, "instance") && query.terms.length <= 1 && !query.excludedTerms.length)
-            return await this.get<LogHistogram>(`logs/histogram?${rangeParams(bounds, filter, { requestId: requiredValue(query, "request"), search: longestTerm(query), bucketMs: String(bucketMs) })}`)
+        if (isSimple(query, "request") && isSimple(query, "instance") && query.terms.length <= 1 && !query.excludedTerms.length) {
+            const counts = await this.get<LogHistogram>(
+                `logs/histogram?${rangeParams(bounds, filter, { requestId: requiredValue(query, "request"), search: longestTerm(query), bucketMs: String(bucketMs) })}`
+            )
+            return { levels: [["console", counts]], records: [], complete: true }
+        }
         return await this.collect(cursor => this.readConsole(filter, bounds, cursor, countedPageSize))
     }
 
-    private async requestCounts(filter: EntryFilter, bounds: TimeBounds, bucketMs: number, hasSockets: boolean): Promise<RequestHistogram | EntryRecord[]> {
+    private async requestCounts(filter: EntryFilter, bounds: TimeBounds, bucketMs: number): Promise<Counted> {
         const { query } = filter
         const narrowed = query.clauses.some(clause => clause.key !== "instance") || query.terms.length > 0 || query.excludedTerms.length > 0
-        if (!narrowed && !hasSockets && isSimple(query, "instance")) return await this.get<RequestHistogram>(`requests/histogram?${rangeParams(bounds, filter, { bucketMs: String(bucketMs) })}`)
-        return await this.collect(cursor => this.readRequests(filter, bounds, cursor, countedPageSize))
+        if (narrowed || !isSimple(query, "instance")) return await this.collect(cursor => this.readRequests(filter, bounds, cursor, countedPageSize))
+        const read = (kind: RequestTrace["kind"]) => this.get<RequestHistogram>(`requests/histogram?${rangeParams(bounds, filter, { kind, bucketMs: String(bucketMs) })}`)
+        const [methods, sockets] = await Promise.all([read("method"), read("websocket")])
+        return {
+            levels: [
+                ["rpc", requestLevels(methods)],
+                ["websocket", requestLevels(sockets)]
+            ],
+            records: [],
+            complete: true
+        }
     }
 
-    private async collect(read: (cursor: string | null) => Promise<Read>): Promise<EntryRecord[]> {
+    private async collect(read: (cursor: string | null) => Promise<Read>): Promise<Counted> {
         const records: EntryRecord[] = []
         let cursor: string | null = null
         for (let page = 0; page < countedPages; page++) {
             const result: Read = await read(cursor)
             records.push(...result.records)
-            if (!result.cursor) break
+            if (!result.cursor) return { levels: [], records, complete: true }
             cursor = result.cursor.next
         }
-        return records
+        return { levels: [], records, complete: false }
     }
 }
 
@@ -183,12 +205,12 @@ function paged<T>(records: { type: EntryRecord["type"]; item: T }[], next: strin
 }
 
 /** The source whose oldest loaded record is newest: the next page reads it. */
-function behind(cursor: Cursor): PagedSource | undefined {
+function behind(cursor: Sources): PagedSource | undefined {
     const sources = (Object.keys(cursor) as PagedSource[]).filter(source => cursor[source])
     return sources.sort((a, b) => cursor[b]!.oldestMs - cursor[a]!.oldestMs)[0]
 }
 
-function cutoffOf(cursor: Cursor): number | null {
+function cutoffOf(cursor: Sources): number | null {
     const source = behind(cursor)
     return source ? cursor[source]!.oldestMs : null
 }
@@ -216,13 +238,17 @@ function connectionRecords(session: SocketSession, { fromMs, toMs }: TimeBounds)
     return records
 }
 
-function placeLevels(histogram: EntryHistogram, source: EntrySource, counts: { fromMs: number; bucketMs: number; buckets: LevelCounts[] }): void {
+function placeLevels(histogram: EntryHistogram, source: EntrySource, counts: Histogram<LevelCounts>): void {
     counts.buckets.forEach((levels, index) => {
         const bucket = histogram.buckets[Math.floor((counts.fromMs + index * counts.bucketMs - histogram.fromMs) / histogram.bucketMs)]
         if (bucket) for (const level of Object.keys(levels) as (keyof LevelCounts)[]) bucket[source][level] += levels[level]
     })
 }
 
-function requestLevels({ ok, failed, rejected, interrupted }: RequestCounts): LevelCounts {
+function requestLevels(histogram: RequestHistogram): Histogram<LevelCounts> {
+    return { ...histogram, buckets: histogram.buckets.map(outcomeLevels) }
+}
+
+function outcomeLevels({ ok, failed, rejected, interrupted }: RequestCounts): LevelCounts {
     return { debug: 0, info: ok, warn: rejected + interrupted, error: failed }
 }

@@ -876,6 +876,7 @@ paths:
                 - name: actorId
                   in: query
                   schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
+                - { name: kind, in: query, description: Counts only method calls or only WebSocket callbacks., schema: { type: string, enum: [method, websocket] } }
                 - { name: fromMs, in: query, required: true, schema: { type: integer, minimum: 0 } }
                 - { name: toMs, in: query, required: true, description: Exclusive; must be after fromMs., schema: { type: integer, minimum: 1 } }
                 - { name: bucketMs, in: query, required: true, description: At most 1000 buckets per range., schema: { type: integer, minimum: 1 } }

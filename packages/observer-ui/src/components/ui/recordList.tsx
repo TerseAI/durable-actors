@@ -29,20 +29,39 @@ export function ListScroller({ onReachEnd, children }: { onReachEnd: (() => void
     )
 }
 
-export function EmptyList({ noun, filtered, onClearFilters }: { noun: string; filtered: boolean; onClearFilters: () => void }) {
+export type EmptyListProps = {
+    noun: string
+    filtered: boolean
+    onClearFilters: () => void
+    /** Older records remain unread, so matches may still exist. */
+    onLoadOlder?: () => void
+}
+
+export function EmptyList({ noun, filtered, onClearFilters, onLoadOlder }: EmptyListProps) {
     return (
         <p className="py-8 text-center text-[13px] text-muted-foreground">
-            {filtered ? (
+            {filtered ? `No ${noun} match these filters${onLoadOlder ? " among the newest records" : ""}.` : onLoadOlder ? `No recent ${noun}.` : `No ${noun} in this time range.`}
+            {onLoadOlder && (
                 <>
-                    No {noun} match these filters.{" "}
-                    <button type="button" onClick={onClearFilters} className="font-medium text-foreground underline decoration-border underline-offset-3 hover:decoration-foreground">
-                        Clear filters
-                    </button>
+                    {" "}
+                    <TextButton onClick={onLoadOlder}>Load older</TextButton>
                 </>
-            ) : (
-                `No ${noun} in this time range.`
+            )}
+            {filtered && (
+                <>
+                    {" "}
+                    <TextButton onClick={onClearFilters}>Clear filters</TextButton>
+                </>
             )}
         </p>
+    )
+}
+
+export function TextButton({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+    return (
+        <button type="button" onClick={onClick} className="font-medium text-foreground underline decoration-border underline-offset-3 hover:decoration-foreground">
+            {children}
+        </button>
     )
 }
 

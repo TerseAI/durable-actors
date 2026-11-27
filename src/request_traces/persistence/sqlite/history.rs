@@ -26,12 +26,16 @@ pub(super) fn histogram(
     project_id: &str,
     query: &RequestHistogramQuery,
 ) -> Result<RequestHistogram> {
-    let (clauses, filter_values) = filters(project_id, &query.requests());
+    let (mut clauses, filter_values) = filters(project_id, &query.requests());
     let mut values = vec![
         Value::Integer(query.from_ms as i64),
         Value::Integer(query.bucket_ms as i64),
     ];
     values.extend(filter_values);
+    if let Some(kind) = query.kind {
+        clauses.push("json_extract(event, '$.kind') = ?");
+        values.push(Value::Text(kind.as_str().into()));
+    }
     let wait = "json_extract(event, '$.queueWaitMs')";
     let mut statement = connection.prepare(&format!(
         "SELECT (started_at_ms - ?) / ?, outcome, count(*), coalesce(sum({wait}), 0), count({wait}),

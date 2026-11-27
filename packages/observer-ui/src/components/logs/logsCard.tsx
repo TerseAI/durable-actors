@@ -68,7 +68,13 @@ export function LogsCard({ actorName, actorId, methods, timeWindow }: LogsCardPr
                 <p className="py-4 text-[13px] text-muted-foreground">Couldn't reach the observer API.</p>
             ) : (
                 <>
-                    <LogChart histogram={logs.histogram && chartOf(logs.histogram, query)} level={null} live={timeWindow.live} onZoom={span => setRange({ mode: "static", ...span })} />
+                    <LogChart
+                        histogram={logs.histogram && chartOf(logs.histogram, query)}
+                        level={null}
+                        live={timeWindow.live}
+                        partial={logs.histogram?.partial}
+                        onZoom={span => setRange({ mode: "static", ...span })}
+                    />
                     <QuerySearch
                         value={text}
                         onChange={setText}
@@ -139,13 +145,14 @@ function sumLevels(counts: LevelCounts, kept: (level: LogLevel) => boolean): num
     return logLevels.filter(kept).reduce((total, level) => total + counts[level], 0)
 }
 
-// The request this one queued behind, when both are on the list.
+// The request on the same instance this one queued behind, when both are on the list.
 function blockerOf(call: RequestTrace, entries: Entry[]): RequestTrace | undefined {
     if (!call.queueWaitMs) return undefined
     for (const { record } of entries) {
         if (record.type !== "request") continue
         const other = record.item
-        if (other.eventId !== call.eventId && other.startedAtMs + (other.queueWaitMs ?? 0) <= call.startedAtMs && call.startedAtMs < other.startedAtMs + other.durationMs) return other
+        if (other.actorId !== call.actorId || other.eventId === call.eventId) continue
+        if (other.startedAtMs + (other.queueWaitMs ?? 0) <= call.startedAtMs && call.startedAtMs < other.startedAtMs + other.durationMs) return other
     }
     return undefined
 }

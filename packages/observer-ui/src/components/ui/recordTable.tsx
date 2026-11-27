@@ -6,7 +6,7 @@ import { cn } from "../../lib/utils.js"
 
 import { Button } from "./button.js"
 import { Popover, PopoverContent, PopoverTrigger } from "./popover.js"
-import { EmptyList, ListScroller } from "./recordList.js"
+import { EmptyList, ListScroller, TextButton } from "./recordList.js"
 import { Skeleton } from "./skeleton.js"
 
 const rowGrid = "grid items-center gap-x-4"
@@ -42,8 +42,8 @@ export type RecordTableProps<R> = {
 
 export function RecordTable<R>({ columns, rows, rowKey, noun, filtered, onClearFilters, onReachEnd, loadingOlder, onOpen, selectedKey }: RecordTableProps<R>) {
     const gridTemplateColumns = `${columns.map(column => column.width).join(" ")} 16px`
-    if (!rows) return <TableSkeleton columns={columns} gridTemplateColumns={gridTemplateColumns} />
-    if (!rows.length) return <EmptyList noun={noun} filtered={filtered} onClearFilters={onClearFilters} />
+    if (!rows || (!rows.length && loadingOlder)) return <TableSkeleton columns={columns} gridTemplateColumns={gridTemplateColumns} />
+    if (!rows.length) return <EmptyList noun={noun} filtered={filtered} onClearFilters={onClearFilters} onLoadOlder={onReachEnd} />
     return (
         <ListScroller onReachEnd={onReachEnd}>
             <TableHeader columns={columns} gridTemplateColumns={gridTemplateColumns} />
@@ -69,10 +69,17 @@ export function RecordTable<R>({ columns, rows, rowKey, noun, filtered, onClearF
                     )
                 })}
             </ol>
-            {loadingOlder && (
+            {loadingOlder ? (
                 <div aria-hidden className="border-t border-border/55">
                     <SkeletonRows columns={columns} gridTemplateColumns={gridTemplateColumns} rows={3} />
                 </div>
+            ) : (
+                // A short list never scrolls, so it asks for older records here.
+                onReachEnd && (
+                    <p className="border-t border-border/55 py-2.5 text-center text-xs text-muted-foreground">
+                        <TextButton onClick={onReachEnd}>Load older {noun}</TextButton>
+                    </p>
+                )
             )}
         </ListScroller>
     )

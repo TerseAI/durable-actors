@@ -8,6 +8,8 @@ import type { InstancePageQuery } from "../types/Actors.js"
 import type { ObserveEvent } from "../types/Events.js"
 
 const refreshDelayMs = 5_000
+// The server stops counting an instance live 35 s after its last report, and a gateway's sockets after 30 s.
+const staleAfterMs = 36_000
 
 /** A change can move an instance across a page boundary, so refresh the current page after relevant events. */
 export function useInstancePage(query: InstancePageQuery, live: boolean) {
@@ -27,6 +29,7 @@ function useInventoryPage<T>(key: readonly unknown[], read: () => Promise<T>, li
     useEffect(() => {
         if (!live || !events) return
         let timer: ReturnType<typeof setTimeout> | undefined
+        let expiry: ReturnType<typeof setTimeout> | undefined
         let stopped = false
         let dirty = false
         function refresh() {
@@ -47,13 +50,21 @@ function useInventoryPage<T>(key: readonly unknown[], read: () => Promise<T>, li
                 actorName === undefined ? 15_000 : refreshDelayMs
             )
         }
+        // Reports stop without an event when a host or gateway dies, so read again once they would be stale.
+        function changed() {
+            refresh()
+            clearTimeout(expiry)
+            expiry = setTimeout(refresh, staleAfterMs)
+        }
+        expiry = setTimeout(refresh, staleAfterMs)
         const unsubscribe = events.subscribe(batch => {
-            if (batch.some(event => affectsInventory(event, actorName, actorId))) refresh()
+            if (batch.some(event => affectsInventory(event, actorName, actorId))) changed()
         })
-        const unwatch = events.onReconnect(refresh)
+        const unwatch = events.onReconnect(changed)
         return () => {
             stopped = true
             clearTimeout(timer)
+            clearTimeout(expiry)
             unsubscribe()
             unwatch()
         }

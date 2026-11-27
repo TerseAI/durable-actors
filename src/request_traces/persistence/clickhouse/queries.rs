@@ -6,7 +6,7 @@ use super::{
 };
 use crate::platform_events::sockets::SocketClose;
 use crate::request_traces::{
-    RequestOutcome, RequestTrace, TraceEvent, TraceRecord,
+    RequestKind, RequestOutcome, RequestTrace, TraceEvent, TraceRecord,
     events::EVENT_LIMIT,
     history::{RequestHistogram, RequestHistogramQuery},
     logs::{ActorLog, LogHistogram, LogHistogramQuery},
@@ -128,6 +128,7 @@ impl ClickHouseTracePersistence {
             self.query(include_str!("requests_histogram.sql"), project)
                 .param("actor_name", query.actor_name.as_deref().unwrap_or(""))
                 .param("actor_id", query.actor_id.as_deref().unwrap_or(""))
+                .param("kind", query.kind.map_or("", RequestKind::as_str))
                 .param("from", millis(query.from_ms))
                 .param("to", millis(query.to_ms))
                 .param("bucket", millis(query.bucket_ms))

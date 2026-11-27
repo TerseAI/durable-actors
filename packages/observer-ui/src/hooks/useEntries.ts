@@ -19,7 +19,16 @@ import { useResidency } from "./useResidency.js"
 export function useEntries(baseUrl: string, timeWindow: TimeWindow, filter: EntryFilter) {
     const events = useEventStream(baseUrl, timeWindow.live ? streamQuery(filter) : null)
     const history = useEntryHistory(baseUrl, timeWindow, filter)
-    const { data: streamed } = useLiveView(streamedEntriesKey(baseUrl, filter), async (): Promise<Entry[]> => [], applyEntryEvents(filter), events)
+    // A reconnect rereads history before it drops streamed rows, so the gap's records appear and none vanish.
+    const { data: streamed } = useLiveView(
+        streamedEntriesKey(baseUrl, filter),
+        async (): Promise<Entry[]> => {
+            if (history.data) await history.mutate()
+            return []
+        },
+        applyEntryEvents(filter),
+        events
+    )
     const lifecycle = useLifecycle(timeWindow, filter)
     const histogram = useEntryHistogram(baseUrl, timeWindow, filter, events)
     const pages = history.data

@@ -14,6 +14,7 @@ FROM (
         AND ReceivedAt > now64(3) - toIntervalSecond({retention:UInt64})
         AND ({actor_name:String} = '' OR ActorName = {actor_name:String})
         AND ({actor_id:String} = '' OR ActorId = {actor_id:String})
+        AND ({kind:String} = '' OR SpanAttributes['durable_actors.kind'] = {kind:String})
         AND toUnixTimestamp64Milli(Timestamp) >= {from:Int64}
         AND toUnixTimestamp64Milli(Timestamp) < {to:Int64}
 )

@@ -11,6 +11,7 @@ export interface LiveEntryHistogram {
     bucketMs: number
     readAtMs: number
     counts: Record<number, SourceCounts>
+    partial?: boolean
 }
 
 /** Prepends streamed entries the list shows. */
@@ -21,10 +22,10 @@ export function applyEntryEvents(filter: EntryFilter): ApplyEvents<Entry[]> {
     }
 }
 
-export function liveEntryHistogram({ fromMs, bucketMs, buckets }: EntryHistogram, readAtMs: number): LiveEntryHistogram {
+export function liveEntryHistogram({ fromMs, bucketMs, buckets, partial }: EntryHistogram, readAtMs: number): LiveEntryHistogram {
     const counts: Record<number, SourceCounts> = {}
     buckets.forEach((bucket, index) => (counts[fromMs + index * bucketMs] = bucket))
-    return { bucketMs, readAtMs, counts }
+    return { bucketMs, readAtMs, counts, partial }
 }
 
 /**
@@ -46,10 +47,10 @@ export function applyEntryCounts(filter: EntryFilter): ApplyEvents<LiveEntryHist
 }
 
 /** The histogram drawn for aligned bounds, which move with a live window. */
-export function entryHistogramFor({ bucketMs, counts }: LiveEntryHistogram, { fromMs, toMs }: TimeBounds): EntryHistogram {
+export function entryHistogramFor({ bucketMs, counts, partial }: LiveEntryHistogram, { fromMs, toMs }: TimeBounds): EntryHistogram {
     const buckets: SourceCounts[] = []
     for (let start = fromMs; start < toMs; start += bucketMs) buckets.push(counts[start] ?? emptySourceCounts())
-    return { fromMs, bucketMs, buckets }
+    return { fromMs, bucketMs, buckets, partial }
 }
 
 function entriesIn(events: ObserveEvent[]): Entry[] {

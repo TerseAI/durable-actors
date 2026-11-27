@@ -713,6 +713,19 @@ async fn request_histogram_counts_outcomes_and_timings_per_bucket() -> Result<()
             {"ok": 0, "failed": 0, "rejected": 0, "interrupted": 0, "queueWaitMs": 0.0, "queueWaits": 0, "runMs": 0.0, "routingMs": 0.0}
         ])
     );
+    let sockets: Value = fixture
+        .get("/v1/projects/default/observe/requests/histogram?fromMs=0&toMs=3000&bucketMs=1000&actorName=Room&kind=websocket")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(
+        sockets["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|bucket| bucket["ok"] == 0 && bucket["failed"] == 0)
+    );
     let invalid = "/v1/projects/default/observe/requests/histogram?fromMs=0&toMs=3000&bucketMs=1";
     assert_eq!(
         fixture.get(invalid).await?.status(),

@@ -357,6 +357,7 @@ async fn read_collector_rows(store: &ClickHouseTracePersistence, project: &str) 
             &RequestHistogramQuery {
                 actor_name: Some("Room".into()),
                 actor_id: Some("lobby".into()),
+                kind: Some(RequestKind::Websocket),
                 from_ms: now - 3_600_000,
                 to_ms: now + 60_000,
                 bucket_ms: 60_000,

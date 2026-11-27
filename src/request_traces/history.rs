@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use super::{RequestOutcome, TRACE_CAPACITY, logs::MAX_HISTOGRAM_BUCKETS};
+use super::{RequestKind, RequestOutcome, TRACE_CAPACITY, logs::MAX_HISTOGRAM_BUCKETS};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -97,6 +97,7 @@ fn page_size() -> usize {
 pub(crate) struct RequestHistogramQuery {
     pub actor_name: Option<String>,
     pub actor_id: Option<String>,
+    pub kind: Option<RequestKind>,
     pub from_ms: u64,
     pub to_ms: u64,
     pub bucket_ms: u64,
