@@ -25,6 +25,8 @@ type LogWriter = (log: ActorLog) => void
 interface ResidentActorOptions {
     readonly actorEntrypointUrl: string
     readonly database: InvocationDatabase
+    /** How long a graceful eviction waits for running calls, and then for `onSleep`. */
+    readonly evictionGraceMs?: number
 }
 
 type SessionActor = Pick<ResidentActor, "ready" | "assign" | "handle" | "isResident" | "onResidencyChange" | "close">

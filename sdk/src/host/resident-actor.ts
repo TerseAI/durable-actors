@@ -44,11 +44,14 @@ class ResidentActor {
     private lastResident = false
     private lastSequence = 0
     private closed = false
+    private eviction: Promise<ActorExecutorReply> | undefined
+    private readonly evictionGraceMs: number
     private readonly residencyListeners = new Set<() => void>()
     private readonly client = new HostActorClient(call => this.callActor(call), remoteActorClient)
     private readonly releaseConsole: () => void
 
     constructor(private readonly options: ResidentActorOptions) {
+        this.evictionGraceMs = options.evictionGraceMs ?? defaultEvictionGraceMs
         this.releaseConsole = captureConsole((level, message) =>
             this.logs({ messageId: currentInvocation()?.id, level, message })
         )
@@ -103,6 +106,9 @@ class ResidentActor {
     }
 
     private async execute(command: ActorExecutionCommand, invocation: Invocation): Promise<ActorExecutorReply> {
+        // Work that arrives during an eviction runs on a fresh activation after onSleep finishes, never beside it
+        // on the activation that is about to stop.
+        while (this.eviction !== undefined) await this.eviction.catch(() => undefined)
         const actor = this.assignedActor()
         const activation = this.activate(actor)
         const reply = await activation.run({ ...command, actor }, invocation)
@@ -112,8 +118,29 @@ class ResidentActor {
     }
 
     private async evict(command: EvictCommand, invocation: Invocation): Promise<ActorExecutorReply> {
-        // The actor leaves memory even when its shutdown fails.
-        await this.activation?.run({ ...command, actor: this.assignedActor() }, invocation)
+        if (this.eviction !== undefined) return this.eviction
+        const eviction = this.evictActivation(command, invocation)
+        this.eviction = eviction
+        try {
+            return await eviction
+        } finally {
+            this.eviction = undefined
+        }
+    }
+
+    private async evictActivation(command: EvictCommand, invocation: Invocation): Promise<ActorExecutorReply> {
+        const activation = this.activation
+        if (activation !== undefined) {
+            // Let work already running settle before onSleep runs. A call that does not settle within the grace
+            // period ends the actor without onSleep. A forced eviction skips onSleep, so it has nothing to wait for.
+            const drained = !command.graceful || (await activation.settledWithin(this.evictionGraceMs))
+            // The actor leaves memory whether its shutdown fails, hangs past the grace period or finishes.
+            if (drained)
+                await settleWithin(
+                    [activation.run({ ...command, actor: this.assignedActor() }, invocation)],
+                    this.evictionGraceMs
+                )
+        }
         this.stop(failedReply("actor_worker_terminated", "the actor was evicted by the Rust host"))
         return { type: "evicted" }
     }
@@ -175,6 +202,7 @@ class ResidentActor {
 class Activation {
     private readonly runtime: ActorRuntime
     private readonly running = new Map<Invocation, (reply: ActorExecutorReply) => void>()
+    private readonly replies = new Set<Promise<ActorExecutorReply>>()
     private stopped = false
 
     constructor(
@@ -194,7 +222,7 @@ class Activation {
 
     /** Resolves when the command replies, or as soon as the activation stops. */
     run(command: AssignedCommand, invocation: Invocation): Promise<ActorExecutorReply> {
-        return new Promise(resolve => {
+        const reply = new Promise<ActorExecutorReply>(resolve => {
             const settle = (reply: ActorExecutorReply): void => {
                 this.running.delete(invocation)
                 resolve(reply)
@@ -206,6 +234,14 @@ class Activation {
                 )
             })
         })
+        this.replies.add(reply)
+        void reply.then(() => this.replies.delete(reply))
+        return reply
+    }
+
+    /** Resolves true once every command running now has replied, or false if one is still running after `ms`. */
+    settledWithin(ms: number): Promise<boolean> {
+        return settleWithin([...this.replies], ms)
     }
 
     /**
@@ -234,6 +270,21 @@ class Activation {
         const invocation = invocationOf("connection lookup")
         if (!this.running.has(invocation)) throw new Error("actor connection lookup is unavailable")
         return invocation.connections(query)
+    }
+}
+
+const defaultEvictionGraceMs = 30_000
+
+async function settleWithin(work: readonly Promise<unknown>[], ms: number): Promise<boolean> {
+    if (work.length === 0) return true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const expired = new Promise<false>(resolve => {
+        timer = setTimeout(() => resolve(false), ms)
+    })
+    try {
+        return await Promise.race([Promise.allSettled(work).then(() => true as const), expired])
+    } finally {
+        clearTimeout(timer)
     }
 }
 
